@@ -22,13 +22,17 @@ typedef struct { uint8_t *p; uint64_t size; } ds4_gpu_tensor;
 typedef struct {
     ds4_gpu_tensor *kv[48], *logits;
     unsigned kv_cap[48], context, cap, position;
-    unsigned draft_pos[MIMO2_DRAFT_LAYERS], draft_saved[MIMO2_DRAFT_LAYERS];
+    unsigned mtp_fill[MIMO2_DRAFT_LAYERS], mtp_base[MIMO2_DRAFT_LAYERS];
     unsigned trial_n, verify_rows, span_n;
     uint64_t media_tag, checkpoint_tag;
     bool failed, hidden_valid;
     unsigned *dflash_pos;
     unsigned dflash_saved_n;
 } ds4_mimo2_graph;
+// ds4_mimo2_graph.inc's restart of the MTP blocks.
+static void mimo2_mtp_rebase(ds4_mimo2_graph *g, unsigned pos) {
+    for (unsigned d = 0; d < MIMO2_DRAFT_LAYERS; d++) { g->mtp_fill[d] = pos; g->mtp_base[d] = pos; }
+}
 static bool fail_sync, fail_write;
 static int ds4_gpu_synchronize(void) {
 #ifdef MIMO2_TEST_CUDA
@@ -140,13 +144,13 @@ static void trial(unsigned n,unsigned source_cap,unsigned dest_cap) {
     FILE *f=tmpfile();assert(f);char err[128];assert(!mimo2_payload_save(&a,tokens,n,logits,f,err,sizeof(err)));
     const uint64_t size=(uint64_t)ftell(f);assert(size==mimo2_payload_bytes(&a,n));
     b.hidden_valid=true; b.trial_n=3; b.verify_rows=3; b.span_n=2;
-    b.media_tag=9; b.checkpoint_tag=9; b.draft_pos[0]=4; b.draft_saved[1]=1;
+    b.media_tag=9; b.checkpoint_tag=9; b.mtp_fill[0]=4; b.mtp_base[1]=1;
     unsigned *ring=malloc(1024*sizeof(unsigned));assert(ring);
     for(unsigned i=0;i<1024;i++) { ring[i]=7; }
     b.dflash_pos=ring; b.dflash_saved_n=3;
     assert(!restore(&b,f,size,&got,out));assert(!b.failed && b.position==n);
     assert(!b.hidden_valid && !b.trial_n && !b.verify_rows && !b.span_n);
-    assert(!b.media_tag && !b.checkpoint_tag && !b.draft_pos[0] && !b.draft_saved[1]);
+    assert(!b.media_tag && !b.checkpoint_tag && b.mtp_fill[0]==n && b.mtp_base[1]==n);
     assert(!b.dflash_saved_n);
     for(unsigned i=0;i<1024;i++) { assert(ring[i]==UINT_MAX); }
     assert(!memcmp(tokens,got,n*4) && !memcmp(logits,out,DS4_N_VOCAB*4));free(got);got=NULL;

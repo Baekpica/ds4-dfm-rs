@@ -5,17 +5,16 @@ static void mimo2_draft_reset(ds4_mimo2_graph *g) {
     g->span_n = 0;
     g->media_tag = 0;
     g->checkpoint_tag = 0;
-    for (unsigned depth = 0; depth < MIMO2_DRAFT_LAYERS; depth++) {
-        g->draft_pos[depth] = 0;
-        g->draft_saved[depth] = 0;
-    }
+    mimo2_mtp_rebase(g, g->position);
 }
 
-/* Embedded MTP is the three dense blocks at layers 48..50. DFlash is a
- * different artifact and is not loaded here. A trial may write rejected
- * draft slots; commit restores those slots and leaves the trunk cursor on
- * the accepted prefix. Draft RoPE uses each block's own cursor, which is
- * rewound with the slot, so a rejected row is overwritten before it is read. */
+/* Embedded MTP is the three dense blocks at layers 48..50, run as SGLang's
+ * multi-layer EAGLE runs MiMo-V2: block d's row i reads the target's row i
+ * and token i+d+1 at position i, and every depth keeps the target rows (no
+ * hidden chain). A draft step first writes the block's rows
+ * that are still missing, from the ring. Rows past the committed tokens use
+ * this trial's drafts; the next step rewrites them, so rejects need no undo.
+ * DFlash is a different artifact and is not loaded here. */
 
 static int mimo2_argmax(const float *logits) {
     unsigned best = 0;
@@ -26,66 +25,68 @@ static int mimo2_argmax(const float *logits) {
     return (int)best;
 }
 
-static bool mimo2_journal_slot(ds4_mimo2_graph *g, unsigned depth, unsigned pos, bool save) {
-    const unsigned layer = MIMO2_LAYERS + depth;
-    const uint64_t row = 8ull * (192 + 128) * sizeof(uint16_t);
-    if (depth >= MIMO2_DRAFT_LAYERS || !g->kv[layer] || !g->kv_cap[layer] || !g->journal) {
-        return false;
-    }
-    const uint64_t slot = ((uint64_t)pos % g->kv_cap[layer]) * row;
-    const uint64_t saved = (uint64_t)depth * row;
-    if (save) {
-        return ds4_gpu_tensor_copy(g->journal, saved, g->kv[layer], slot, row);
-    }
-    return ds4_gpu_tensor_copy(g->kv[layer], slot, g->journal, saved, row);
-}
-
-static bool mimo2_draft_head(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
-                             unsigned il) {
+/* MTP block rows lo..lo+n-1 into b_cur: eh_proj of [enorm(embedding of each
+ * row's token) | hnorm(target row)]. The target row is the one before the
+ * final norm: SGLang's normed hidden accepted 0.5-2% fewer drafts on four
+ * workloads. The joined rows borrow the qkv scratch; the block's projection
+ * overwrites it only after eh_proj has read them. */
+static bool mimo2_mtp_input(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
+                            unsigned il, const int *tokens, unsigned lo, unsigned n) {
+    ds4_exaone_batch_ws *b = &g->ws;
     const ds4_layer_weights *l = &w->layer[il];
-    return mimo2_norm(g->ws.b_norm, g->ws.b_cur, m, l->layer_output_norm, 1) &&
-        plain_graph_matmul_tensor(g->logits, m, w->output, M2_EMBED, DS4_N_VOCAB, g->ws.b_norm, 1);
+    return mimo2_ring_copy(g, b->b_ffn_out, lo, n, M2_RING_LOAD) &&
+        mimo2_norm(b->b_dense_gate, b->b_ffn_out, m, l->nextn_hnorm, n) &&
+        mimo2_embed(g, m, w, tokens, n, b->b_attn_out) &&
+        mimo2_norm(b->b_dense_up, b->b_attn_out, m, l->nextn_enorm, n) &&
+        ds4_gpu_concat_rows_tensor(g->qkv, b->b_dense_up, b->b_dense_gate, n, M2_EMBED) &&
+        plain_graph_matmul_tensor(b->b_cur, m, l->nextn_eh_proj, 2 * M2_EMBED, M2_EMBED, g->qkv, n);
 }
 
+/* One draft from block `depth`: g->trial[0] is the target's token at the
+ * frontier p, g->trial[1..depth] the earlier drafts. Rows lo..p-1 run through
+ * the block, in segments of the prefill width; the last row predicts. */
 static int mimo2_draft_step(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
-                            unsigned depth, int token, float *logits) {
-    if (depth >= MIMO2_DRAFT_LAYERS || !g->hidden_valid || token < 0 ||
-        (unsigned)token >= DS4_N_VOCAB) {
+                            unsigned depth, float *logits) {
+    const unsigned p = g->position, il = MIMO2_LAYERS + depth;
+    if (depth >= MIMO2_DRAFT_LAYERS || !g->mtp_hidden || !g->hidden_valid ||
+        g->mtp_fill[depth] >= p) {
         return -1;
     }
-    /* Absolute target positions need draft KV for every row 0..pos.
-     * That prefix is not filled yet, so attention must keep this dense cursor. */
-    const unsigned pos = g->draft_pos[depth];
-    const unsigned il = MIMO2_LAYERS + depth;
-    const ds4_layer_weights *l = &w->layer[il];
-    if (pos >= g->context) { return -1; }
-    if (!mimo2_journal_slot(g, depth, pos, true)) { return -1; }
-    g->draft_saved[depth] = 1;
-    g->host_positions[0] = pos;
-    ds4_gpu_tensor *left = ds4_gpu_tensor_view(g->joined, 0, (uint64_t)M2_EMBED * sizeof(float));
-    ds4_gpu_tensor *right = ds4_gpu_tensor_view(
-        g->joined, (uint64_t)M2_EMBED * sizeof(float), (uint64_t)M2_EMBED * sizeof(float));
-    bool ok = left && right &&
-        ds4_gpu_tensor_write(g->tokens, 0, &token, sizeof(token)) &&
-        ds4_gpu_tensor_write(g->positions, 0, &pos, sizeof(pos)) &&
-        mimo2_embed(g, m, w, &token, 1, g->ws.b_attn_out) &&
-        mimo2_norm(left, g->ws.b_attn_out, m, l->nextn_enorm, 1) &&
-        mimo2_norm(right, g->hidden, m, l->nextn_hnorm, 1) &&
-        plain_graph_matmul_tensor(g->ws.b_cur, m, l->nextn_eh_proj,
-            2 * M2_EMBED, M2_EMBED, g->joined, 1) &&
-        ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, M2_ROT, 1) &&
-        mimo2_layer(g, m, w, il, 1) &&
-        mimo2_draft_head(g, m, w, il) &&
+    unsigned lo = g->mtp_fill[depth];
+    if (p - lo > M2_WINDOW) {
+        /* Older rows are outside the query's window. Restart the block's
+         * positions here so its attention never reads the skipped slots. */
+        lo = p - M2_WINDOW;
+        g->mtp_base[depth] = lo;
+    }
+    int tokens[M2_WINDOW];
+    unsigned n = 0;
+    for (unsigned at = lo; at < p; at += n) {
+        n = p - at < g->cap ? p - at : g->cap;
+        for (unsigned j = 0; j < n; j++) {
+            const unsigned t = at + j + depth + 1;
+            tokens[j] = t < p ? g->mtp_tok[t % M2_MTP_RING] : g->trial[t - p];
+            g->host_positions[j] = at + j - g->mtp_base[depth];
+        }
+        if (!ds4_gpu_tensor_write(g->tokens, 0, tokens, n * sizeof(int)) ||
+            !ds4_gpu_tensor_write(g->positions, 0, g->host_positions, n * sizeof(unsigned)) ||
+            !ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, M2_ROT, n) ||
+            !mimo2_mtp_input(g, m, w, il, tokens, at, n) ||
+            !mimo2_layer(g, m, w, il, n)) {
+            return -1;
+        }
+    }
+    const uint64_t row = (uint64_t)M2_EMBED * sizeof(float);
+    ds4_gpu_tensor *last = ds4_gpu_tensor_view(g->ws.b_cur, (n - 1) * row, row);
+    const bool ok = last &&
+        mimo2_norm(g->ws.b_norm, last, m, w->layer[il].layer_output_norm, 1) &&
+        plain_graph_matmul_tensor(g->logits, m, w->output, M2_EMBED, DS4_N_VOCAB, g->ws.b_norm, 1) &&
         ds4_gpu_tensor_read(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
-    /* MiMo is not in the upstream hidden-chain list. Every draft head
-     * keeps the same target hidden. Commit replaces it from the verify row. */
-    ds4_gpu_tensor_free(left);
-    ds4_gpu_tensor_free(right);
+    ds4_gpu_tensor_free(last);
     if (!ok) { return -1; }
-    const int next = mimo2_argmax(logits);
-    if (next < 0) { return -1; }
-    g->draft_pos[depth] = pos + 1;
-    return next;
+    // Rows from p - depth on read this trial's drafts.
+    g->mtp_fill[depth] = p - depth > lo ? p - depth : lo;
+    return mimo2_argmax(logits);
 }
 
 static bool mimo2_pad_covered(const ds4_mimo2_graph *g, unsigned index) {
@@ -264,7 +265,7 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
         }
     } else for (unsigned depth = 0; depth + 1 < n; depth++) {
         const int next = mimo2_draft_step(g, &s->engine->model, &s->engine->weights,
-                                           depth, g->trial[depth], s->logits);
+                                           depth, s->logits);
         if (next < 0) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }
         g->trial[depth + 1] = next;
     }
@@ -301,22 +302,10 @@ int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen)
         return mimo2_session_fail(s, err, errlen);
     }
     g->position = end;
-    for (unsigned depth = 0; depth < MIMO2_DRAFT_LAYERS; depth++) {
-        if (g->draft_saved[depth] && depth >= (unsigned)keep) {
-            if (!g->draft_pos[depth] ||
-                !mimo2_journal_slot(g, depth, g->draft_pos[depth] - 1, false)) {
-                return mimo2_session_fail(s, err, errlen);
-            }
-            g->draft_pos[depth]--;
-        }
-        g->draft_saved[depth] = 0;
-    }
     if (g->verify_rows != g->trial_n) { return mimo2_session_fail(s, err, errlen); }
+    // The verify forward already left the accepted rows in the MTP ring.
     const float *logits = g->verify_logits + (size_t)(keep - 1) * DS4_N_VOCAB;
-    if (!ds4_gpu_tensor_write(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float)) ||
-        !ds4_gpu_tensor_copy(g->hidden, 0, g->ws.b_cur,
-            (uint64_t)(keep - 1) * M2_EMBED * sizeof(float),
-            (uint64_t)M2_EMBED * sizeof(float))) {
+    if (!ds4_gpu_tensor_write(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float))) {
         return mimo2_session_fail(s, err, errlen);
     }
     memcpy(s->logits, logits, (size_t)DS4_N_VOCAB * sizeof(float));
