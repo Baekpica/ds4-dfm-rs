@@ -39,14 +39,27 @@ struct Cand {
 }
 
 /// The verify draw a speculative step handed to the next position (session
-/// `pos`, native `generation`): the next plain sample there with the same
-/// sampler returns it; anything else drops it.
+/// `pos`, native `generation`, the stream state `rng` its draws left): the
+/// next plain sample there with the same sampler and stream returns it;
+/// anything else, such as a new request reusing the frontier, drops it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PendingDraw {
     pub pos: i32,
     pub generation: u64,
     pub token: i32,
     pub sampler: Sampler,
+    pub rng: u64,
+}
+
+impl PendingDraw {
+    /// Whether the plain sample at `pos` with `sampler` and stream `rng` is
+    /// the one this draw was handed to.
+    pub(crate) fn here(&self, pos: i32, generation: u64, sampler: &Sampler, rng: u64) -> bool {
+        self.pos == pos
+            && self.generation == generation
+            && self.sampler == *sampler
+            && self.rng == rng
+    }
 }
 
 thread_local! {
@@ -475,6 +488,24 @@ mod tests {
         }
         let share = zeros as f64 / runs as f64;
         assert!((share - 0.5).abs() < 0.02, "token 0 share {share}");
+    }
+
+    /// A request that reuses another's frontier with the same sampler draws
+    /// from its own stream, not the other request's handed-on draw.
+    #[test]
+    fn a_pending_draw_belongs_to_its_stream() {
+        let s = sampler(1.0, 0, 0.95, 0.0);
+        let pending = super::PendingDraw {
+            pos: 40,
+            generation: 3,
+            token: 9,
+            sampler: s,
+            rng: 0xabc,
+        };
+        assert!(pending.here(40, 3, &s, 0xabc));
+        assert!(!pending.here(40, 3, &s, 0x5eed));
+        assert!(!pending.here(41, 3, &s, 0xabc));
+        assert!(!pending.here(40, 3, &sampler(0.7, 0, 0.95, 0.0), 0xabc));
     }
 
     /// Uncut, the last kept row's draw is the next position's token.

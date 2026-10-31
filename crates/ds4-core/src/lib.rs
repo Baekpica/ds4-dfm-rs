@@ -3396,6 +3396,7 @@ impl Session<'_> {
             generation: self.native_generation(),
             token,
             sampler,
+            rng: *trial.rng,
         });
         Ok(accepted)
     }
@@ -3622,8 +3623,7 @@ impl Session<'_> {
             min_p,
         };
         if let Some(pending) = self.host.pending_draw.take() {
-            let here = pending.pos == self.pos() && pending.generation == self.native_generation();
-            if here && pending.sampler == sampler {
+            if pending.here(self.pos(), self.native_generation(), &sampler, *rng) {
                 return pending.token;
             }
         }
