@@ -4,6 +4,7 @@ static bool mimo2_reset(ds4_mimo2_graph *g) {
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0;
     g->high = 0;
+    g->restored = 0;
     g->failed = false;
     return true;
 }
@@ -39,6 +40,7 @@ enum { M2_REDRAFT = 1024 };
 static bool mimo2_ring_holds(const ds4_mimo2_graph *g, unsigned live, unsigned q) {
     const long ring = (long)M2_WINDOW + g->cap - 1;
     const long high = g->high > live ? g->high : live;
+    if (q < g->restored) { return false; }
     return ring >= (long)g->context || high - q <= ring - M2_WINDOW + 1;
 }
 
@@ -105,6 +107,13 @@ static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
     return 0;
+}
+
+/* The host asks rather than mirroring the high-water mark and restore floor. */
+int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+    if (!ds4_session_is_mimo2(s) || !s->mimo2_graph_ready || !tokens || n_tokens <= 0) { return 0; }
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    return (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt);
 }
 
 static int mimo2_session_eval(ds4_session *s, int token, char *err, size_t errlen) {

@@ -1470,6 +1470,8 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
                             int *tokens, int *target, int cap,
                             char *err, size_t errlen);
 int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Rows of the live state a text sync of `tokens` keeps; 0 rebuilds. */
+int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens);
 int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
                                  const unsigned *starts, const unsigned *counts,
                                  const float *const *rows, unsigned nspans,

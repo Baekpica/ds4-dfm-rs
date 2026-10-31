@@ -105,7 +105,8 @@ drafts on the serial lane (109.79 GiB). Its prefix reuse resumes at the
 common prefix with the live tokens (agent clients re-render the last answer):
 it re-runs the 1,024 rows below it so the DFlash taps and MTP ring hold only
 this prefix, while the SWA ring (window + prefill cap - 1 rows, measured from
-the newest row written) still holds the window there, else prefills cold. Partial reuse across edits and forks, and the gated disk KV,
+the newest row written) still holds the window there, never below a restored
+snapshot (it keeps one window); otherwise it prefills cold. Partial reuse across edits and forks, and the gated disk KV,
 need banks: `--mtp-mode off --max-seqs 2 -c 262144 --prefix-reuse partial
 --kv-disk-dir DIR`.
 

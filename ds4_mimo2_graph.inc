@@ -35,6 +35,9 @@ typedef struct {
     /* One past the newest row written (drafts included): the SWA ring keeps
      * rows at or after high - ring, so a rewind below it is refused. */
     unsigned high;
+    /* A restored snapshot holds one SWA window before this row: no rewind
+     * below it, however large the ring. */
+    unsigned restored;
     unsigned *host_positions;
     float *verify_logits;
     int trial[M2_TRIAL];
@@ -230,6 +233,7 @@ static bool mimo2_graph_clone_bank(ds4_mimo2_graph *g,
     g->owns_scratch = false;
     g->position = 0;
     g->high = 0;
+    g->restored = 0;
     g->failed = false;
     g->hidden_valid = false;
     g->spans = NULL;

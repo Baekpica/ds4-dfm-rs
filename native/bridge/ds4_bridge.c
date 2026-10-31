@@ -820,6 +820,14 @@ int ds4_bridge_mimo2_commit(ds4_bridge_session *s, int32_t keep, char *err, size
     return ds4_session_mimo2_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_mimo2_sync_keep(ds4_bridge_session *s, const int32_t *tokens, int32_t n_tokens)
+{
+    if (!s || !s->session) {
+        return 0;
+    }
+    return ds4_session_mimo2_sync_keep(s->session, tokens, n_tokens);
+}
+
 int ds4_bridge_mimo2_encode_vision(ds4_bridge_session *s, const float *patches,
                                    uint32_t n_patches, uint32_t grid_h, uint32_t grid_w,
                                    float *out, char *err, size_t errlen)

@@ -277,6 +277,10 @@ int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen)
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_mimo2_commit");
 }
+int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+    (void)s; (void)tokens; (void)n_tokens;
+    STUB("ds4_session_mimo2_sync_keep");
+}
 int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
                                     unsigned n_patches, unsigned grid_h, unsigned grid_w,
                                     float *out, char *err, size_t errlen) {

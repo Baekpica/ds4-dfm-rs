@@ -299,41 +299,6 @@ impl SessionLedger {
         }
     }
 
-    /// C `mimo2_sync_keep`: resume 1,024 rows below the common prefix (the
-    /// drafters' windows refill from this prefix) while the SWA ring
-    /// (window + prefill cap - 1 rows; rejected drafts write up to 7 past
-    /// the frontier) still holds the window before it, else at the prefix
-    /// itself; never inside media pads.
-    fn mimo2_sync_start(&self, prompt: &[i32]) -> i32 {
-        const WINDOW: i64 = 128;
-        const TRIAL_ROWS: i64 = 8;
-        const REDRAFT: i32 = 1024;
-        let pad = prompt.iter().position(|&t| {
-            matches!(
-                t,
-                crate::mimo2::IMAGE_PAD | crate::mimo2::VIDEO_PAD | crate::mimo2::AUDIO_PAD
-            )
-        });
-        let text = &prompt[..pad.unwrap_or(prompt.len())];
-        let mut common = Self::common_prefix(&self.tokens, text);
-        if common > 0 && common as usize == prompt.len() {
-            common -= 1;
-        }
-        let ring = WINDOW + i64::from(self.prefill_cap) - 1;
-        let high = self.tokens.len() as i64 + TRIAL_ROWS - 1;
-        let holds =
-            |q: i32| ring >= i64::from(self.ctx) || high - i64::from(q) <= ring - WINDOW + 1;
-        let redraft = (common - REDRAFT).max(0);
-        if holds(redraft) {
-            return redraft;
-        }
-        if holds(common) {
-            common
-        } else {
-            0
-        }
-    }
-
     pub fn plan_sync(&self, prompt: &[i32], exaone_span: i32) -> SyncPlan {
         let plen = prompt.len() as i32;
         if self.prompt_exceeds_context(plen) {
@@ -360,18 +325,6 @@ impl SessionLedger {
                 start,
                 rebuild: start == 0,
                 bump,
-                fence: false,
-                bounds: false,
-            };
-        }
-
-        if self.family == ModelFamily::Mimo2 && self.valid && !self.starts_with_checkpoint(prompt) {
-            let start = self.mimo2_sync_start(prompt);
-            return SyncPlan {
-                err: false,
-                start,
-                rebuild: start == 0,
-                bump: true,
                 fence: false,
                 bounds: false,
             };
@@ -812,39 +765,6 @@ mod tests {
         assert_eq!(host.planned_exaone_rewind_span(), 513);
         host.backend = SessionBackend::Cpu;
         assert_eq!(host.planned_exaone_rewind_span(), 0);
-    }
-
-    #[test]
-    fn mimo2_sync_resumes_at_common_prefix() {
-        let mut host = SessionLedger::new(ModelFamily::Mimo2, SessionBackend::Cuda, 1 << 20, 4096);
-        host.tokens = (0..20_000).collect();
-        host.valid = true;
-
-        // An agent client re-renders the last 500 generated tokens; the
-        // drafters' 1,024-row window is re-run below the prefix.
-        let mut next: Vec<i32> = (0..19_500).collect();
-        next.extend([7, 8, 9]);
-        let plan = host.plan_sync(&next, 0);
-        assert_eq!(plan.start, 19_500 - 1024);
-        assert!(!plan.err && !plan.rebuild && plan.bump);
-
-        // A resend that ends inside the state re-runs its last token.
-        let plan = host.plan_sync(&host.tokens[..19_500], 0);
-        assert_eq!(plan.start, 19_499 - 1024);
-
-        // Too far back to re-run the drafter window: keep the prefix itself.
-        let plan = host.plan_sync(&host.tokens[..16_500], 0);
-        assert_eq!(plan.start, 16_499);
-
-        // Past the SWA ring the window before the prefix is gone.
-        let plan = host.plan_sync(&host.tokens[..10_000], 0);
-        assert_eq!(plan.start, 0);
-        assert!(plan.rebuild);
-
-        // Media pads are bound by the media path, never resumed into.
-        let mut media: Vec<i32> = (0..19_000).collect();
-        media[18_000] = crate::mimo2::IMAGE_PAD;
-        assert_eq!(host.plan_sync(&media, 0).start, 18_000 - 1024);
     }
 
     #[test]

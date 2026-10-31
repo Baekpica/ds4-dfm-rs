@@ -114,7 +114,9 @@ owns the tool loop.
   agent clients re-render the last answer, so an extend-only sync prefilled
   every MiMo turn from zero (cached_tokens 0 even for an identical resend).
   Positional and SWA state rewinds while the ring, counted from the newest
-  row written, holds the window; drafter windows re-run below the prefix.
+  row written, holds the window, never below a restored snapshot (it holds
+  one window); drafter windows re-run below the prefix. The host asks native
+  for the kept rows: a host mirror lost the high-water mark across rewinds.
   Gate with an identical resend and a re-rendered continuation.
 - Recurrent-state (KDA, linear-attention) payloads restore only a prompt that
   extends the saved history: test disk restore with the next turn; re-sending
