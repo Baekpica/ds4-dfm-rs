@@ -118,6 +118,36 @@ Gates follow the change, not one number:
   between the halves of each run (9 degrees of freedom, p = 0.01 at 21.7).
 - Acceptance, speed and output: the table above, finish reasons and tool
   calls on both runs.
+- Every drafting family with a local artifact, one server each with its
+  drafter (`--ctx 16384`, the same requests, sampled at temperature 1.0 and
+  top-p 0.95 except the greedy one). Tokens per decode step; every request
+  finished with stop, length or tool_calls:
+
+| Family, lane, drafter | Story | Code | Thinking | Greedy | Tool call | Digits |
+|---|---:|---:|---:|---:|---:|---:|
+| MiMo-V2.6 VQ, serial, MTP 2 | 1.81 | 2.70 | 2.81 | 2.82 | 2.47 | 2.49 |
+| MiMo-V2.6 VQ, serial, DFlash 7 | 1.69 | 5.00 | 6.00 | 5.13 | 4.11 | 3.73 |
+| MiMo-V2.6 MOPD, serial, MTP 2 | 1.81 | 2.60 | 2.66 | 2.74 | 2.47 | 2.49 |
+| MiMo-V2.6 MOPD, serial, DFlash 7 | 1.62 | 1.89 | 2.60 | 2.08 | 2.85 | 2.70 |
+| GLM-5.3 VQ, banks, MTP 2 | 1.69 | 2.74 | 2.55 | 2.86 | 1.38 | 2.31 |
+| GLM-5.3 VQ, serial, MTP 2 | 1.69 | 2.70 | 2.55 | 2.86 | 1.22 | 2.27 |
+| Ling-3.1 VQ, banks, MTP 2 | 1.83 | 2.67 | 2.63 | 2.82 | 2.64 | 2.36 |
+| Ling-3.1 VQ, serial, MTP 2 | 1.83 | 2.67 | 2.63 | 2.78 | 2.64 | 2.32 |
+| IQuest-Q1, banks, MTP 3 | 1.32 | 2.74 | 2.21 | 3.12 | 3.67 | 2.09 |
+| IQuest-Q1, serial, MTP 3 | 1.32 | 2.74 | 2.21 | 3.12 | 3.67 | 2.06 |
+| Naive N0.5, banks, DSpark 2 | 1.42 | 1.48 | 1.37 | 1.53 | 1.70 | 1.07 |
+| Naive N0.5, serial, DSpark 2 | 1.42 | 1.47 | 1.37 | 1.52 | 1.70 | 1.05 |
+| Step-3.7, banks, MTP 3 | 1.90 | 3.70 | 3.26 | 3.51 | 3.83 | 2.90 |
+| Step-3.7, serial, MTP 3 | 1.90 | 3.70 | 3.26 | 3.51 | 3.83 | 2.85 |
+| Inkling, serial, MTP 8 | 1.61 | 5.26 | 4.16 | 4.88 | 8.75 | 3.46 |
+| dots3, serial, MTP 2 | 1.67 | 2.70 | 2.67 | 2.86 | 2.86 | 2.52 |
+| Beam VQ, serial, DFlash2 7 | 1.59 | 2.25 | 3.17 | 2.22 | 2.21 | 2.32 |
+| MiniMax VQ, serial, DSpark 3 | 1.15 | 2.63 | 3.22 | 3.03 | 3.93 | 2.44 |
+
+  GLM's tool calls end their prefixes at structural tool syntax under
+  sampling. Naive's DSpark drafter accepts little at any temperature (greedy
+  1.53). IQuest ran in its documented weight-server shape, and Step-3.7's
+  banks need `--max-seqs 2`.
 
 Each A/B ran the same server twice, with its drafter and with `--mtp-mode
 off` on the same lane. `--mtp-mode on` removes `DS4_MTP_SPEC_DISABLE` from
