@@ -84,8 +84,9 @@ static int mimo2_draft_step(ds4_mimo2_graph *g, const ds4_model *m, const ds4_we
         ds4_gpu_tensor_read(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
     ds4_gpu_tensor_free(last);
     if (!ok) { return -1; }
-    // Rows from p - depth on read this trial's drafts.
-    g->mtp_fill[depth] = p - depth > lo ? p - depth : lo;
+    // Rows from p - depth on read this trial's drafts (every row when p <= depth).
+    const unsigned drafted = p > depth ? p - depth : 0;
+    g->mtp_fill[depth] = drafted > lo ? drafted : lo;
     return mimo2_argmax(logits);
 }
 
