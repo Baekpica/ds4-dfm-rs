@@ -78,6 +78,8 @@ freeze or permission to bind native internals.
 | `ds4_bridge_iquest_commit` | commit an accepted prefix of the pending trial; restore rejected target/MTP ring writes and normalized hidden carry before publishing the frontier |
 | `ds4_bridge_glm53_trial` | embedded proposals and width-one target verification; borrowed token/argmax outputs, pending native journal, 0 for ordinary fallback and -1 on failure |
 | `ds4_bridge_glm53_commit` | restore the recorded accepted prefix, including recurrent state, pool tails and predictor frontier; never re-forward to commit |
+| `ds4_bridge_ling31_trial` | Ling-3.1 recursive drafts and one batched verify; borrowed token/target outputs, 0 for ordinary fallback and -1 on failure |
+| `ds4_bridge_ling31_commit` | keep the accepted prefix of the pending trial; reject rows roll back without re-forward |
 | `ds4_bridge_session_argmax` | greedy next id |
 | `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
 | `ds4_bridge_session_ctx` | session context length |
@@ -87,6 +89,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_prefill_cap` | chunk cap used by the native graph |
 | `ds4_bridge_session_exaone_rewind_span` | EXAONE sliding-window reuse span |
 | `ds4_bridge_session_sample` | `ds4_session_sample` (caller-owned rng) |
+| `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials draw each verify row through the host's `draw` callback until cleared (NULL); `ud` and `rng` must outlive those trials |
 | `ds4_bridge_session_save_payload` | path wrapper over `ds4_session_save_payload` (native writes header+tokens+GPU tail) |
 | `ds4_bridge_session_load_payload` | path wrapper; `payload_bytes` = file size |
 | `ds4_bridge_session_load_payload_range` | path + checked `offset`/`length`; native consumes exactly that embedded DSV4 range |

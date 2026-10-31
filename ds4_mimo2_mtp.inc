@@ -278,7 +278,9 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
     if (!mimo2_head_rows(g, &s->engine->model, &s->engine->weights, n, g->verify_logits)) {
         return mimo2_session_fail(s, err, errlen) ? -1 : -1;
     }
-    for (unsigned row = 0; row < n; row++) {
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, g->verify_logits, DS4_N_VOCAB, DS4_N_VOCAB, g->trial, n, target);
+    } else for (unsigned row = 0; row < n; row++) {
         const int id = mimo2_argmax(g->verify_logits + (size_t)row * DS4_N_VOCAB);
         if (id < 0) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }
         target[row] = id;

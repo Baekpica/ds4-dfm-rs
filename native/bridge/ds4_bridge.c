@@ -689,6 +689,26 @@ int ds4_bridge_glm53_commit(ds4_bridge_session *s, int32_t keep, char *err, size
     return ds4_session_glm53_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_ling31_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                            int32_t *tokens, int32_t *target, int32_t cap,
+                            char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_ling31_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_ling31_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_ling31_commit(s->session, keep, err, errlen);
+}
+
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen)
@@ -1194,6 +1214,14 @@ int ds4_bridge_session_sample(ds4_bridge_session *s,
 {
     if (!s || !s->session) return -1;
     return ds4_session_sample(s->session, temperature, top_k, top_p, min_p, rng);
+}
+
+int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s, ds4_bridge_spec_draw_fn draw,
+                                        void *ud, uint64_t *rng)
+{
+    if (!s || !s->session) return -1;
+    ds4_session_set_spec_sampler(s->session, draw, ud, rng);
+    return 0;
 }
 
 int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,

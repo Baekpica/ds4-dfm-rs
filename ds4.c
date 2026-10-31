@@ -23839,7 +23839,7 @@ static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
 
 static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
                                   const ds4_weights *w, const int *tokens, unsigned n,
-                                  int *argmax) {
+                                  int *argmax, float *rows) {
     if (!argmax || !n || n > IK_VERIFY_ROWS || n > g->undo_cap ||
         g->n_layers != INKLING_LAYERS || !inkling_graph_forward(g, m, w, tokens, n)) {
         return false;
@@ -23851,7 +23851,9 @@ static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
         ds4_gpu_tensor *id = ds4_gpu_tensor_view(g->buf[IK_TOKENS],
                                                   (uint64_t)i * sizeof(int), sizeof(int));
         bool ok = id && inkling_head_logits(g, m, w, g->buf[IK_FINAL], i + 1) &&
-            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB);
+            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB) &&
+            (!rows || ds4_gpu_tensor_read(g->logits, 0, rows + (size_t)i * DS4_N_VOCAB,
+                                           (uint64_t)DS4_N_VOCAB * sizeof(float)));
         ds4_gpu_tensor_free(id);
         if (!ok) {
             return false;
@@ -41035,6 +41037,61 @@ static int sample_top_p_min_p_override_excluding(
                                         excluded_id, excluded_eot);
 }
 
+/* The host's draw a speculative trial verifies with; draw NULL keeps argmax
+ * targets. */
+typedef struct {
+    ds4_spec_draw_fn draw;
+    void *ud;
+    uint64_t *rng;
+} ds4_spec_sampler;
+
+#ifndef DS4_NO_GPU
+static bool spec_sampling(const ds4_spec_sampler *sp) {
+    return sp && sp->draw && sp->rng;
+}
+
+/* Verify targets drawn by the host's sampler (sample-and-match, the default
+ * of TensorRT-LLM and llama.cpp; vLLM's and SGLang's target-only acceptance
+ * keeps the same distribution). Rows are drawn in order through `draw`, and
+ * the first draw that rejects the next draft ends the trial. Later rows repeat that draw: acceptance never reads past the first
+ * mismatch, and every target stays a valid token id. The last draw is
+ * rewound. The next ordinary sample of the committed row then draws the same
+ * token, and a stream spends one draw per token as plain sampling does. */
+static void spec_sample_rows(const ds4_spec_sampler *sp, const float *rows, size_t stride,
+                             uint32_t vocab, const int *tokens, uint32_t n, int *target) {
+    uint64_t before = *sp->rng;
+    uint32_t drawn = 0;
+    while (drawn < n) {
+        before = *sp->rng;
+        target[drawn] = sp->draw(sp->ud, rows + (size_t)drawn * stride, vocab, sp->rng);
+        drawn++;
+        if (drawn == n || target[drawn - 1] != tokens[drawn]) { break; }
+    }
+    for (uint32_t i = drawn; i < n; i++) { target[i] = target[drawn - 1]; }
+    *sp->rng = before;
+}
+
+/* Host rows for spec_sample_rows: the families that reduce verify rows to
+ * argmax on the device read them only when a request samples. Thread-local
+ * and grown on demand, so a borrowed bank session owns nothing. */
+static float *spec_host_buffer(size_t floats) {
+    static __thread float *buf;
+    static __thread size_t cap;
+    if (floats > cap) {
+        float *grown = realloc(buf, floats * sizeof(float));
+        if (!grown) { return NULL; }
+        buf = grown;
+        cap = floats;
+    }
+    return buf;
+}
+
+static const float *spec_host_rows(const ds4_gpu_tensor *rows, uint32_t vocab, uint32_t n) {
+    float *buf = spec_host_buffer((size_t)vocab * n);
+    return buf && ds4_gpu_tensor_read(rows, 0, buf, (uint64_t)vocab * n * sizeof(float)) ? buf : NULL;
+}
+#endif
+
 static void print_top_logits(
         FILE          * fp,
         const char    * label,
@@ -48097,6 +48154,8 @@ struct ds4_session {
     uint64_t generation;
     bool checkpoint_valid;
     bool mtp_draft_valid;
+    /* The sampler a speculative trial verifies with; set around one trial. */
+    ds4_spec_sampler spec;
     /* S6 lazy session graph: graph alloc deferred to the first GPU-touching
      * root API (ds4_session_ensure_graph).  Host state (checkpoint, ctx_size,
      * prefill_cap, logits) is live from create; pos/ctx/tokens readers never
@@ -65805,11 +65864,19 @@ static void family_banked_capture_checkpoint(
     }
 }
 
-#ifndef __APPLE__
-static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
-        int *tokens, int *target, int capacity, char *err, size_t errlen);
-static int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen);
-#endif
+
+/* A sampling bank's verify-row draw: the bank's own sampler and stream. */
+static int cont_spec_draw(void *ud, const float *row, uint32_t vocab, uint64_t *rng) {
+    const ds4_family_cont_bank *cb = ud;
+    return sample_top_p_min_p(row, vocab, cb->temperature, cb->top_k, cb->top_p, cb->min_p, rng);
+}
+
+/* Drafts are checked with the bank's sampler: a forced token, or a greedy
+ * position (tool syntax) in a sampling bank, ends the accepted prefix. */
+static bool cont_spec_forced(int override, float temperature) {
+    return DS4_SAMPLE_OVERRIDE_IS_TOKEN(override) ||
+        (override == DS4_SAMPLE_OVERRIDE_GREEDY && temperature > 0.0f);
+}
 
 /* Borrow one bank as a serial session for the family device trial and
  * commit. Rust selects the accepted prefix; callbacks may shorten it further
@@ -65835,14 +65902,17 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         (gr && (!gr->graph[bank].mtp_ready || gr->failed[bank])) ||
         (ir && !ir->graph[bank].mtp_enabled) || (lr && !lr->graph[bank].mtp_drafts) ||
         !cb->step_accept || (!gr && !ir && !lr && cb->sample_exclude) || current_excluded >= 0 ||
-        cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
+    /* A sampling bank verifies with its own sampler and stream (sample-and-
+     * match); the rewound last draw is the next ordinary sample. */
     ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
         .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
                    : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
-                       .len = (int)pos, .cap = (int)ctx->seq_cap}};
+                       .len = (int)pos, .cap = (int)ctx->seq_cap},
+        .spec = {.draw = cb->temperature > 0.0f ? cont_spec_draw : NULL, .ud = cb,
+                 .rng = &cb->rng}};
     if (gr) {
         s.glm53_graph_ready = true; s.glm53_graph = gr->graph[bank];
     } else if (ir) {
@@ -65860,7 +65930,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     const unsigned capacity = gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : lr ? L31_MTP_ROWS
         : nr ? N05_DF_BLOCK : S37_VERIFY;
     if (budget > capacity) { budget = capacity; }
-    if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(first_override)) { budget = 1; }
+    if (cont_spec_forced(first_override, cb->temperature)) { budget = 1; }
     int tokens[IQ_DRAFT_SLOTS + 1], target[IQ_DRAFT_SLOTS + 1];
     int n = gr
         ? ds4_session_glm53_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
@@ -65889,7 +65959,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         if (cb->sample_exclude && cb->sample_exclude(ud, cb->user) >= 0) { break; }
         const int override = i == 1 ? first_override : (cb->sample_override
             ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE);
-        if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(override)) { break; }
+        if (cont_spec_forced(override, cb->temperature)) { break; }
         const int token = tokens[i];
         cb->generated[cb->generated_len++] = token;
         cb->current = token;
@@ -77279,7 +77349,7 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
             return -1;
         }
         predicted[row] = sample_argmax(s->logits, DS4_N_VOCAB);
-        if (cache_logits) {
+        if (cache_logits || spec_sampling(&s->spec)) {
             memcpy(s->step37_spec.verify_logits + (size_t)row * DS4_N_VOCAB,
                    s->logits, DS4_N_VOCAB * sizeof(float));
         }
@@ -77288,6 +77358,10 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
     s->step37_trial_n = n;
     memcpy(tokens, s->step37_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, s->step37_spec.verify_logits, DS4_N_VOCAB, DS4_N_VOCAB,
+                         tokens, n, target);
+    }
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);
     return (int)n;
 #endif
@@ -77378,10 +77452,13 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
     }
     int predicted[IK_VERIFY_ROWS];
     s->inkling_trial[0] = first;
-    if ((n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
+    // A sampling request draws its targets from the head rows (DS4_N_VOCAB, as ordinary decode reads).
+    float *rows = spec_sampling(&s->spec) ? spec_host_buffer((size_t)n * DS4_N_VOCAB) : NULL;
+    if ((spec_sampling(&s->spec) && !rows) ||
+        (n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
                                         &e->mtp_model, &e->inkling_mtp, s->checkpoint.v,
                                         first, s->inkling_trial + 1, n - 1)) ||
-        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted)) {
+        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted, rows)) {
         inkling_trial_failed(s);
         payload_set_err(err, errlen, "Inkling draft/target verification failed");
         return -1;
@@ -77389,6 +77466,7 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
     s->inkling_trial_n = n;
     memcpy(tokens, s->inkling_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
+    if (rows) { spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, n, target); }
     return (int)n;
 #endif
 }
@@ -78444,6 +78522,12 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p, rng);
 }
 
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_draw_fn draw, void *ud,
+                                  uint64_t *rng) {
+    if (!s) { return; }
+    s->spec = (ds4_spec_sampler){.draw = draw, .ud = ud, .rng = rng};
+}
+
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id) {
@@ -79275,6 +79359,16 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         accepted[0] = first_token;
         return 1;
     }
+#ifndef DS4_NO_GPU
+    /* The Qwen and DeepSeek V4 serial verifiers below compare argmax rows; a
+     * sampling session commits one target token (their bank lanes verify
+     * sampled drafts). */
+    if (spec_sampling(&s->spec)) {
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) { return -1; }
+        accepted[0] = first_token;
+        return 1;
+    }
+#endif
     if (ds4_session_is_qwen4exp(s)) {
 #ifdef DS4_NO_GPU
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;

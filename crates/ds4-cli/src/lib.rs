@@ -433,34 +433,51 @@ fn validate_one_shot_args(args: &ShadowArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn use_mtp_spec(temp: f32, mtp: Option<&str>, draft: i32) -> bool {
-    temp <= 0.0 && mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+// Drafts verify against the run's sampler at any temperature
+// (`Session::eval_speculative`), so no gate reads it.
+fn use_mtp_spec(mtp: Option<&str>, draft: i32) -> bool {
+    mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
-fn use_iquest_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool {
+fn use_iquest_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
     family == ds4_core::ModelFamily::IQuestQ1
-        && temp <= 0.0
         && (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
-fn use_glm_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool {
+fn use_glm_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
     matches!(
         family,
         ds4_core::ModelFamily::Glm53
             | ds4_core::ModelFamily::Glm53Vq
             | ds4_core::ModelFamily::Ling31Vq
-    ) && temp <= 0.0
-        && draft > 1
+    ) && draft > 1
         && ds4_core::check_mtp_draft(family, draft).is_ok()
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
-fn use_naive_spec(temp: f32, dspark: Option<&str>, draft: i32) -> bool {
-    temp <= 0.0
-        && dspark.is_some()
-        && draft >= 1
-        && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+fn use_naive_spec(dspark: Option<&str>, draft: i32) -> bool {
+    dspark.is_some() && draft >= 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+}
+
+/// The run's sampler for draft verification; temperature 0 keeps argmax.
+fn spec_sampler(args: &ShadowArgs) -> ds4_core::Sampler {
+    ds4_core::Sampler {
+        temperature: args.temp,
+        top_k: 0,
+        top_p: args.top_p,
+        min_p: args.min_p,
+    }
+}
+
+/// Ends a speculative prefix after a stop token, where the plain loop stops.
+pub(crate) fn stop_cut(model: &ds4_core::Model) -> impl FnMut(&[i32]) -> usize + '_ {
+    |prefix: &[i32]| {
+        prefix
+            .iter()
+            .position(|&token| model.token_is_stop(token))
+            .map_or(prefix.len(), |stop| stop + 1)
+    }
 }
 
 fn mtp_open_options(
@@ -625,11 +642,11 @@ fn run_chat_turn(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), chat.thinking_enabled());
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
-        || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
-        || use_glm_spec(args.temp, model.family(), args.mtp_draft)
+    let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
+        || use_iquest_spec(model.family(), args.mtp_draft)
+        || use_glm_spec(model.family(), args.mtp_draft)
         || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
+            && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0i32;
     let mut raw = Vec::new();
@@ -647,7 +664,16 @@ fn run_chat_turn(
             break;
         }
         let accepted = if use_mtp {
-            match session.eval_speculative_argmax(token, max_tokens - generated, eos) {
+            let left = max_tokens - generated;
+            let sampler = spec_sampler(args);
+            match session.eval_speculative(
+                token,
+                left,
+                eos,
+                sampler,
+                &mut rng,
+                &mut stop_cut(model),
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("ds4: decode failed: {e}");
@@ -954,11 +980,11 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), !args.nothink);
     let mut decode_error = None;
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
-        || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
-        || use_glm_spec(args.temp, model.family(), args.mtp_draft)
+    let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
+        || use_iquest_spec(model.family(), args.mtp_draft)
+        || use_glm_spec(model.family(), args.mtp_draft)
         || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
+            && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0;
 
@@ -980,8 +1006,15 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
             break;
         }
         if use_mtp {
-            let accepted = match session.eval_speculative_argmax(token, max_tokens - generated, eos)
-            {
+            let left = max_tokens - generated;
+            let accepted = match session.eval_speculative(
+                token,
+                left,
+                eos,
+                spec_sampler(args),
+                &mut rng,
+                &mut stop_cut(model),
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     decode_error = Some(e.to_string());
@@ -2233,7 +2266,7 @@ mod tests {
         ]))
         .unwrap();
         assert!(validate_one_shot_args(&mtp).is_ok());
-        assert!(use_mtp_spec(mtp.temp, mtp.mtp.as_deref(), mtp.mtp_draft));
+        assert!(use_mtp_spec(mtp.mtp.as_deref(), mtp.mtp_draft));
 
         let dspark = parse_args(args(&[
             "-p",
@@ -2250,11 +2283,10 @@ mod tests {
     }
 
     #[test]
-    fn mtp_spec_follows_c_gates() {
-        assert!(!use_mtp_spec(0.0, None, 2));
-        assert!(!use_mtp_spec(0.0, Some("mtp.gguf"), 1));
-        assert!(!use_mtp_spec(0.5, Some("mtp.gguf"), 2));
-        assert!(use_mtp_spec(0.0, Some("mtp.gguf"), 2));
+    fn mtp_spec_gates() {
+        assert!(!use_mtp_spec(None, 2));
+        assert!(!use_mtp_spec(Some("mtp.gguf"), 1));
+        assert!(use_mtp_spec(Some("mtp.gguf"), 2));
     }
 
     #[test]
@@ -2275,12 +2307,11 @@ mod tests {
         assert!(mtp_open_options(&parsed, None).unwrap().is_empty());
         let too_many = parse_args(args(&["--mtp-draft", "8", "-p", "hello"])).unwrap();
         assert!(mtp_open_options(&too_many, Some(ds4_core::ModelFamily::IQuestQ1)).is_err());
-        assert!(use_iquest_spec(0.0, ds4_core::ModelFamily::IQuestQ1, 3));
-        assert!(use_iquest_spec(0.0, ds4_core::ModelFamily::IQuestQ1, 7));
-        assert!(!use_iquest_spec(0.5, ds4_core::ModelFamily::IQuestQ1, 3));
-        assert!(!use_iquest_spec(0.0, ds4_core::ModelFamily::IQuestQ1, 1));
-        assert!(!use_iquest_spec(0.0, ds4_core::ModelFamily::IQuestQ1, 8));
-        assert!(!use_iquest_spec(0.0, ds4_core::ModelFamily::DeepSeek4, 3));
+        assert!(use_iquest_spec(ds4_core::ModelFamily::IQuestQ1, 3));
+        assert!(use_iquest_spec(ds4_core::ModelFamily::IQuestQ1, 7));
+        assert!(!use_iquest_spec(ds4_core::ModelFamily::IQuestQ1, 1));
+        assert!(!use_iquest_spec(ds4_core::ModelFamily::IQuestQ1, 8));
+        assert!(!use_iquest_spec(ds4_core::ModelFamily::DeepSeek4, 3));
     }
 
     #[test]
@@ -2289,9 +2320,8 @@ mod tests {
         let options = mtp_open_options(&parsed, Some(ds4_core::ModelFamily::Glm53)).unwrap();
         assert!(options.contains(&ModelOpenOption::MtpDraftTokens(3)));
         assert!(options.contains(&ModelOpenOption::MtpMargin(2.5)));
-        assert!(use_glm_spec(0.0, ds4_core::ModelFamily::Glm53, 3));
-        assert!(!use_glm_spec(0.5, ds4_core::ModelFamily::Glm53, 3));
-        assert!(!use_glm_spec(0.0, ds4_core::ModelFamily::Glm53, 1));
+        assert!(use_glm_spec(ds4_core::ModelFamily::Glm53, 3));
+        assert!(!use_glm_spec(ds4_core::ModelFamily::Glm53, 1));
         let mut too_many = parsed;
         too_many.mtp_draft = 4;
         assert!(mtp_open_options(&too_many, Some(ds4_core::ModelFamily::Glm53)).is_err());
@@ -2317,8 +2347,8 @@ mod tests {
         let parsed = parse_args(args(&["--mtp-draft", "2"])).unwrap();
         let options = mtp_open_options(&parsed, Some(ds4_core::ModelFamily::Glm53Vq)).unwrap();
         assert!(options.contains(&ModelOpenOption::MtpDraftTokens(2)));
-        assert!(use_glm_spec(0.0, ds4_core::ModelFamily::Glm53Vq, 2));
-        assert!(!use_glm_spec(0.0, ds4_core::ModelFamily::Glm53Vq, 1));
+        assert!(use_glm_spec(ds4_core::ModelFamily::Glm53Vq, 2));
+        assert!(!use_glm_spec(ds4_core::ModelFamily::Glm53Vq, 1));
     }
 
     #[test]
@@ -2356,10 +2386,9 @@ mod tests {
         assert!(controls
             .iter()
             .any(|o| matches!(o, ModelOpenOption::MtpMargin(m) if *m == 0.0)));
-        assert!(use_naive_spec(0.0, parsed.dspark.as_deref(), 1));
-        assert!(use_naive_spec(0.0, parsed.dspark.as_deref(), 6));
-        assert!(!use_naive_spec(0.5, parsed.dspark.as_deref(), 6));
-        assert!(!use_naive_spec(0.0, None, 6));
+        assert!(use_naive_spec(parsed.dspark.as_deref(), 1));
+        assert!(use_naive_spec(parsed.dspark.as_deref(), 6));
+        assert!(!use_naive_spec(None, 6));
     }
 
     #[test]

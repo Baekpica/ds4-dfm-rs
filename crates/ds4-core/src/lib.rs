@@ -26,6 +26,7 @@ mod inkling_media;
 mod inkling_mtp;
 mod iquest;
 mod layout;
+mod ling31_mtp;
 mod ling31_vq;
 mod ling3vl;
 mod mapped;
@@ -41,6 +42,7 @@ mod naive_mtp;
 mod payload;
 mod progress;
 mod qwen35;
+mod sample;
 mod serving;
 mod serving_cuda;
 mod serving_host;
@@ -90,6 +92,7 @@ pub use layout::{
     validate_mtp_layouts, validate_support_layouts, LayoutError, LayoutSpec, TypeClass,
 };
 pub use ling31_vq::Feature as Ling31Feature;
+
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -120,6 +123,7 @@ pub use payload::{
     MAGIC as PAYLOAD_MAGIC, U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
 };
 pub use progress::PrefillCheckpoint;
+pub use sample::Sampler;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, native_ctx_default, open_draft_tokens,
     parse_disk_space, resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView,
@@ -198,9 +202,9 @@ use ds4_sys::{
     ds4_bridge_session_load_payload_range, ds4_bridge_session_load_snapshot,
     ds4_bridge_session_output_head_bench, ds4_bridge_session_payload_bytes,
     ds4_bridge_session_power, ds4_bridge_session_prefill_cap, ds4_bridge_session_rewind,
-    ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
-    ds4_bridge_session_save_layer_payload, ds4_bridge_session_save_payload,
-    ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
+    ds4_bridge_session_sample_excluding, ds4_bridge_session_save_layer_payload,
+    ds4_bridge_session_save_payload, ds4_bridge_session_save_snapshot,
+    ds4_bridge_session_set_power, ds4_bridge_session_set_spec_sampler, ds4_bridge_session_sync,
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
     ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
@@ -1088,6 +1092,28 @@ pub struct Session<'m> {
     shape: Shape,
     _model: PhantomData<&'m Model>,
     _not_send: PhantomData<*const ()>,
+}
+
+type SpecDrawFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, u32, *mut u64) -> std::os::raw::c_int;
+
+/// A trial's draw of one verify row with the request's sampler.
+unsafe extern "C" fn spec_draw(
+    ud: *mut std::ffi::c_void,
+    row: *const f32,
+    vocab: u32,
+    rng: *mut u64,
+) -> std::os::raw::c_int {
+    // SAFETY: eval_speculative lends its Sampler as `ud` and the stream as
+    // `rng` for the trial; native passes one live row of `vocab` logits.
+    let (sampler, row, rng) = unsafe {
+        (
+            &*ud.cast::<Sampler>(),
+            std::slice::from_raw_parts(row, vocab as usize),
+            &mut *rng,
+        )
+    };
+    sample::draw(row, sampler, rng, [-1, -1])
 }
 
 pub struct SessionSnapshot {
@@ -3292,38 +3318,91 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// [`Self::eval_speculative`] with argmax targets and no host cut.
     pub fn eval_speculative_argmax(
         &mut self,
         first: i32,
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
+        let mut all = |prefix: &[i32]| prefix.len();
+        self.eval_speculative(first, max_tokens, eos, Sampler::GREEDY, &mut 0, &mut all)
+    }
+
+    /// Commit `first` and the drafts its family's trial accepts, one step.
+    /// Every family shares the rule: the target draws each verify row with
+    /// `sampler` (sample-and-match, TensorRT-LLM's and llama.cpp's default;
+    /// argmax at temperature 0) and a draft is kept while it equals the draw,
+    /// ending after `eos`. `limit(prefix)` then cuts the prefix before commit
+    /// where the host's own policy says the plain loop must decide (a forced
+    /// token, a stop token). The last draw is rewound into `rng`: the next
+    /// ordinary [`Self::sample`] of the committed row repeats it, so a stream
+    /// keeps plain sampling's distribution and, at equal logits, its seed's
+    /// tokens.
+    pub fn eval_speculative(
+        &mut self,
+        first: i32,
+        max_tokens: i32,
+        eos: i32,
+        sampler: Sampler,
+        rng: &mut u64,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
+    ) -> Result<Vec<i32>> {
+        let raw = self.raw.as_ptr();
+        let mut sampler = sampler;
+        let draw = (sampler.temperature > 0.0).then_some(spec_draw as SpecDrawFn);
+        let ud = (&mut sampler as *mut Sampler).cast();
+        // SAFETY: `sampler` and `rng` outlive the trial; the clear below
+        // drops native's borrow before either goes away.
+        unsafe { ds4_bridge_session_set_spec_sampler(raw, draw, ud, rng) };
+        let accepted = self.eval_family_spec(first, max_tokens, eos, limit);
+        unsafe {
+            ds4_bridge_session_set_spec_sampler(
+                raw,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        accepted
+    }
+
+    fn eval_family_spec(
+        &mut self,
+        first: i32,
+        max_tokens: i32,
+        eos: i32,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
+    ) -> Result<Vec<i32>> {
         if matches!(self.host.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
-            return self.eval_glm_argmax(first, max_tokens, eos);
+            return self.eval_glm_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Inkling {
-            return self.eval_inkling_argmax(first, max_tokens, eos);
+            return self.eval_inkling_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Step37 {
-            return self.eval_step37_argmax(first, max_tokens, eos);
+            return self.eval_step37_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Dots3Note {
-            return self.eval_dots3_argmax(first, max_tokens, eos);
+            return self.eval_dots3_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Mimo2 {
-            return self.eval_mimo2_argmax(first, max_tokens, eos);
+            return self.eval_mimo2_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::IQuestQ1 {
-            return self.eval_iquest_argmax(first, max_tokens, eos);
+            return self.eval_iquest_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::NaiveN05 {
-            return self.eval_naive_argmax(first, max_tokens, eos);
+            return self.eval_naive_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::BeamVq {
-            return self.eval_beam_argmax(first, max_tokens, eos);
+            return self.eval_beam_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::MinimaxVq {
-            return self.eval_minimax_argmax(first, max_tokens, eos);
+            return self.eval_minimax_argmax(first, max_tokens, eos, limit);
+        }
+        if self.host.family == ModelFamily::Ling31Vq {
+            return self.eval_ling31_argmax(first, max_tokens, eos, limit);
         }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
@@ -3492,6 +3571,8 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// One draw from the committed row's logits ([`sample::draw`]): the
+    /// same sampler a speculative trial verifies with. -1 without logits.
     pub fn sample(
         &mut self,
         temperature: f32,
@@ -3500,9 +3581,22 @@ impl Session<'_> {
         min_p: f32,
         rng: &mut u64,
     ) -> i32 {
-        unsafe {
-            ds4_bridge_session_sample(self.raw.as_ptr(), temperature, top_k, top_p, min_p, rng)
-        }
+        let sampler = Sampler {
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+        };
+        let raw = self.raw.as_ptr();
+        sample::with_row(self.shape.n_vocab as usize, |row| {
+            // SAFETY: native copies at most `row.len()` floats into the row.
+            let n =
+                unsafe { ds4_bridge_session_copy_logits(raw, row.as_mut_ptr(), row.len() as i32) };
+            if n <= 0 {
+                return -1;
+            }
+            sample::draw(&row[..n as usize], &sampler, rng, [-1, -1])
+        })
     }
 
     pub fn sample_excluding(
@@ -4267,6 +4361,42 @@ mod tests {
     }
 
     #[no_mangle]
+    extern "C" fn ds4_bridge_session_set_spec_sampler(
+        _s: *mut ds4_bridge_session,
+        _draw: Option<
+            unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, u32, *mut u64) -> i32,
+        >,
+        _ud: *mut std::ffi::c_void,
+        _rng: *mut u64,
+    ) -> i32 {
+        0
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_ling31_trial(
+        _s: *mut ds4_bridge_session,
+        _first: i32,
+        _max: i32,
+        _tokens: *mut i32,
+        _target: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        0
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_ling31_commit(
+        _s: *mut ds4_bridge_session,
+        _keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
     extern "C" fn ds4_bridge_eval_speculative_argmax(
         _s: *mut ds4_bridge_session,
         _first: i32,
@@ -4584,7 +4714,9 @@ mod tests {
                 _not_send: PhantomData,
             });
             session.host.replace_checkpoint(&[1, 2, 3]);
-            assert!(session.eval_step37_argmax(first, 4, 99).is_err());
+            assert!(session
+                .eval_step37_argmax(first, 4, 99, &mut |p| p.len())
+                .is_err());
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
             assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
@@ -4609,7 +4741,9 @@ mod tests {
         let prefix = [1, 2, 3];
         session.host.replace_checkpoint(&prefix);
         session.host.mtp_draft_valid = true;
-        assert!(session.eval_iquest_argmax(4, 4, 0).is_err());
+        assert!(session
+            .eval_iquest_argmax(4, 4, 0, &mut |p| p.len())
+            .is_err());
         assert_eq!(session.generation(), session.native_generation());
 
         if failure == IQuestFailure::Reject {
@@ -4728,7 +4862,9 @@ mod tests {
                 _not_send: PhantomData,
             });
             session.host.replace_checkpoint(&[1, 2, 3]);
-            assert!(session.eval_dots3_argmax(first, 4, 99).is_err());
+            assert!(session
+                .eval_dots3_argmax(first, 4, 99, &mut |p| p.len())
+                .is_err());
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
             assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });

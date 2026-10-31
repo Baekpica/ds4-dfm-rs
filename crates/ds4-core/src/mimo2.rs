@@ -1691,6 +1691,7 @@ impl crate::Session<'_> {
         first: i32,
         max_tokens: i32,
         eos: i32,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
     ) -> crate::Result<Vec<i32>> {
         if max_tokens <= 0 {
             return Ok(Vec::new());
@@ -1755,6 +1756,7 @@ impl crate::Session<'_> {
                 message: "MiMo reject passed the accepted prefix".into(),
             });
         }
+        let keep = limit(&tokens[..keep as usize]).clamp(1, keep as usize) as i32;
         let rc = unsafe {
             ds4_sys::ds4_bridge_mimo2_commit(
                 self.raw.as_ptr(),

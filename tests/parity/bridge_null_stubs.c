@@ -261,6 +261,18 @@ int ds4_session_glm53_commit(ds4_session *s, int keep, char *err, size_t len) {
     (void)s; (void)keep; (void)err; (void)len;
     STUB("ds4_session_glm53_commit");
 }
+
+int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
+        int *tokens, int *target, int cap, char *err, size_t len) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    (void)err; (void)len;
+    STUB("ds4_session_ling31_trial");
+}
+
+int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t len) {
+    (void)s; (void)keep; (void)err; (void)len;
+    STUB("ds4_session_ling31_commit");
+}
 int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen) {
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_mimo2_commit");
@@ -384,6 +396,11 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
                        float min_p, uint64_t *rng) {
     (void)s; (void)temperature; (void)top_k; (void)top_p; (void)min_p; (void)rng;
     STUB("ds4_session_sample");
+}
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_draw_fn draw, void *ud,
+                                  uint64_t *rng) {
+    (void)s; (void)draw; (void)ud; (void)rng;
+    STUB("ds4_session_set_spec_sampler");
 }
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,

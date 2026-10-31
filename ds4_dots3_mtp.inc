@@ -223,6 +223,9 @@ int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
         target[i] = argmax_f32(row, DS4_N_VOCAB);
         tokens[i] = sp->trial[i];
     }
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, sp->verify_logits, DS4_N_VOCAB, DS4_N_VOCAB, sp->trial, n, target);
+    }
     sp->trial_n = n;
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);
     return (int)n;

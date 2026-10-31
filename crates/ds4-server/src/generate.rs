@@ -314,9 +314,20 @@ pub trait DecodeIo {
         Ok(())
     }
     fn eval(&mut self, token: i32) -> Result<(), GenerateError>;
-    /// Commit a nonempty greedy prefix bounded by the positive budget.
+    /// Commit a nonempty speculative prefix bounded by the positive budget:
+    /// `first`, then the drafts the target's draws with `sampler` accept
+    /// (argmax at temperature 0; the next ordinary sample repeats the last
+    /// draw). `allow` sees each committed token's text and says whether the
+    /// next position may take a draft; a stop token ends the prefix.
     /// Implementations may include EOS as the final accepted token.
-    fn eval_greedy(&mut self, first: i32, _budget: i32) -> Result<Vec<i32>, GenerateError> {
+    fn eval_spec(
+        &mut self,
+        first: i32,
+        _budget: i32,
+        _sampler: ds4_core::Sampler,
+        _rng: &mut u64,
+        _allow: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<Vec<i32>, GenerateError> {
         self.eval(first)?;
         Ok(vec![first])
     }
@@ -1861,24 +1872,41 @@ fn decode_pass(
             break;
         }
         let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
-        // Forced control prefixes can change policy between tokens. Only
-        // an unconstrained greedy segment may be committed ahead of output.
+        // Drafts verify against this step's sampler. A copy of the
+        // accumulator replays each committed token: the prefix ends before a
+        // position this loop would force (a control token, tool syntax's
+        // argmax under sampling) or never reach (past a closed DSML call).
         let prefix_start = engine.pos();
-        let accepted = if temperature <= 0.0
-            && parsed.eos_policy == EosPolicy::Default
-            && matches!(ov, SampleOverride::None)
-            && parsed.required_tool_prefix.is_empty()
-            && parsed.required_think_end_prefix.is_empty()
-        {
-            let accepted = engine.eval_greedy(token, budget)?;
-            if engine.last_eval_speculated() {
-                *speculation = true;
-            }
-            accepted
-        } else {
-            engine.eval(token)?;
-            vec![token]
-        };
+        let accepted =
+            if parsed.eos_policy == EosPolicy::Default && matches!(ov, SampleOverride::None) {
+                let sampler = ds4_core::Sampler {
+                    temperature,
+                    top_k,
+                    top_p,
+                    min_p,
+                };
+                let dsml = req.chat_format == ChatFormat::DeepSeek;
+                let mut probe = acc.clone();
+                let mut allow = |piece: &[u8]| {
+                    probe.feed(piece, &[]);
+                    if dsml && probe.track_tools && probe.saw_tool_end {
+                        return false;
+                    }
+                    match probe.sampling_override(&policy) {
+                        SampleOverride::None => true,
+                        SampleOverride::Greedy => temperature <= 0.0,
+                        SampleOverride::Token(_) => false,
+                    }
+                };
+                let accepted = engine.eval_spec(token, budget, sampler, rng, &mut allow)?;
+                if engine.last_eval_speculated() {
+                    *speculation = true;
+                }
+                accepted
+            } else {
+                engine.eval(token)?;
+                vec![token]
+            };
         if accepted.is_empty() || accepted.len() > budget as usize || accepted[0] != token {
             engine.invalidate();
             return Err(GenerateError::Engine("invalid greedy prefix result".into()));
@@ -4502,6 +4530,18 @@ impl<'a> NativeDecode<'a> {
         result
     }
 
+    /// Whether this family drafts on the serial lane (its drafter loaded).
+    fn serial_spec_ready(&mut self) -> Result<bool, GenerateError> {
+        let family = self.model.family();
+        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
+        Ok(serial_mtp_ready(
+            family,
+            self.model.mtp().is_some() || self.model.dspark().is_some(),
+            dots3,
+            self.model.mtp_draft_tokens(),
+        ) && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none())
+    }
+
     fn session(&mut self) -> Result<&mut ds4_core::Session<'a>, GenerateError> {
         if self.session.is_none() {
             let s = self
@@ -4976,24 +5016,36 @@ impl DecodeIo for NativeDecode<'_> {
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 
-    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        let family = self.model.family();
-        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
-        if !serial_mtp_ready(
-            family,
-            self.model.mtp().is_some() || self.model.dspark().is_some(),
-            dots3,
-            self.model.mtp_draft_tokens(),
-        ) || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
-        {
+    fn eval_spec(
+        &mut self,
+        first: i32,
+        budget: i32,
+        sampler: ds4_core::Sampler,
+        rng: &mut u64,
+        allow: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<Vec<i32>, GenerateError> {
+        if !self.serial_spec_ready()? {
             self.speculated = false;
             self.eval(first)?;
             return Ok(vec![first]);
         }
         self.speculated = true;
-        let eos = self.model.token_eos();
+        let model = self.model;
+        let eos = model.token_eos();
+        // The position after token i takes a draft only when token i is no
+        // stop token and the host's policy, fed its text, leaves it free.
+        let mut limit = |prefix: &[i32]| {
+            for (index, &token) in prefix[..prefix.len() - 1].iter().enumerate() {
+                let free = !model.token_is_stop(token)
+                    && model.token_text(token).is_ok_and(|piece| allow(&piece));
+                if !free {
+                    return index + 1;
+                }
+            }
+            prefix.len()
+        };
         self.session()?
-            .eval_speculative_argmax(first, budget, eos)
+            .eval_speculative(first, budget, eos, sampler, rng, &mut limit)
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 
