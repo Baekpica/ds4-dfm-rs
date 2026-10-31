@@ -663,6 +663,24 @@ fn cold_sync(io: &mut impl SerialKvIo, tokens: &[i32]) -> Result<i32, GenerateEr
     Ok(0)
 }
 
+/// A prompt that leaves the live tokens (an agent client re-rendering the
+/// last answer): engines that rewind (MiMo, EXAONE) keep the common prefix.
+#[cfg(any(feature = "native", test))]
+fn rewound_sync(
+    io: &mut impl SerialKvIo,
+    live: &[i32],
+    tokens: &[i32],
+) -> Result<i32, GenerateError> {
+    let common = live.iter().zip(tokens).take_while(|(a, b)| a == b).count();
+    let start = io.sync_start(tokens);
+    if start <= 0 || start as usize > common {
+        return cold_sync(io, tokens);
+    }
+    let cached = record_prefix_reuse(io, tokens, common);
+    io.sync(tokens)?;
+    Ok(cached)
+}
+
 #[cfg(any(feature = "native", test))]
 fn record_prefix_reuse(io: &mut impl SerialKvIo, tokens: &[i32], prefix: usize) -> i32 {
     let prefix = i32::try_from(prefix.min(tokens.len())).unwrap_or(0);
@@ -1046,11 +1064,11 @@ fn disk_sync_prompt_impl(
     }
 
     let Some(store) = store else {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     };
     store.continued_last_store_tokens = 0;
     let Some((model_id, quant_bits, ctx)) = identity else {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     };
     if policy.save_current {
         let _ = try_store_live(
@@ -1064,7 +1082,7 @@ fn disk_sync_prompt_impl(
         );
     }
     if !policy.load {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     }
     let candidate = match store.text_prefix_candidate(prompt, model_id, quant_bits, ctx) {
         Ok(candidate) => candidate,
@@ -6022,6 +6040,35 @@ mod disk_sync_tests {
                     "none"
                 }
             );
+            assert_eq!(io.syncs, [tokens]);
+        }
+    }
+
+    #[test]
+    fn live_reuse_counts_rewound_prefix() {
+        // An agent client re-renders the last answer: the prompt leaves the
+        // live tokens at 500; an engine that rewinds (MiMo, EXAONE) keeps 500.
+        for (start, cached, taken) in [(500, 500, ReuseTaken::Exact), (0, 0, ReuseTaken::Cold)] {
+            let live = vec![1; 600];
+            let mut tokens = vec![1; 500];
+            tokens.extend([2; 40]);
+            let mut io = FakeSerial::new(&live, b"prefix");
+            io.planned_start = Some(start);
+            let actual = super::disk_sync_template(
+                &mut io,
+                None,
+                0,
+                2,
+                b"other",
+                &tokens,
+                DiskSyncPolicy {
+                    save_current: false,
+                    load: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(actual, cached, "start={start}");
+            assert_eq!(io.reuse, taken);
             assert_eq!(io.syncs, [tokens]);
         }
     }

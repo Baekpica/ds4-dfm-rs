@@ -864,6 +864,12 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_mimo2_sync_keep(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+    ) -> c_int;
+
     pub fn ds4_bridge_mimo2_encode_vision(
         s: *mut ds4_bridge_session,
         patches: *const f32,

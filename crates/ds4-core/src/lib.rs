@@ -2613,8 +2613,21 @@ impl Session<'_> {
     }
 
     pub fn last_plan(&self, tokens: &[i32]) -> SyncPlan {
-        self.host
-            .plan_sync(tokens, self.host.planned_exaone_rewind_span())
+        let mut plan = self
+            .host
+            .plan_sync(tokens, self.host.planned_exaone_rewind_span());
+
+        // MiMo resumes inside its SWA ring: only native knows the newest row
+        // written and a restored snapshot's floor.
+        if self.host.family == ModelFamily::Mimo2 && self.host.valid && plan.rebuild && !plan.err {
+            let n = tokens.len() as i32;
+            let keep = unsafe {
+                ds4_sys::ds4_bridge_mimo2_sync_keep(self.raw.as_ptr(), tokens.as_ptr(), n)
+            };
+            plan.start = keep.max(0);
+            plan.rebuild = plan.start == 0;
+        }
+        plan
     }
 
     fn check_sync(&self, tokens: &TokenBuffer) -> Result<SyncPlan> {
@@ -4240,6 +4253,7 @@ mod tests {
         static GLM_TRIAL_CALLS: Cell<u32> = const { Cell::new(0) };
         static GLM_FIRST: Cell<i32> = const { Cell::new(0) };
         static GLM_KEEP: Cell<i32> = const { Cell::new(0) };
+        static MIMO2_KEEP: Cell<i32> = const { Cell::new(0) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4575,6 +4589,33 @@ mod tests {
         errlen: usize,
     ) -> i32 {
         ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_mimo2_sync_keep(
+        _s: *mut ds4_bridge_session,
+        _tokens: *const i32,
+        _n_tokens: i32,
+    ) -> i32 {
+        MIMO2_KEEP.with(Cell::get)
+    }
+
+    #[test]
+    fn mimo2_plan_takes_native_keep() {
+        // Native counts its SWA ring from the newest row written, which an
+        // earlier, longer branch may have set; the live length cannot.
+        let mut session = audit_session(ModelFamily::Mimo2);
+        let live: Vec<i32> = (0..2_000).collect();
+        session.host.replace_checkpoint(&live);
+        for keep in [0, 1_989] {
+            MIMO2_KEEP.with(|k| k.set(keep));
+            let plan = session.last_plan(&live[..1_990]);
+            assert_eq!((plan.start, plan.rebuild), (keep, keep == 0));
+        }
+
+        // An extension keeps the live rows without asking.
+        MIMO2_KEEP.with(|k| k.set(-1));
+        assert_eq!(session.last_plan(&[&live[..], &[7]].concat()).start, 2_000);
     }
 
     #[no_mangle]

@@ -262,6 +262,7 @@ int ds4_bridge_mimo2_trial(ds4_bridge_session *s, int32_t first, int32_t max_tok
                            int32_t *tokens, int32_t *target, int32_t cap,
                            char *err, size_t errlen);
 int ds4_bridge_mimo2_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_mimo2_sync_keep(ds4_bridge_session *s, const int32_t *tokens, int32_t n_tokens);
 int ds4_bridge_mimo2_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
                                 const uint32_t *starts, const uint32_t *counts,
                                 const float *const *rows, uint32_t nspans, uint64_t tag,

@@ -3,6 +3,8 @@
 static bool mimo2_reset(ds4_mimo2_graph *g) {
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0;
+    g->high = 0;
+    g->restored = 0;
     g->failed = false;
     return true;
 }
@@ -26,6 +28,41 @@ static bool mimo2_read_logits(ds4_session *s) {
     return true;
 }
 
+static void mimo2_draft_reset(ds4_mimo2_graph *g);
+
+/* Re-run this many rows below a rewound prefix: the DFlash tap window and
+ * the MTP ring then hold only this prefix's rows (an abandoned branch
+ * overwrote some of their slots). */
+enum { M2_REDRAFT = 1024 };
+
+/* Whether the SWA ring still holds the window before q: C ring rows written
+ * below `high` keep every row at or after high - C. */
+static bool mimo2_ring_holds(const ds4_mimo2_graph *g, unsigned live, unsigned q) {
+    const long ring = (long)M2_WINDOW + g->cap - 1;
+    const long high = g->high > live ? g->high : live;
+    if (q < g->restored) { return false; }
+    return ring >= (long)g->context || high - q <= ring - M2_WINDOW + 1;
+}
+
+/* Rows the live state keeps for `prompt`; 0 rebuilds. Full layers index KV
+ * by position, so any common prefix holds there; SWA layers need their
+ * ring. A prompt that ends inside the state re-runs its last token. */
+static unsigned mimo2_sync_keep(const ds4_session *s, const ds4_mimo2_graph *g,
+                                const ds4_tokens *prompt) {
+    if (!s->checkpoint_valid || g->failed || g->position != (unsigned)s->checkpoint.len) { return 0; }
+    unsigned common = 0;
+    const unsigned live = (unsigned)s->checkpoint.len;
+    while (common < live && common < (unsigned)prompt->len &&
+           s->checkpoint.v[common] == prompt->v[common]) {
+        common++;
+    }
+    if (common == live) { return live; }
+    if (common && common == (unsigned)prompt->len) { common--; }
+    const unsigned redraft = common > M2_REDRAFT ? common - M2_REDRAFT : 0;
+    if (mimo2_ring_holds(g, live, redraft)) { return redraft; }
+    return mimo2_ring_holds(g, live, common) ? common : 0;
+}
+
 static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                char *err, size_t errlen) {
     enum { IMAGE_PAD = 151655, VIDEO_PAD = 151656, AUDIO_PAD = 151669 };
@@ -42,10 +79,16 @@ static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
     ds4_mimo2_graph *g = &s->mimo2_graph;
     if (!s->mimo2_graph_ready) { payload_set_err(err, errlen, "MiMo graph is not initialized"); return 1; }
     unsigned start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
+    const unsigned keep = mimo2_sync_keep(s, g, prompt);
+    if (keep && keep == (unsigned)s->checkpoint.len) {
+        start = keep;
         if (start == (unsigned)prompt->len) { return 0; }
+    } else if (keep) {
+        // Agent clients re-render the last answer: resume below the common prefix.
+        g->position = keep;
+        s->checkpoint.len = (int)keep;
+        mimo2_draft_reset(g);
+        start = keep;
     } else {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "MiMo graph reset failed"); return 1; }
@@ -64,6 +107,13 @@ static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
     return 0;
+}
+
+/* The host asks rather than mirroring the high-water mark and restore floor. */
+int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+    if (!ds4_session_is_mimo2(s) || !s->mimo2_graph_ready || !tokens || n_tokens <= 0) { return 0; }
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    return (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt);
 }
 
 static int mimo2_session_eval(ds4_session *s, int token, char *err, size_t errlen) {

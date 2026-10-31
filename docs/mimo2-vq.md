@@ -101,7 +101,12 @@ runs on the serial lane. A 1M-token sequence holds 11.39 GiB of FP8 rows and
 workspace (largest image, 32,768 patches) 2.38 GiB.
 
 With no options the server plans the native context with two embedded MTP
-drafts on the serial lane (109.79 GiB), whose prefix reuse is exact. Partial reuse across edits and forks, and the gated disk KV,
+drafts on the serial lane (109.79 GiB). Its prefix reuse resumes at the
+common prefix with the live tokens (agent clients re-render the last answer):
+it re-runs the 1,024 rows below it so the DFlash taps and MTP ring hold only
+this prefix, while the SWA ring (window + prefill cap - 1 rows, measured from
+the newest row written) still holds the window there, never below a restored
+snapshot (it keeps one window); otherwise it prefills cold. Partial reuse across edits and forks, and the gated disk KV,
 need banks: `--mtp-mode off --max-seqs 2 -c 262144 --prefix-reuse partial
 --kv-disk-dir DIR`.
 

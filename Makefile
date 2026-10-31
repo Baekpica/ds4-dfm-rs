@@ -992,7 +992,8 @@ test-mmq-parity: tests/test_mmq_parity
 tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter-out ds4_cuda.o,$(DS4_CUDA_CORE_OBJS))
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
-.PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish
+.PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
+	test-mimo2-sync-keep
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1004,6 +1005,9 @@ test-vq-source-release:
 
 test-family-cont-spec-finish:
 	python3 tests/test_family_cont_spec_finish.py
+
+test-mimo2-sync-keep:
+	python3 tests/test_mimo2_sync_keep.py
 
 # Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
 # own reference code, reached through the DS4_TEST_HOOKS entry points, so the

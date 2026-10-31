@@ -8,6 +8,12 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- MiMo's serial lane resumes a prompt that leaves the live tokens at their
+  common prefix instead of prefilling from zero. Agent clients re-render the
+  last answer, so every turn missed: a Hermes tool turn re-prefilled 13-26K
+  tokens (cached_tokens 0 even for an identical resend). It re-runs the
+  drafters' 1,024-row window below the prefix while the SWA ring still holds
+  it; greedy text matches a cold prefill.
 - Drafts verify against the request's own sampler in every drafting family
   ([sampled speculation](docs/speculative-sampling.md)): sampled, thinking
   and tool-result requests speculate on the serial and bank lanes instead of
