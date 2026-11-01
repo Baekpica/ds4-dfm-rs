@@ -1001,14 +1001,24 @@ int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
 
 /* GroupNorm without the SiLU epilogue (`nn.GroupNorm(32, C)`): the ResBlock's
  * `out_norm`, whose output the embedding then scales and shifts. Statistics are
- * per (batch, group) over the whole volume, as PyTorch's are, and the variance
- * is accumulated as a mean square deviation in a second pass. */
+ * per (batch, group) over the whole volume, as PyTorch's are. Three passes and
+ * the whole grid: partial sums per (batch, group, part), a finalize that folds
+ * them into a per-(batch, channel) scale and shift, and a coalesced apply. */
 int h3d_group_norm(h3d_context *context, h3d_tensor *output,
                    const h3d_tensor *input, const h3d_tensor *weight,
                    const h3d_tensor *bias, uint32_t batch, uint32_t depth,
                    uint32_t height, uint32_t width, uint32_t channels,
                    uint32_t groups, float epsilon, char *error,
                    size_t error_size);
+
+/* The same norm with the reference's `F.silu(norm(x))` folded into the apply
+ * pass, so the volume is read and written once instead of twice. */
+int h3d_group_norm_activate(h3d_context *context, h3d_tensor *output,
+                            const h3d_tensor *input, const h3d_tensor *weight,
+                            const h3d_tensor *bias, uint32_t batch,
+                            uint32_t depth, uint32_t height, uint32_t width,
+                            uint32_t channels, uint32_t groups, float epsilon,
+                            char *error, size_t error_size);
 
 /* `h = input * scale[c] + shift[c]`: the ResBlock's embedding applied as
  * `out_norm * (1 + scale) + shift` with the two halves of `emb_layers` held

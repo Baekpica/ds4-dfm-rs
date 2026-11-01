@@ -564,6 +564,23 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    fn h3d_group_norm_activate(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     fn h3d_channel_affine(
         context: *mut Context,
         output: *mut CTensor,
@@ -4115,6 +4132,46 @@ impl Gpu {
                 )
             },
             "GroupNorm",
+        )
+    }
+
+    /// `h3d_group_norm_activate`: the same norm with the reference's
+    /// `F.silu(norm(x))` folded into the apply pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_activate(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_group_norm_activate(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    groups,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "GroupNorm activate",
         )
     }
 

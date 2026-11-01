@@ -653,7 +653,7 @@ impl Upscaler {
         clock.lap(&self.gpu, "blocks_out");
 
         let normed = f32_alloc(&self.gpu, resized_count)?;
-        device(self.gpu.group_norm(
+        device(self.gpu.group_norm_activate(
             &normed,
             &current,
             &self.norm_out.weight,
@@ -666,12 +666,10 @@ impl Upscaler {
             GROUPS,
             EPSILON,
         ))?;
-        let activated = f32_alloc(&self.gpu, resized_count)?;
-        device(self.gpu.silu_f32(&activated, &normed))?;
         clock.lap(&self.gpu, "norm_out");
         let output = self.conv(
             &self.conv_out,
-            &activated,
+            &normed,
             time,
             out_height,
             out_width,
@@ -802,10 +800,11 @@ impl Upscaler {
         let mod_shift = f32_alloc(&self.gpu, shift_values.len())?;
         upload_f32(&self.gpu, &mod_shift, &shift_values)?;
         let hidden = f32_alloc(&self.gpu, count)?;
-        // GroupNorm over the whole volume, then SiLU in place: `group_norm_silu`
+        // GroupNorm over the whole volume with the SiLU folded in: the
+        // reference computes `F.silu(self.norm(x))`, and `group_norm_silu`
         // reduces per temporal slice, which is the encoder's shape (T = 1) and
         // not this layer's.
-        device(self.gpu.group_norm(
+        device(self.gpu.group_norm_activate(
             &hidden,
             input,
             &block.norm_in.weight,
@@ -818,7 +817,6 @@ impl Upscaler {
             GROUPS,
             EPSILON,
         ))?;
-        device(self.gpu.silu_f32(&hidden, &hidden))?;
         let convolved = self.conv(&block.conv_in, &hidden, time, height, width, scratch)?;
         drop(hidden);
         let normalized = f32_alloc(&self.gpu, count)?;
@@ -866,7 +864,7 @@ impl Upscaler {
     ) -> Result<Tensor, UpscaleError> {
         let count = voxels * WIDTH as usize;
         let hidden = f32_alloc(&self.gpu, count)?;
-        device(self.gpu.group_norm(
+        device(self.gpu.group_norm_activate(
             &hidden,
             input,
             &block.norm.weight,
@@ -879,7 +877,6 @@ impl Upscaler {
             GROUPS,
             EPSILON,
         ))?;
-        device(self.gpu.silu_f32(&hidden, &hidden))?;
         let depthwise = f32_alloc(&self.gpu, count)?;
         device(self.gpu.temporal_dwconv(
             &depthwise,

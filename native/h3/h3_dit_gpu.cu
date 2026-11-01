@@ -6838,49 +6838,137 @@ int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("zero pad", error, error_size);
 }
 
-__global__ static void h3d_group_norm_kernel(
-    float *output, const float *input, const float *weight, const float *bias,
-    uint32_t depth, uint32_t height, uint32_t width, uint32_t channels,
-    uint32_t groups, float epsilon) {
-    uint32_t group = blockIdx.x % groups;
-    uint32_t batch = blockIdx.x / groups;
+__device__ static double h3d_block_sum_double(double value) {
+    __shared__ double shared[32];
+    __syncthreads();
+    uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    if (lane == 0) shared[warp] = value;
+    __syncthreads();
+    uint32_t warps = (blockDim.x + 31u) >> 5u;
+    value = (threadIdx.x < warps) ? shared[threadIdx.x] : 0.0;
+    if (warp == 0) {
+        for (int offset = 16; offset > 0; offset >>= 1)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (threadIdx.x == 0) shared[0] = value;
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+/* Grid-wide GroupNorm, in three passes.
+ *
+ * This was one block per (batch, group): 32 blocks for a 252k-voxel volume,
+ * each walking its voxels strided by the block width, and the resizer's stage
+ * timer charged it 6 GB/s against the 367 GB/s the im2col reaches. The volume
+ * is 129M floats, so the reduction needs the whole grid. `partial` splits each
+ * (batch, group) over `parts` blocks and accumulates the sum and the sum of
+ * squares (in double: one pass over the volume and the variance is still
+ * `E[x^2] - E[x]^2` to eighteen digits, which the F32 two-pass this replaces
+ * did not buy for two reads), `finalize` turns the parts into a per-
+ * (batch, channel) scale and shift, and `apply` is a coalesced grid-stride
+ * pass that can also emit the SiLU the reference computes on the norm's own
+ * output, which saves a whole read and write of the volume. */
+__global__ static void h3d_group_norm_partial_kernel(
+    const float *input, double *partials, uint32_t voxels, uint32_t channels,
+    uint32_t groups, uint32_t parts) {
     uint32_t per_group = channels / groups;
-    uint32_t first = group * per_group;
-    size_t voxels = (size_t)depth * height * width;
-    float count = (float)(voxels * per_group);
-    float sum = 0.0f;
-    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
-        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
-        for (uint32_t channel = 0; channel < per_group; channel++)
-            sum += input[base + channel];
-    }
-    float mean = h3d_block_sum(sum) / count;
-    float squares = 0.0f;
-    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
-        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
-        for (uint32_t channel = 0; channel < per_group; channel++) {
-            float delta = input[base + channel] - mean;
-            squares += delta * delta;
+    uint32_t lane = blockIdx.y;
+    uint32_t batch = lane / groups;
+    uint32_t first = (lane % groups) * per_group;
+    uint32_t part = blockIdx.x;
+    // Split the voxels, not the elements, so the inner loop is a run of
+    // `per_group` contiguous channels and needs no division to address.
+    size_t share = voxels / parts;
+    size_t begin = share * part;
+    size_t end = part + 1 == parts ? voxels : share * (part + 1);
+    const float *base =
+        input + (size_t)batch * voxels * channels + (size_t)first;
+    double sum = 0.0;
+    double squares = 0.0;
+    for (size_t voxel = begin + threadIdx.x; voxel < end;
+         voxel += blockDim.x) {
+        const float *source = base + voxel * channels;
+        for (uint32_t inside = 0; inside < per_group; inside++) {
+            float value = source[inside];
+            sum += (double)value;
+            squares += (double)value * (double)value;
         }
     }
-    float inverse = rsqrtf(h3d_block_sum(squares) / count + epsilon);
-    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
-        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
-        for (uint32_t channel = 0; channel < per_group; channel++) {
-            uint32_t index = first + channel;
-            output[base + channel] =
-                (input[base + channel] - mean) * inverse * weight[index] +
-                bias[index];
-        }
+    sum = h3d_block_sum_double(sum);
+    squares = h3d_block_sum_double(squares);
+    if (threadIdx.x == 0) {
+        size_t slot = ((size_t)lane * parts + part) * 2;
+        partials[slot] = sum;
+        partials[slot + 1] = squares;
     }
 }
 
-int h3d_group_norm(h3d_context *context, h3d_tensor *output,
-                   const h3d_tensor *input, const h3d_tensor *weight,
-                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
-                   uint32_t height, uint32_t width, uint32_t channels,
-                   uint32_t groups, float epsilon, char *error,
-                   size_t error_size) {
+__global__ static void h3d_group_norm_finalize_kernel(
+    const double *partials, const float *weight, const float *bias,
+    float *scale, float *shift, uint32_t channels, uint32_t groups,
+    uint32_t parts, double count, float epsilon) {
+    uint32_t lane = blockIdx.x;
+    uint32_t per_group = channels / groups;
+    uint32_t group = lane % groups;
+    double sum = 0.0;
+    double squares = 0.0;
+    for (uint32_t part = threadIdx.x; part < parts; part += blockDim.x) {
+        sum += partials[((size_t)lane * parts + part) * 2];
+        squares += partials[((size_t)lane * parts + part) * 2 + 1];
+    }
+    sum = h3d_block_sum_double(sum);
+    squares = h3d_block_sum_double(squares);
+    __shared__ float moments[2];
+    if (threadIdx.x == 0) {
+        double mean = sum / count;
+        double variance = squares / count - mean * mean;
+        // A negative from cancellation is clamped rather than left to poison
+        // the rsqrt.
+        if (variance < 0.0) variance = 0.0;
+        moments[0] = (float)mean;
+        moments[1] = rsqrtf((float)variance + epsilon);
+    }
+    __syncthreads();
+    float mean = moments[0];
+    float inverse = moments[1];
+    // `x * rstd * weight + (bias - mean * rstd * weight)`, so the apply pass is
+    // one fused multiply-add per element and reads no per-channel statistics.
+    size_t row = (size_t)(lane / groups) * channels + group * per_group;
+    for (uint32_t channel = threadIdx.x; channel < per_group;
+         channel += blockDim.x) {
+        uint32_t index = group * per_group + channel;
+        float scaled = inverse * weight[index];
+        scale[row + channel] = scaled;
+        shift[row + channel] = bias[index] - mean * scaled;
+    }
+}
+
+__global__ static void h3d_group_norm_apply_kernel(
+    float *output, const float *input, const float *scale, const float *shift,
+    uint32_t channels, uint32_t rows, size_t elements, uint32_t activate) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t batch = index / rows;
+    float value = input[index] * scale[(size_t)batch * channels + channel] +
+                  shift[(size_t)batch * channels + channel];
+    if (activate) value /= 1.0f + expf(-value);
+    output[index] = value;
+}
+
+/* The three passes with an optional SiLU on the result. `batch` and the
+ * volume are the caller's, `parts` is chosen so a (batch, group) pair gets
+ * enough blocks to fill the device without making the finalize pass long. */
+static int h3d_group_norm_volume(h3d_context *context, h3d_tensor *output,
+                                 const h3d_tensor *input,
+                                 const h3d_tensor *weight,
+                                 const h3d_tensor *bias, uint32_t batch,
+                                 uint32_t depth, uint32_t height, uint32_t width,
+                                 uint32_t channels, uint32_t groups,
+                                 float epsilon, uint32_t activate, char *error,
+                                 size_t error_size) {
     if (!context || !batch || !depth || !height || !width || !channels ||
         !groups || channels % groups) {
         return h3d_set_error(error, error_size, "invalid GroupNorm shape");
@@ -6892,11 +6980,69 @@ int h3d_group_norm(h3d_context *context, h3d_tensor *output,
         !h3d_is(weight, H3D_F32, channels) || !h3d_is(bias, H3D_F32, channels)) {
         return h3d_set_error(error, error_size, "invalid GroupNorm tensors");
     }
-    h3d_group_norm_kernel<<<batch * groups, 256, 0, context->stream>>>(
-        (float *)output->data, (const float *)input->data,
-        (const float *)weight->data, (const float *)bias->data, depth, height,
-        width, channels, groups, epsilon);
-    return h3d_launch_ok("GroupNorm", error, error_size);
+    if (!elements) return 1;
+    uint32_t per_group = channels / groups;
+    uint32_t lanes = batch * groups;
+    uint32_t parts = 2048 / lanes;
+    if (!parts) parts = 1;
+    if (parts > 256) parts = 256;
+    size_t count = (size_t)depth * height * width * per_group;
+    size_t partial_doubles = (size_t)lanes * parts * 2;
+    size_t scale_floats = (size_t)batch * channels * 2;
+    void *scratch = NULL;
+    if (cudaMallocAsync(&scratch,
+                        partial_doubles * sizeof(double) +
+                            scale_floats * sizeof(float),
+                        context->stream) != cudaSuccess) {
+        return h3d_set_error(error, error_size, "GroupNorm scratch");
+    }
+    double *partials = (double *)scratch;
+    float *scale = (float *)(partials + partial_doubles);
+    float *shift = scale + (size_t)batch * channels;
+    dim3 grid(parts, lanes);
+    h3d_group_norm_partial_kernel<<<grid, 256, 0, context->stream>>>(
+        (const float *)input->data, partials, depth * height * width, channels,
+        groups, parts);
+    int status = h3d_launch_ok("GroupNorm partial", error, error_size);
+    if (status) {
+        h3d_group_norm_finalize_kernel<<<lanes, 256, 0, context->stream>>>(
+            partials, (const float *)weight->data, (const float *)bias->data,
+            scale, shift, channels, groups, parts, (double)count, epsilon);
+        status = h3d_launch_ok("GroupNorm finalize", error, error_size);
+    }
+    if (status) {
+        h3d_group_norm_apply_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                      context->stream>>>(
+            (float *)output->data, (const float *)input->data, scale, shift,
+            channels, depth * height * width * channels, elements, activate);
+        status = h3d_launch_ok("GroupNorm apply", error, error_size);
+    }
+    cudaFreeAsync(scratch, context->stream);
+    return status;
+}
+
+int h3d_group_norm(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, const h3d_tensor *weight,
+                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t groups, float epsilon, char *error,
+                   size_t error_size) {
+    return h3d_group_norm_volume(context, output, input, weight, bias, batch,
+                                 depth, height, width, channels, groups, epsilon,
+                                 0, error, error_size);
+}
+
+/* The same norm with the SiLU folded in, which is how every block of the
+ * resizer uses it: norm, activate, then the convolution. */
+int h3d_group_norm_activate(h3d_context *context, h3d_tensor *output,
+                            const h3d_tensor *input, const h3d_tensor *weight,
+                            const h3d_tensor *bias, uint32_t batch,
+                            uint32_t depth, uint32_t height, uint32_t width,
+                            uint32_t channels, uint32_t groups, float epsilon,
+                            char *error, size_t error_size) {
+    return h3d_group_norm_volume(context, output, input, weight, bias, batch,
+                                 depth, height, width, channels, groups, epsilon,
+                                 1, error, error_size);
 }
 
 /* `h = norm * (1 + scale) + shift` per channel, the ResBlock's embedding
