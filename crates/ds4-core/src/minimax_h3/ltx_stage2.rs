@@ -370,6 +370,23 @@ impl Stage2 {
         };
         let prepared = self.edges.prepare(gpu, &request, &self.edges_scratch)?;
 
+        if traced() {
+            trace_state(gpu, "in-video", &prepared.video, rows, CHANNELS as u32)?;
+            trace_rows(gpu, "video-self-cos", &prepared.video_signals.self_cos, rows)?;
+            if let Some(state) = prepared.audio.as_ref() {
+                trace_state(gpu, "in-audio", state, self.geometry.audio_frames, 128)?;
+                trace_rows(gpu, "in-audio-rows", state, self.geometry.audio_frames)?;
+                if let Some(signals) = prepared.audio_signals.as_ref() {
+                    trace_rows(
+                        gpu,
+                        "audio-self-cos",
+                        &signals.self_cos,
+                        self.geometry.audio_frames,
+                    )?;
+                }
+            }
+        }
+
         // `STAGE2_TAUS` is indexed by the completed step
         // (`sol_attention.py:188`), so each interval routes at its own tau.
         let sol = self
@@ -390,6 +407,13 @@ impl Stage2 {
             &self.blocks,
             sol.as_ref(),
         )?;
+
+        if traced() {
+            trace_state(gpu, "video-state", &prepared.video, rows, CHANNELS as u32)?;
+            if let Some(state) = prepared.audio.as_ref() {
+                trace_state(gpu, "audio-state", state, self.geometry.audio_frames, 128)?;
+            }
+        }
 
         self.edges.head(gpu, &prepared, &self.edges_scratch)?;
 
@@ -434,6 +458,10 @@ impl Stage2 {
         )
         .map_err(RefinerError::Run)?;
 
+        if traced() {
+            trace_state(gpu, "video-latent", &self.scratch.latent, rows, width)?;
+        }
+
         Ok(calls)
     }
 
@@ -446,6 +474,76 @@ impl Stage2 {
 
         Ok(())
     }
+}
+
+/// `H3_STAGE2_TRACE=1` prints one statistics line per stream per step, so a
+/// run that goes wrong can be read without a second instrument.
+fn traced() -> bool {
+    std::env::var_os("H3_STAGE2_TRACE").is_some()
+}
+
+/// One line of `mean`, `rms` and `max` for a state the step produced.
+fn trace_state(
+    gpu: &Gpu,
+    name: &str,
+    tensor: &Tensor,
+    rows: u32,
+    width: u32,
+) -> Result<(), RefinerError> {
+    let mut bytes = vec![0u8; tensor.bytes()];
+    gpu.read(tensor, &mut bytes).map_err(RefinerError::Run)?;
+
+    let (mut sum, mut square, mut max) = (0f64, 0f64, 0f32);
+
+    for pair in bytes.chunks_exact(2) {
+        let value = super::vision::bf16_to_f32(u16::from_le_bytes([pair[0], pair[1]]));
+        sum += value as f64;
+        square += (value as f64) * (value as f64);
+        max = max.max(value.abs());
+    }
+
+    let count = (bytes.len() / 2) as f64;
+
+    println!(
+        "TRACE {name} rows={rows} width={width} mean={:.5} rms={:.5} max={max:.5}",
+        sum / count,
+        (square / count).sqrt()
+    );
+
+    Ok(())
+}
+
+/// One line per positional table: the per-row means' spread says whether the
+/// rows carry different positions at all.
+fn trace_rows(gpu: &Gpu, name: &str, tensor: &Tensor, rows: u32) -> Result<(), RefinerError> {
+    let mut bytes = vec![0u8; tensor.bytes()];
+    gpu.read(tensor, &mut bytes).map_err(RefinerError::Run)?;
+
+    let values: Vec<f32> = bytes
+        .chunks_exact(2)
+        .map(|pair| super::vision::bf16_to_f32(u16::from_le_bytes([pair[0], pair[1]])))
+        .collect();
+    let width = values.len() / rows as usize;
+    let means: Vec<f64> = values
+        .chunks_exact(width.max(1))
+        .map(|row| row.iter().map(|value| *value as f64).sum::<f64>() / row.len() as f64)
+        .collect();
+    let (min, max) = (
+        means.iter().cloned().fold(f64::INFINITY, f64::min),
+        means.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+    );
+    let distinct = {
+        let mut sorted = means.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        sorted.len()
+    };
+
+    println!(
+        "ROWS {name} rows={rows} width={width} row_mean_min={min:.5} row_mean_max={max:.5} distinct_rows={distinct}"
+    );
+
+    Ok(())
 }
 
 /// A schedule is walked from its first value to a terminal zero, strictly
