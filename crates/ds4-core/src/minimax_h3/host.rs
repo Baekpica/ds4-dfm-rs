@@ -271,6 +271,56 @@ impl Schedule {
             audio,
         })
     }
+
+    /// The two-stage refine grid: one evaluation at `sigma_video` and the
+    /// terminal zero. The reference's preset says `0.72, 0`
+    /// (`harness/workflow.py:50`, `:418`), which is exactly one step.
+    ///
+    /// The audio sigma is derived from the video one the way `serving` derives
+    /// every index from the shared base grid: invert the video shift to the
+    /// base time, apply the audio shift. That is the reference's
+    /// `time_shift_sigma(sigma_v, 12, 3)`
+    /// (`comfy/ldm/minimax/model.py:36-39`), which ComfyUI's H3 passes to the
+    /// audio stream while the sampler carries a single sigma.
+    pub fn refine(sigma_video: f32) -> Option<Schedule> {
+        if !(sigma_video.is_finite() && sigma_video > 0.0 && sigma_video <= 1.0) {
+            return None;
+        }
+        let base = base_grid(sigma_video, VIDEO_SIGMA_SHIFT);
+        let audio = AUDIO_SIGMA_SHIFT * base / (1.0f32 + (AUDIO_SIGMA_SHIFT - 1.0f32) * base);
+
+        Some(Schedule {
+            steps: 1,
+            video: vec![sigma_video, 0.0],
+            audio: vec![audio, 0.0],
+        })
+    }
+}
+
+/// The base-grid time a shifted sigma came from: the inverse of
+/// `s * base / (1 + (s - 1) * base)`, written as the reference's
+/// `time_shift_sigma` writes it (`comfy/ldm/minimax/model.py:36-39`).
+pub fn base_grid(sigma: f32, shift: f32) -> f32 {
+    sigma / (shift + sigma * (1.0 - shift))
+}
+
+/// Seed a refine's video latent from the upscaled draft:
+/// `sigma * noise + (1 - sigma) * latent`.
+///
+/// This is the flow-matching seeding ComfyUI performs before the first step
+/// (`CONST.noise_scaling`, `comfy/model_sampling.py:94-97`, called at
+/// `comfy/samplers.py:993` with `noise_scale` 1.0), and it is what makes the
+/// refine re-noise rather than continue: the draft's terminal sigma is 0.70588
+/// and the refine re-enters at 0.72, above it. The expression order is the
+/// reference's.
+pub fn renoise(latent: &mut [f32], noise: &[f32], sigma: f32) -> bool {
+    if latent.len() != noise.len() || !(sigma.is_finite() && sigma >= 0.0) {
+        return false;
+    }
+    for (value, draw) in latent.iter_mut().zip(noise) {
+        *value = sigma * *draw + (1.0 - sigma) * *value;
+    }
+    true
 }
 
 /// `h3_dit.c:2537-2554` `h3_dit_reuse_schedule`: with interval 1 every step
@@ -488,6 +538,95 @@ mod tests {
         assert!(Schedule::serving(0).is_none());
         assert!(Schedule::serving(1).is_none());
         assert!(Schedule::serving(MAX_STEPS + 1).is_none());
+    }
+
+    /// The preset's refine is `0.72, 0` (`harness/workflow.py:50`): one
+    /// evaluation, and the audio sigma is the audio shift applied to the same
+    /// base time the video sigma came from.
+    #[test]
+    fn refine_grid_is_the_presets_one_step() {
+        let schedule = Schedule::refine(0.72).expect("0.72 is a legal refine sigma");
+
+        assert_eq!(schedule.steps, 1);
+        assert_eq!(schedule.video[0].to_bits(), 0x3f38_51ec);
+        assert_eq!(schedule.video[1].to_bits(), 0);
+        assert_eq!(schedule.audio[0].to_bits(), 0x3ec8_590c);
+        assert_eq!(schedule.audio[1].to_bits(), 0);
+    }
+
+    /// The derived audio sigma agrees with the serving grid's own audio sigma
+    /// at the same video sigma, which is the property that makes the refine
+    /// a continuation of the reference's schedule rather than a new one. The
+    /// two float paths differ by one ulp at most.
+    #[test]
+    fn refine_audio_sigma_is_the_serving_grids_audio_sigma() {
+        let serving = Schedule::serving(6).expect("six evaluations are legal");
+
+        // The last entry is the terminal zero, which is not a refine sigma.
+        for index in 0..6 {
+            let refine = Schedule::refine(serving.video[index]).expect("a serving sigma is legal");
+            assert!(
+                (refine.audio[0] - serving.audio[index]).abs() <= 1.2e-7,
+                "index {index}: {} against {}",
+                refine.audio[0],
+                serving.audio[index]
+            );
+        }
+    }
+
+    /// The refine re-enters above where the six-step draft stopped: 0.72
+    /// against the draft's own terminal 0.7058824. That is what makes it a
+    /// re-noise and not a continuation.
+    #[test]
+    fn refine_enters_above_the_drafts_last_sigma() {
+        let draft = Schedule::serving(6).expect("six evaluations are legal");
+        let refine = Schedule::refine(0.72).expect("0.72 is a legal refine sigma");
+
+        assert!(refine.video[0] > draft.video[5]);
+    }
+
+    /// A sigma outside `(0, 1]` is not a refine grid: zero would divide the
+    /// base time by zero, and above one is not a time the model was trained on.
+    #[test]
+    fn refine_grid_refuses_a_sigma_it_cannot_invert() {
+        assert!(Schedule::refine(0.0).is_none());
+        assert!(Schedule::refine(-0.1).is_none());
+        assert!(Schedule::refine(1.2).is_none());
+        assert!(Schedule::refine(f32::NAN).is_none());
+        assert!(Schedule::refine(1.0).is_some());
+    }
+
+    /// `comfy/model_sampling.py:94-97`: the seed is `sigma * noise +
+    /// (1 - sigma) * latent`, and at sigma 1 it is the noise alone, which is
+    /// how the one-stage route starts.
+    #[test]
+    fn renoise_is_the_reference_seeding() {
+        let mut latent = vec![2.0f32, -4.0, 0.5];
+        let noise = vec![0.25f32, 1.5, -2.0];
+
+        assert!(renoise(&mut latent, &noise, 0.72));
+        // 0.72 * n + 0.28 * x; the tolerance is the f32 rounding of 1 - 0.72,
+        // not a slack in the formula.
+        assert!((latent[0] - 0.74).abs() < 1e-6);
+        assert!((latent[1] + 0.04).abs() < 1e-6);
+        assert!((latent[2] + 1.30).abs() < 1e-6);
+
+        let mut at_one = vec![2.0f32];
+        assert!(renoise(&mut at_one, &[0.25], 1.0));
+        assert_eq!(at_one, vec![0.25]);
+
+        let mut at_zero = vec![2.0f32];
+        assert!(renoise(&mut at_zero, &[0.25], 0.0));
+        assert_eq!(at_zero, vec![2.0]);
+    }
+
+    /// A length mismatch or a negative sigma is refused rather than seeded.
+    #[test]
+    fn renoise_refuses_a_short_noise_or_a_bad_sigma() {
+        let mut latent = vec![1.0f32, 2.0];
+        assert!(!renoise(&mut latent, &[0.5], 0.72));
+        assert!(!renoise(&mut latent, &[0.5, 0.5], -0.1));
+        assert!(!renoise(&mut latent, &[0.5, 0.5], f32::NAN));
     }
 
     /// `h3_dit.c:2537-2554`: 20 steps at interval 3 evaluate 0, 3, 6, 9, 12,

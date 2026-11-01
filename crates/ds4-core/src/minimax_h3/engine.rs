@@ -21,7 +21,8 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 
 use super::dit::{Attention, Dit, LoadOptions, VaeAttention, VaeGemm};
-use super::host::{reuse_schedule, temporal, Rng, Schedule};
+use super::host::{reuse_schedule, temporal, Rng, Schedule, Temporal};
+use super::latent_upscale::Upscaler;
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
 use super::reference::{self, fnv_f32};
@@ -30,6 +31,52 @@ use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding, Encoder};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
 use super::{condition, vae_audio, vae_encoder, vae_video};
+
+use ds4_sys::h3_dit::Gpu;
+
+/// The reference's two-stage product route, its `ts_h2` preset
+/// (`harness/workflow.py:50`): a draft at `scale` of the delivery canvas, the
+/// video latent upscaled to the delivery canvas, and one refine step at
+/// `sigma` with the draft's audio held.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Draft {
+    pub scale: f32,
+    pub sigma: f32,
+}
+
+impl Draft {
+    /// The preset's numbers: draft at 0.7 of the canvas, refine sigmas
+    /// `0.72, 0` (`harness/workflow.py:50`, `:418`).
+    pub const RELEASED: Draft = Draft {
+        scale: 0.7,
+        sigma: 0.72,
+    };
+
+    /// The draft canvas: `round(scale * size / 32) * 32` per axis, the
+    /// reference's own rounding (`harness/workflow.py:393-394`). Python's
+    /// `round` is half to even, so this is `round_ties_even`; 768 x 1344 gives
+    /// the preset's 544 x 928.
+    pub fn canvas(&self, width: i32, height: i32) -> Result<(i32, i32), EngineError> {
+        if !(self.scale.is_finite() && self.scale > 0.0 && self.scale < 1.0) {
+            return Err(EngineError::new(format!(
+                "draft scale {} is not in (0, 1)",
+                self.scale
+            )));
+        }
+
+        let snap = |value: i32| -> i64 {
+            ((value as f64) * (self.scale as f64) / 32.0).round_ties_even() as i64 * 32
+        };
+        let (width, height) = (snap(width), snap(height));
+        if width < 32 || height < 32 {
+            return Err(EngineError::new(format!(
+                "draft canvas {width}x{height} is below one canvas multiple"
+            )));
+        }
+
+        Ok((width as i32, height as i32))
+    }
+}
 
 /// One render request. The canvas is the reference's `h3_params` canvas; the
 /// delivered frame is the model canvas.
@@ -44,6 +91,11 @@ pub struct RenderRequest {
     pub steps: usize,
     pub reuse: usize,
     pub seed: u64,
+    /// The two-stage route (`Draft::RELEASED` is the reference's preset):
+    /// `Some` renders a draft at that scale, upscales the video latent and
+    /// refines once at the delivery canvas with the draft's audio held.
+    /// `None` is the single pass.
+    pub draft: Option<Draft>,
     /// FL2VA anchors: the first and last frame the clip must start and end on
     /// (`h3.c:1231-1257`). They condition the DiT; they are not delivered.
     pub first_frame: Option<PathBuf>,
@@ -90,6 +142,20 @@ pub struct RenderReport {
     pub audio_seconds: f64,
     pub video_seconds: f64,
     pub mux_seconds: f64,
+    /// The two-stage split of `denoise_seconds`, and the upscale between them.
+    /// All three are zero on the single pass.
+    pub draft_seconds: f64,
+    pub refine_seconds: f64,
+    pub upscale_seconds: f64,
+    /// The draft's audio as the refine received it. It must equal
+    /// `audio_hash`: the refine's video conditions on the audio that is
+    /// decoded, which is the reference's freeze (`harness/workflow.py:448`)
+    /// and the property `docs/kernels.md:296` records as the fix for the
+    /// lipsync failure mode.
+    pub draft_audio_hash: u64,
+    /// Whether the refine returned the audio it was given, bit for bit.
+    /// Trivially true on the single pass.
+    pub audio_frozen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +197,11 @@ struct PreparedKey {
     frames: i32,
     steps: usize,
     reuse: usize,
+    /// The stage's one-step refine sigma, when it is a refine. The modulation
+    /// maps are baked per step at load, so two sigmas are two different graphs
+    /// even though both schedules have one step: without this, a render at
+    /// 0.55 would reuse a graph prepared for 0.72 and run the wrong timestep.
+    sigma: Option<u32>,
     rope: u32,
     /// Which attention the held DiT was loaded with. Its path is set once, on
     /// the context `Dit::load_with` creates, so a request that asks for the
@@ -164,6 +235,9 @@ pub struct Engine {
     /// different embeddings.
     embedding: Option<([u8; 32], Encoder, Embedding)>,
     prepared: Option<Prepared>,
+    /// The latent upscaler, opened on the first two-stage render and kept: its
+    /// checkpoint is 690 MB and the route calls it once per clip.
+    upscaler: Option<Upscaler>,
 }
 
 impl Engine {
@@ -182,6 +256,7 @@ impl Engine {
             tokenizer,
             embedding: None,
             prepared: None,
+            upscaler: None,
         })
     }
 
@@ -220,20 +295,58 @@ impl Engine {
             ));
         }
 
+        // The two-stage route's own canvas and one-step grid. Both canvases go
+        // through `Canvas`, so the released 32-pixel multiple and the pixel
+        // ceiling apply to the draft as well.
+        let draft = match request.draft {
+            Some(route) => {
+                let (width, height) = route.canvas(request.width, request.height)?;
+                let draft_canvas = Canvas::new(width, height, 0, 0)
+                    .map_err(|error| EngineError::new(format!("draft canvas: {error}")))?;
+                let refine = Schedule::refine(route.sigma).ok_or_else(|| {
+                    EngineError::new(format!("refine sigma {} is outside (0, 1]", route.sigma))
+                })?;
+                Some((route, draft_canvas, refine))
+            }
+            None => None,
+        };
+
+        // The prompt embedding is the first stage's, which on the two-stage
+        // route is the draft's: the reference's `encode_once="draft"`
+        // (`harness/workflow.py:52`) pays one Qwen pass and re-encodes only the
+        // keyframe rows at the refine's canvas (`:438-441`).
+        let (first_width, first_height) = match &draft {
+            Some((_, draft_canvas, _)) => (draft_canvas.width(), draft_canvas.height()),
+            None => (request.width, request.height),
+        };
+        let (first_latent_w, first_latent_h) = match &draft {
+            Some((_, draft_canvas, _)) => draft_canvas.latent(),
+            None => (latent_w, latent_h),
+        };
+        let first_rope = match &draft {
+            Some((_, draft_canvas, _)) => draft_canvas.rope_scale(false),
+            None => canvas.rope_scale(false),
+        };
+
         // Anchors (`h3.c:1231-1345`): each frame is read at the canvas, encoded
         // by the video VAE, patchified and jittered before the layout is built,
         // because the cond row count is part of the packed signature. The same
         // pixels are the prompt's vision spans, so they are read once.
-        let anchors = self.read_anchors(request, frame_count, latent_h, latent_w)?;
+        let anchors = self.read_anchors(
+            request,
+            frame_count,
+            first_width,
+            first_height,
+            first_latent_h,
+            first_latent_w,
+        )?;
 
         // References (`h3.c:1027-1200`): decoded at their own canvases,
         // encoded and jittered in request order. Their rows join the anchors'
         // only in a request that cannot carry both.
-        let references = self.read_references(request, shape.frame_count)?;
+        let references =
+            self.read_references(request, shape.frame_count, first_width, first_height)?;
         let conditioning = conditioning_identity(&request.prompt, &anchors, &references);
-        let (keyframes, mut video_rows) = (anchors.keyframes, anchors.rows);
-        video_rows.extend_from_slice(&references.video_rows);
-        let audio_rows = references.audio_rows.clone();
 
         // Conditioning: the reference memoizes the prompt embedding
         // (`h3.c:223-309`) because the encoder is the largest read of the run.
@@ -285,56 +398,35 @@ impl Engine {
         };
         let text_seconds = text_started.elapsed().as_secs_f64();
 
-        let key = PreparedKey {
+        // Stage one: the draft on the two-stage route, the whole clip
+        // otherwise. `load_stage` caches on the key, so an unmixed request
+        // keeps the graph it had.
+        let first_steps = schedule.steps;
+        let first_key = PreparedKey {
             conditioning,
-            width: request.width,
-            height: request.height,
+            width: first_width,
+            height: first_height,
             frames: frame_count,
-            steps: request.steps,
+            steps: schedule.steps,
             reuse: request.reuse,
-            rope: canvas.rope_scale(false).to_bits(),
+            sigma: None,
+            rope: first_rope.to_bits(),
             attention: request.attention,
             vae_attention: request.vae_attention,
             vae_gemm: request.vae_gemm,
         };
-
-        // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
-        // 61.7 GiB read and the whole preparation, including the AdaLN tree
-        // and the rope tables. A miss frees the old graph first so both are
-        // never resident.
         let load_started = Instant::now();
-        let prepared_hit = self.prepared.as_ref().is_some_and(|held| held.key == key);
-        if !prepared_hit {
-            self.prepared = None;
-            let spec = Spec {
-                text_len: text.tokens(),
-                latent_t: shape.video_t,
-                latent_h,
-                latent_w,
-                audio_t: shape.audio_t,
-                frame_count: shape.frame_count,
-                keyframes: &keyframes,
-                references: &references.layout,
-            };
-            let sequence = sequence::build(&spec)
-                .map_err(|error| EngineError::new(format!("layout: {error:?}")))?;
-            let dit = Dit::load_with(
-                &self.catalog.component(partition, "transformer"),
-                sequence,
-                schedule,
-                &text,
-                canvas.rope_scale(false),
-                LoadOptions {
-                    attention: request.attention,
-                    vae_attention: request.vae_attention,
-                    vae_gemm: request.vae_gemm,
-                    ..LoadOptions::resident()
-                },
-            )
-            .map_err(|error| EngineError::new(format!("transformer: {error}")))?;
-            self.prepared = Some(Prepared { key, dit });
-        }
-        let load_seconds = load_started.elapsed().as_secs_f64();
+        let mut prepared_hit = self.load_stage(
+            first_key,
+            partition,
+            &text,
+            &anchors,
+            &references,
+            shape,
+            schedule,
+            request,
+        )?;
+        let mut load_seconds = load_started.elapsed().as_secs_f64();
 
         let dit = &mut self
             .prepared
@@ -345,7 +437,9 @@ impl Engine {
         // The leading spans are refreshed on every call, cached graph or fresh
         // (`h3_dit_reset_run`, `h3_dit.c:2408-2440`). With no media both counts
         // are zero and this only validates.
-        dit.set_conditions(&video_rows, &audio_rows)
+        let mut video_rows = anchors.rows.clone();
+        video_rows.extend_from_slice(&references.video_rows);
+        dit.set_conditions(&video_rows, &references.audio_rows)
             .map_err(|error| EngineError::new(format!("conditions: {error}")))?;
 
         let mut video = vec![0.0f32; dit.video_elements()];
@@ -363,7 +457,7 @@ impl Engine {
             eprintln!(
                 "STEP {}/{} seconds={:.3} total={:.3}",
                 step + 1,
-                request.steps,
+                first_steps,
                 step_started.elapsed().as_secs_f64(),
                 denoise_started.elapsed().as_secs_f64()
             );
@@ -372,7 +466,108 @@ impl Engine {
         };
         dit.denoise_with(&mut video, &mut audio, request.reuse, Some(&mut progress))
             .map_err(|error| EngineError::new(format!("denoise: {error}")))?;
-        let denoise_seconds = denoise_started.elapsed().as_secs_f64();
+        let draft_seconds = denoise_started.elapsed().as_secs_f64();
+        let draft_audio_hash = fnv_f32(&audio);
+        let mut refine_seconds = 0.0;
+        let mut upscale_seconds = 0.0;
+        let mut audio_frozen = true;
+
+        // Stage two: the latent upscaled to the delivery canvas, re-noised at
+        // the refine sigma, one step with the draft's audio held.
+        if let Some((route, _, refine_schedule)) = draft {
+            // The refine reads its own conditioning rows at its own canvas -
+            // the reference re-encodes the keyframes at full size and keeps
+            // the draft's Qwen hidden states (`harness/workflow.py:438-441`).
+            let refine_anchors = self.read_anchors(
+                request,
+                frame_count,
+                request.width,
+                request.height,
+                latent_h,
+                latent_w,
+            )?;
+            let refine_references =
+                self.read_references(request, shape.frame_count, request.width, request.height)?;
+
+            let upscale_started = Instant::now();
+            let upscaled = {
+                let upscaler = self.upscaler()?;
+                upscaler
+                    .upscale(
+                        &video,
+                        shape.video_t as usize,
+                        first_latent_h as usize,
+                        first_latent_w as usize,
+                        latent_h as usize,
+                        latent_w as usize,
+                    )
+                    .map_err(|error| EngineError::new(format!("upscaler: {error}")))?
+            };
+            upscale_seconds = upscale_started.elapsed().as_secs_f64();
+            if upscaled.time != shape.video_t as usize {
+                return Err(EngineError::new(format!(
+                    "upscaler returned {} latent frames, {shape_video} expected",
+                    upscaled.time,
+                    shape_video = shape.video_t
+                )));
+            }
+
+            let refine_key = PreparedKey {
+                conditioning,
+                width: request.width,
+                height: request.height,
+                frames: frame_count,
+                steps: refine_schedule.steps,
+                reuse: 1,
+                sigma: Some(route.sigma.to_bits()),
+                rope: canvas.rope_scale(false).to_bits(),
+                attention: request.attention,
+                vae_attention: request.vae_attention,
+                vae_gemm: request.vae_gemm,
+            };
+            let refine_load = Instant::now();
+            prepared_hit &= self.load_stage(
+                refine_key,
+                partition,
+                &text,
+                &refine_anchors,
+                &refine_references,
+                shape,
+                refine_schedule,
+                request,
+            )?;
+            load_seconds += refine_load.elapsed().as_secs_f64();
+
+            let dit = &mut self
+                .prepared
+                .as_mut()
+                .expect("the prepared DiT was just inserted")
+                .dit;
+            let mut refine_video_rows = refine_anchors.rows.clone();
+            refine_video_rows.extend_from_slice(&refine_references.video_rows);
+            dit.set_conditions(&refine_video_rows, &refine_references.audio_rows)
+                .map_err(|error| EngineError::new(format!("conditions: {error}")))?;
+
+            // `x = sigma * noise + (1 - sigma) * upscaled`: the reference's
+            // sampler seeds its first step that way (`comfy/samplers.py:993`),
+            // and its noise is the draft's own draw at the full canvas.
+            let mut latent = upscaled.values;
+            let mut noise = vec![0.0f32; dit.video_elements()];
+            Rng::seed(request.seed).fill_normal(&mut noise);
+            if !super::host::renoise(&mut latent, &noise, route.sigma) {
+                return Err(EngineError::new(
+                    "refine seeding: the noise and the upscaled latent disagree on length",
+                ));
+            }
+
+            let refine_started = Instant::now();
+            dit.denoise_refine(&mut latent, &audio)
+                .map_err(|error| EngineError::new(format!("refine: {error}")))?;
+            refine_seconds = refine_started.elapsed().as_secs_f64();
+            audio_frozen = fnv_f32(&audio) == draft_audio_hash;
+            video = latent;
+        }
+        let denoise_seconds = draft_seconds + refine_seconds;
 
         let video_hash = fnv_f32(&video);
         let audio_hash = fnv_f32(&audio);
@@ -453,7 +648,95 @@ impl Engine {
             audio_seconds,
             video_seconds,
             mux_seconds,
+            draft_seconds,
+            refine_seconds,
+            upscale_seconds,
+            draft_audio_hash,
+            audio_frozen,
         })
+    }
+
+    /// Load (or keep) the prepared graph for one stage: the key decides.
+    ///
+    /// `h3.c:168-190`, `h3.c:1505-1516`: a hit skips the 61.7 GiB read and the
+    /// whole preparation, including the AdaLN tree and the rope tables. A miss
+    /// frees the old graph first so two are never resident - which is why the
+    /// two-stage route pays a load per stage: the draft's canvas and the
+    /// refine's canvas are different sequences.
+    #[allow(clippy::too_many_arguments)]
+    fn load_stage(
+        &mut self,
+        key: PreparedKey,
+        partition: Partition,
+        text: &Embedding,
+        anchors: &Anchors,
+        references: &reference::Set,
+        shape: Temporal,
+        schedule: Schedule,
+        request: &RenderRequest,
+    ) -> Result<bool, EngineError> {
+        if self.prepared.as_ref().is_some_and(|held| held.key == key) {
+            return Ok(true);
+        }
+        self.prepared = None;
+
+        let (latent_w, latent_h) = super::host::latent_canvas(key.width, key.height);
+        let spec = Spec {
+            text_len: text.tokens(),
+            latent_t: shape.video_t,
+            latent_h,
+            latent_w,
+            audio_t: shape.audio_t,
+            frame_count: shape.frame_count,
+            keyframes: &anchors.keyframes,
+            references: &references.layout,
+        };
+        let sequence = sequence::build(&spec)
+            .map_err(|error| EngineError::new(format!("layout: {error:?}")))?;
+        let rope = f32::from_bits(key.rope);
+        let dit = Dit::load_with(
+            &self.catalog.component(partition, "transformer"),
+            sequence,
+            schedule,
+            text,
+            rope,
+            LoadOptions {
+                attention: request.attention,
+                vae_attention: request.vae_attention,
+                vae_gemm: request.vae_gemm,
+                ..LoadOptions::resident()
+            },
+        )
+        .map_err(|error| EngineError::new(format!("transformer: {error}")))?;
+        self.prepared = Some(Prepared { key, dit });
+
+        Ok(false)
+    }
+
+    /// The latent upscaler, opened on first use and kept for the session.
+    ///
+    /// The checkpoint's directory comes from the environment, never from a
+    /// path in this file: `H3_UPSCALER_DIR`, the same rule every H3 probe
+    /// follows for `H3_MODEL`.
+    fn upscaler(&mut self) -> Result<&Upscaler, EngineError> {
+        if self.upscaler.is_none() {
+            let dir = std::env::var_os("H3_UPSCALER_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    EngineError::new(
+                        "H3_UPSCALER_DIR is not set: the two-stage route needs the latent \
+                         upscaler checkpoint's directory",
+                    )
+                })?;
+            let gpu = Gpu::create()
+                .map_err(|error| EngineError::new(format!("upscaler context: {error}")))?;
+            let upscaler = Upscaler::open(&dir, gpu)
+                .map_err(|error| EngineError::new(format!("upscaler: {error}")))?;
+            self.upscaler = Some(upscaler);
+        }
+
+        Ok(self.upscaler.as_ref().expect("just opened"))
     }
 
     /// Read, encode and jitter the ordered references (`h3.c:1027-1200`).
@@ -463,10 +746,16 @@ impl Engine {
     /// its rows describe the same clip. The twelve cap (`h3.c:588`) and the
     /// 15-second budget over the whole set (`h3.c:1171-1176`) live in
     /// `reference::prepare_set`, which the CLI renderer calls too.
+    ///
+    /// The canvas is the stage's, not the request's: the reference sizes a
+    /// reference against the area being sampled, and the two-stage route
+    /// samples the draft's area first.
     fn read_references(
         &self,
         request: &RenderRequest,
         frame_count: i32,
+        width: i32,
+        height: i32,
     ) -> Result<reference::Set, EngineError> {
         let video_vae = self.component("video_vae/source");
         let audio_vae = self.component("audio_vae");
@@ -479,7 +768,7 @@ impl Engine {
             &paths,
             &request.references,
             reference::ImageSize::Match,
-            (request.width as u32, request.height as u32),
+            (width as u32, height as u32),
             frame_count as usize,
             request.seed,
         )
@@ -493,10 +782,18 @@ impl Engine {
     /// the media's. Each anchor contributes the target canvas' own row span, so
     /// a latent of any other geometry is an error rather than a short span
     /// (`h3.c:1338-1341`).
+    ///
+    /// The canvas is the stage's: the draft reads its anchor at the draft size
+    /// and the refine re-reads it at the delivery size, which is what the
+    /// reference's `encode_once="draft"` does with the keyframes
+    /// (`harness/workflow.py:438-441`).
+    #[allow(clippy::too_many_arguments)]
     fn read_anchors(
         &self,
         request: &RenderRequest,
         frame_count: i32,
+        width: i32,
+        height: i32,
         latent_h: i32,
         latent_w: i32,
     ) -> Result<Anchors, EngineError> {
@@ -513,16 +810,15 @@ impl Engine {
         for (frame, fit, path) in anchors {
             let Some(path) = path else { continue };
             let values =
-                media::read_image_f32(path, request.width as u32, request.height as u32, fit)
-                    .map_err(|error| {
-                        EngineError::new(format!("anchor {}: {}", path.display(), error.detail()))
-                    })?;
+                media::read_image_f32(path, width as u32, height as u32, fit).map_err(|error| {
+                    EngineError::new(format!("anchor {}: {}", path.display(), error.detail()))
+                })?;
             let latent = vae_encoder::encode(
                 &self.component("video_vae/source"),
                 &values,
                 1,
-                request.height as usize,
-                request.width as usize,
+                height as usize,
+                width as usize,
                 |_, _| {},
             )
             .map_err(|error| EngineError::new(format!("anchor {}: {error}", path.display())))?;
@@ -543,8 +839,8 @@ impl Engine {
             );
             out.pixels.push(condition::AnchorPixels {
                 values,
-                height: request.height as u32,
-                width: request.width as u32,
+                height: height as u32,
+                width: width as u32,
             });
         }
 
@@ -705,9 +1001,21 @@ fn small(value: impl TryInto<i32>) -> Result<i32, EngineError> {
 /// Kept for the operator's log line; the server prints it per request.
 impl RenderReport {
     pub fn summary(&self) -> String {
+        // The two-stage route names its stages, because a total of six draft
+        // steps and one refine step is not comparable to six steps at the
+        // delivery canvas unless the split is in the line.
+        let stages = if self.refine_seconds > 0.0 {
+            format!(
+                " draft={:.3}s upscale={:.3}s refine={:.3}s audio_frozen={}",
+                self.draft_seconds, self.upscale_seconds, self.refine_seconds, self.audio_frozen
+            )
+        } else {
+            String::new()
+        };
+
         format!(
             "frames={} evaluated={} text={:.3}s{} load={:.3}s{} denoise={:.3}s \
-             audio={:.3}s video={:.3}s mux={:.3}s scale=1.0000",
+             audio={:.3}s video={:.3}s mux={:.3}s scale=1.0000{}",
             self.frames,
             self.evaluated,
             self.text_seconds,
@@ -718,6 +1026,7 @@ impl RenderReport {
             self.audio_seconds,
             self.video_seconds,
             self.mux_seconds,
+            stages,
         )
     }
 }
@@ -725,6 +1034,60 @@ impl RenderReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preset's draft canvas is the reference's own rounding
+    /// (`harness/workflow.py:393-394`): 768 x 1344 gives 544 x 928, which is
+    /// the size its `README.md:172` names.
+    #[test]
+    fn the_released_draft_canvas_is_the_references() {
+        let draft = Draft::RELEASED;
+
+        assert_eq!(draft.canvas(768, 1344), Ok((544, 928)));
+        assert_eq!(draft.canvas(1344, 768), Ok((928, 544)));
+        assert_eq!(draft.canvas(512, 512), Ok((352, 352)));
+    }
+
+    /// A half-scale draft is the other spelling the reference accepts; the
+    /// rounding is still to a 32-pixel multiple, and a .5 pixel lands on the
+    /// even multiple because Python's `round` is half to even.
+    #[test]
+    fn a_half_draft_rounds_to_thirty_two() {
+        let half = Draft {
+            scale: 0.5,
+            ..Draft::RELEASED
+        };
+
+        assert_eq!(half.canvas(768, 1344), Ok((384, 672)));
+        // 272 / 32 = 8.5 and 464 / 32 = 14.5: ties, so half to even, not away
+        // from zero - `round()` would give 288 x 480.
+        assert_eq!(half.canvas(544, 928), Ok((256, 448)));
+    }
+
+    /// A canvas that would round below one multiple, or a scale that is not a
+    /// shrink, is refused rather than snapped to something the model has never
+    /// seen.
+    #[test]
+    fn a_draft_canvas_that_cannot_be_sampled_is_refused() {
+        assert!(Draft::RELEASED.canvas(8, 928).is_err());
+        assert!(Draft {
+            scale: 0.0,
+            ..Draft::RELEASED
+        }
+        .canvas(768, 1344)
+        .is_err());
+        assert!(Draft {
+            scale: 1.0,
+            ..Draft::RELEASED
+        }
+        .canvas(768, 1344)
+        .is_err());
+        assert!(Draft {
+            scale: f32::NAN,
+            ..Draft::RELEASED
+        }
+        .canvas(768, 1344)
+        .is_err());
+    }
 
     fn key(frames: i32, conditioning: [u8; 32]) -> PreparedKey {
         PreparedKey {
@@ -734,6 +1097,7 @@ mod tests {
             frames,
             steps: 20,
             reuse: 1,
+            sigma: None,
             rope: 16,
             attention: Attention::Tensor,
             vae_attention: Some(VaeAttention::Scalar),
@@ -942,6 +1306,30 @@ mod tests {
         assert_eq!(scalar, {
             let mut same = key(4, conditioning);
             same.attention = Attention::Scalar;
+            same
+        });
+    }
+
+    /// A refine's sigma is part of the graph: the modulation maps are baked
+    /// per step at load, so two one-step schedules at different sigmas are two
+    /// graphs. `steps` alone cannot tell them apart, which is what this test
+    /// would have caught in the first cut of the route.
+    #[test]
+    fn a_refine_sigma_is_part_of_the_prepared_key() {
+        let conditioning = [3u8; 32];
+        let mut narrow = key(4, conditioning);
+        narrow.steps = 1;
+        narrow.sigma = Some(0.72f32.to_bits());
+
+        let mut wide = narrow.clone();
+        wide.sigma = Some(0.55f32.to_bits());
+
+        assert_ne!(narrow, wide);
+        assert_eq!(narrow.sigma, Some(0.72f32.to_bits()));
+        // The same sigma still hits.
+        assert_eq!(narrow, {
+            let mut same = narrow.clone();
+            same.sigma = Some(0.72f32.to_bits());
             same
         });
     }

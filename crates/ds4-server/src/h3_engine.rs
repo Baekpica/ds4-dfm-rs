@@ -92,6 +92,7 @@ impl Renderer for EngineRenderer {
             steps: self.steps,
             reuse: self.reuse,
             seed: spec.seed,
+            draft: None,
             first_frame: first.as_ref().map(|file| file.path().to_path_buf()),
             last_frame: last.as_ref().map(|file| file.path().to_path_buf()),
             references,

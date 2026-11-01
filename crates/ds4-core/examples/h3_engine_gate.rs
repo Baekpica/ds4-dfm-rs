@@ -1,11 +1,22 @@
 //! Does the resident engine pay the prompt encode and the DiT load once?
 //!
 //! Usage: h3_engine_gate [--width N --height N --frames N --steps N]
+//!        [--draft [--refine-sigma S] --upscaler DIR]
 //!
 //! One `EngineHandle` renders the same request twice and prints both phase
 //! reports. The second render must hit the prompt embedding and the prepared
 //! DiT, and both renders must produce the same media hashes: residency is
 //! worth nothing if it changes the clip.
+//!
+//! `--draft` renders the reference's two-stage route instead
+//! (`harness/workflow.py:50`): a draft at 0.7 of the canvas, the latent
+//! upscaled, one refine step at 0.72 with the draft's audio frozen. That arm
+//! asserts what the route is about - the audio the refine conditioned on is the
+//! audio the decoder received (`draft_audio_hash == audio_hash`, and the
+//! engine's own `audio_frozen`) - and reports the split per stage. Its repeat
+//! cannot be a prepared hit: the engine holds one prepared graph and the two
+//! stages are two canvases, so the claim it makes on the second render is the
+//! prompt encode, not the load.
 //!
 //! Live gate: it needs the FastH3 checkpoint and a GPU. The checkpoint is
 //! named by the environment, never by a path in this file: `H3_MODEL` for the
@@ -18,7 +29,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ds4_core::minimax_h3::dit::{Attention, VaeAttention, VaeGemm};
-use ds4_core::minimax_h3::engine::{EngineHandle, RenderReport, RenderRequest};
+use ds4_core::minimax_h3::engine::{Draft, EngineHandle, RenderReport, RenderRequest};
 use ds4_core::minimax_h3::render::Encode;
 use ds4_core::minimax_h3::text_forward::Encoder;
 
@@ -39,6 +50,7 @@ fn main() -> ExitCode {
     let mut steps = STEPS;
     let mut vae_attention = Some(VaeAttention::Tensor);
     let mut vae_gemm = Some(VaeGemm::Reduced);
+    let mut draft: Option<Draft> = None;
 
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
@@ -86,11 +98,36 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             },
+            // The two-stage route (`harness/workflow.py:50`). `--draft` alone
+            // is the reference's 0.7 / 0.72; the sigma is the only knob the
+            // route's arithmetic has not already fixed.
+            "--draft" => draft = Some(Draft::RELEASED),
+            "--refine-sigma" => match argv.next().as_deref().map(str::parse::<f32>) {
+                Some(Ok(sigma)) => {
+                    draft = Some(Draft {
+                        scale: draft.unwrap_or(Draft::RELEASED).scale,
+                        sigma,
+                    });
+                }
+                _ => {
+                    eprintln!("--refine-sigma takes a number such as 0.72");
+                    return ExitCode::from(2);
+                }
+            },
+            // The upscaler's checkpoint directory, as the engine wants it:
+            // through the environment, never as a path in the engine.
+            "--upscaler" => match argv.next() {
+                Some(dir) => std::env::set_var("H3_UPSCALER_DIR", dir),
+                None => {
+                    eprintln!("--upscaler needs a directory");
+                    return ExitCode::from(2);
+                }
+            },
             "-h" | "--help" => {
                 println!(
                     "usage: h3_engine_gate [--width N --height N --frames N --steps N] \
                      [--vae-arms env] [--vae-attention scalar|tensor] \
-                     [--vae-gemm fp32|bf16]"
+                     [--vae-gemm fp32|bf16] [--draft [--refine-sigma S]] [--upscaler DIR]"
                 );
                 return ExitCode::SUCCESS;
             }
@@ -120,13 +157,17 @@ fn main() -> ExitCode {
     };
 
     println!(
-        "ENGINE model={} canvas={}x{}x{} steps={} seed={}",
+        "ENGINE model={} canvas={}x{}x{} steps={} seed={} route={}",
         model.display(),
         width,
         height,
         frames,
         steps,
-        SEED
+        SEED,
+        match draft {
+            Some(route) => format!("two-stage draft={} refine={}", route.scale, route.sigma),
+            None => "direct".to_string(),
+        }
     );
 
     let engine = match EngineHandle::spawn(&model) {
@@ -153,6 +194,7 @@ fn main() -> ExitCode {
             steps,
             reuse: 1,
             seed: SEED,
+            draft,
             first_frame: None,
             last_frame: None,
             references: Vec::new(),
@@ -170,6 +212,22 @@ fn main() -> ExitCode {
                     "REQ {turn} wall={:.3}s {}",
                     started.elapsed().as_secs_f64(),
                     report.summary()
+                );
+                // The two-stage split on its own line, so a log can be read
+                // for the stage numbers without parsing the summary.
+                println!(
+                    "STAGES turn={turn} draft={:.3}s upscale={:.3}s refine={:.3}s \
+                     load={:.3}s text_hit={} prepared_hit={} draft_audio={:016x} \
+                     audio={:016x} frozen={}",
+                    report.draft_seconds,
+                    report.upscale_seconds,
+                    report.refine_seconds,
+                    report.load_seconds,
+                    report.text_hit,
+                    report.prepared_hit,
+                    report.draft_audio_hash,
+                    report.audio_hash,
+                    report.audio_frozen
                 );
                 reports.push(report);
             }
@@ -189,6 +247,30 @@ fn main() -> ExitCode {
         media(second)
     );
     let residency = second.text_hit && second.prepared_hit;
+
+    // The two-stage arm's own assertion: the audio the refine conditioned on is
+    // the audio the decoder received, bit for bit, and the refine says so. This
+    // is the reference's freeze (`harness/workflow.py:448`) and the property
+    // `docs/kernels.md:296` records as the fix for the lip-sync failure mode.
+    let frozen = reports
+        .iter()
+        .all(|report| report.audio_frozen && report.draft_audio_hash == report.audio_hash);
+
+    if draft.is_some() {
+        // Residency is not this arm's claim: the engine holds one prepared
+        // graph and the two stages are two graphs, so a repeat reloads both.
+        // What a repeat must still save is the prompt encode, and the stages
+        // must not change the clip.
+        if identical && frozen && second.text_hit {
+            println!("RESULT PASS two-stage text_hit audio_frozen");
+            return ExitCode::SUCCESS;
+        }
+        println!(
+            "RESULT FAIL two-stage identical={} frozen={} text_hit={}",
+            identical, frozen, second.text_hit
+        );
+        return ExitCode::FAILURE;
+    }
 
     if residency && identical {
         println!("RESULT PASS residency");

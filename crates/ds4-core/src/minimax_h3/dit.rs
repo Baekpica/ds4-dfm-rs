@@ -2342,6 +2342,55 @@ impl Dit {
         Ok(())
     }
 
+    /// The two-stage refine: one evaluation at the schedule's own sigma, then
+    /// Euler on the video latent alone.
+    ///
+    /// The audio latent is the draft's and is never updated. The reference's
+    /// `LTXVFreezeLatent` sets a zero denoise mask on the audio stream
+    /// (`comfy_extras/nodes_lt_keyframes.py:984-1036`) and the sampler hands
+    /// the model's audio output back as `latent_image` instead of accepting it
+    /// (`comfy/samplers.py:634-642`). The rows do still enter the model, which
+    /// is the point of the freeze: they are the conditioning the video's lip
+    /// sync is computed against.
+    ///
+    /// The caller seeds `video` with `host::renoise` before this call, as the
+    /// reference's sampler seeds its first step (`comfy/samplers.py:993`).
+    pub fn denoise_refine(&mut self, video: &mut [f32], audio: &[f32]) -> Result<(), DitError> {
+        if self.schedule.steps != 1 {
+            return Err(DitError::Geometry {
+                detail: format!(
+                    "refine needs a one-step schedule, this graph has {}",
+                    self.schedule.steps
+                ),
+            });
+        }
+        if video.len() != self.video_elements() || audio.len() != self.audio_elements() {
+            return Err(DitError::Geometry {
+                detail: format!(
+                    "refine of {}x{} values, expected {}x{}",
+                    video.len(),
+                    audio.len(),
+                    self.video_elements(),
+                    self.audio_elements()
+                ),
+            });
+        }
+
+        let (video_velocity, _audio_velocity) = self.forward(0, video, audio)?;
+        if !host::euler_step(
+            video,
+            &video_velocity,
+            self.schedule.video[0],
+            self.schedule.video[1],
+        ) {
+            return Err(DitError::Geometry {
+                detail: "Euler solver rejected the refine step".into(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// `h3_dit.c:2316-2396`: the fused final head, AdaLN then projection,
     /// once per modality slice. Shared by the evaluated and the reused core
     /// step, which both end here.
