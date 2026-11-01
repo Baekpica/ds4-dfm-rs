@@ -426,6 +426,12 @@ impl Refiner {
         // and `sol_calls` the rest (`refiner_encoder_ablation_single_gpu.py:
         // 771-780` expects 47 and 1 for its 48-layer stage 2).
         let (mut routed, mut dense) = (0u32, 0u32);
+        // `H3_BLOCK_PROFILE=1` times each block with a device sync on both
+        // sides, which says whether one update's cost is uniform across the
+        // stack or concentrated in the layer-0 dense attention and the AV
+        // blocks. The syncs make the sum larger than the step's own line.
+        let profile = std::env::var_os("H3_BLOCK_PROFILE").is_some();
+        let mut spent = 0f64;
 
         for block in &self.blocks {
             // Layer 0 does not route (`sol_attention.py:4-5`); the policy
@@ -440,6 +446,11 @@ impl Refiner {
                 }
             }
 
+            if profile {
+                gpu.sync().map_err(RefinerError::Run)?;
+            }
+            let at = std::time::Instant::now();
+
             block.apply(
                 gpu,
                 video,
@@ -449,6 +460,22 @@ impl Refiner {
                 block_sol,
                 self.diagnostic,
             )?;
+
+            if profile {
+                gpu.sync().map_err(RefinerError::Run)?;
+                let ms = at.elapsed().as_secs_f64() * 1e3;
+                spent += ms;
+                println!(
+                    "PROFILE layer={} routed={} audio={} ms={ms:.2}",
+                    block.layer,
+                    block_sol.is_some(),
+                    audio.is_some()
+                );
+            }
+        }
+
+        if profile {
+            println!("PROFILE blocks={} spent_ms={spent:.2}", self.blocks.len());
         }
 
         Ok((routed, dense))

@@ -211,6 +211,13 @@ impl Stage2 {
         })
     }
 
+    /// The blocks held and the bytes they were read from, for a latency
+    /// record: one update reads every weight once, so `bytes` against the
+    /// step's own seconds is the floor a bandwidth-bound update cannot beat.
+    pub fn footprint(&self) -> (usize, u64) {
+        (self.refiner.blocks(), self.refiner.loaded().1)
+    }
+
     /// Turn on the release's Stage 2 Sol-Attn policy
     /// (`super_acceleration/stage2/sol_attention.py`): layers 1 through 47
     /// route their video self-attention with one tau per step (`TAU_SCHEDULE`)
@@ -314,6 +321,34 @@ impl Stage2 {
         self.schedule == SIGMAS
     }
 
+    /// Write the per-token denoise mask, which is `1` in every route the
+    /// release ships. The mask is read three times and each read is the same
+    /// statement about how much of the draft survives:
+    /// `noise_lerp` starts the state at `clean + m * (noise - clean)`,
+    /// `timesteps` hands the blocks `m * sigma` per token, and
+    /// `post_process_latent` blends `m * denoised + (1 - m) * clean` after
+    /// every step. `m = 1` is the release's generative refine, where the draft
+    /// contributes only through the first noised state; `m < 1` keeps the
+    /// draft's content in the state and in every blend, so the refiner adds
+    /// texture to the picture it was given instead of drawing a new one. The
+    /// release uses the same three reads with `m = 0` for its frozen audio
+    /// stream (`runtime/stage2.py:96-99`), which is the limit where nothing of
+    /// the model reaches the state at all.
+    pub fn set_anchor(&mut self, gpu: &Gpu, anchor: f32) -> Result<(), RefinerError> {
+        if !(anchor > 0.0 && anchor <= 1.0) {
+            return Err(RefinerError::Run(format!(
+                "the anchor is {anchor}, outside (0, 1]"
+            )));
+        }
+
+        let mut bytes = Vec::with_capacity(self.scratch.rows as usize * 4);
+        for _ in 0..self.scratch.rows {
+            bytes.extend_from_slice(&anchor.to_le_bytes());
+        }
+        gpu.upload(&self.scratch.mask, &bytes)
+            .map_err(RefinerError::Run)
+    }
+
     /// `create_noised_state` (`helpers.py:428-448`) with `conditionings=[]`:
     /// patchify the initial latent into the state, copy it to the clean latent,
     /// draw the noise, and run `GaussianNoiser.__call__`'s two lerps.
@@ -353,6 +388,7 @@ impl Stage2 {
         let sigma = self.schedule[index];
         let next = self.schedule[index + 1];
         let (rows, width) = (self.scratch.rows, self.scratch.width);
+        let mut laps = Laps::new(index);
 
         // `SimpleDenoiser.__call__` (`denoisers.py:225-252`) builds one Modality
         // from the state and calls `X0Model.forward` (`model.py:590-605`): the
@@ -369,6 +405,7 @@ impl Stage2 {
             audio_context: audio.map(|(_, audio_context)| audio_context),
         };
         let prepared = self.edges.prepare(gpu, &request, &self.edges_scratch)?;
+        laps.lap(gpu, "prepare")?;
 
         if traced() {
             trace_state(gpu, "in-video", &prepared.video, rows, CHANNELS as u32)?;
@@ -414,6 +451,7 @@ impl Stage2 {
             &self.blocks,
             sol.as_ref(),
         )?;
+        laps.lap(gpu, "blocks")?;
 
         if traced() {
             trace_state(gpu, "video-state", &prepared.video, rows, CHANNELS as u32)?;
@@ -423,6 +461,7 @@ impl Stage2 {
         }
 
         self.edges.head(gpu, &prepared, &self.edges_scratch)?;
+        laps.lap(gpu, "head")?;
 
         gpu.timesteps(&self.scratch.timesteps, &self.scratch.mask, rows, sigma)
             .map_err(RefinerError::Run)?;
@@ -469,6 +508,8 @@ impl Stage2 {
             trace_state(gpu, "video-latent", &self.scratch.latent, rows, width)?;
         }
 
+        laps.lap(gpu, "sample")?;
+
         Ok(calls)
     }
 
@@ -487,6 +528,42 @@ impl Stage2 {
 /// run that goes wrong can be read without a second instrument.
 fn traced() -> bool {
     std::env::var_os("H3_STAGE2_TRACE").is_some()
+}
+
+/// `H3_STAGE2_PROFILE=1` splits one step into its four phases with a device
+/// sync on every boundary. Each boundary is a full pipeline drain, so the split
+/// is honest and the step's total is not: read the phases, not the sum, and
+/// take the step's own `STAGE2 step=` line as its cost.
+struct Laps {
+    on: bool,
+    step: usize,
+    at: std::time::Instant,
+}
+
+impl Laps {
+    fn new(step: usize) -> Laps {
+        Laps {
+            on: std::env::var_os("H3_STAGE2_PROFILE").is_some(),
+            step,
+            at: std::time::Instant::now(),
+        }
+    }
+
+    fn lap(&mut self, gpu: &Gpu, phase: &str) -> Result<(), RefinerError> {
+        if !self.on {
+            return Ok(());
+        }
+
+        gpu.sync().map_err(RefinerError::Run)?;
+        println!(
+            "PROFILE step={} phase={phase} seconds={:.3}",
+            self.step,
+            self.at.elapsed().as_secs_f64()
+        );
+        self.at = std::time::Instant::now();
+
+        Ok(())
+    }
 }
 
 /// One line of `mean`, `rms` and `max` for a state the step produced.

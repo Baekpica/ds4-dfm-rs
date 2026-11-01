@@ -49,6 +49,9 @@ const DEFAULT_SEED: u64 = 42;
 const DEFAULT_OUTPUT: &str = "outputs/h3-sol.mp4";
 /// `configs/default.json:53`: the distilled refiner LoRA is applied at 0.8.
 const DEFAULT_LORA_STRENGTH: f32 = 0.8;
+/// The release's video denoise mask: every token is fully denoised, so the
+/// refiner's only draft contribution is the first noised state.
+const DEFAULT_ANCHOR: f32 = 1.0;
 
 /// The refiner's text context: the cached prompt's own shape
 /// (`prompt_cache.py`; `CONTEXT_ROWS` in `ltx_refiner`).
@@ -74,6 +77,11 @@ struct Options {
     draft_height: usize,
     seed: u64,
     sol: bool,
+    /// `--stage2-anchor M`: the video denoise mask, `1` in the release's
+    /// route. Below one the refiner keeps `1 - M` of the draft in the state
+    /// and blends the same share back after every step, so it enhances the
+    /// picture it was given rather than drawing a new one from the noise.
+    anchor: f32,
     /// `--hash`: the decoded frames' FNV, the same value the resident route
     /// prints. It is how the two lifetimes are compared: same request, same
     /// arm, same frames.
@@ -303,11 +311,26 @@ fn run() -> Result<ExitCode, String> {
             .map_err(|error| error.token())?;
     }
 
+    if options.anchor != DEFAULT_ANCHOR {
+        stage
+            .set_anchor(&gpu, options.anchor)
+            .map_err(|error| error.token())?;
+    }
+
+    println!("STAGE2 anchor={:.3}", options.anchor);
+
     println!(
         "SIGMAS values={:?} steps={} release={}",
         stage.schedule(),
         stage.steps(),
         stage.is_release_schedule()
+    );
+
+    let (blocks, bytes) = stage.footprint();
+    println!(
+        "STAGE2 blocks={blocks} weights_gib={:.2} rows={}",
+        bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        refiner_geometry.video_tokens()
     );
 
     stage.seed(options.seed);
@@ -587,6 +610,7 @@ fn parse(arguments: Vec<String>) -> Result<Option<Options>, String> {
         draft_height: DEFAULT_DRAFT_HEIGHT,
         seed: DEFAULT_SEED,
         sol: false,
+        anchor: DEFAULT_ANCHOR,
         hash: false,
         sigmas: Vec::new(),
         transfer_only: false,
@@ -621,6 +645,7 @@ fn parse(arguments: Vec<String>) -> Result<Option<Options>, String> {
             "--draft-height" => options.draft_height = unsigned(&mut argv, &flag)? as usize,
             "--seed" => options.seed = unsigned(&mut argv, &flag)?,
             "--sol" => options.sol = true,
+            "--stage2-anchor" => options.anchor = real(&mut argv, &flag)?,
             "--hash" => options.hash = true,
             "--h3-vae" => options.h3_vae = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--h3-video" => options.h3_video = Some(value(&mut argv, &flag)?),
@@ -743,6 +768,10 @@ Usage: h3-sol-rs --latent DRAFT --audio PCM --upscaler FILE --adapter DIR \
   --draft-height N          stage-1 canvas height (default 384)
   --seed N                  stage-2 noise seed (default 42)
   --sol                     enable the release's Sol-Attn routing
+  --stage2-anchor M         the video denoise mask, 1.0 by default (the
+                            release's). Below 1 the refiner keeps 1 - M of the
+                            draft in the state and blends it back after every
+                            step: 0.6 enhances the draft, 0.3 barely leaves it
   --hash                    print the decoded frames' FNV (how the resident
                             route and this one are compared)
   --save-upscaled PATH      write the upscaler's own H3 latent, [c][t][h][w] BF16
