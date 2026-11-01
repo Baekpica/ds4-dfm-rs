@@ -236,8 +236,8 @@ int main(void) {
     if (ds4_bridge_mimo2_commit(NULL, 1, err, sizeof(err)) == 0) {
         fail("MiMo commit NULL session");
     }
-    if (ds4_bridge_mimo2_sync_keep(NULL, NULL, 0) != 0) {
-        fail("MiMo sync keep NULL session");
+    if (ds4_bridge_session_sync_keep(NULL, NULL, 0) != -1) {
+        fail("sync keep NULL session");
     }
     if (ds4_bridge_mimo2_sync_media(NULL, NULL, 0, NULL, NULL, NULL, 0, 0, err, sizeof(err)) == 0) {
         fail("MiMo media NULL session");

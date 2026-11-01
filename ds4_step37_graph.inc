@@ -360,13 +360,20 @@ static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_we
     return step37_forward_impl(g, m, w, tokens, n, pos, STEP37_HEAD_LAST);
 }
 
-/* The widened SWA ring retains one extra chunk for a tail rewrite. Reset to
- * zero is also safe: causal attention cannot read the old future rows. */
+/* The widened SWA ring retains one extra chunk for a tail rewrite: it still
+ * holds the window under pos while the newest row written is at most one
+ * chunk above. Reset to zero is also safe: causal attention cannot read the
+ * old future rows. */
+static bool step37_holds(const ds4_step37_graph *g, unsigned pos) {
+    const unsigned newest = g->high_water > g->position ? g->high_water : g->position;
+    return !pos || newest - pos <= g->cap;
+}
+
 static bool step37_rewind(ds4_step37_graph *g, unsigned pos) {
     if (!g || !g->cap || g->failed || pos > g->position) { return false; }
     /* Repeated rewinds must not move the physical retention boundary. */
     unsigned newest = g->high_water > g->position ? g->high_water : g->position;
-    if (pos && newest - pos > g->cap) { return false; }
+    if (!step37_holds(g, pos)) { return false; }
     g->high_water = pos ? newest : 0;
     g->position = pos;
     return true;

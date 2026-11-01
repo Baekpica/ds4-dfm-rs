@@ -132,12 +132,6 @@ mod tests {
     }
 
     #[no_mangle]
-    extern "C" fn ds4_bridge_session_exaone_rewind_span(s: *mut ds4_bridge_session) -> i32 {
-        assert!(!s.is_null());
-        0
-    }
-
-    #[no_mangle]
     unsafe extern "C" fn ds4_bridge_session_sync_cb(
         s: *mut ds4_bridge_session,
         tokens: *const i32,

@@ -1,7 +1,7 @@
 /* Serial session: one graph owns every KDA tile, MLA latent row and the
- * carried hidden row. A prompt that extends the checkpoint continues in
- * place; any other prompt resets the recurrent state and prefills from 0
- * (a KDA tile cannot rewind). */
+ * carried hidden row. A prompt resumes at its common prefix from a copy of
+ * the KDA tiles and hidden row taken at or below it (a KDA tile cannot
+ * rewind); latent rows keep every position. */
 static int ling31_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->ling31_graph.failed = true;
     s->checkpoint_valid = false;
@@ -22,6 +22,17 @@ static bool ling31_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the live state keeps for `prompt`; 0 rebuilds. The MTP layer's rows
+ * restart one behind the resume row, as a bank restore's. */
+static uint32_t ling31_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_ling31_graph *g = &s->ling31_graph;
+    if (!s->checkpoint_valid || g->failed || g->mtp_n || g->position != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
 static int ling31_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
@@ -33,20 +44,27 @@ static int ling31_session_sync(ds4_session *s, const ds4_tokens *prompt, char *e
     if (!s->ling31_graph_ready) { payload_set_err(err, errlen, "Ling-3.1 graph is not initialized"); return 1; }
     ds4_ling31_graph *g = &s->ling31_graph;
     if (g->mtp_n) { payload_set_err(err, errlen, "Ling-3.1 MTP trial needs commit or invalidation"); return 1; }
-    uint32_t start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (uint32_t)s->checkpoint.len;
+    uint32_t start = ling31_sync_keep(s, prompt);
+    const int slot = start && start < (uint32_t)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
+    if (start && start >= (uint32_t)s->checkpoint.len) {
         if (start == (uint32_t)prompt->len) { return 0; }
+    } else if (slot >= 0 && serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+        ling31_frontier(g, start);
+        session_rewound(s, start);
     } else {
+        start = 0;
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "Ling-3.1 graph reset failed"); return 1; }
     }
-    const uint32_t end = (uint32_t)prompt->len;
+    const uint32_t resume = start, end = (uint32_t)prompt->len;
     while (start < end) {
         const uint32_t n = end - start < g->row_cap ? end - start : g->row_cap;
         // Only the final chunk's last row needs the vocabulary head.
         const ling31_head_mode head = start + n == end ? LING31_HEAD_LAST : LING31_HEAD_SKIP;
+        // Where the final chunk starts: a resent turn resumes here.
+        if (head == LING31_HEAD_LAST && start > resume) {
+            (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, start);
+        }
         if (!ling31_forward(g, &s->engine->model, &s->engine->weights, prompt->v + start, n, start, head)) {
             return ling31_session_fail(s, err, errlen);
         }
@@ -54,6 +72,8 @@ static int ling31_session_sync(ds4_session *s, const ds4_tokens *prompt, char *e
         if (s->progress) { s->progress(s->progress_ud, "prefill_chunk", (int)start, prompt->len); }
     }
     if (!ling31_read_logits(s)) { return ling31_session_fail(s, err, errlen); }
+    // The prompt's end: a re-rendered continuation resumes here.
+    (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, end);
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;

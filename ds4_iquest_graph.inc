@@ -12,6 +12,9 @@ typedef struct {
     int trial_tokens[IQ_DRAFT_SLOTS + 1];
     unsigned trial_n, trial_base;
     unsigned kv_cap[IQ_LAYERS], context, cap, position, mtp_position;
+    /* Newest row any forward wrote (verify rows too) and a restore's floor:
+     * what the SWA rings still hold for a rewind. */
+    unsigned high, restored;
     unsigned *host_positions;
     uint64_t bytes;
     bool failed, owns_scratch, mtp_enabled;
@@ -300,7 +303,8 @@ static bool iquest_forward(ds4_iquest_graph *g, const ds4_model *m,
         /* Teacher pairs are embed(token[i+1]), target_hidden[i], position i.
          * Preserve only one carry across chunks; never retain whole history. */
         unsigned begin = 0;
-        if (pos) {
+        // A rewind keeps the MTP row under pos (mtp_position == pos): no carry.
+        if (pos && g->mtp_position != pos) {
             if (g->mtp_position != pos - 1 || !iquest_mtp_forward(g, m, w, tokens,
                     g->carry, 1, pos - 1, IQ_NO_LOGITS)) { return false; }
         }
@@ -319,5 +323,6 @@ static bool iquest_forward(ds4_iquest_graph *g, const ds4_model *m,
     if (!ds4_gpu_tensor_copy(g->carry, 0, g->hidden,
             (uint64_t)(n - 1) * IQ_EMBED * sizeof(float), IQ_EMBED * sizeof(float))) { return false; }
     g->position = pos + n; g->failed = false;
+    if (g->position > g->high) { g->high = g->position; }
     return true;
 }

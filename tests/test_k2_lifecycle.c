@@ -36,17 +36,12 @@ static void sync_trace(ds4_session *session, const ds4_tokens *prompt,
                        const char *label) {
     const int live = ds4_session_pos(session);
     const int common = ds4_session_common_prefix(session, prompt);
-    const int span = ds4_session_exaone_rewind_span(session);
-    CHECK(span == 0); /* K2 keeps exact extensions, never an edited LCP. */
-    int start = common;
-    if (start > 0 && start == prompt->len) { start--; }
-    if (live - start > span) { start = 0; }
+    /* K2 has no sliding ring: any common prefix is kept. */
+    const int keep = ds4_session_sync_keep(session, prompt->v, prompt->len);
     const uint64_t before = ds4_session_generation(session);
     CHECK(ds4_session_sync(session, prompt, error, sizeof(error)) == 0);
-    /* C has no host last_plan accessor. This is the native EXAONE rule
-     * derived from public state, not a measured count of GPU rows. */
-    fprintf(stderr, "K2 sync %s live=%d prompt=%d lcp=%d span=%d derived_start=%d cap=%d generation=%llu/%llu\n",
-            label, live, prompt->len, common, span, start,
+    fprintf(stderr, "K2 sync %s live=%d prompt=%d lcp=%d keep=%d cap=%d generation=%llu/%llu\n",
+            label, live, prompt->len, common, keep,
             ds4_session_prefill_cap(session), (unsigned long long)before,
             (unsigned long long)ds4_session_generation(session));
 }
@@ -220,7 +215,7 @@ int main(int argc, char **argv) {
 
     ds4_batch_ctx *batch = NULL;
     CHECK(ds4_batch_ctx_create_fit(engine, context, 2, 16, &batch, error, sizeof(error)) == 0);
-    CHECK(!ds4_batch_ctx_supports_partial_reuse(batch));
+    CHECK(ds4_batch_ctx_supports_partial_reuse(batch));
     fp = fopen(disk.path, "rb");
     CHECK(fp && ds4_cont_bank_restore_payload(batch, 0, fp, disk.bytes, error, sizeof(error)) == 0);
     CHECK(fclose(fp) == 0);

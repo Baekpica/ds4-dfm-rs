@@ -2661,19 +2661,23 @@ impl Session<'_> {
     }
 
     pub fn last_plan(&self, tokens: &[i32]) -> SyncPlan {
-        let mut plan = self
-            .host
-            .plan_sync(tokens, self.host.planned_exaone_rewind_span());
+        let mut plan = self.host.plan_sync(tokens);
 
-        // MiMo resumes inside its SWA ring: only native knows the newest row
-        // written and a restored snapshot's floor.
-        if self.host.family == ModelFamily::Mimo2 && self.host.valid && plan.rebuild && !plan.err {
+        // A prompt that leaves the live state resumes inside it where the
+        // family can (ring windows, recurrent checkpoints): only native knows
+        // the newest row written and what it holds. -1: extension only.
+        if self.host.valid && plan.rebuild && !plan.err {
             let n = tokens.len() as i32;
             let keep = unsafe {
-                ds4_sys::ds4_bridge_mimo2_sync_keep(self.raw.as_ptr(), tokens.as_ptr(), n)
+                ds4_sys::ds4_bridge_session_sync_keep(self.raw.as_ptr(), tokens.as_ptr(), n)
             };
-            plan.start = keep.max(0);
-            plan.rebuild = plan.start == 0;
+            if keep >= 0 {
+                plan.start = keep;
+                plan.rebuild = keep == 0;
+                // Native moves the generation when it resumes below the live
+                // rows, whatever the family's rebuild rule.
+                plan.bump |= keep > 0;
+            }
         }
         plan
     }
@@ -4318,7 +4322,7 @@ mod tests {
         static GLM_TRIAL_CALLS: Cell<u32> = const { Cell::new(0) };
         static GLM_FIRST: Cell<i32> = const { Cell::new(0) };
         static GLM_KEEP: Cell<i32> = const { Cell::new(0) };
-        static MIMO2_KEEP: Cell<i32> = const { Cell::new(0) };
+        static SYNC_KEEP: Cell<i32> = const { Cell::new(-1) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4657,30 +4661,43 @@ mod tests {
     }
 
     #[no_mangle]
-    extern "C" fn ds4_bridge_mimo2_sync_keep(
+    extern "C" fn ds4_bridge_session_sync_keep(
         _s: *mut ds4_bridge_session,
         _tokens: *const i32,
         _n_tokens: i32,
     ) -> i32 {
-        MIMO2_KEEP.with(Cell::get)
+        SYNC_KEEP.with(Cell::get)
     }
 
     #[test]
-    fn mimo2_plan_takes_native_keep() {
+    fn rewind_plan_takes_native_keep() {
         // Native counts its SWA ring from the newest row written, which an
         // earlier, longer branch may have set; the live length cannot.
         let mut session = audit_session(ModelFamily::Mimo2);
         let live: Vec<i32> = (0..2_000).collect();
         session.host.replace_checkpoint(&live);
         for keep in [0, 1_989] {
-            MIMO2_KEEP.with(|k| k.set(keep));
+            SYNC_KEEP.with(|k| k.set(keep));
             let plan = session.last_plan(&live[..1_990]);
             assert_eq!((plan.start, plan.rebuild), (keep, keep == 0));
         }
 
-        // An extension keeps the live rows without asking.
-        MIMO2_KEEP.with(|k| k.set(-1));
+        // An extension keeps the live rows without asking; an
+        // extension-only family's rewind rebuilds.
+        SYNC_KEEP.with(|k| k.set(-1));
         assert_eq!(session.last_plan(&[&live[..], &[7]].concat()).start, 2_000);
+        let plan = session.last_plan(&live[..1_990]);
+        assert_eq!((plan.start, plan.rebuild), (0, true));
+
+        // Motif-3 rebuilds without a generation bump, but native bumps when
+        // it resumes below the live rows: the host follows.
+        let mut motif = audit_session(ModelFamily::Motif3);
+        motif.host.replace_checkpoint(&live);
+        for (keep, bump) in [(0, false), (1_989, true)] {
+            SYNC_KEEP.with(|k| k.set(keep));
+            assert_eq!(motif.last_plan(&live[..1_990]).bump, bump);
+        }
+        SYNC_KEEP.with(|k| k.set(-1));
     }
 
     #[no_mangle]

@@ -45852,6 +45852,10 @@ typedef struct {
     uint32_t ctx_cap;
     uint32_t cache_len;
     uint32_t mtp_cache_len;
+    /* Newest row a forward wrote and a restore's floor: what the SWA rings
+     * still hold for a rewind. */
+    uint32_t high;
+    uint32_t restored;
     uint64_t latent_cache_bytes;
     ds4_gpu_tensor *tokens;
     ds4_gpu_tensor *positions;
@@ -45925,6 +45929,10 @@ typedef struct {
     uint32_t cap;              /* prefill chunk rows */
     uint32_t ctx_cap;
     uint32_t cache_len;
+    /* Newest row a forward wrote and a restore's floor: what the SWA rings
+     * still hold for a rewind. */
+    uint32_t high;
+    uint32_t restored;
     uint32_t idx_sub;          /* indexer score sub-chunk (queries) */
     uint64_t cache_bytes;
     ds4_gpu_tensor *tokens;
@@ -46070,6 +46078,8 @@ typedef struct {
     uint32_t        layer_kv_cap[DS4_MAX_LAYER];
     uint64_t        kv_bytes;
     uint64_t        workspace_bytes;
+    /* Serial rewind bounds: the newest row written and the restore floor. */
+    uint32_t        high, restored;
 } ds4_exaone_gpu_graph;
 
 /* One row in a cross-bank decode.  Weight-bound stages run once over all
@@ -46657,6 +46667,7 @@ static bool exaone_graph_prefill_chunk(ds4_exaone_gpu_graph *g,
                                        bool want_logits) {
     if (n_tok == 0u || n_tok > g->prefill_cap) return false;
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    if (pos0 + n_tok > g->high) { g->high = pos0 + n_tok; }
 
     for (uint32_t t = 0; t < n_tok; t++) {
         ds4_gpu_tensor *row = ds4_gpu_tensor_view(
@@ -46689,6 +46700,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
                                 int token,
                                 uint32_t pos) {
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    if (pos + 1u > g->high) { g->high = pos + 1u; }
     if (!ds4_gpu_embed_token_quant_tensor(g->cur, m->map, m->size,
                                           w->token_embd->abs_offset,
                                           w->token_embd->type, DS4_N_VOCAB,
@@ -47632,6 +47644,32 @@ static ds4_exaone_batch_runtime *exaone_batch_runtime_create(
     return rt;
 }
 
+/* K2-Horizon has no LLLG ring: every row stays at its position. */
+static bool exaone_ringless(void) {
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (exaone_layer_is_sliding(il)) { return false; }
+    }
+    return true;
+}
+
+/* A ringless bank forks at any prefix: rows [0, pos) are exact. */
+static bool exaone_bank_fork(ds4_exaone_batch_runtime *rt, uint32_t src, uint32_t dst, uint32_t pos) {
+    if (!rt || !exaone_ringless() || src >= rt->max_seq || dst >= rt->max_seq ||
+        !pos || pos > rt->cache_len[src]) { return false; }
+    rt->bank_logits_valid[dst] = 0u;
+    if (src != dst) {
+        const ds4_exaone_gpu_graph *sg = &rt->graph[src];
+        const uint64_t row_bytes = sg->kv_dim * 2u * sizeof(uint16_t);
+        for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+            if (sg->layer_kv[il] && !ds4_gpu_tensor_copy(rt->graph[dst].layer_kv[il], 0, sg->layer_kv[il], 0,
+                                                         (uint64_t)pos * row_bytes)) { return false; }
+        }
+        if (!ds4_gpu_synchronize()) { return false; }
+    }
+    rt->cache_len[dst] = pos;
+    return true;
+}
+
 static bool exaone_batch_runtime_copy_bank(
         ds4_exaone_batch_runtime *rt, uint32_t src, uint32_t dst,
         uint32_t tokens) {
@@ -48172,6 +48210,17 @@ typedef struct ds4_dots3_spec ds4_dots3_spec;
 struct ds4_qwen35_gpu_graph;
 struct ds4_qwen35_ref_state;
 
+/* Copies of a serial session's recurrent state pool a rewind resumes from
+ * (serial_ckpt_capture). */
+enum { SERIAL_CKPTS = 2 };
+typedef struct {
+    ds4_gpu_tensor *slab;        /* SERIAL_CKPTS slots, mapped on demand */
+    uint64_t slot_bytes;
+    uint32_t pos[SERIAL_CKPTS];  /* 0: empty */
+    uint64_t gen[SERIAL_CKPTS];  /* the session generation it belongs to */
+    uint32_t aux[SERIAL_CKPTS][2]; /* family cursors beside the state */
+} ds4_serial_ckpt;
+
 struct ds4_session {
     ds4_engine *engine;
     ds4_dist_session *distributed;
@@ -48225,6 +48274,7 @@ struct ds4_session {
      * even after another context/bank fit changes the process environment. */
     uint32_t glm53_rows, glm53_window;
     bool glm53_graph_ready;
+    ds4_serial_ckpt rewind;
 #endif
     /* Prism Bonsai keeps its whole trunk in one struct per backend, both
      * defined further down next to their kernels' wrappers, so a session owns
@@ -49187,7 +49237,10 @@ static bool motif3_graph_forward_impl(
     }
 
     if (!host_logits) {
-        if (latent) g->cache_len = pos0 + rows;
+        if (latent) {
+            g->cache_len = pos0 + rows;
+            if (g->cache_len > g->high) { g->high = g->cache_len; }
+        }
         return true;
     }
 
@@ -49219,7 +49272,10 @@ static bool motif3_graph_forward_impl(
             (uint64_t)DS4_N_VOCAB * sizeof(host_logits[0])),
             "logits readback");
 #undef M3_FORWARD
-    if (latent) g->cache_len = pos0 + rows;
+    if (latent) {
+        g->cache_len = pos0 + rows;
+        if (g->cache_len > g->high) { g->high = g->cache_len; }
+    }
     return true;
 }
 
@@ -50080,6 +50136,7 @@ static bool dots3_graph_forward_chunk(
     }
 #undef D3_FORWARD
     g->cache_len = pos0 + rows;
+    if (g->cache_len > g->high) { g->high = g->cache_len; }
     return true;
 }
 
@@ -52804,6 +52861,8 @@ static int exaone_payload_restore_graph(
         free(tokens);
         return 1;
     }
+    /* The ring holds the saved window under n_tokens, no row above it. */
+    g->high = g->restored = n_tokens;
     *tokens_out = tokens;
     return 0;
 }
@@ -53190,7 +53249,9 @@ static int step37_payload_restore_graph(ds4_step37_graph *g, ds4_step37_spec *sp
         return 1;
     }
     g->position = n;
-    g->high_water = n;
+    /* Only the live window was restored: no rewind below n until new rows
+     * replenish the chunk slack (as the bank restore). */
+    g->high_water = n + g->cap;
     if (spec) {
         for (unsigned i = 0; i < STEP37_DRAFT_LAYERS; i++) {
             spec->draft.position[i] = base;
@@ -53331,6 +53392,7 @@ static int motif3_payload_restore_graph(
     }
     g->cache_len = n_tokens;
     g->mtp_cache_len = 0u;
+    g->high = g->restored = n_tokens;
     const uint64_t total = motif3_payload_bytes_for_graph(g, n_tokens);
     const uint64_t header_bytes =
         (uint64_t)DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t);
@@ -53555,6 +53617,7 @@ static int dots3_payload_restore_graph(
         return 1;
     }
     g->cache_len = n_tokens;
+    g->high = g->restored = n_tokens;
     const uint64_t base = dots3_payload_bytes_for_graph(g, n_tokens);
     const uint64_t total = base ? base + dots3_spec_payload_bytes(sp, n_tokens) : 0;
     const uint64_t header_bytes =
@@ -56932,6 +56995,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         if (s->motif3_graph_ready) {
             s->motif3_graph.cache_len = 0u;
             s->motif3_graph.mtp_cache_len = 0u;
+            s->motif3_graph.high = s->motif3_graph.restored = 0u;
         }
     } else if (ds4_session_is_dots3(s)) {
         s->checkpoint_valid = false;
@@ -56939,6 +57003,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->mtp_draft_valid = false;
         if (s->dots3_graph_ready) {
             s->dots3_graph.cache_len = 0u;
+            s->dots3_graph.high = s->dots3_graph.restored = 0u;
         }
         dots3_spec_reset(s->dots3_spec);
     } else if (ds4_session_is_exaone(s)) {
@@ -62064,7 +62129,7 @@ static int exaone_batch_ctx_create_impl(
     for (uint32_t b = 0; b < ctx->max_seq; b++) ctx->bank_gen[b] = 1u;
     /* v0.6.2 Inc 3 recency array; see the Solar create note. */
     ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
-    ctx->supports_partial_reuse = ctx->exaone->checkpoint_slab != NULL;
+    ctx->supports_partial_reuse = ctx->exaone->checkpoint_slab != NULL || exaone_ringless();
     ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
     *out = ctx;
     return 0;
@@ -65747,6 +65812,13 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     }
 }
 
+/* Banks whose rows all stay at their positions fork at any prefix. */
+static bool prefix_bank_fork(ds4_batch_ctx *ctx, uint32_t src, uint32_t dst, uint32_t pos) {
+    if (ctx->minimax) { return minimax_bank_fork(ctx->minimax, src, dst, pos); }
+    if (ctx->axk2) { return axk2_bank_fork(ctx->axk2, src, dst, pos); }
+    return exaone_bank_fork(ctx->exaone, src, dst, pos);
+}
+
 static bool family_banked_copy(
         ds4_batch_ctx *ctx, uint32_t src, uint32_t dst,
         uint32_t tokens) {
@@ -66363,7 +66435,7 @@ static int family_banked_engine_continuous_generate(
                         forked = partial = true;
                     }
                 } else if (source_prefix &&
-                           requested_cached < source_frontier && ctx->exaone) {
+                           requested_cached < source_frontier && ctx->exaone && !exaone_ringless()) {
                     const int checkpoint = exaone_ckpt_find(
                         ctx->exaone, (uint32_t)src, requested_cached, (uint32_t)req.n);
                     uint32_t pos = 0;
@@ -66471,19 +66543,19 @@ static int family_banked_engine_continuous_generate(
                         forked = partial = true;
                     }
                 } else if (source_prefix &&
-                           requested_cached < source_frontier && (ctx->minimax || ctx->axk2)) {
-                    /* MiniMax and A.X-K2 caches are position-indexed: any
-                     * prefix of the source is exact. Keep one prompt row to
-                     * prefill so the bank produces the next logits. */
+                           requested_cached < source_frontier && (ctx->minimax || ctx->axk2 || ctx->exaone)) {
+                    /* MiniMax, A.X-K2 and K2-Horizon caches are position-
+                     * indexed: any prefix of the source is exact. Keep one
+                     * prompt row to prefill so the bank produces the next
+                     * logits. */
                     const uint32_t pos = requested_cached < (uint32_t)req.n
                         ? requested_cached : (uint32_t)req.n - 1u;
                     if (!pos) {
                         ctx->fork_rejects++;
-                    } else if (ctx->minimax ? !minimax_bank_fork(ctx->minimax, (uint32_t)src, b, pos)
-                                            : !axk2_bank_fork(ctx->axk2, (uint32_t)src, b, pos)) {
+                    } else if (!prefix_bank_fork(ctx, (uint32_t)src, b, pos)) {
                         ctx->bank_gen[b]++;
                         ctx->bank_hist_valid[b] = 0;
-                        FCG_ERR("continuous_generate: MiniMax prefix fork failed src=%d dst=%u", src, b);
+                        FCG_ERR("continuous_generate: prefix fork failed src=%d dst=%u", src, b);
                         ok = false;
                         break;
                     } else {
@@ -76380,6 +76452,8 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
+        ds4_gpu_tensor_free(s->rewind.slab);
+        memset(&s->rewind, 0, sizeof(s->rewind));
         if (ds4_session_is_iquest(s)) {
             iquest_graph_free(&s->iquest_graph); s->iquest_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -77005,6 +77079,158 @@ static bool glm53_vision_spans_validate(
 }
 
 #ifndef DS4_NO_GPU
+/* Serial rewind (AGENTS.md serving contract). Agent clients re-render the
+ * last answer, so a prompt that leaves the live state resumes at its common
+ * prefix where the family's state allows instead of prefilling from zero:
+ *
+ *   live  [ common prefix | old branch ......... high )
+ *   keep  [ common prefix )  re-prefill the new tail from there
+ *
+ * Positional rows below the prefix are untouched. A sliding ring must still
+ * hold the window under it; recurrent state needs a checkpoint at or below
+ * it. Each family's keep function answers both the host (ds4_session_sync_
+ * keep) and its own sync, so the rows reported are the rows resumed. */
+
+/* Rows before family limits: the common prefix, one less when the prompt
+ * ends inside the state (its last token re-runs for the logits); the live
+ * length for an extension. */
+static uint32_t session_keep_prefix(ds4_session *s, const ds4_tokens *prompt) {
+    const uint32_t live = (uint32_t)s->checkpoint.len;
+    uint32_t common = (uint32_t)ds4_session_common_prefix(s, prompt);
+    if (common && common < live && common == (uint32_t)prompt->len) { common--; }
+    return common;
+}
+
+/* Whether a sliding ring of `ring` rows, written up to `high`, still holds the
+ * `window` rows under `k`. Rows an abandoned branch wrote at or past k
+ * displaced the oldest once the ring wrapped; a restore brings back only
+ * the window under `restored`. */
+static bool ring_holds(uint32_t ring, uint32_t window, uint32_t high,
+                       uint32_t restored, uint32_t k) {
+    if (k < restored) { return false; }
+    return high <= k || high <= ring || (ring > window && high - k <= ring - window);
+}
+
+/* Recurrent state (KDA, linear attention) has no positional index to cut
+ * back: a rewind resumes from a copy of the family's state pool. A sync
+ * takes one where its final chunk starts and one at its end; a resent turn
+ * resumes at the first, a re-rendered continuation at the second. A copy
+ * belongs to the generation it was taken in: invalidate, rebuild and
+ * restore move the generation, a rewind re-tags the copies it keeps. Slots
+ * map on demand beyond the operator floor; a skipped copy only means a
+ * rebuild. */
+static bool serial_ckpt_live(const ds4_session *s, int i) {
+    return s->rewind.pos[i] && s->rewind.gen[i] == s->generation;
+}
+
+/* The deepest live copy at or below `limit` and the live rows, or -1. */
+static int serial_ckpt_find(const ds4_session *s, uint32_t limit) {
+    int best = -1;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (!serial_ckpt_live(s, i) || s->rewind.pos[i] > limit ||
+            s->rewind.pos[i] > (uint32_t)s->checkpoint.len) { continue; }
+        if (best < 0 || s->rewind.pos[i] > s->rewind.pos[best]) { best = i; }
+    }
+    return best;
+}
+
+/* One tensor span of a family's recurrent state, copied in list order. */
+typedef struct {
+    ds4_gpu_tensor *tensor;
+    uint64_t bytes;
+} serial_part;
+
+/* Copies the state after `pos` rows (its `n` parts) into a dead slot or the
+ * shallowest live one; returns the slot or -1. */
+static int serial_ckpt_capture(ds4_session *s, const serial_part *parts, uint32_t n,
+                               uint32_t pos) {
+    ds4_serial_ckpt *c = &s->rewind;
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!parts[i].tensor || !parts[i].bytes) { return -1; }
+        bytes += parts[i].bytes;
+    }
+    if (!bytes || !pos) { return -1; }
+    int slot = -1;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (serial_ckpt_live(s, i) && c->pos[i] == pos) { return i; }
+        if (slot < 0 || !serial_ckpt_live(s, i) ||
+            (serial_ckpt_live(s, slot) && c->pos[i] < c->pos[slot])) { slot = i; }
+    }
+    if (!c->slab || c->slot_bytes != bytes) {
+        ds4_gpu_tensor_free(c->slab);
+        memset(c, 0, sizeof(*c));
+        c->slab = ds4_gpu_tensor_reserve((uint64_t)SERIAL_CKPTS * bytes);
+        if (!c->slab) { return -1; }
+        c->slot_bytes = bytes;
+    }
+    const uint64_t base = (uint64_t)slot * bytes;
+    if (batch_span_need(c->slab, base, bytes) > ds4_mem_usable_beyond(0) ||
+        !ds4_gpu_tensor_ensure(c->slab, base, bytes)) { return -1; }
+    // A failed copy must never leave a slot naming half-replaced state. The
+    // copy is a driver memcpy: no chained launch may be in flight around it.
+    c->pos[slot] = 0;
+    if (!ds4_gpu_synchronize()) { return -1; }
+    uint64_t at = base;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!ds4_gpu_tensor_copy(c->slab, at, parts[i].tensor, 0, parts[i].bytes)) { return -1; }
+        at += parts[i].bytes;
+    }
+    if (!ds4_gpu_synchronize()) { return -1; }
+    c->pos[slot] = pos;
+    c->gen[slot] = s->generation;
+    c->aux[slot][0] = c->aux[slot][1] = 0;
+    return slot;
+}
+
+static bool serial_ckpt_restore(const ds4_session *s, int slot, const serial_part *parts,
+                                uint32_t n) {
+    const ds4_serial_ckpt *c = &s->rewind;
+    const uint64_t base = (uint64_t)slot * c->slot_bytes;
+    uint64_t at = base;
+    if (!ds4_gpu_synchronize()) { return false; }
+    for (uint32_t i = 0; i < n; i++) {
+        if (!ds4_gpu_tensor_copy(parts[i].tensor, 0, c->slab, at, parts[i].bytes)) { return false; }
+        at += parts[i].bytes;
+    }
+    return at - base == c->slot_bytes && ds4_gpu_synchronize();
+}
+
+/* The live state now ends at `keep`: content below the old length changed,
+ * so the generation moves, as the host plan's does. Recurrent copies at or
+ * below keep still describe this state; deeper ones the old branch. */
+static void session_rewound(ds4_session *s, uint32_t keep) {
+    const uint64_t was = s->generation;
+    s->checkpoint.len = (int)keep;
+    s->mtp_draft_valid = false;
+    s->generation++;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (s->rewind.gen[i] == was && s->rewind.pos[i] <= keep) { s->rewind.gen[i] = s->generation; }
+    }
+}
+
+/* GLM-5.3: DSA latent and pool rows keep every position; the KDA state, the
+ * pools' incomplete groups and the MTP cursors resume from a copy at or below
+ * the common prefix. */
+static uint32_t glm53_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_glm53_gpu_graph *g = &s->glm53_graph;
+    if (!s->glm53_graph_ready || !s->checkpoint_valid || g->mtp_trial_n ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
+/* A copy of the GLM state after `pos` rows, with its MTP cursors. */
+static void glm53_sync_capture(ds4_session *s, uint32_t pos) {
+    ds4_glm53_gpu_graph *g = &s->glm53_graph;
+    const int slot = serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, pos);
+    if (slot < 0) { return; }
+    s->rewind.aux[slot][0] = g->mtp_len;
+    s->rewind.aux[slot][1] = g->mtp_min;
+}
+
 static int ds4_session_sync_glm53(
         ds4_session *s,
         const ds4_tokens *prompt,
@@ -77038,14 +77264,21 @@ static int ds4_session_sync_glm53(
         }
     }
 
-    int start = 0;
-    if (span_count == 0u && s->checkpoint_valid &&
-        g->cache_len == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len &&
-        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = s->checkpoint.len;
+    int start = span_count == 0u ? (int)glm53_sync_keep(s, prompt) : 0;
+    const int slot = start && start < s->checkpoint.len
+        ? serial_ckpt_find(s, (uint32_t)start) : -1;
+    if (start && start >= s->checkpoint.len) {
         if (start == prompt->len) return 0;
+    } else if (slot >= 0 &&
+               serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+        g->cache_len = (uint32_t)start;
+        g->last_rows = 0u;
+        g->mtp_len = s->rewind.aux[slot][0];
+        g->mtp_min = s->rewind.aux[slot][1];
+        g->mtp_rewind_n = g->mtp_rewind_epoch = 0u;
+        session_rewound(s, (uint32_t)start);
     } else {
+        start = 0;
         s->generation++;
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -77075,6 +77308,8 @@ static int ds4_session_sync_glm53(
             if (pos + rows == end) { span_index++; }
         }
         const bool last = pos + rows == (uint32_t)prompt->len;
+        // Where the final chunk starts: a resent turn resumes here.
+        if (last && span_count == 0u && pos > (uint32_t)start) { glm53_sync_capture(s, pos); }
         if (!glm53_graph_prefill(g, &e->model, &e->weights,
                 prompt->v + pos, rows, pos, embedding, last ? s->logits : NULL)) {
             snprintf(err, errlen, "GLM-5.3 prefill failed at position %u", pos);
@@ -77088,6 +77323,8 @@ static int ds4_session_sync_glm53(
             s->progress(s->progress_ud, "prefill_chunk", (int)pos, prompt->len);
         }
     }
+    // The prompt's end: a re-rendered continuation resumes here.
+    if (span_count == 0u) { glm53_sync_capture(s, (uint32_t)prompt->len); }
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
@@ -77133,6 +77370,19 @@ static bool ling3vl_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the Ling state keeps for a text `prompt`; 0 rebuilds. Latent rows
+ * keep every position; the KDA state resumes from a copy at or below the
+ * common prefix. Media states rebuild. */
+static unsigned ling3vl_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_ling3vl_graph *g = &s->ling3vl_graph;
+    if (!s->ling3vl_graph_ready || !s->checkpoint_valid || g->failed ||
+        s->ling3vl_media.count || g->position != (unsigned)s->checkpoint.len) { return 0; }
+    const unsigned keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
 static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                 const ds4_ling3vl_media *media, char *err,
                                 size_t errlen) {
@@ -77154,14 +77404,16 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
         payload_set_err(err, errlen, "Ling graph is not initialized");
         return 1;
     }
-    unsigned start = 0u;
-    if (!media && !s->ling3vl_media.count && s->checkpoint_valid && !g->failed &&
-        g->position == (unsigned)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len &&
-        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
+    unsigned start = media ? 0u : ling3vl_sync_keep(s, prompt);
+    const int slot = start && start < (unsigned)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
+    if (start && start >= (unsigned)s->checkpoint.len) {
         if (start == (unsigned)prompt->len) { return 0; }
+    } else if (slot >= 0 &&
+               serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+        g->position = g->high_water = start;
+        session_rewound(s, start);
     } else {
+        start = 0u;
         ds4_session_invalidate(s);
         if (media) { s->ling3vl_media = *media; }
         if (g->failed) {
@@ -77169,9 +77421,15 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
             return 1;
         }
     }
+    const unsigned resume = start;
+    const bool text = !s->ling3vl_media.count;
     while (start < (unsigned)prompt->len) {
         unsigned n = (unsigned)prompt->len - start;
         if (n > g->cap) { n = g->cap; }
+        // Where the final chunk starts: a resent turn resumes here.
+        if (text && start > resume && start + n == (unsigned)prompt->len) {
+            (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, start);
+        }
         if (!ling3vl_forward(g, &s->engine->model, &s->engine->weights,
                              prompt->v + start, n, start)) {
             return ling3vl_session_fail(s, err, errlen);
@@ -77182,6 +77440,8 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
         }
     }
     if (!ling3vl_read_logits(s)) { return ling3vl_session_fail(s, err, errlen); }
+    // The prompt's end: a re-rendered continuation resumes here.
+    if (text) { (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, start); }
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
@@ -77244,6 +77504,22 @@ static bool step37_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the Step state keeps for a text `prompt`; 0 rebuilds. Full layers
+ * keep every position and the widened SWA ring the window under a resume
+ * row one chunk below the newest written. MTP predictor rings and media
+ * states rebuild. */
+static unsigned step37_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_step37_graph *g = &s->step37_graph;
+    if (!s->step37_graph_ready || !s->checkpoint_valid || g->failed || s->step37_trial_n ||
+        s->step37_media.count || g->position != (unsigned)s->checkpoint.len) { return 0; }
+    const unsigned keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) {
+        return !s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
+                                         s->step37_spec.position == g->position) ? keep : 0;
+    }
+    return !s->engine->mtp_ready && step37_holds(g, keep) ? keep : 0;
+}
+
 static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                 const ds4_step37_media *media, char *err, size_t errlen) {
     if (!prompt->v || s->step37_trial_n) {
@@ -77263,14 +77539,12 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
         payload_set_err(err, errlen, "Step graph is not initialized");
         return 1;
     }
-    unsigned start = 0;
-    if (!media && !s->step37_media.count && s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
-        (!s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
-                                 s->step37_spec.position == g->position)) &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
-        if (start == (unsigned)prompt->len) { return 0; }
-    } else {
+    unsigned start = media ? 0 : step37_sync_keep(s, prompt);
+    if (start && start == (unsigned)prompt->len) { return 0; }
+    if (start && start < (unsigned)s->checkpoint.len) {
+        if (!step37_rewind(g, start)) { return step37_session_fail(s, err, errlen); }
+        session_rewound(s, start);
+    } else if (!start) {
         ds4_session_invalidate(s);
         if (media) { s->step37_media = *media; }
         if (g->failed || (s->engine->mtp_ready && !step37_spec_valid(&s->step37_spec))) {
@@ -77721,6 +77995,158 @@ static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errl
     return rc;
 }
 
+#ifndef DS4_NO_GPU
+/* Motif-3: full layers keep every position; SWA rings must still hold the
+ * window under the resume row. */
+static uint32_t motif3_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_motif3_gpu_graph *g = &s->motif3_graph;
+    if (!s->checkpoint_valid || !s->motif3_graph_ready ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    uint32_t ring = g->ctx_cap;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->layer_cache_cap[il] && g->layer_cache_cap[il] < ring) { ring = g->layer_cache_cap[il]; }
+    }
+    return ring_holds(ring, DS4_N_SWA + 1u, g->high, g->restored, keep) ? keep : 0;
+}
+
+/* EXAONE: global layers keep every position; LLLG sliding rings must still
+ * hold the window under the resume row. K2-Horizon has no ring. */
+static uint32_t exaone_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_exaone_gpu_graph *g = &s->exaone_graph;
+    if (!s->exaone_graph_ready || !s->checkpoint_valid) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == (uint32_t)s->checkpoint.len) { return keep; }
+    uint32_t ring = g->ctx_size;
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (g->layer_kv[il] && exaone_graph_layer_is_sliding(il) && g->layer_kv_cap[il] < ring) {
+            ring = g->layer_kv_cap[il];
+        }
+    }
+    if (ring >= g->ctx_size) { return keep; }
+    // A row attends to itself and the DS4_N_SWA - 1 rows under it.
+    return ring_holds(ring, DS4_N_SWA - 1u, g->high, g->restored, keep) ? keep : 0;
+}
+
+/* Solar: GQA rows keep every position; the KDA state and its conv rings
+ * resume from a copy at or below the common prefix. */
+static uint32_t solar_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    if (!s->solar_graph_ready || !s->checkpoint_valid || !s->solar_state_valid) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == (uint32_t)s->checkpoint.len) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0 : s->rewind.pos[slot];
+}
+
+/* Qwen4Exp: QSA rows keep every position; the GDN conv and recurrent states
+ * and the PLE conv rows (the bank checkpoints' parts, in their order) resume
+ * from a copy at or below the common prefix. Image states rebuild. */
+static uint32_t qwen4exp_rewind_parts(ds4_qwen_gpu_graph *g, serial_part *parts) {
+    uint32_t n = 0;
+    parts[n++] = (serial_part){g->ple.conv_state, ds4_gpu_tensor_bytes(g->ple.conv_state)};
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (ds4_qwen4exp_layer_is_full_attention(il)) { continue; }
+        const ds4_qwen_gdn_state *st = &g->gdn_state[il];
+        parts[n++] = (serial_part){st->conv, ds4_gpu_tensor_bytes(st->conv)};
+        parts[n++] = (serial_part){st->recurrent, ds4_gpu_tensor_bytes(st->recurrent)};
+    }
+    return n;
+}
+
+static uint32_t qwen4exp_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_qwen_gpu_graph *g = &s->qwen_graph;
+    if (!s->qwen_graph_ready || !s->checkpoint_valid ||
+        g->length != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->length) { return keep; }
+    if (g->image_count) { return 0; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0 : s->rewind.pos[slot];
+}
+
+/* A copy of the Qwen state after `pos` rows. */
+static void qwen4exp_sync_capture(ds4_session *s, uint32_t pos) {
+    serial_part parts[1 + 2 * DS4_MAX_LAYER];
+    const uint32_t n = qwen4exp_rewind_parts(&s->qwen_graph, parts);
+    (void)serial_ckpt_capture(s, parts, n, pos);
+}
+
+/* The state back at `pos` rows from copy `slot`, as a same-bank checkpoint
+ * restore: QSA rows cut back, the PLE hash from the kept tokens, MTP
+ * history restarted (drafts only). */
+static bool qwen4exp_rewind(ds4_session *s, int slot, uint32_t pos) {
+    ds4_qwen_gpu_graph *g = &s->qwen_graph;
+    serial_part parts[1 + 2 * DS4_MAX_LAYER];
+    const uint32_t n = qwen4exp_rewind_parts(g, parts);
+    const ds4_ple_hash_config *hash = ds4_ple_store_hash_config(s->engine->qwen_ple_store);
+    if (!hash || !pos || !serial_ckpt_restore(s, slot, parts, n)) { return false; }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!ds4_qwen4exp_layer_is_full_attention(il)) { continue; }
+        if (g->qsa_state[il].length < pos) { return false; }
+        g->qsa_state[il].length = pos;
+    }
+    ds4_ple_hash_state_reset(&g->ple.hash_state, hash);
+    if (pos >= 2u) { g->ple.hash_state.previous[0] = s->checkpoint.v[pos - 2u]; }
+    g->ple.hash_state.previous[1] = s->checkpoint.v[pos - 1u];
+    g->ple.prepared_rows = 0u;
+    g->length = pos;
+    if (g->mtp_enabled && !qwen4exp_qsa_state_reset(&g->mtp_qsa_state)) { return false; }
+    g->mtp_pending_valid = false;
+    qwen_mtp_vocab_reset(g);
+    return true;
+}
+
+/* dots3: full layers and DSA keys keep every position; SWA rings must still
+ * hold the window under the resume row, which drops to the prefill grid as
+ * an extension's tail does (MoE-tier parity). An MTP predictor needs the
+ * target's hidden row under it, which nothing keeps: it rebuilds. */
+static uint32_t dots3_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_dots3_gpu_graph *g = &s->dots3_graph;
+    if (!s->checkpoint_valid || !s->dots3_graph_ready ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    if (s->dots3_spec || !s->prefill_cap) { return 0; }
+    keep -= keep % s->prefill_cap;
+    uint32_t ring = g->ctx_cap;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->layer_cache_cap[il] && g->layer_cache_cap[il] < ring) { ring = g->layer_cache_cap[il]; }
+    }
+    return ring_holds(ring, DS4_N_SWA, g->high, g->restored, keep) ? keep : 0;
+}
+#endif
+
+/* Rows of the live serial state a sync of `tokens` keeps when they do not
+ * extend it: the common prefix, lowered to where the family's state can
+ * resume (ring windows, recurrent checkpoints); 0 rebuilds. -1 when the
+ * family resumes only on extension, which the host plans itself. The host
+ * asks rather than mirroring high-water marks and checkpoint positions. */
+int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+    if (!s || !tokens || n_tokens <= 0) { return -1; }
+#ifndef DS4_NO_GPU
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    if (ds4_session_is_mimo2(s)) {
+        return s->mimo2_graph_ready ? (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt) : 0;
+    }
+    if (ds4_session_is_axk2(s)) { return s->axk2_graph_ready ? (int)axk2_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_minimax(s)) { return s->minimax_graph_ready ? (int)minimax_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_beam(s)) { return s->beam_graph_ready ? (int)beam_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_naive(s)) { return s->naive_graph_ready ? (int)naive_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_motif3(s)) { return (int)motif3_sync_keep(s, &prompt); }
+    if (ds4_session_is_exaone(s)) { return (int)exaone_sync_keep(s, &prompt); }
+    if (ds4_session_is_dots3(s)) { return (int)dots3_sync_keep(s, &prompt); }
+    if (ds4_session_is_step37(s)) { return (int)step37_sync_keep(s, &prompt); }
+    if (ds4_session_is_iquest(s)) { return s->iquest_graph_ready ? (int)iquest_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_ling3vl(s)) { return (int)ling3vl_sync_keep(s, &prompt); }
+    if (ds4_session_is_solar(s)) { return (int)solar_sync_keep(s, &prompt); }
+    if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
+    if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
+#endif
+    return -1;
+}
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
@@ -77753,17 +78179,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             snprintf(err, errlen, "Motif-3 latent session is not initialized");
             return 1;
         }
-        int start = 0;
-        if (s->checkpoint_valid &&
-            s->motif3_graph.cache_len == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        int start = (int)motif3_sync_keep(s, prompt);
+        if (!start) {
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
             s->motif3_graph.cache_len = 0;
+            s->motif3_graph.high = s->motif3_graph.restored = 0;
+        } else if (start == prompt->len) {
+            return 0;
+        } else if (start < s->checkpoint.len) {
+            s->motif3_graph.cache_len = (uint32_t)start;
+            session_rewound(s, (uint32_t)start);
         }
         while (start < prompt->len) {
             uint32_t rows = (uint32_t)(prompt->len - start);
@@ -77802,17 +78228,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (err && errlen) { snprintf(err, errlen, "commit dots3 trial before sync"); }
             return 1;
         }
-        int start = 0;
-        if (s->checkpoint_valid &&
-            s->dots3_graph.cache_len == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        int start = (int)dots3_sync_keep(s, prompt);
+        if (!start) {
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
             s->dots3_graph.cache_len = 0;
+            s->dots3_graph.high = s->dots3_graph.restored = 0;
+        } else if (start == prompt->len) {
+            return 0;
+        } else if (start < s->checkpoint.len) {
+            s->dots3_graph.cache_len = (uint32_t)start;
+            session_rewound(s, (uint32_t)start);
         }
         /* Plain sessions replay a partial chunk; MTP needs matching teacher rows. */
         const uint32_t tail = (uint32_t)start % s->prefill_cap;
@@ -77986,14 +78412,15 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        int start = 0;
-        if (s->checkpoint_valid &&
-            g->length == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
+        int start = (int)qwen4exp_sync_keep(s, prompt);
+        const int slot = start && start < s->checkpoint.len
+            ? serial_ckpt_find(s, (uint32_t)start) : -1;
+        if (start && start >= s->checkpoint.len) {
             if (start == prompt->len) return 0;
+        } else if (slot >= 0 && qwen4exp_rewind(s, slot, (uint32_t)start)) {
+            session_rewound(s, (uint32_t)start);
         } else {
+            start = 0;
             s->generation++;
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
@@ -78010,6 +78437,10 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             const uint32_t rows = qwen4exp_prefill_rows(
                 remain, s->prefill_cap, start == first_start);
             const bool last = rows == remain;
+            // Where the final chunk starts: a resent turn resumes here.
+            if (last && start > first_start && !g->image_count) {
+                qwen4exp_sync_capture(s, (uint32_t)start);
+            }
             uint32_t next_rows = remain - rows;
             if (next_rows > s->prefill_cap) next_rows = s->prefill_cap;
             if (!qwen4exp_graph_forward_chunk(
@@ -78038,6 +78469,8 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (s->progress)
                 s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
         }
+        // The prompt's end: a re-rendered continuation resumes here.
+        if (!g->image_count) { qwen4exp_sync_capture(s, (uint32_t)start); }
         ds4_tokens_copy(&s->checkpoint, prompt);
         s->checkpoint_valid = true;
         return 0;
@@ -78056,19 +78489,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        /* Reuse an extending prefix, or a diverged prefix whose preceding
-         * sliding window is still resident in the widened ring. Client-side
-         * replay can retokenize the latest assistant turn, so exact extension
-         * alone would turn a small tail rewrite into a full cold prefill. */
-        int start = 0;
-        if (s->checkpoint_valid) {
-            const int live = s->checkpoint.len;
-            const int common = ds4_session_common_prefix(s, prompt);
-            const int span = ds4_session_exaone_rewind_span(s);
-            start = common;
-            if (start > 0 && start == prompt->len) start = prompt->len - 1;
-            if (live - start > span) start = 0;
-            if (common < live) s->generation++;
+        int start = (int)exaone_sync_keep(s, prompt);
+        if (start && start == prompt->len) { return 0; }
+        if (!start) {
+            if (s->checkpoint_valid) { s->generation++; }
+            g->high = g->restored = 0;
+        } else if (start < s->checkpoint.len) {
+            session_rewound(s, (uint32_t)start);
         }
         s->checkpoint.len = start;
         s->mtp_draft_valid = false;
@@ -78106,14 +78533,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        int start = 0;
-        if (s->checkpoint_valid && s->solar_state_valid &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
+        int start = (int)solar_sync_keep(s, prompt);
+        const int slot = start && start < s->checkpoint.len
+            ? serial_ckpt_find(s, (uint32_t)start) : -1;
+        if (start && start >= s->checkpoint.len) {
             s->mtp_draft_valid = false;
             if (start == prompt->len) return 0;
+        } else if (slot >= 0 &&
+                   serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+            session_rewound(s, (uint32_t)start);
         } else {
+            start = 0;
             s->generation++;   /* non-extending sync rebuilds content */
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
@@ -78132,6 +78562,10 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             uint32_t n = (uint32_t)prompt->len - done;
             if (n > s->prefill_cap) n = s->prefill_cap;
             const bool last = done + n == (uint32_t)prompt->len;
+            // Where the final chunk starts: a resent turn resumes here.
+            if (last && done > (uint32_t)start) {
+                (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, done);
+            }
             if (!solar_graph_prefill_chunk(g, &e->model, &e->weights,
                                            prompt->v + done, n, done, last)) {
                 if (errlen) {
@@ -78164,6 +78598,8 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             (void)solar_graph_reset_state(g);
             return 1;
         }
+        // The prompt's end: a re-rendered continuation resumes here.
+        (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, done);
         ds4_tokens_copy(&s->checkpoint, prompt);
         s->checkpoint_valid = true;
         s->solar_state_valid = true;
@@ -78582,37 +79018,6 @@ int ds4_session_common_prefix(ds4_session *s, const ds4_tokens *prompt) {
     int i = 0;
     while (i < n && s->checkpoint.v[i] == prompt->v[i]) i++;
     return i;
-}
-
-int ds4_session_exaone_rewind_span(ds4_session *s) {
-#ifdef DS4_NO_GPU
-    (void)s;
-    return 0;
-#else
-    if (!s || !ds4_session_is_exaone(s) || !s->exaone_graph_ready) return 0;
-    /* Full-attention storage does not qualify edited-prefix reuse for K2.
-     * Match the host's exact-only policy; an exact extension still has
-     * live_pos - resume_pos == 0 and keeps its existing prefix. */
-    if (DS4_MODEL_VARIANT == DS4_VARIANT_K2_HORIZON_375B) {
-        return 0;
-    }
-    const ds4_exaone_gpu_graph *g = &s->exaone_graph;
-    const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
-    uint32_t narrowest = 0u;
-    bool bounded = false;
-    for (uint32_t il = 0; il < n_exec; il++) {
-        if (!g->layer_kv[il] || !exaone_graph_layer_is_sliding(il)) continue;
-        if (!bounded || g->layer_kv_cap[il] < narrowest) {
-            narrowest = g->layer_kv_cap[il];
-            bounded = true;
-        }
-    }
-    if (!bounded) return (int)g->ctx_size;
-    const int live = s->checkpoint_valid ? s->checkpoint.len : 0;
-    if ((uint32_t)live <= narrowest) return live;
-    if (narrowest <= DS4_N_SWA) return 0;
-    return (int)(narrowest - DS4_N_SWA + 1u);
-#endif
 }
 
 static bool session_logits_unready(const ds4_session *s) {

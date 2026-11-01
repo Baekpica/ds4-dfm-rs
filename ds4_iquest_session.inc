@@ -3,6 +3,7 @@ static bool iquest_reset(ds4_iquest_graph *g) {
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0; g->failed = false;
     g->mtp_position = 0; g->trial_n = 0;
+    g->high = g->restored = 0;
     return true;
 }
 
@@ -22,6 +23,26 @@ static bool iquest_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the live state keeps for `prompt`; 0 rebuilds. Full layers keep
+ * every position; SWA rings (window + one chunk) must still hold the window
+ * under the resume row. With MTP the resume row stays below the first new
+ * token, so the MTP row under it consumed only common tokens and the
+ * forward skips its carry. The abandoned branch's MTP rows only thin later
+ * drafts' window; the target verifies every draft. */
+static unsigned iquest_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_iquest_graph *g = &s->iquest_graph;
+    if (!s->checkpoint_valid || g->failed || g->trial_n ||
+        g->position != (unsigned)s->checkpoint.len) { return 0; }
+    unsigned keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    if (g->mtp_enabled && keep && keep == (unsigned)ds4_session_common_prefix(s, prompt)) { keep--; }
+    unsigned ring = g->context;
+    for (unsigned il = 0; il < IQ_LAYERS; il++) {
+        if (g->kv_cap[il] < ring) { ring = g->kv_cap[il]; }
+    }
+    return ring_holds(ring, IQ_WINDOW, g->high, g->restored, keep) ? keep : 0;
+}
+
 static int iquest_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!prompt->v) { payload_set_err(err, errlen, "IQuest-Q1 sync needs tokens"); return 1; }
     for (int i = 0; i < prompt->len; i++) {
@@ -33,14 +54,16 @@ static int iquest_session_sync(ds4_session *s, const ds4_tokens *prompt, char *e
     ds4_iquest_graph *g = &s->iquest_graph;
     if (g->trial_n) { payload_set_err(err, errlen, "IQuest-Q1 trial needs commit or invalidation"); return 1; }
     if (!s->iquest_graph_ready) { payload_set_err(err, errlen, "IQuest-Q1 graph is not initialized"); return 1; }
-    unsigned start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
-        if (start == (unsigned)prompt->len) { return 0; }
-    } else {
+    unsigned start = iquest_sync_keep(s, prompt);
+    if (!start) {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "IQuest-Q1 graph reset failed"); return 1; }
+    } else if (start == (unsigned)prompt->len) {
+        return 0;
+    } else if (start < (unsigned)s->checkpoint.len) {
+        g->position = start;
+        if (g->mtp_enabled) { g->mtp_position = start; }
+        session_rewound(s, start);
     }
     while (start < (unsigned)prompt->len) {
         const unsigned remaining = (unsigned)prompt->len - start;

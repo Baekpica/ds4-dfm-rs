@@ -50,6 +50,22 @@ for exact provenance. Historical entries retain their original scope.
   Rust hosts accepted it and did nothing. The property it guarded, reused or
   restored state matching a fresh run, is recorded as a common host check to
   build (`docs/rust-migration/C_CONTINUATION.md`).
+- Serial lanes resume at the common prefix in fourteen more families instead
+  of prefilling every non-extending prompt from zero. A.X-K2, MiniMax, Beam,
+  Naive, Motif-3, dots3, Step 3.7, IQuest and K2-Horizon keep positional
+  rows while their sliding rings still hold the window; Solar, GLM-5.3,
+  Ling-3.0-VL, Ling-3.1 and Qwen3.8 resume from one of two copies of their
+  recurrent state taken during each sync. dots3 and Step 3.7 sessions with
+  MTP and media states still rebuild. The host asks native for the kept rows
+  (`ds4_session_sync_keep`).
+- K-EXAONE's serial rewind measured its ring from the live length: after a
+  longer abandoned branch it could resume over overwritten rows. Rings now
+  count from the newest row written; `ds4_bridge_session_exaone_rewind_span`
+  and the host's mirror of it are removed.
+- K2-Horizon banks fork at any common prefix (partial reuse), like MiniMax
+  and A.X-K2: no layer slides, so no checkpoint is needed.
+- Step 3.7's serial restore no longer admits a rewind below the restored
+  prefix: its rings get back one window, as the bank restore assumed.
 
 ## v0.1.5 — 2026-11-01
 

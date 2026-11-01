@@ -1,6 +1,5 @@
-/* Serial session: one graph owns every layer's index keys and K/V pages. A
- * prompt that extends the checkpoint continues in place; any other prompt
- * prefills from 0. */
+/* Serial session: one graph owns every layer's index keys and K/V pages, all
+ * indexed by position, so a prompt resumes at any common prefix. */
 static int minimax_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->minimax_graph.failed = true;
     s->checkpoint_valid = false;
@@ -25,6 +24,13 @@ enum { MINIMAX_IMAGE_PAD = 200025, MINIMAX_VIDEO_PAD = 200026 };
 
 static bool minimax_media_pad(int token) { return token == MINIMAX_IMAGE_PAD || token == MINIMAX_VIDEO_PAD; }
 
+/* Rows the live state keeps for `prompt`; 0 rebuilds. */
+static uint32_t minimax_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_minimax_graph *g = &s->minimax_graph;
+    if (!s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) { return 0; }
+    return session_keep_prefix(s, prompt);
+}
+
 /* `tag` != 0: a media sync whose spans the graph holds (g->span_*). A prompt
  * extends the checkpoint only under the same media tag; identical pads over
  * other pixels prefill again. A pad no span covers is refused: its
@@ -40,16 +46,22 @@ static int minimax_session_prefill(ds4_session *s, const ds4_tokens *prompt, uin
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     if (!s->minimax_graph_ready) { payload_set_err(err, errlen, "MiniMax graph is not initialized"); return 1; }
     ds4_minimax_graph *g = &s->minimax_graph;
-    uint32_t start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint) &&
-        (!tag || tag == g->checkpoint_tag)) {
-        start = (uint32_t)s->checkpoint.len;
-        if (start == (uint32_t)prompt->len) { return 0; }
-    } else {
+    uint32_t start = !tag || tag == g->checkpoint_tag ? minimax_sync_keep(s, prompt) : 0;
+    const uint32_t live = (uint32_t)s->checkpoint.len;
+    if (!start) {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "MiniMax graph reset failed"); return 1; }
         g->checkpoint_tag = 0;
+    } else if (start == (uint32_t)prompt->len) {
+        return 0;
+    } else if (start < live) {
+        /* The old branch's verify rows (up to live + a block) displaced the
+         * DSpark ring's rows below live - window: its context restarts above
+         * them, or at the resume row. */
+        const uint32_t lost = live > MINIMAX_DRAFT_WINDOW ? live - MINIMAX_DRAFT_WINDOW : 0u;
+        if (g->draft_first < lost) { g->draft_first = lost < start ? lost : start; }
+        g->position = start;
+        session_rewound(s, start);
     }
     for (uint32_t i = start; i < (uint32_t)prompt->len; i++) {
         if (!minimax_media_pad(prompt->v[i])) { continue; }
