@@ -91,6 +91,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 
 | Ledger | Recorded scope |
 |---|---|
+| [v0.1.5](releases/v0.1.5.md) | VQ families (A.X-K2, Ling-3.1 1019, MiMo), sampled speculation, standard sampling |
 | [v0.1.4](releases/v0.1.4.md) | Cumulative model/VQ support, inference work, audit repairs and bounded GB10 smoke |
 | [v0.1.3](releases/v0.1.3.md) | Common serving controls and scoped P0–P4 qualification |
 | [v0.1.2](releases/v0.1.2.md) | Shared Jinja and Inkling checkpoint |
