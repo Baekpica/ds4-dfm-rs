@@ -947,24 +947,28 @@ fn apply(
                     detail: format!("no tensor {a}"),
                 })?;
 
-                if factor.shape.first() != Some(&ADAPTER_RANK) {
+                // The rank is the pair's own: A is `[rank, cols]` and B has to
+                // agree, whatever the rank happens to be for this module.
+                if factor.shape.len() != 2 {
                     return Err(MergeError::Adapter {
-                        detail: format!("{a} is not rank {ADAPTER_RANK}"),
+                        detail: format!("{a} is not [rank, cols]"),
                     });
                 }
+                let rank = factor.shape[0];
 
                 let other = adapter.find(b).ok_or_else(|| MergeError::Adapter {
                     detail: format!("no tensor {b}"),
                 })?;
-                if other.shape.last() != Some(&ADAPTER_RANK) || other.shape.len() != 2 {
+                if other.shape.last() != Some(&rank) || other.shape.len() != 2 {
                     return Err(MergeError::Adapter {
-                        detail: format!("{b} is not [rows, {ADAPTER_RANK}]"),
+                        detail: format!("{b} is not [rows, {rank}]"),
                     });
                 }
 
                 Prepared::LowRank {
                     a: decode(&adapter.read(a)?, factor.dtype)?,
                     b_rows: other.shape[0],
+                    rank: rank as usize,
                 }
             }
             Delta::Add { diff } => {
@@ -1031,10 +1035,14 @@ fn apply(
 
 /// A delta's payload, read once per tensor.
 enum Prepared {
-    /// The rank-64 factor A in F32, and how many rows B states.
+    /// Factor A in F32, the rows B states, and the pair's own rank. The rank
+    /// is read per module rather than held to one constant: the FastH3 adapter
+    /// is uniform at 64, while a few-step adapter such as the Turbo LoRA states
+    /// rank 16 on the AdaLN projections and 64 elsewhere.
     LowRank {
         a: Vec<f32>,
         b_rows: u64,
+        rank: usize,
     },
     Add {
         diff: Vec<u8>,
@@ -1063,13 +1071,17 @@ fn run_task(
     let delta = &deltas[segments[task.segment].delta];
 
     match (delta, &prepared[segments[task.segment].delta]) {
-        (Delta::LowRank { b, .. }, Prepared::LowRank { a, b_rows }) => {
+        (Delta::LowRank { b, .. }, Prepared::LowRank { a, b_rows, rank }) => {
             let factor = adapter.find(b).ok_or_else(|| MergeError::Adapter {
                 detail: format!("no tensor {b}"),
             })?;
-            if factor.shape.first() != Some(&b_rows) {
+            let (dest_rows, _) = geometry(tensor)?;
+            if factor.shape.first() != Some(&dest_rows) {
                 return Err(MergeError::Adapter {
-                    detail: format!("{b} holds {b_rows} rows, not {b_rows}"),
+                    detail: format!(
+                        "{b} holds {b_rows} rows, {} holds {dest_rows}",
+                        tensor.name
+                    ),
                 });
             }
 
@@ -1079,7 +1091,7 @@ fn run_task(
                 &mut values,
                 a,
                 &b_values,
-                ADAPTER_RANK as usize,
+                *rank,
                 task.rows,
                 cols,
                 tensor.dtype,

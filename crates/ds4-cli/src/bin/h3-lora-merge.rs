@@ -28,9 +28,11 @@ usage: h3-lora-merge --model <MiniMax-H3> --adapter <adapter_model.safetensors> 
 --out <directory> [--threads N] [--check]
 
   --model    the released checkpoint directory (read only)
-  --adapter  the FastH3 adapter (fastvideo-lora-v2)
+  --adapter  a low-rank adapter: the FastH3 distilled one (fastvideo-lora-v2)
+             or a bare one that names the served tensors, such as
+             larryvrh/MiniMax-H3-Turbo-Lora
   --out      where the derived checkpoint goes; must not exist
-  --threads  worker threads for the rank-64 products (default: available parallelism)
+  --threads  worker threads for the low-rank products (default: available parallelism)
   --check    resolve and report the plan, write nothing
   --help     this text";
 
@@ -176,9 +178,9 @@ fn check(args: &Args) -> Result<(), String> {
             .map(|delta| match delta {
                 Delta::Add { .. } => "add".to_string(),
                 Delta::LowRank { rows, .. } => match rows {
-                    Rows::Identity => "rank64".to_string(),
-                    Rows::Qkv { part } => format!("rank64[qkv {part}]"),
-                    Rows::Swap => "rank64[swap]".to_string(),
+                    Rows::Identity => "low-rank".to_string(),
+                    Rows::Qkv { part } => format!("low-rank[qkv {part}]"),
+                    Rows::Swap => "low-rank[swap]".to_string(),
                 },
             })
             .collect::<Vec<_>>()
