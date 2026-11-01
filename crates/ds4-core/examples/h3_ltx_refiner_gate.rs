@@ -1001,9 +1001,20 @@ fn run_edges(gpu: &Gpu, path: &Path, options: &Options) -> Result<ExitCode, Stri
             ("edges-video-self-cos", &prepared.video_signals.self_cos),
             ("edges-video-self-sin", &prepared.video_signals.self_sin),
             ("edges-video-cross-cos", &video_cross.cos),
+            ("edges-video-cross-sin", &video_cross.sin),
+            ("edges-video-context", &v_context),
             ("edges-audio-modulation", &audio_signals.modulation),
+            (
+                "edges-audio-prompt-modulation",
+                &audio_signals.prompt_modulation,
+            ),
             ("edges-audio-self-cos", &audio_signals.self_cos),
+            ("edges-audio-self-sin", &audio_signals.self_sin),
             ("edges-audio-cross-scale-shift", &audio_cross.scale_shift),
+            ("edges-audio-cross-gate", &audio_cross.gate),
+            ("edges-audio-cross-cos", &audio_cross.cos),
+            ("edges-audio-cross-sin", &audio_cross.sin),
+            ("edges-audio-context", &a_context),
         ] {
             failed |= report_state(
                 gpu,
@@ -1063,6 +1074,17 @@ fn run_edges(gpu: &Gpu, path: &Path, options: &Options) -> Result<ExitCode, Stri
             options.dump.as_deref(),
             options.residual.as_deref(),
             seconds,
+        )?;
+        // The partner state: the A2V fault is localised by which of the two
+        // states a block moves, so both are reported per block.
+        failed |= report_state(
+            gpu,
+            &format!("edges-block{block}-audio"),
+            audio_state,
+            &mut expect,
+            options.dump.as_deref(),
+            options.residual.as_deref(),
+            0.0,
         )?;
     }
 

@@ -656,6 +656,8 @@ impl Block {
         sol: Option<&Sol<'_>>,
         diagnostic: Diagnostic,
     ) -> Result<(), RefinerError> {
+        let trace = BlockTrace::new(self.layer);
+
         // 1-2. Video self-attention, then the text cross-attention
         // (`transformer.py:270-298`). Only the self-attention's video rows
         // route: the reference swaps `attn1`'s local head callable and leaves
@@ -671,7 +673,10 @@ impl Block {
             &s.video,
             sol,
             diagnostic,
+            &trace,
+            "video",
         )?;
+        trace.state(gpu, "video-after-sa-text", video)?;
 
         // 3. Audio self-attention and text cross-attention (`:300-326`).
         if let Some((state, a)) = audio {
@@ -686,7 +691,10 @@ impl Block {
                 &s.audio,
                 None,
                 Diagnostic::Off,
+                &trace,
+                "audio",
             )?;
+            trace.state(gpu, "audio-after-sa-text", state)?;
         }
 
         // 4. A2V then V2A (`:328-397`): all four modulated operands are formed
@@ -747,6 +755,10 @@ impl Block {
                 ac,
                 &s.audio,
             )?;
+            trace.state(gpu, "a2v-query", &s.video.cross_query)?;
+            trace.state(gpu, "a2v-context", &s.audio.cross_context)?;
+            trace.state(gpu, "a2v-out", &s.video.attention)?;
+            trace.rows(gpu, "a2v-gate", &s.video.gate, 1, v.dim)?;
             av_direction(
                 gpu,
                 &self.video_to_audio,
@@ -759,6 +771,12 @@ impl Block {
                 vc,
                 &s.video,
             )?;
+            trace.state(gpu, "v2a-query", &s.audio.cross_query)?;
+            trace.state(gpu, "v2a-context", &s.video.cross_context)?;
+            trace.state(gpu, "v2a-out", &s.audio.attention)?;
+            trace.rows(gpu, "v2a-gate", &s.audio.gate, 1, a.dim)?;
+            trace.state(gpu, "video-after-av", video)?;
+            trace.state(gpu, "audio-after-av", state)?;
         }
 
         // 5. The two feed-forwards (`:399-414`), rows 3..5, re-formed here
@@ -770,6 +788,68 @@ impl Block {
 
         Ok(())
     }
+}
+
+/// The one-block golden's instrument: with `H3_BLOCK_DUMP=DIR` set, every state
+/// and AV operand a block produces is written there as raw BF16, under the
+/// names the reference probe writes, so `h3_ltx_refiner_gate --compare` reports
+/// which checkpoint a port diverges at rather than only that it diverges.
+///
+/// It is a diagnosis and nothing else: unset, one environment lookup per block.
+struct BlockTrace {
+    directory: Option<std::path::PathBuf>,
+    at: String,
+}
+
+impl BlockTrace {
+    fn new(layer: usize) -> BlockTrace {
+        BlockTrace {
+            directory: std::env::var_os("H3_BLOCK_DUMP").map(std::path::PathBuf::from),
+            at: format!("edges-block{layer}"),
+        }
+    }
+
+    fn state(&self, gpu: &Gpu, name: &str, tensor: &Tensor) -> Result<(), RefinerError> {
+        let Some(directory) = self.directory.as_ref() else {
+            return Ok(());
+        };
+        let mut bytes = vec![0u8; tensor.bytes()];
+        gpu.read(tensor, &mut bytes).map_err(RefinerError::Run)?;
+        write_trace(directory, &self.at, name, &bytes)
+    }
+
+    /// The first `rows` rows only: the AV gate lives in row 0 of a buffer sized
+    /// for the whole state, and the rows past it are not part of the operand.
+    fn rows(
+        &self,
+        gpu: &Gpu,
+        name: &str,
+        tensor: &Tensor,
+        rows: u32,
+        width: u32,
+    ) -> Result<(), RefinerError> {
+        let Some(directory) = self.directory.as_ref() else {
+            return Ok(());
+        };
+        let mut bytes = vec![0u8; tensor.bytes()];
+        gpu.read(tensor, &mut bytes).map_err(RefinerError::Run)?;
+        bytes.truncate(rows as usize * width as usize * 2);
+        write_trace(directory, &self.at, name, &bytes)
+    }
+}
+
+fn write_trace(
+    directory: &std::path::Path,
+    at: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), RefinerError> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| RefinerError::Run(format!("H3_BLOCK_DUMP: {error}")))?;
+    std::fs::write(directory.join(format!("{at}-{name}.bf16")), bytes)
+        .map_err(|error| RefinerError::Run(format!("H3_BLOCK_DUMP {name}: {error}")))?;
+
+    Ok(())
 }
 
 /// A modality's AV cross group, or the reason the AV step must not have been
@@ -800,6 +880,8 @@ fn self_and_text(
     m: &ModalityScratch,
     sol: Option<&Sol<'_>>,
     diagnostic: Diagnostic,
+    trace: &BlockTrace,
+    kind: &str,
 ) -> Result<(), RefinerError> {
     let (rows, dim) = (signals.rows, signals.dim);
 
@@ -828,6 +910,8 @@ fn self_and_text(
     )
     .map_err(RefinerError::Run)?;
 
+    trace.state(gpu, &format!("{kind}-normed"), &m.normed)?;
+
     self_attention.run(
         gpu,
         &m.scratch,
@@ -844,6 +928,7 @@ fn self_and_text(
         )),
         sol,
     )?;
+    trace.state(gpu, &format!("{kind}-self-out"), &m.attention)?;
 
     // `x + y * gate` (`ops.py:74-82`): the short-circuit path is the
     // diagnostic's, and it leaves `post_normed` the norm of `state` alone.
@@ -858,8 +943,12 @@ fn self_and_text(
             .copy(&m.residual, 0, state, 0, (rows * dim) as usize)
             .map_err(RefinerError::Run)?,
     }
+    trace.state(gpu, &format!("{kind}-self-gated"), &m.gated)?;
+    trace.state(gpu, &format!("{kind}-post-sa"), &m.residual)?;
+
     gpu.rms_norm(&m.post_normed, &m.residual, None, rows, dim, RMS_EPSILON)
         .map_err(RefinerError::Run)?;
+    trace.state(gpu, &format!("{kind}-post-normed"), &m.post_normed)?;
 
     // Rows 6..8 on the query and the 2-row prompt table on the context, with
     // no RoPE: `apply_cross_attention_adaln` is called without `pe`
@@ -912,6 +1001,9 @@ fn self_and_text(
     )
     .map_err(RefinerError::Run)?;
 
+    trace.state(gpu, &format!("{kind}-text-query"), &m.text_input)?;
+    trace.state(gpu, &format!("{kind}-text-context"), &m.context)?;
+
     cross_attention.run(
         gpu,
         &m.scratch,
@@ -923,6 +1015,7 @@ fn self_and_text(
         None,
         None,
     )?;
+    trace.state(gpu, &format!("{kind}-text-out"), &m.attention)?;
 
     // `attn(...) * q_gate` (`transformer.py:252`), then the residual.
     gpu.mul_rows(&m.gated, &m.attention, &m.gate, rows, dim, rows)
@@ -959,10 +1052,15 @@ fn av_modulate(
         Side::Context => &m.cross_context,
     };
 
-    for offset in 0..2u32 {
+    // `get_av_ca_ada_values` unpacks this pair the other way round from the
+    // block's own AdaLN: `scale, shift = (...)` (`transformer.py:220`) - so the
+    // pair's first row is the *scale* and its second the shift, while
+    // `ModalityScratch::ada(0)` is the shift buffer. The AV gate is a single
+    // row and is unaffected (`transformer.py:211-218`).
+    for (offset, destination) in [(0u32, 1u32), (1u32, 0u32)] {
         ada(
             gpu,
-            m.ada(offset),
+            m.ada(destination),
             table,
             &cross.scale_shift,
             rows,
@@ -2822,11 +2920,8 @@ impl Edges {
                 &sinusoid_bytes(&audio_values, audio_rows as usize),
             )
             .map_err(RefinerError::Run)?;
-            gpu.upload(
-                &scratch.single_sinusoid,
-                &sinusoid_bytes(&audio_values, 1),
-            )
-            .map_err(RefinerError::Run)?;
+            gpu.upload(&scratch.single_sinusoid, &sinusoid_bytes(&audio_values, 1))
+                .map_err(RefinerError::Run)?;
             self.audio_adaln.apply(
                 gpu,
                 &scratch.audio_sinusoid,
