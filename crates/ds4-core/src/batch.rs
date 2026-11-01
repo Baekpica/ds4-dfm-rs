@@ -75,14 +75,27 @@ pub fn qwen_image_pixel_hash(data: &[u8]) -> Result<u64> {
 }
 
 /// Rows for native, packed at admission so a queued request holds only its
-/// bytes. None hands the bytes to native, whose decode then reports the
+/// bytes. All images go back to back in one buffer, which native reads in
+/// place. None hands the bytes to native, whose decode then reports the
 /// failure or the geometry change on the request.
-fn pack_qwen(image: &QwenImageInput) -> Option<Vec<f32>> {
-    let plan = vit_image::probe(Tower::Qwen, &image.data).ok()?;
-    if (plan.grid_h, plan.grid_w) != (image.grid_h, image.grid_w) {
-        return None;
+fn pack_qwen(images: &[QwenImageInput]) -> Option<Vec<f32>> {
+    let dim = vit_image::row_values(Tower::Qwen);
+    let plans = images
+        .iter()
+        .map(|image| {
+            let plan = vit_image::probe(Tower::Qwen, &image.data).ok()?;
+            ((plan.grid_h, plan.grid_w) == (image.grid_h, image.grid_w)).then_some(plan)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let rows: usize = plans.iter().map(|p| (p.grid_h * p.grid_w) as usize).sum();
+    let mut out = vec![0f32; rows * dim];
+    let mut rest = &mut out[..];
+    for (image, plan) in images.iter().zip(&plans) {
+        let (head, tail) = rest.split_at_mut((plan.grid_h * plan.grid_w) as usize * dim);
+        vit_image::pack_into(Tower::Qwen, &image.data, plan, head).ok()?;
+        rest = tail;
     }
-    vit_image::pack(Tower::Qwen, &image.data, &plan).ok()
+    Some(out)
 }
 
 /// One admission. `tokens` moves into the batch context and stays alive
@@ -173,7 +186,7 @@ pub trait ContDriver {
 struct LiveAdmit {
     tokens: Vec<i32>,
     images: Vec<QwenImageInput>,
-    patches: Vec<Option<Vec<f32>>>,
+    patches: Option<Vec<f32>>,
 }
 
 struct TrampCtx<'a> {
@@ -194,22 +207,29 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     let entry = t.live.entry(user).or_insert_with(|| LiveAdmit {
         tokens: Vec::new(),
         images: Vec::new(),
-        patches: Vec::new(),
+        patches: None,
     });
     entry.tokens = a.tokens;
     entry.images = a.images;
-    entry.patches = entry.images.iter().map(pack_qwen).collect();
+    entry.patches = pack_qwen(&entry.images);
     let r = &mut *req;
     r.tokens = entry.tokens.as_ptr();
     r.n = entry.tokens.len() as i32;
-    for ((dst, image), rows) in r.images.iter_mut().zip(&entry.images).zip(&entry.patches) {
+    let dim = vit_image::row_values(Tower::Qwen);
+    let mut row = 0usize;
+    for (dst, image) in r.images.iter_mut().zip(&entry.images) {
+        let at = row * dim;
+        row += (image.grid_h * image.grid_w) as usize;
         *dst = ds4_bridge_qwen_image_input {
             data: image.data.as_ptr(),
             data_len: image.data.len(),
             token_offset: image.token_offset,
             grid_h: image.grid_h,
             grid_w: image.grid_w,
-            patches: rows.as_ref().map_or(std::ptr::null(), |rows| rows.as_ptr()),
+            patches: entry
+                .patches
+                .as_ref()
+                .map_or(std::ptr::null(), |rows| rows[at..].as_ptr()),
         };
     }
     r.image_count = entry.images.len() as u32;

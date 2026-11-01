@@ -285,8 +285,33 @@ pub fn pixel_hash(rgb: &Rgb) -> u64 {
     h
 }
 
+/// Values in one patch row: channels x frames x patch area.
+pub fn row_values(tower: Tower) -> usize {
+    let (patch, frames) = match tower {
+        Tower::Qwen => (VIT_PATCH, 2),
+        Tower::Ling => (VIT_PATCH, 1),
+        Tower::Glm => (GLM_PATCH, 2),
+    };
+    (3 * frames * patch * patch) as usize
+}
+
 /// Decode, orient (GLM), resize and pack one image for `tower`.
 pub fn pack(tower: Tower, data: &[u8], plan: &ImagePlan) -> Result<Vec<f32>, String> {
+    let mut out = vec![0f32; (plan.grid_h * plan.grid_w) as usize * row_values(tower)];
+    pack_into(tower, data, plan, &mut out)?;
+    Ok(out)
+}
+
+/// [`pack`] into `out`, which holds exactly the plan's rows.
+pub fn pack_into(
+    tower: Tower,
+    data: &[u8],
+    plan: &ImagePlan,
+    out: &mut [f32],
+) -> Result<(), String> {
+    if out.len() != (plan.grid_h * plan.grid_w) as usize * row_values(tower) {
+        return Err("patch buffer does not match the image plan".into());
+    }
     let mut rgb = decode(data)?;
     if tower == Tower::Glm {
         rgb = orient(rgb, jpeg_orientation(data));
@@ -294,18 +319,23 @@ pub fn pack(tower: Tower, data: &[u8], plan: &ImagePlan) -> Result<Vec<f32>, Str
     if rgb.width != plan.source_width || rgb.height != plan.source_height {
         return Err("PNG/JPEG decode changed the image size".into());
     }
-    let resized = resize(&rgb, plan.content_width, plan.content_height);
-    Ok(match tower {
-        Tower::Qwen => pack_rows(
+    let resized = if rgb.width == plan.content_width && rgb.height == plan.content_height {
+        rgb
+    } else {
+        resize(&rgb, plan.content_width, plan.content_height)
+    };
+    match tower {
+        Tower::Qwen => pack_rows::<{ VIT_PATCH as usize }>(
             plan,
-            VIT_PATCH,
             2,
             |v, _| f32::from(v).mul_add(2.0 / 255.0, -1.0),
             &resized,
+            out,
         ),
-        Tower::Ling => pack_rows(plan, VIT_PATCH, 1, clip, &resized),
-        Tower::Glm => pack_rows(plan, GLM_PATCH, 2, clip, &resized),
-    })
+        Tower::Ling => pack_rows::<{ VIT_PATCH as usize }>(plan, 1, clip, &resized, out),
+        Tower::Glm => pack_rows::<{ GLM_PATCH as usize }>(plan, 2, clip, &resized, out),
+    }
+    Ok(())
 }
 
 /// The C build (-O3 -ffast-math) computes v * (1/255) - mean fused, then
@@ -317,51 +347,57 @@ fn clip(v: u8, c: usize) -> f32 {
 }
 
 /// Rows in 2x2 merge order; per row: channel, frame, y, x. Pixels outside
-/// the content (GLM's padding) read as 0 before normalization. Each patch
-/// line is written contiguously and later frames copy the first.
-fn pack_rows(
+/// the content (GLM's padding) read as 0 before normalization. One pass
+/// over a patch line's pixels writes its three channel lines (a constant
+/// `P` lets the compiler vectorize it); later frames copy the first.
+fn pack_rows<const P: usize>(
     plan: &ImagePlan,
-    patch: u32,
     frames: usize,
     norm: impl Fn(u8, usize) -> f32,
     rgb: &Rgb,
-) -> Vec<f32> {
-    let p = patch as usize;
-    let plane = p * p;
-    let dim = 3 * frames * plane;
-    let rows = (plan.grid_h * plan.grid_w) as usize;
+    out: &mut [f32],
+) {
+    let plane = P * P;
+    let block = frames * plane;
     let (w, h) = (rgb.width as usize, rgb.height as usize);
-    let lut: [[f32; 256]; 3] = std::array::from_fn(|c| std::array::from_fn(|v| norm(v as u8, c)));
-    let mut out = vec![0f32; rows * dim];
-    let mut dst_rows = out.chunks_exact_mut(dim);
+    let pad: [f32; 3] = std::array::from_fn(|c| norm(0, c));
+    let mut dst_rows = out.chunks_exact_mut(3 * block);
     for by in 0..(plan.grid_h / 2) as usize {
         for bx in 0..(plan.grid_w / 2) as usize {
             for (my, mx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                let dst = dst_rows.next().expect("grid rows");
-                let (py, px) = ((2 * by + my) * p, (2 * bx + mx) * p);
-                let inside = p.min(w.saturating_sub(px));
-                for (c, lut) in lut.iter().enumerate() {
-                    let base = c * frames * plane;
-                    for y in 0..p {
-                        let line = &mut dst[base + y * p..base + (y + 1) * p];
-                        let src = (py + y < h && inside > 0)
-                            .then(|| &rgb.data[((py + y) * w + px) * 3..]);
-                        let n = if src.is_some() { inside } else { 0 };
-                        if let Some(src) = src {
-                            for (d, px) in line[..n].iter_mut().zip(src.as_chunks::<3>().0) {
-                                *d = lut[px[c] as usize];
-                            }
-                        }
-                        line[n..].fill(lut[0]);
+                let (r, rest) = dst_rows.next().expect("grid rows").split_at_mut(block);
+                let (g, b) = rest.split_at_mut(block);
+                let (py, px) = ((2 * by + my) * P, (2 * bx + mx) * P);
+                for y in 0..P {
+                    let n = if py + y < h {
+                        P.min(w.saturating_sub(px))
+                    } else {
+                        0
+                    };
+                    let at = ((py + y) * w + px) * 3;
+                    let pixels = if n == 0 {
+                        &[][..]
+                    } else {
+                        rgb.data[at..at + 3 * n].as_chunks::<3>().0
+                    };
+                    let line = y * P..(y + 1) * P;
+                    let (r, g, b) = (&mut r[line.clone()], &mut g[line.clone()], &mut b[line]);
+                    let lines = r.iter_mut().zip(g.iter_mut()).zip(b.iter_mut());
+                    for (((r, g), b), &[pr, pg, pb]) in lines.zip(pixels) {
+                        (*r, *g, *b) = (norm(pr, 0), norm(pg, 1), norm(pb, 2));
                     }
-                    for f in 1..frames {
-                        dst.copy_within(base..base + plane, base + f * plane);
+                    r[n..].fill(pad[0]);
+                    g[n..].fill(pad[1]);
+                    b[n..].fill(pad[2]);
+                }
+                for f in 1..frames {
+                    for channel in [&mut *r, &mut *g, &mut *b] {
+                        channel.copy_within(0..plane, f * plane);
                     }
                 }
             }
         }
     }
-    out
 }
 
 /// Separable antialiased bicubic (a = -0.5) in 22-bit fixed point; the
@@ -770,8 +806,9 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// `DS4_VIT_BENCH=qwen:FILE:N`: median ms per decode+resize+pack and
-    /// the process peak RSS, the numbers `vit_image_ref bench` prints for C.
+    /// `DS4_VIT_BENCH=qwen:FILE:N`: median ms per decode+resize+pack, the
+    /// process peak RSS and its rise over the start, as `vit_image_ref
+    /// bench` prints them for C.
     #[test]
     #[ignore]
     fn bench() {
@@ -785,6 +822,9 @@ mod tests {
         let tower = TOWERS.iter().find(|(_, t)| *t == name).expect("tower").0;
         let data = std::fs::read(repo().join(file)).unwrap();
         let plan = probe(tower, &data).unwrap();
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+        let page_kib = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } / 1024;
+        let start_kib = statm.split(' ').nth(1).unwrap().parse::<i64>().unwrap() * page_kib;
         let mut ms: Vec<f64> = (0..n.parse::<usize>().unwrap())
             .map(|_| {
                 let start = Instant::now();
@@ -799,10 +839,11 @@ mod tests {
             usage
         };
         eprintln!(
-            "rust {name} median {:.2} ms min {:.2} ms peak_rss {} KiB",
+            "rust {name} median {:.2} ms min {:.2} ms peak_rss {} KiB rise {} KiB",
             ms[ms.len() / 2],
             ms[0],
-            usage.ru_maxrss
+            usage.ru_maxrss,
+            usage.ru_maxrss - start_kib
         );
     }
 

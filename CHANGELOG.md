@@ -35,11 +35,15 @@ for exact provenance. Historical entries retain their original scope.
   drafter Rust never validated, and checks a named vision sidecar before
   open; a bad file used to end the process inside the native binder.
 - Qwen4Exp, Ling-3.0-VL and GLM-5.3 images are decoded, resized and packed
-  in Rust (`image` crate); native adds only the vision tower's positions.
-  PNG rows match the C path bit for bit (GLM within an ulp), JPEG decodes
-  differ from stb_image by a few levels on 1-2% of pixels, and the Qwen
-  pixel hash, a disk-KV identity, keeps its C definition. Preprocessing is
-  faster on large images (bug.jpeg Qwen 70.8 -> 56.8 ms).
+  in Rust; native adds only the vision tower's positions and reads the rows
+  in place. JPEG decodes through libjpeg-turbo with PIL's settings
+  (vendored, built with CMake), so pixels match the HF processors; stb_image
+  differed by up to 48 levels on 4:2:2 JPEGs, so Qwen JPEG disk-KV entries
+  from earlier builds miss once. PNG rows match the C path bit for bit (GLM
+  within an ulp), and the Qwen pixel hash keeps its C definition.
+  Preprocessing is faster than C on 14 of 15 fixture/tower pairs (bug.jpeg
+  Qwen 73.7 -> 48.6 ms) and 0.02 ms slower on the last; Qwen request times
+  and VmHWM are unchanged.
 
 ## v0.1.5 — 2026-11-01
 

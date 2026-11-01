@@ -7,6 +7,7 @@
  *   vit_image_ref decode FILE OUT            -> RGB8 bytes
  *   vit_image_ref pack qwen|ling|glm FILE OUT -> f32 patch rows
  *   vit_image_ref bench qwen|ling|glm FILE N  -> median ms per pack, peak RSS
+ *                                               and its rise over the start
  */
 #include <sys/resource.h>
 #include "../ds4.c"
@@ -56,6 +57,15 @@ static int probe(const char *tower, const uint8_t *data, size_t len,
 fail:
     fprintf(stderr, "probe: %s\n", err);
     return 1;
+}
+
+/* Resident KiB now (statm), to report the peak's rise over the start. */
+static long rss_kib(void) {
+    long pages = 0, resident = 0;
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (f && fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+    if (f) fclose(f);
+    return resident * (sysconf(_SC_PAGESIZE) / 1024);
 }
 
 static double now_ms(void) {
@@ -130,6 +140,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "bench")) {
         /* Decode, resize and pack as the native prefill does, N times. */
         const int n = atoi(argv[4]);
+        const long start_kib = rss_kib();
         double *ms = calloc((size_t)n, sizeof(double));
         for (int i = 0; i < n; i++) {
             const double t0 = now_ms();
@@ -153,7 +164,8 @@ int main(int argc, char **argv) {
         qsort(ms, (size_t)n, sizeof(double), cmp_double);
         struct rusage ru;
         getrusage(RUSAGE_SELF, &ru);
-        printf("c %s median %.2f ms min %.2f ms peak_rss %ld KiB\n", argv[2], ms[n / 2], ms[0], ru.ru_maxrss);
+        printf("c %s median %.2f ms min %.2f ms peak_rss %ld KiB rise %ld KiB\n", argv[2],
+               ms[n / 2], ms[0], ru.ru_maxrss, ru.ru_maxrss - start_kib);
         return 0;
     }
 
