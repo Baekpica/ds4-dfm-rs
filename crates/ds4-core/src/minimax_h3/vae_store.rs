@@ -25,6 +25,10 @@ struct Site {
     begin: usize,
     bytes: usize,
     shape: Vec<u64>,
+    /// F32 is the decoders' own layout; F16 is the latent upscaler's, which
+    /// widens the halves itself (`latent_upscale::half_to_f32`). Anything else
+    /// stays refused by name.
+    f32: bool,
 }
 
 pub struct Store {
@@ -43,9 +47,16 @@ impl Store {
         for (index, shard) in store.shards().iter().enumerate() {
             shards.push(shard.path.clone());
             for tensor in &shard.tensors {
-                if tensor.dtype != StDtype::F32 {
-                    return Err(format!("{label} tensor {} is not F32", tensor.name));
-                }
+                let f32 = match tensor.dtype {
+                    StDtype::F32 => true,
+                    StDtype::F16 => false,
+                    other => {
+                        return Err(format!(
+                            "{label} tensor {} is {other:?}, not F32 or F16",
+                            tensor.name
+                        ))
+                    }
+                };
                 let begin = usize::try_from(tensor.file_offset)
                     .map_err(|_| format!("{label} offset too wide"))?;
                 let bytes = usize::try_from(tensor.bytes())
@@ -55,6 +66,7 @@ impl Store {
                     begin,
                     bytes,
                     shape: tensor.shape.clone(),
+                    f32,
                 });
             }
         }
@@ -87,6 +99,7 @@ impl Store {
         shape: &[u64],
         error: &str,
     ) -> Result<Tensor, String> {
+        self.require_f32(name, error)?;
         let bytes = self.bytes(name, shape)?;
         let tensor = gpu.alloc(Dtype::F32, bytes.len() / 4)?;
         gpu.upload(&tensor, bytes)
@@ -106,6 +119,7 @@ impl Store {
         shape: &[u64],
         error: &str,
     ) -> Result<Tensor, String> {
+        self.require_f32(name, error)?;
         let bytes = self.bytes(name, shape)?;
         let narrowed = narrow_bytes(bytes);
         let tensor = gpu.alloc(Dtype::Bf16, narrowed.len() / 2)?;
@@ -119,6 +133,16 @@ impl Store {
     /// halves itself. Every other caller wants [`Store::load`].
     pub fn raw(&self, name: &str, shape: &[u64]) -> Result<&[u8], String> {
         self.bytes(name, shape)
+    }
+
+    /// The F32 readers' guard: a caller that wants raw bytes instead
+    /// ([`Store::raw`]) widens or rounds them itself and asks for no promise.
+    fn require_f32(&self, name: &str, error: &str) -> Result<(), String> {
+        match self.sites.get(name) {
+            Some(site) if site.f32 => Ok(()),
+            Some(_) => Err(format!("{error}: {name} is not F32")),
+            None => Err(format!("{error}: checkpoint is missing {name}")),
+        }
     }
 
     /// The shape the checkpoint records for `name`, so a reference
