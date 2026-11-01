@@ -469,8 +469,29 @@ impl Adapter {
     /// Open the adapter and prove it is the artifact it claims: the format
     /// string and the rank are fixed, and the three payload counts the
     /// metadata declares are counted from the header instead of trusted.
+    ///
+    /// Two artifact classes are read. The FastH3 distilled adapter declares all
+    /// of the above. A few-step adapter such as
+    /// `larryvrh/MiniMax-H3-Turbo-Lora` declares none of it and only states
+    /// `W_eff = W + lora_B @ lora_A`, the same scale-1.0 convention this merge
+    /// applies, so it is read as bare. Bare loses only the count check, which
+    /// was a second opinion: `Plan::build` still proves every adapter key
+    /// resolves to a served tensor and every destination's rows are covered
+    /// exactly once. A partially declared adapter is refused rather than read
+    /// as bare, so a damaged artifact cannot pass as an undeclared one.
     pub fn open(path: &Path) -> Result<Adapter, MergeError> {
         let shard = safetensors::read_shard(path)?;
+
+        if !shard.metadata.contains_key("format") {
+            for key in ["rank", "low_rank_tensors", "diff_tensors", "set_weight_tensors"] {
+                if shard.metadata.contains_key(key) {
+                    return Err(MergeError::Adapter {
+                        detail: format!("metadata {key} without a format"),
+                    });
+                }
+            }
+            return Ok(Adapter { shard });
+        }
 
         for (key, expected) in [("format", ADAPTER_FORMAT), ("rank", "64")] {
             let got = shard.metadata.get(key).ok_or_else(|| MergeError::Adapter {
