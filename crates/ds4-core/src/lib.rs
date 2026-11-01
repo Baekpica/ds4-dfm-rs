@@ -24,6 +24,7 @@ mod inkling;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
+mod instance_lock;
 mod iquest;
 mod layout;
 mod ling31_mtp;
@@ -32,6 +33,7 @@ mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
+mod mem_policy;
 mod mimo2;
 mod mimo2_vq;
 pub mod minimax_h3;
@@ -40,6 +42,7 @@ mod minimax_vq;
 mod naive;
 mod naive_mtp;
 mod payload;
+mod ple;
 mod progress;
 mod qwen35;
 mod sample;
@@ -63,6 +66,7 @@ pub mod v41_golden;
 pub mod v41_media;
 mod v41_run;
 mod validate;
+mod vit_image;
 mod vq;
 mod zchain;
 
@@ -165,8 +169,8 @@ pub use v41::{
     V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
 };
 pub use v41_run::{
-    set_mem_budget_mb, v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass,
-    V41KvDisk, V41KvHit, V41RunOptions, V41Sampling,
+    v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass, V41KvDisk, V41KvHit,
+    V41RunOptions, V41Sampling,
 };
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,
@@ -190,10 +194,9 @@ use ds4_sys::{
     ds4_bridge_distributed_options, ds4_bridge_eval, ds4_bridge_eval_speculative_argmax,
     ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio, ds4_bridge_inkling_pixels,
     ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
-    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
-    ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
-    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
-    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options, ds4_bridge_session,
+    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
+    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -207,11 +210,11 @@ use ds4_sys::{
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
     ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
-    ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_info,
-    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
-    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
-    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
-    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
+    ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_input, ds4_host_bind_look,
+    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
+    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
+    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
+    DS4_BRIDGE_MAX_DIMS, DS4_HOST_MAX_STOPS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +243,11 @@ pub enum ModelOpenOption {
     SteeringAttn(f32),
     SteeringFfn(f32),
     Vision(String),
+    /// `--mem-floor-gb`; absent: `DS4_MEM_FLOOR_GB`, else 4.
+    MemFloorGb(u64),
+    /// `--mem-budget-mb`: the L1 load gate refuses a planned resident above
+    /// 85% of it.
+    MemBudgetMb(u64),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -284,6 +292,8 @@ struct OpenTuning {
     steering_attn: f32,
     steering_ffn: f32,
     vision_path: Option<String>,
+    mem_floor_gb: Option<u64>,
+    mem_budget_mb: Option<u64>,
 }
 
 impl Default for OpenTuning {
@@ -304,6 +314,8 @@ impl Default for OpenTuning {
             steering_attn: 0.0,
             steering_ffn: 0.0,
             vision_path: None,
+            mem_floor_gb: None,
+            mem_budget_mb: None,
         }
     }
 }
@@ -428,6 +440,8 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
             ModelOpenOption::SsdStreamingCold => tuning.ssd_streaming_cold = true,
             ModelOpenOption::SsdCacheAuto => tuning.ssd_cache_auto = true,
             ModelOpenOption::ServingBudget(req) => tuning.serving_budget = Some(req.clone()),
+            ModelOpenOption::MemFloorGb(gb) => tuning.mem_floor_gb = Some(*gb),
+            ModelOpenOption::MemBudgetMb(mb) => tuning.mem_budget_mb = Some(*mb),
             ModelOpenOption::SsdCacheExperts(count) if *count > 0 => {
                 tuning.ssd_streaming_cache_experts = *count;
             }
@@ -716,6 +730,8 @@ pub struct Model {
     /// family.  The server boots its ctx from here.
     v41_ctx: Option<u32>,
     _distributed: Option<FfiDistributed>,
+    /// Released after the native engine is freed (fields drop after `drop`).
+    _instance_lock: std::fs::File,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -901,6 +917,28 @@ enum ShardMapping {
     Named,
 }
 
+/// The vision tower whose input `vit_image` packs for this family.
+fn vit_tower(family: ModelFamily) -> Option<vit_image::Tower> {
+    match family {
+        ModelFamily::Qwen4Exp => Some(vit_image::Tower::Qwen),
+        ModelFamily::Ling3Vl => Some(vit_image::Tower::Ling),
+        ModelFamily::Glm53 => Some(vit_image::Tower::Glm),
+        _ => None,
+    }
+}
+
+/// A single-file sidecar's tensor directory, for native to map it from.
+fn sidecar_dir(path: Option<&str>) -> Result<Option<FfiTensorDir>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let inventory = TensorInventory::open(Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("sidecar {path}: {}", e.token()),
+    })?;
+    pack_tensor_dir(&inventory, ShardMapping::Legacy).map(Some)
+}
+
 fn pack_tensor_dir(inventory: &TensorInventory, mapping: ShardMapping) -> Result<FfiTensorDir> {
     let mut names = Vec::with_capacity(inventory.tensors.len());
     for t in &inventory.tensors {
@@ -995,7 +1033,23 @@ fn bools_to_u8(src: &[bool; 256]) -> [u8; 256] {
     out
 }
 
-fn pack_host_vocab(v: &Vocab) -> FfiVocab {
+/// `Vocab::is_stop` over the whole vocabulary: native ends static rows and
+/// excludes EOT under an EOS policy with the host's set.
+fn host_stops(v: &Vocab) -> Result<(u32, [i32; DS4_HOST_MAX_STOPS])> {
+    let mut stops = [-1; DS4_HOST_MAX_STOPS];
+    let mut n = 0usize;
+    for token in (0..v.n_vocab()).filter(|&token| v.is_stop(token)) {
+        let slot = stops.get_mut(n).ok_or_else(|| Error {
+            code: 1,
+            message: format!("more than {DS4_HOST_MAX_STOPS} stop tokens"),
+        })?;
+        *slot = token;
+        n += 1;
+    }
+    Ok((n as u32, stops))
+}
+
+fn pack_host_vocab(v: &Vocab) -> Result<FfiVocab> {
     let tokens: Vec<ds4_host_str> = v
         .tokens()
         .iter()
@@ -1013,6 +1067,7 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         })
         .collect();
     let user_defined = v.user_defined_ids();
+    let (n_stop, stop) = host_stops(v)?;
     let raw = ds4_host_vocab {
         n_vocab: tokens.len() as u32,
         tokens: tokens.as_ptr(),
@@ -1059,13 +1114,15 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         dots3_endofsystem_id: v.dots3_endofsystem_id,
         dots3_endofuser_id: v.dots3_endofuser_id,
         dots3_endoftext_id: v.dots3_endoftext_id,
+        n_stop,
+        stop,
     };
-    FfiVocab {
+    Ok(FfiVocab {
         tokens,
         merges,
         user_defined,
         raw,
-    }
+    })
 }
 
 impl FfiVocab {
@@ -1697,9 +1754,11 @@ impl Model {
                 message: "GLM-5.3 requires one full CUDA model with embedded MTP".into(),
             });
         }
-        // Resolve Naive's common sidecar environment here as well as native:
-        // the Rust catalog must validate and retain the actual loaded file.
-        let env_dspark = (identified.shape.family == ModelFamily::NaiveN05)
+        // DS4_DSPARK_MODEL names the drafter for every host. Native no longer
+        // reads it for a Rust host, so the file it opens is the one validated
+        // and bound here; distributed launches ignore it, as native did.
+        let env_dspark = distributed
+            .is_none()
             .then(|| {
                 std::env::var("DS4_DSPARK_MODEL")
                     .ok()
@@ -1759,7 +1818,7 @@ impl Model {
             ling_open_check(backend, &tuning, dspark_path, distributed)?;
         }
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
-        let mut ffi_vocab = pack_host_vocab(&vocab);
+        let mut ffi_vocab = pack_host_vocab(&vocab)?;
         // Ling-3.1 maps its MTP part only when the open drafts with it;
         // MiniMax its DSpark drafter part.
         let inventory = if identified.shape.family == ModelFamily::Ling31Vq {
@@ -2019,19 +2078,35 @@ impl Model {
             return Err(fail(check, &err));
         }
         let c_path = cstring_path(path)?;
+        // A host-named vision sidecar gets the open's own checks first; a bad
+        // file used to end the process inside the native binder.
+        if let Some(vision) = tuning.vision_path.as_deref() {
+            sibling::probe_vision_sidecar(identified.shape, backend, distributed, vision)?;
+        }
         // MiniMax maps its release's vision part (read only for media).
         if identified.shape.family == ModelFamily::MinimaxVq {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
         }
-        // MiMo VQ maps its release's vision part; native opens the audio part
-        // beside it. Both are hashed here first.
+        // MiMo VQ maps its release's vision and audio parts, both hashed here
+        // first.
+        let mut audio_path = None;
         if identified.shape.variant == Variant::Mimo26FlashVq {
             let (vision, audio) = mimo2_vq::media_paths(Path::new(path));
             tuning.vision_path = vision
                 .filter(|_| audio.is_some())
                 .map(|p| p.to_string_lossy().into_owned());
+            audio_path = audio
+                .filter(|_| tuning.vision_path.is_some())
+                .map(|p| p.to_string_lossy().into_owned());
         }
+        let audio_c = audio_path.as_deref().map(cstring_path).transpose()?;
+        // Native maps each sidecar from these directories instead of parsing
+        // the GGUF again (tests/tensors.rs sidecar_parse_matches_c).
+        let mut vision_dir = sidecar_dir(tuning.vision_path.as_deref())?;
+        let mut audio_dir = sidecar_dir(audio_path.as_deref())?;
+        let mut mtp_dir = sidecar_dir(mtp_path)?;
+        let mut dspark_dir = sidecar_dir(dspark_path)?;
         let vision_path = tuning
             .vision_path
             .as_deref()
@@ -2050,6 +2125,16 @@ impl Model {
             Some(s) => (s.path.as_ptr(), s.map.as_c()),
             None => (ptr::null(), ptr::null()),
         };
+        // Qwen SSD-PLE: validated here, before the weight map; native opens
+        // it on graph backends only.
+        let mut ple = (identified.shape.family == ModelFamily::Qwen4Exp && backend != Backend::Cpu)
+            .then(|| ple::resolve(Path::new(path)))
+            .transpose()?;
+        let mem_policy = mem_policy::resolve(
+            identified.shape.family,
+            tuning.mem_floor_gb,
+            tuning.mem_budget_mb,
+        );
         let opt = ds4_bridge_model_open_options {
             model_path: c_path.as_ptr(),
             vision_path: vision_path
@@ -2086,6 +2171,13 @@ impl Model {
                 .unwrap_or(ptr::null()),
             directional_steering_attn: tuning.steering_attn,
             directional_steering_ffn: tuning.steering_ffn,
+            ple: ple.as_mut().map_or(ptr::null(), |sidecar| sidecar.ffi()),
+            mem: &mem_policy,
+            audio_path: audio_c.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+            vision_tensors: vision_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            audio_tensors: audio_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            mtp_tensors: mtp_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            dspark_tensors: dspark_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
         // Every native draw (serial, banks, verify rows) is the Rust sampler.
@@ -2093,6 +2185,8 @@ impl Model {
         HOST_SAMPLER.call_once(|| unsafe {
             ds4_sys::ds4_bridge_set_host_sampler(Some(sample::host_draw));
         });
+        // Taken where native took it; a held lock returns an error.
+        let instance_lock = instance_lock::acquire()?;
         let mut raw = ptr::null_mut();
         let rc = unsafe {
             match ffi_distributed.as_mut() {
@@ -2118,6 +2212,12 @@ impl Model {
             code: 1,
             message: "ds4_bridge_model_open returned NULL".into(),
         })?;
+        // Return the freed load buffers before the host fits banks from free
+        // memory (0.75 GiB of a Ling-3.1 server's RSS stayed in glibc arenas).
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
+        }
         Ok(Self {
             raw,
             family: identified.shape.family,
@@ -2133,6 +2233,7 @@ impl Model {
             runtime_budget,
             v41_ctx: v41_wire.as_ref().map(|w| w.ctx),
             _distributed: ffi_distributed,
+            _instance_lock: instance_lock,
             _not_send: PhantomData,
         })
     }
@@ -2200,31 +2301,21 @@ impl Model {
         if self.family == ModelFamily::Inkling {
             return inkling_media::probe_image(data);
         }
-        let mut info = ds4_bridge_vision_info::default();
-        let mut err = [0u8; 512];
-        let rc = unsafe {
-            ds4_bridge_model_vision_probe(
-                self.raw.as_ptr(),
-                data.as_ptr(),
-                data.len(),
-                &mut info,
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
-        };
-        if rc != 0 {
-            return Err(fail(rc, &err));
-        }
+        let tower = vit_tower(self.family).ok_or_else(|| Error {
+            code: 1,
+            message: "this model family has no image probe".into(),
+        })?;
+        let plan = vit_image::probe(tower, data).map_err(|message| Error { code: 1, message })?;
         Ok(VisionImageInfo {
-            source_width: info.source_width,
-            source_height: info.source_height,
-            content_width: info.content_width,
-            content_height: info.content_height,
-            padded_width: info.padded_width,
-            padded_height: info.padded_height,
-            grid_height: info.grid_height,
-            grid_width: info.grid_width,
-            token_count: info.token_count,
+            source_width: plan.source_width,
+            source_height: plan.source_height,
+            content_width: plan.content_width,
+            content_height: plan.content_height,
+            padded_width: plan.padded_width,
+            padded_height: plan.padded_height,
+            grid_height: plan.grid_h,
+            grid_width: plan.grid_w,
+            token_count: plan.token_count,
         })
     }
 
@@ -3052,12 +3143,29 @@ impl Session<'_> {
                 message: "vision sync requires 1 to 4 images".into(),
             });
         }
+        // Decode, resize and pack here; native adds the tower's positions.
+        let tower = vit_tower(self.host.family).ok_or_else(|| Error {
+            code: 1,
+            message: "this model family has no vision tower input".into(),
+        })?;
+        let packed = images
+            .iter()
+            .map(|image| {
+                let plan = vit_image::probe(tower, image.data)?;
+                Ok((plan, vit_image::pack(tower, image.data, &plan)?))
+            })
+            .collect::<std::result::Result<Vec<_>, String>>()
+            .map_err(|message| Error { code: 1, message })?;
         let images = images
             .iter()
-            .map(|image| ds4_bridge_vision_input {
+            .zip(&packed)
+            .map(|(image, (plan, rows))| ds4_bridge_vision_input {
                 data: image.data.as_ptr(),
                 data_len: image.data.len(),
                 token_offset: image.token_offset,
+                patches: rows.as_ptr(),
+                grid_h: plan.grid_h,
+                grid_w: plan.grid_w,
             })
             .collect::<Vec<_>>();
         let mut err = [0u8; 512];

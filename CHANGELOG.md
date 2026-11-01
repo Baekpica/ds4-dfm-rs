@@ -14,6 +14,37 @@ for exact provenance. Historical entries retain their original scope.
 - DeepSeek V4 CLI and bench prompts encode on the host; the native bridge
   drops twelve entries the Rust host no longer calls (tokenizer, stop/EOS,
   C sampler, session position, model id, distributed worker).
+- A held instance lock (`DS4_LOCK_FILE`, default `/tmp/ds4.lock`) is an
+  error from `ds4`, `ds4-bench` and `ds4-server`. Native model open used to
+  call `exit(2)` inside the FFI call, ending the host without an error.
+- The Rust hosts parse and validate the Qwen SSD-PLE manifest before the
+  weight map and pass the sidecar to native, which keeps the page cache. A
+  missing or bad sidecar now fails at once instead of after the map.
+- Memory policy values (`--mem-floor-gb`, `--mem-budget-mb`, fit headrooms
+  and switch, governor modes) reach native as open options instead of
+  environment variables. An L1 budget refusal fails the model open (exit
+  1) instead of `_exit(137)`.
+- Native stops where the Rust host does: the host stop set reaches native at
+  model open. Static batch rows end at the host's stop tokens and report
+  `stop` (they decoded to the token budget and reported `length`); GLM VQ
+  user/observation and K2 `im_end` stop natively; an EOS policy also
+  excludes Naive's EOT.
+- Native maps each sidecar (vision, MiMo VQ audio, MTP/DFlash, DSpark) from
+  the tensor directory Rust built instead of parsing the GGUF again. Rust
+  resolves `DS4_DSPARK_MODEL` for every family, so native no longer opens a
+  drafter Rust never validated, and checks a named vision sidecar before
+  open; a bad file used to end the process inside the native binder.
+- Qwen4Exp, Ling-3.0-VL and GLM-5.3 images are decoded, resized and packed
+  in Rust; native adds only the vision tower's positions. Qwen rows are
+  packed into native's buffer only after the request passes admission and
+  its memory check, and are freed after upload, as in C. JPEG decodes
+  through libjpeg-turbo with PIL's settings (vendored, built with CMake), so
+  pixels match the HF processors; stb_image differed by up to 48 levels on
+  4:2:2 JPEGs, so Qwen JPEG disk-KV entries from earlier builds miss once.
+  PNG rows match the C path bit for bit (GLM within an ulp), and the Qwen
+  pixel hash keeps its C definition. Preprocessing is faster than C on 14 of
+  15 fixture/tower pairs (bug.jpeg Qwen 73.7 -> 48.6 ms) and 0.02 ms slower
+  on the last; Qwen request times and VmHWM are unchanged.
 
 ## v0.1.5 — 2026-11-01
 

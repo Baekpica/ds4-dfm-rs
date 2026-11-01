@@ -156,6 +156,8 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.vision_path = opt->vision_path;
     eopt.n_threads = opt->n_threads;
     eopt.defer_boot_prewarm = opt->defer_boot_prewarm != 0;
+    eopt.host_policy = true; /* ds4-core Model::open owns process policy */
+    eopt.audio_path = opt->audio_path;
     eopt.power_percent = opt->power_percent;
     eopt.warm_weights = opt->warm_weights != 0;
     eopt.quality = opt->quality != 0;
@@ -182,6 +184,10 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->shape) ds4_host_shape_install(opt->shape);
     if (opt->vocab) ds4_host_vocab_install(opt->vocab);
     if (opt->bind) ds4_host_bind_map_install(opt->bind);
+    if (opt->ple) ds4_host_ple_install(opt->ple);
+    if (opt->mem) ds4_host_mem_policy_install(opt->mem);
+    ds4_host_sidecar_dirs_install(opt->vision_tensors, opt->audio_tensors,
+                                  opt->mtp_tensors, opt->dspark_tensors);
     /* Sibling maps index the sibling's own tensor dir; only meaningful
      * when the matching path rides the same open. */
     if (opt->mtp_bind && opt->mtp_path && opt->mtp_path[0])
@@ -189,6 +195,8 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->dspark_bind && opt->dspark_path && opt->dspark_path[0])
         ds4_host_dspark_bind_map_install(opt->dspark_bind);
     rc = ds4_engine_open(&engine, &eopt);
+    ds4_host_sidecar_dirs_clear();
+    ds4_host_ple_clear();
     ds4_host_dspark_bind_map_clear();
     ds4_host_mtp_bind_map_clear();
     ds4_host_bind_map_clear();
@@ -358,31 +366,6 @@ int ds4_bridge_session_sync(ds4_bridge_session *s,
     return session_sync(s, tokens, n_tokens, NULL, NULL, err, errlen);
 }
 
-int ds4_bridge_model_vision_probe(ds4_bridge_model *m,
-                                  const uint8_t *data, size_t data_len,
-                                  ds4_bridge_vision_info *info,
-                                  char *err, size_t errlen)
-{
-    ds4_vision_image_info native;
-
-    if (!m || !m->engine || !info) {
-        set_err(err, errlen, "model or image info is NULL");
-        return 1;
-    }
-    if (!ds4_engine_vision_probe(m->engine, data, data_len,
-                                 &native, err, errlen)) return 1;
-    info->source_width = native.source_width;
-    info->source_height = native.source_height;
-    info->content_width = native.content_width;
-    info->content_height = native.content_height;
-    info->padded_width = native.padded_width;
-    info->padded_height = native.padded_height;
-    info->grid_height = native.grid_height;
-    info->grid_width = native.grid_width;
-    info->token_count = native.token_count;
-    return 0;
-}
-
 int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const int32_t *tokens, int n_tokens,
                                    const ds4_bridge_vision_input *images,
@@ -407,22 +390,30 @@ int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
     if (ds4_engine_model_id(s->model->engine) == DS4_MODEL_ID_LING30_FLASH_VL) {
         ds4_ling3vl_image_input native[4] = {0};
         for (uint32_t i = 0; i < image_count; i++) {
-            if (!images[i].data || images[i].data_len == 0u) {
+            if (!images[i].patches && (!images[i].data || images[i].data_len == 0u)) {
                 set_err(err, errlen, "invalid Ling image payload");
                 return 1;
             }
             native[i].data = images[i].data;
             native[i].data_len = images[i].data_len;
             native[i].token_offset = images[i].token_offset;
+            native[i].patches = images[i].patches;
+            native[i].grid_h = images[i].grid_h;
+            native[i].grid_w = images[i].grid_w;
         }
         return ds4_session_sync_ling3vl(s->session, &prompt, native, image_count,
                                         err, errlen);
     }
     for (uint32_t i = 0; i < image_count; i++) {
-        if (!images[i].data || images[i].data_len == 0u ||
-            !ds4_engine_vision_encode_memory(
-                s->model->engine, images[i].data, images[i].data_len,
-                &spans[i].embedding, err, errlen)) goto cleanup;
+        const int ok = images[i].patches
+            ? ds4_engine_vision_encode_patches(
+                  s->model->engine, images[i].patches, images[i].grid_h,
+                  images[i].grid_w, &spans[i].embedding, err, errlen)
+            : images[i].data && images[i].data_len != 0u &&
+              ds4_engine_vision_encode_memory(
+                  s->model->engine, images[i].data, images[i].data_len,
+                  &spans[i].embedding, err, errlen);
+        if (!ok) goto cleanup;
         spans[i].token_start = images[i].token_offset;
     }
     rc = ds4_session_sync_multimodal(
@@ -883,7 +874,6 @@ void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp) {
     ds4_engine_set_decode_sampling(&face);
 }
 
-void ds4_bridge_set_mem_budget_mb(int mb) { ds4_set_mem_budget_mb(mb); }
 
 int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd) {
     if (!m || !m->engine) return 0;
@@ -1571,40 +1561,6 @@ uint64_t ds4_bridge_mem_substrate_outstanding(void)
     return ds4_gpu_substrate_outstanding();
 }
 
-int ds4_bridge_qwen_image_probe(const uint8_t *data, size_t data_len,
-                                ds4_bridge_qwen_image_info *info,
-                                char *err, size_t errlen)
-{
-    ds4_qwen_image_info native;
-    int rc;
-
-    if (!info) {
-        set_err(err, errlen, "image info is NULL");
-        return 1;
-    }
-    memset(&native, 0, sizeof(native));
-    rc = ds4_qwen_image_probe(data, data_len, &native, err, errlen);
-    if (rc != 0) return rc;
-    info->source_width = native.source_width;
-    info->source_height = native.source_height;
-    info->resized_width = native.resized_width;
-    info->resized_height = native.resized_height;
-    info->grid_h = native.grid_h;
-    info->grid_w = native.grid_w;
-    info->token_count = native.token_count;
-    return 0;
-}
-
-int ds4_bridge_qwen_image_pixel_hash(const uint8_t *data, size_t data_len,
-                                     uint64_t *hash,
-                                     char *err, size_t errlen)
-{
-    if (!hash) {
-        set_err(err, errlen, "image hash is NULL");
-        return 1;
-    }
-    return ds4_qwen_image_pixel_hash(data, data_len, hash, err, errlen);
-}
 
 struct ds4_bridge_batch_ctx {
     ds4_batch_ctx *ctx;
@@ -2004,6 +1960,8 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
         req->images[i].token_offset = br.images[i].token_offset;
         req->images[i].grid_h = br.images[i].grid_h;
         req->images[i].grid_w = br.images[i].grid_w;
+        req->images[i].pack = br.images[i].pack;
+        req->images[i].pack_ud = br.images[i].pack_ud;
     }
     req->image_count = br.image_count;
     req->max_new = br.max_new;

@@ -185,6 +185,28 @@ fn tensor_parse_matches_c() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Real sidecar GGUFs (vision, audio, MTP, drafters): the Rust inventory
+/// native receives must equal the C parse it replaces.
+/// `DS4_TEST_SIDECARS=/a.gguf:/b.gguf cargo test --test tensors -- --ignored`
+#[test]
+#[ignore]
+fn sidecar_parse_matches_c() {
+    let paths = std::env::var("DS4_TEST_SIDECARS").expect("DS4_TEST_SIDECARS");
+    let mut mismatched = Vec::new();
+    for path in paths.split(':').filter(|p| !p.is_empty()) {
+        let rust = TensorInventory::open(Path::new(path)).unwrap().dump();
+        let c = c_out(&["parse", path]);
+        if rust != c {
+            let first = rust.lines().zip(c.lines()).position(|(r, c)| r != c);
+            eprintln!("MISMATCH {path} at line {first:?}");
+            mismatched.push(path);
+            continue;
+        }
+        eprintln!("ok {path} ({} lines)", rust.lines().count());
+    }
+    assert!(mismatched.is_empty(), "parse mismatch: {mismatched:?}");
+}
+
 #[test]
 fn split_inventory_concatenates_shards() {
     let dir = std::env::temp_dir().join(format!("ds4-split-{}", std::process::id()));

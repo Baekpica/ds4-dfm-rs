@@ -3,7 +3,9 @@
 
 A request that finishes inside the accepted prefix must leave its last token
 pending, as ordinary decode does: the server keys the bank by every generated
-token but the last. Every accepted draft still counts as a hit."""
+token but the last. Every accepted draft still counts as a hit. A static row
+(no token listener) also finishes at the host's stop set; a streaming row
+leaves stops to the host."""
 import subprocess, tempfile
 from pathlib import Path
 
@@ -51,7 +53,12 @@ typedef struct {
     int current, eos;
     float temperature;
 } bank_t;
-static int abort_at, greedy_after;
+static int abort_at, greedy_after, host_stop;
+/* host_static_stop with a one-token host stop set. */
+static bool host_static_stop(const void *ctx, int (*on_token)(void *, void *, int), int token) {
+    (void)ctx;
+    return !on_token && token == host_stop;
+}
 static int deliver(void *ud, void *user, int token) { (void)ud; (void)user; return token != abort_at; }
 /* Tool syntax: the position after `greedy_after` takes the argmax. */
 static int override_at(void *ud, void *user) {
@@ -62,7 +69,7 @@ static int override_at(void *ud, void *user) {
 
 /* Trial [10, 11, 12, 13] after 10 was emitted; returns the rows landed. */
 static int step(int keep, uint32_t max_new, int eos, int abort_token, float temperature,
-                int greedy_token, uint64_t *hits) {
+                int greedy_token, int stop_token, bool streaming, uint64_t *hits) {
     int generated[8] = {10};
     bank_t bank = {.generated = generated, .generated_len = 1, .max_new = max_new, .current = 10,
                    .eos = eos, .temperature = temperature, .sample_override = override_at};
@@ -71,13 +78,15 @@ static int step(int keep, uint32_t max_new, int eos, int abort_token, float temp
     const int tokens[4] = {10, 11, 12, 13};
     int graph = 0;
     void *gr = NULL, *ir = NULL, *lr = &graph, *nr = NULL, *ud = NULL;
-    int (*on_token)(void *, void *, int) = deliver;
+    int (*on_token)(void *, void *, int) = streaming ? deliver : NULL;
+    const void *ctx = NULL;
     const int first_override = DS4_SAMPLE_OVERRIDE_NONE;
     ds4_session s = {0};
     char err[16];
     const size_t errlen = sizeof(err);
     abort_at = abort_token;
     greedy_after = greedy_token;
+    host_stop = stop_token;
     metrics.spec_hits = 0;
     landed = 0;
 BODY
@@ -91,22 +100,26 @@ fail:
 int main(void) {
     static const struct {
         const char *name; int keep; uint32_t max_new; int eos, abort_token; float temperature;
-        int greedy_token, rows; uint64_t hits;
+        int greedy_token, stop_token; bool streaming; int rows; uint64_t hits;
     } cases[] = {
-        {"length_inside", 3, 3, -1, -1, 0.0f, -1, 2, 2},
-        {"eos_inside", 3, 8, 12, -1, 0.0f, -1, 2, 2},
-        {"abort_inside", 3, 8, -1, 11, 0.0f, -1, 1, 1},
-        {"running", 3, 8, -1, -1, 0.0f, -1, 3, 2},
+        {"length_inside", 3, 3, -1, -1, 0.0f, -1, -1, true, 2, 2},
+        {"eos_inside", 3, 8, 12, -1, 0.0f, -1, -1, true, 2, 2},
+        {"abort_inside", 3, 8, -1, 11, 0.0f, -1, -1, true, 1, 1},
+        {"running", 3, 8, -1, -1, 0.0f, -1, -1, true, 3, 2},
         /* A sampling bank stops before a greedy position; argmax drafts pass it. */
-        {"greedy_sampled", 3, 8, -1, -1, 1.0f, 11, 2, 1},
-        {"greedy_argmax", 3, 8, -1, -1, 0.0f, 11, 3, 2},
+        {"greedy_sampled", 3, 8, -1, -1, 1.0f, 11, -1, true, 2, 1},
+        {"greedy_argmax", 3, 8, -1, -1, 0.0f, 11, -1, true, 3, 2},
+        /* A host stop ends a static row like EOS; a streaming row runs on. */
+        {"stop_static", 3, 8, -1, -1, 0.0f, -1, 12, false, 2, 2},
+        {"stop_streaming", 3, 8, -1, -1, 0.0f, -1, 12, true, 3, 2},
     };
     int ok = 1;
     printf("{");
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         uint64_t hits = 0;
         const int rows = step(cases[i].keep, cases[i].max_new, cases[i].eos, cases[i].abort_token,
-                              cases[i].temperature, cases[i].greedy_token, &hits);
+                              cases[i].temperature, cases[i].greedy_token, cases[i].stop_token,
+                              cases[i].streaming, &hits);
         const int pass = rows == cases[i].rows && hits == cases[i].hits;
         ok &= pass;
         printf("%s\"%s\":{\"rows\":%d,\"hits\":%llu,\"pass\":%s}", i ? "," : "", cases[i].name, rows,

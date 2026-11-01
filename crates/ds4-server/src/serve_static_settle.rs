@@ -29,8 +29,9 @@ pub fn detok_static_row(
     let mut text = Vec::new();
     let mut emitted = 0i32;
     for &token in row.tokens.iter().take(n) {
+        // A host stop ends the request even if native decoded past it.
         if is_stop(token) {
-            break;
+            return (text, "stop", emitted);
         }
         text.extend(text_of(token));
         emitted += 1;

@@ -44,6 +44,7 @@ required-features = ["h3-gates"]
 
 [dependencies]
 ds4-sys = { path = "../ds4-sys" }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = { version = "0.11", default-features = false }
 regex = "1"
@@ -52,6 +53,15 @@ rustfft = "6.4.1"
 hound = "3.5.1"
 hf-chat-template = { version = "=1.0.0", default-features = false, features = ["pycompat", "strftime"] }
 unicode-normalization = "0.1"
+
+# JPEG pixels through libjpeg-turbo, PIL's decoder, built from the vendored
+# source with CMake. NEON needs no assembler, so aarch64 requires SIMD; x86
+# gets it only where NASM is installed (output is identical either way).
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake", "require-simd"] }
+
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "=0.8.9"

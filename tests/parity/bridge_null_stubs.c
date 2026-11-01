@@ -62,6 +62,16 @@ void ds4_host_shape_clear(void) {}
 void ds4_host_vocab_install(const ds4_host_vocab *v) { (void)v; }
 void ds4_host_vocab_clear(void) {}
 void ds4_host_bind_map_install(const ds4_host_bind_map *m) { (void)m; }
+void ds4_host_ple_install(const ds4_host_ple *p) { (void)p; }
+void ds4_host_ple_clear(void) {}
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark) {
+    (void)vision; (void)audio; (void)mtp; (void)dspark;
+}
+void ds4_host_sidecar_dirs_clear(void) {}
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) { (void)p; }
 void ds4_host_bind_map_clear(void) {}
 void ds4_host_mtp_bind_map_install(const ds4_host_bind_map *m) { (void)m; }
 void ds4_host_mtp_bind_map_clear(void) {}
@@ -129,6 +139,13 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
                                     char *err, size_t errlen) {
     (void)e; (void)encoded; (void)encoded_len; (void)out; (void)err; (void)errlen;
     STUB("ds4_engine_vision_encode_memory");
+}
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *err, size_t errlen) {
+    (void)e; (void)patches; (void)grid_h; (void)grid_w; (void)out; (void)err; (void)errlen;
+    STUB("ds4_engine_vision_encode_patches");
 }
 void ds4_vision_embedding_free(ds4_vision_embedding *embedding) {
     (void)embedding;
@@ -666,7 +683,6 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
                                  void *ud) {
     (void)cb; (void)ud;
 }
-void ds4_set_mem_budget_mb(int mb) { (void)mb; }
 int ds4_v41_engram_count(void *engine) { (void)engine; return 0; }
 ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
                                 ds4_v41_wait_fn wait, void *wait_ud,

@@ -78,6 +78,11 @@ typedef struct {
     uint32_t token_offset;
     uint32_t grid_h;
     uint32_t grid_w;
+    /* Rust hosts: decode, resize and pack this image's `values` floats of
+     * rows into `out` (vit_image.rs) once native has admitted the request
+     * and checked memory; nonzero on failure. data is then unused. */
+    int (*pack)(void *ud, float *out, uint64_t values);
+    void *pack_ud;
 } ds4_qwen_image_input;
 
 /* Ling-3.0-flash-VL shares Qwen3-VL's preprocessing shape but not its pixel
@@ -98,6 +103,10 @@ typedef struct {
     const uint8_t *data;
     size_t data_len;
     uint32_t token_offset;
+    /* Rust hosts: rows packed for the tower and their grid; data unused. */
+    const float *patches;
+    uint32_t grid_h;
+    uint32_t grid_w;
 } ds4_ling3vl_image_input;
 
 /* Official Ling-3.0-flash-VL multimodal special-token ids. */
@@ -254,6 +263,11 @@ typedef struct {
        fit's headroom (the prewarm's footprint is post-placement growth by
        design, exactly like the lazy first-forward costs it replaces). */
     bool defer_boot_prewarm;
+    /* A Rust host owns process policy: it holds the instance lock (a held
+       lock is its error, not an exit here), resolves DS4_DSPARK_MODEL
+       itself and trims its own heap after open. */
+    bool host_policy;
+    const char *audio_path;    /* MiMo VQ audio part; NULL derives it */
     ds4_distributed_options distributed;
 } ds4_engine_options;
 
@@ -305,6 +319,11 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
                                     const uint8_t *encoded, size_t encoded_len,
                                     ds4_vision_embedding *out,
                                     char *error, size_t error_cap);
+/* GLM-5.3: rows a Rust host packed (vit_image.rs) for a grid_h x grid_w image. */
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *error, size_t error_cap);
 void ds4_vision_embedding_free(ds4_vision_embedding *embedding);
 const char *ds4_engine_model_name(ds4_engine *e);
 ds4_chat_format ds4_engine_chat_format(ds4_engine *e);
@@ -1647,6 +1666,6 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
  * model open before any GPU buffer is bound. */
 void ds4_set_mem_budget_mb(int mb);
 uint64_t ds4_runtime_mem_budget_bytes(void);
-void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes);
+bool ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes);
 
 #endif

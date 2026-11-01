@@ -2734,8 +2734,39 @@ void ds4_host_bind_map_install(const ds4_host_bind_map *m) {
     g_host_bind_map = m;
 }
 
+/* Rust hosts pass the Qwen SSD-PLE sidecar they parsed and validated; the
+ * C hosts keep reading DS4_QWEN_PLE_* and the manifest. */
+static const ds4_host_ple *g_host_ple;
+
+void ds4_host_ple_install(const ds4_host_ple *p) {
+    g_host_ple = p;
+}
+
+void ds4_host_ple_clear(void) {
+    g_host_ple = NULL;
+}
+
 void ds4_host_bind_map_clear(void) {
     g_host_bind_map = NULL;
+}
+
+static const ds4_host_tensor_dir *g_host_vision_dir;
+static const ds4_host_tensor_dir *g_host_audio_dir;
+static const ds4_host_tensor_dir *g_host_mtp_dir;
+static const ds4_host_tensor_dir *g_host_dspark_dir;
+
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark) {
+    g_host_vision_dir = vision;
+    g_host_audio_dir = audio;
+    g_host_mtp_dir = mtp;
+    g_host_dspark_dir = dspark;
+}
+
+void ds4_host_sidecar_dirs_clear(void) {
+    ds4_host_sidecar_dirs_install(NULL, NULL, NULL, NULL);
 }
 
 /* MTP/DSpark sibling bind maps live in their own slots: the base map is
@@ -3754,6 +3785,16 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
     model_build_catalog(m);
 
     if (!metal_mapping && prefetch_cpu) model_prefetch_cpu_mapping(m);
+}
+
+/* A sidecar mapped from the host's tensor directory for it (Rust hosts);
+ * NULL keeps the C parse (C hosts). */
+static void sidecar_model_open(ds4_model *m, const ds4_host_tensor_dir *dir,
+                               const char *path, bool metal_mapping,
+                               bool prefetch_cpu) {
+    g_host_tensor_dir = dir;
+    model_open(m, path, metal_mapping, prefetch_cpu);
+    g_host_tensor_dir = NULL;
 }
 
 /* Map all files in a split GGUF into one reserved virtual range.  Each
@@ -10783,11 +10824,33 @@ uint64_t ds4_runtime_mem_budget_bytes(void) {
     return g_mem_budget_bytes;
 }
 
+/* Rust hosts pass the memory policy values at open (budget included);
+ * the C hosts keep their env reads and ds4_set_mem_budget_mb. */
+static ds4_host_mem_policy g_host_mem;
+static bool g_host_mem_set;
+
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) {
+    g_host_mem_set = p != NULL;
+    if (!p) return;
+    g_host_mem = *p;
+    g_mem_budget_bytes = p->budget_bytes;
+}
+
+/* DS4_SESSION_GRAPH_FIT=0 turns the session-graph fit gate off: the
+ * allocation fails open. */
+static bool ds4_session_graph_fit_off(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_fit == 0;
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    return fit && fit[0] == '0' && fit[1] == '\0';
+}
+
 #define DS4_L1_GATE_FRAC 0.85   /* core_util.c:10 */
 #define DS4_GIB (1024.0 * 1024.0 * 1024.0)   /* core_internal.h:91 */
 
-void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
-    if (g_mem_budget_bytes == 0) return;
+/* Returns false on refusal; the engine fails its open instead of the
+ * reference's _exit(137), which ended the Rust host inside the FFI call. */
+bool ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
+    if (g_mem_budget_bytes == 0) return true;
     const uint64_t planned = resident_model_bytes + kv_and_scratch_bytes;
     const uint64_t limit = (uint64_t)((double)g_mem_budget_bytes * DS4_L1_GATE_FRAC);
     if (planned > limit) {
@@ -10798,11 +10861,12 @@ void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_b
                 (double)kv_and_scratch_bytes / DS4_GIB,
                 DS4_L1_GATE_FRAC * 100.0, (double)g_mem_budget_bytes / DS4_GIB);
         fflush(stderr);
-        _exit(137);
+        return false;
     }
     fprintf(stderr,
             "ds4: L1 budget gate: planned resident %.2f GiB within %.2f GiB budget\n",
             (double)planned / DS4_GIB, (double)g_mem_budget_bytes / DS4_GIB);
+    return true;
 }
 
 #ifndef DS4_NO_GPU
@@ -18504,6 +18568,7 @@ static uint64_t metal_graph_alloc_bytes_estimate(
  * Backend-neutral (env + arithmetic only) and called unconditionally from
  * the server's serial quote path, so it must stay OUTSIDE the GPU guard. */
 uint64_t ds4_session_graph_headroom_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_headroom;
     uint64_t headroom = 1024ull << 20;
     const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
     if (he && he[0]) {
@@ -18578,8 +18643,7 @@ static bool metal_graph_session_fit_check(
         bool                     loud,
         ds4_session_graph_fit_quote *q) {   /* memgov D4-1: optional quote out */
     if (q) memset(q, 0, sizeof(*q));
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -27113,9 +27177,16 @@ static bool qwen4exp_vision_host_prepare(
     ds4_qwen_image_info info[4];
     uint64_t patch_rows = 0u, feature_rows = 0u;
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
-                                 &info[i], error, error_size) != 0)
+        if (images[i].pack) {
+            /* A Rust host probed it; it packs the rows below. */
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) return false;
+            info[i] = (ds4_qwen_image_info){.grid_h = gh, .grid_w = gw,
+                                            .token_count = gh * gw / 4u};
+        } else if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
+                                        &info[i], error, error_size) != 0) {
             return false;
+        }
         if (info[i].grid_h != images[i].grid_h ||
             info[i].grid_w != images[i].grid_w) {
             if (error && error_size)
@@ -27144,24 +27215,38 @@ static bool qwen4exp_vision_host_prepare(
 
     uint32_t patch_base = 0u;
     for (uint32_t image_i = 0; image_i < image_count; image_i++) {
-        int width = 0, height = 0, channels = 0;
-        uint8_t *decoded = stbi_load_from_memory(
-            images[image_i].data, (int)images[image_i].data_len,
-            &width, &height, &channels, 3);
-        if (!decoded || width != (int)info[image_i].source_width ||
-            height != (int)info[image_i].source_height) {
-            stbi_image_free(decoded);
-            if (error && error_size)
-                snprintf(error, error_size, "PNG/JPEG decode failed: %s",
-                         stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
+        const bool packed = images[image_i].pack != NULL;
+        const uint64_t values = (uint64_t)info[image_i].grid_h * info[image_i].grid_w *
+                                DS4_QWEN_VISION_PATCH_DIM;
+        /* The host decodes into these rows only now, past admission and the
+         * memory check; they go with the rest of host after upload. */
+        if (packed && images[image_i].pack(images[image_i].pack_ud,
+                host->patches + (size_t)patch_base * DS4_QWEN_VISION_PATCH_DIM, values) != 0) {
+            if (error && error_size) snprintf(error, error_size, "PNG/JPEG decode failed");
             qwen4exp_vision_host_free(host);
             return false;
         }
-        uint8_t *resized = qwen4exp_resize_rgb_pillow(
-            decoded, info[image_i].source_width, info[image_i].source_height,
-            info[image_i].resized_width, info[image_i].resized_height);
-        stbi_image_free(decoded);
-        if (!resized) {
+        uint8_t *resized = NULL;
+        if (!packed) {
+            int width = 0, height = 0, channels = 0;
+            uint8_t *decoded = stbi_load_from_memory(
+                images[image_i].data, (int)images[image_i].data_len,
+                &width, &height, &channels, 3);
+            if (!decoded || width != (int)info[image_i].source_width ||
+                height != (int)info[image_i].source_height) {
+                stbi_image_free(decoded);
+                if (error && error_size)
+                    snprintf(error, error_size, "PNG/JPEG decode failed: %s",
+                             stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
+                qwen4exp_vision_host_free(host);
+                return false;
+            }
+            resized = qwen4exp_resize_rgb_pillow(
+                decoded, info[image_i].source_width, info[image_i].source_height,
+                info[image_i].resized_width, info[image_i].resized_height);
+            stbi_image_free(decoded);
+        }
+        if (!packed && !resized) {
             if (error && error_size) snprintf(error, error_size, "image resize failed");
             qwen4exp_vision_host_free(host);
             return false;
@@ -27179,7 +27264,7 @@ static bool qwen4exp_vision_host_prepare(
                         const uint32_t row = patch_base + local++;
                         float *dst = host->patches +
                             (size_t)row * DS4_QWEN_VISION_PATCH_DIM;
-                        for (uint32_t c = 0; c < 3u; c++) {
+                        if (!packed) for (uint32_t c = 0; c < 3u; c++) {
                             for (uint32_t temporal = 0; temporal < 2u; temporal++) {
                                 (void)temporal;
                                 for (uint32_t py = 0; py < 16u; py++) {
@@ -37605,6 +37690,9 @@ struct ds4_vocab {
     int dots3_endofsystem_id;
     int dots3_endofuser_id;
     int dots3_endoftext_id;
+    /* Rust hosts: their stop set (Vocab::is_stop); 0 = the family table. */
+    uint32_t n_stop;
+    int stop[DS4_HOST_MAX_STOPS];
     str_i32_table token_to_id;
     str_i32_table merge_rank;
     /* USER_DEFINED tokens, matched as literal text before the regex split.
@@ -37756,14 +37844,10 @@ static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
     return opening_rows;
 }
 
-static bool qwen4exp_engine_open_ple(ds4_engine *engine,
-                                     const char *model_path) {
-#ifdef __APPLE__
-    (void)engine;
-    (void)model_path;
-    return false;
-#else
-    if (!engine || !model_path || !model_path[0]) return false;
+#ifndef __APPLE__
+/* C hosts: sidecar and cache policy from DS4_QWEN_PLE_* and the manifest. */
+static ds4_ple_store *qwen4exp_open_ple_env(const char *model_path,
+                                            char *error, size_t error_size) {
     const char *slash = strrchr(model_path, '/');
     const bool filesystem_root = slash == model_path;
     const size_t root_len = filesystem_root ? 1u
@@ -37792,13 +37876,28 @@ static bool qwen4exp_engine_open_ple(ds4_engine *engine,
      * without changing their published BF16 metadata or their compute path. */
     const char *ple_dir = getenv("DS4_QWEN_PLE_DIR");
     const bool override_ple = ple_dir && ple_dir[0];
-    char error[512] = {0};
-    engine->qwen_ple_store = ds4_ple_store_open(
+    ds4_ple_store *store = ds4_ple_store_open(
         override_ple ? ple_dir : root,
         override_ple ? "ple-manifest.json" : "ple/ple-manifest.json",
         (size_t)cache_mb << 20,
-        workers, true, error, sizeof(error));
+        workers, true, error, error_size);
     free(root);
+    return store;
+}
+#endif
+
+static bool qwen4exp_engine_open_ple(ds4_engine *engine,
+                                     const char *model_path) {
+#ifdef __APPLE__
+    (void)engine;
+    (void)model_path;
+    return false;
+#else
+    if (!engine || !model_path || !model_path[0]) return false;
+    char error[512] = {0};
+    engine->qwen_ple_store = g_host_ple
+        ? ds4_ple_store_open_host(g_host_ple, true, error, sizeof(error))
+        : qwen4exp_open_ple_env(model_path, error, sizeof(error));
     if (!engine->qwen_ple_store) {
         fprintf(stderr, "ds4: cannot open Qwen SSD-PLE sidecars: %s\n",
                 error[0] ? error : "unknown error");
@@ -39783,6 +39882,9 @@ static void model_apply_host_vocab(ds4_vocab *vocab) {
     vocab->dots3_endofsystem_id = h->dots3_endofsystem_id;
     vocab->dots3_endofuser_id = h->dots3_endofuser_id;
     vocab->dots3_endoftext_id = h->dots3_endoftext_id;
+    if (h->n_stop > DS4_HOST_MAX_STOPS) ds4_die("host stop set is too large");
+    vocab->n_stop = h->n_stop;
+    for (i = 0; i < h->n_stop; i++) vocab->stop[i] = h->stop[i];
 }
 
 static void vocab_free(ds4_vocab *vocab) {
@@ -40636,6 +40738,12 @@ char *ds4_token_text(ds4_engine *e, int token, size_t *len) {
 
 static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
     if (!vocab || token < 0) return false;
+    if (vocab->n_stop) {
+        for (uint32_t i = 0; i < vocab->n_stop; i++) {
+            if (token == vocab->stop[i]) return true;
+        }
+        return false;
+    }
     if (token == vocab->eos_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         /* The source EOS list includes next-user/tool-observation roles.
@@ -60156,23 +60264,29 @@ static uint64_t ds4_batch_slabs_bank_bytes(const ds4_gpu_graph *g, bool mtp, boo
  * derivation disclosed once per boot on its own line. */
 static uint64_t ds4_mem_floor_bytes(void);
 static uint64_t ds4_batch_fit_headroom_bytes(int ctx_size) {
-    const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
     (void)ctx_size;
-    if (he && he[0]) {
-        const long hv = atol(he);
-        if (hv >= 0) return (uint64_t)hv << 20;
+    uint64_t burst;
+    if (g_host_mem_set) {
+        if (!g_host_mem.batch_fit_derived) return g_host_mem.batch_fit_headroom;
+        burst = g_host_mem.batch_fit_burst;
+    } else {
+        const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
+        if (he && he[0]) {
+            const long hv = atol(he);
+            if (hv >= 0) return (uint64_t)hv << 20;
+        }
+        { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
+          if (de && de[0] == '0' && de[1] == '\0')
+              return 6144ull << 20; }      /* kill switch: the V7 static */
+        /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
+         * (cuBLASLt and MMQ kernel images the driver loads on first use). */
+        burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
+        { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
+          if (be && be[0]) {
+              const long bv = atol(be);
+              if (bv >= 0) burst = (uint64_t)bv << 20;
+          } }
     }
-    { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
-      if (de && de[0] == '0' && de[1] == '\0')
-          return 6144ull << 20; }      /* kill switch: the V7 static */
-    /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
-     * (cuBLASLt and MMQ kernel images the driver loads on first use). */
-    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
-    { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
-      if (be && be[0]) {
-          const long bv = atol(be);
-          if (bv >= 0) burst = (uint64_t)bv << 20;
-      } }
     const uint64_t floor = ds4_mem_floor_bytes();
     const uint64_t headroom = floor + burst;
     static int disclosed;              /* boot-path call sites only */
@@ -60349,6 +60463,7 @@ static bool ds4_batch_fit_kv_plan_enabled(void) {
  * serves as the A/B kill switch at 0).  Distinct from the fit headroom
  * above: headroom is a boot PLANNING margin, the floor is a LIVE line. */
 static uint64_t ds4_mem_floor_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.floor_bytes;
     static uint64_t floor_b = UINT64_MAX;
     if (floor_b == UINT64_MAX) {
         uint64_t f = 4ull << 30;
@@ -60478,6 +60593,13 @@ void ds4_gov_modes_init(void) {
         DS4_GOV_MODE_ENFORCE,   /* SERIAL_SESSION   (D2-4)  */
         DS4_GOV_MODE_ENFORCE,   /* STATIC_BATCH     (D2-5)  */
     };
+    if (g_host_mem_set) {
+        for (int c = 0; c < DS4_GOVC__COUNT; c++) {
+            g_gov_mode[c] = g_host_mem.gov_mode[c];
+        }
+        g_gov_modes_ready = 1;
+        return;
+    }
     int gdef = -1;
     const char *g = getenv("DS4_MEMGOV");
     if (g && g[0]) {
@@ -64989,6 +65111,16 @@ static void family_cont_publish_generated(
  * residual/MoE graph and select mutable state through bank-aware CUDA kernels.
  * The scalar one-bank path remains the correctness and low-concurrency fast
  * path; lifecycle, history, sampling, and callbacks are identical on both. */
+/* Static rows have no on_token listener, so they end at the host's stop
+ * set here; streaming rows leave every stop but EOS to the host, which
+ * sees the token text (Beam's <|call|> must reach its tool parser). */
+static bool host_static_stop(const ds4_batch_ctx *ctx,
+                             int (*on_token)(void *ud, void *user, int token),
+                             int token) {
+    return !on_token && ctx->e->vocab.n_stop &&
+           vocab_token_is_generation_stop(&ctx->e->vocab, token);
+}
+
 static int solar_engine_continuous_generate(
         ds4_batch_ctx *ctx,
         int (*admit)(void *ud, ds4_cont_request *req),
@@ -65377,7 +65509,7 @@ static int solar_engine_continuous_generate(
                     sb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == sb->eos;
+                    const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, sb->user, token);
                     if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -65472,7 +65604,7 @@ static int solar_engine_continuous_generate(
             sb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == sb->eos;
+            const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, sb->user, token);
             if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -65974,7 +66106,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         emitted++;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         if (finish || aborted || cb->generated_len >= cb->max_new) {
             finished = true;
@@ -66035,7 +66167,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         cb->current = token;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         finished = finish || aborted || cb->generated_len >= cb->max_new;
     }
@@ -66788,7 +66920,7 @@ static int family_banked_engine_continuous_generate(
                     cb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == cb->eos;
+                    const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, cb->user, token);
                     if (hit_eos || cb->generated_len >= cb->max_new ||
@@ -66927,7 +67059,7 @@ static int family_banked_engine_continuous_generate(
             cb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == cb->eos;
+            const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, cb->user, token);
             if (hit_eos || cb->generated_len >= cb->max_new || aborted) {
@@ -66955,7 +67087,7 @@ static int family_banked_engine_continuous_generate(
                 cb->current = token;
                 ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                 ds4_metrics_window_add(1u, 0u, 0u);
-                const bool next_eos = token == cb->eos;
+                const bool next_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                 const bool next_aborted = !next_eos && on_token &&
                     !on_token(ud, cb->user, token);
                 if (next_eos || cb->generated_len >= cb->max_new ||
@@ -73130,7 +73262,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
-    ds4_acquire_instance_lock();
+    if (!opt->host_policy) ds4_acquire_instance_lock();
 
     bool load_slice = opt->load_slice;
     uint32_t load_layer_start = opt->load_layer_start;
@@ -73411,7 +73543,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
-        model_open(&e->vision_model, opt->vision_path, true, false);
+        sidecar_model_open(&e->vision_model, g_host_vision_dir,
+                           opt->vision_path, true, false);
         if (v41_sidecar) {
             /* The sidecar carries the DeepSeek-ViT + aligner and the per-layer
              * image-row router bias (blk.N.exp_probs_b_vl).  Its own metadata
@@ -73436,7 +73569,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (snprintf(audio, sizeof(audio), "%.*saudio-q8_0.gguf", dir, opt->vision_path) >= (int)sizeof(audio)) {
                 ds4_die("MiMo VQ audio part path too long");
             }
-            model_open(&e->audio_model, audio, true, false);
+            sidecar_model_open(&e->audio_model, g_host_audio_dir,
+                               opt->audio_path ? opt->audio_path : audio, true, false);
             mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
@@ -73511,7 +73645,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4 &&
         opt->distributed.role == DS4_DISTRIBUTED_NONE) {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0])
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
             dspark_path = getenv("DS4_DSPARK_MODEL");
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
@@ -73532,7 +73666,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * this window so mtp names resolve by index and the layout check
          * above skips (the host already ran the expected-layout table). */
         if (g_host_mtp_bind_map) ds4_host_bind_map_install(g_host_mtp_bind_map);
-        model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
+        sidecar_model_open(&e->mtp_model, g_host_mtp_dir, opt->mtp_path,
+                           graph_backend, true);
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
             inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
             if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
@@ -73595,7 +73730,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
      * runs attach it without threading a flag through every tool yet. */
     {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0]) dspark_path = getenv("DS4_DSPARK_MODEL");
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
+            dspark_path = getenv("DS4_DSPARK_MODEL");
         if (dspark_path && dspark_path[0] &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE) {
             /* The host dspark map indexes the flag path's tensor dir; an
@@ -73603,7 +73739,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              * explicit-path case installs it (the bridge sets both). */
             if (g_host_dspark_bind_map && opt->dspark_path && opt->dspark_path[0])
                 ds4_host_bind_map_install(g_host_dspark_bind_map);
-            model_open(&e->dspark_model, dspark_path, graph_backend, true);
+            sidecar_model_open(&e->dspark_model, g_host_dspark_dir, dspark_path,
+                               graph_backend, true);
             if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
                 ds4_str arch = {0};
                 if (e->mtp_draft_tokens > N05_DF_BLOCK - 1 ||
@@ -73739,7 +73876,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if (e->dspark_ready) {
             const char *dspark_prov = opt->dspark_path && opt->dspark_path[0]
-                ? opt->dspark_path : getenv("DS4_DSPARK_MODEL");
+                ? opt->dspark_path : opt->host_policy ? NULL : getenv("DS4_DSPARK_MODEL");
             (void)ds4_gpu_model_source_bind(e->dspark_model.map,
                                             e->dspark_model.size,
                                             DS4_MSRC_ROLE_DRAFTER,
@@ -73812,6 +73949,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
 #endif
         int model_map_ok = 0;
+        bool budget_ok = true; /* --mem-budget-mb L1 gate */
         if (opt->ssd_streaming) {
             ds4_model_map_span_vec spans;
             if (!glm53_stream_spans(&e->weights, &spans)) {
@@ -73877,8 +74015,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     load_end,
                     spans.len,
                     (double)span_bytes / 1073741824.0);
-            ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
-            model_map_ok = ds4_gpu_set_model_map_spans(e->model.map,
+            budget_ok = ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_spans(e->model.map,
                                                         e->model.size,
                                                         offsets,
                                                         sizes,
@@ -73908,16 +74046,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                         resident += spans.v[i].end - spans.v[i].off;
                     }
                     free(spans.v);
-                    ds4_l1_budget_gate(resident, 0);
+                    budget_ok = ds4_l1_budget_gate(resident, 0);
                 }
             } else {
-                ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
+                budget_ok = ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
             }
-            model_map_ok = ds4_gpu_set_model_map_range(e->model.map,
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_range(e->model.map,
                                                        e->model.size,
                                                        e->model.tensor_data_pos,
                                                        e->model.size - e->model.tensor_data_pos,
                                                        e->model.max_tensor_bytes);
+        }
+        if (!budget_ok) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
         }
         if (!model_map_ok) {
             fprintf(stderr,
@@ -74298,8 +74441,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #ifdef __GLIBC__
     /* Freed load buffers (16 MiB O_DIRECT reads per part) stay in glibc's
      * arenas once its mmap threshold rises: 0.75 GiB of a Ling-3.1 server's
-     * RSS. Return them before callers fit banks from free memory. */
-    malloc_trim(0);
+     * RSS. Return them before callers fit banks from free memory; a Rust
+     * host trims after open returns. */
+    if (!opt->host_policy) malloc_trim(0);
 #endif
 
     *out = e;
@@ -74395,22 +74539,43 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     ds4_glm53_vision_host host = {0};
     if (!glm53_vision_host_prepare(
             encoded, encoded_len, &host, error, error_cap)) return 0;
-    float *embedding = xmalloc((size_t)host.info.token_count * 4096u * sizeof(float));
-    const ds4_vision_image_info info = host.info;
-    const int ok = ds4_gpu_glm53_vision_encode(
-            embedding, host.patches, host.info.grid_height,
-            host.info.grid_width, e->vision_model.map, e->vision_model.size,
-            &e->vision_weights);
+    const int ok = ds4_engine_vision_encode_patches(
+            e, host.patches, host.info.grid_height, host.info.grid_width,
+            out, error, error_cap);
     glm53_vision_host_free(&host);
-    if (!ok) {
+    return ok;
+#endif
+}
+
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *error, size_t error_cap) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+#ifdef DS4_NO_GPU
+    (void)e; (void)patches; (void)grid_h; (void)grid_w;
+    if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
+    return 0;
+#else
+    const uint64_t token_count = (uint64_t)grid_h * grid_w / 4u;
+    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        !patches || (grid_h & 1u) || (grid_w & 1u) || token_count == 0u || token_count > 8000u) {
+        if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready or the grid is invalid");
+        return 0;
+    }
+    float *embedding = xmalloc((size_t)token_count * 4096u * sizeof(float));
+    if (!ds4_gpu_glm53_vision_encode(
+            embedding, patches, grid_h, grid_w, e->vision_model.map,
+            e->vision_model.size, &e->vision_weights)) {
         free(embedding);
         if (error && error_cap) snprintf(error, error_cap, "GLM-5.3 vision encoding failed");
         return 0;
     }
     out->data = embedding;
-    out->token_count = info.token_count;
-    out->grid_width = info.grid_width;
-    out->grid_height = info.grid_height;
+    out->token_count = (uint32_t)token_count;
+    out->grid_width = grid_w;
+    out->grid_height = grid_h;
     return 1;
 #endif
 }
@@ -74623,8 +74788,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
                                           uint32_t ctx_size,
                                           uint32_t prefill_cap,
                                           bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
 
     const ds4_context_memory plan =
         solar_graph_context_memory_estimate(backend, ctx_size);
@@ -74644,12 +74808,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long v = atol(he);
-        if (v >= 0) headroom = (uint64_t)v << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74676,8 +74835,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
                                            uint32_t ctx_size,
                                            uint32_t prefill_cap,
                                            bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
     if (backend != DS4_BACKEND_CUDA || ctx_size > DS4_ROPE_ORIG_CTX) {
         return false;
     }
@@ -74700,12 +74858,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long value = atol(he);
-        if (value >= 0) headroom = (uint64_t)value << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74741,8 +74894,7 @@ static bool glm53_graph_session_fit_check(
     if (q) memset(q, 0, sizeof(*q));
     const uint64_t plan = glm53_session_bytes(ctx_size, rows, window, mtp);
     if (backend != DS4_BACKEND_CUDA || plan == 0u) return false;
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74782,8 +74934,7 @@ static bool qwen4exp_graph_session_fit_check(ds4_backend backend,
                                               bool loud,
                                               ds4_session_graph_fit_quote *q) {
     if (q) memset(q, 0, sizeof(*q));
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74860,9 +75011,8 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = iquest_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; } return true;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74887,9 +75037,8 @@ static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling31_memory(ctx, cap).total_bytes + ling31_mtp_bytes(ctx, ling31_session_drafts(e));
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74915,9 +75064,8 @@ static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = beam_memory(ctx, cap).total_bytes + (beam_drafting(e) ? beam_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74938,9 +75086,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = axk2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74959,9 +75106,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 // The serial graph's chunk, halved like a bank's until it fits beside the
 // session headroom.
 static uint32_t axk2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if (e->backend != DS4_BACKEND_CUDA || (fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (e->backend != DS4_BACKEND_CUDA || ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         return cap;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74974,9 +75120,8 @@ static bool minimax_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = minimax_memory(ctx, cap).total_bytes + (minimax_drafting(e) ? minimax_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74997,9 +75142,8 @@ static bool naive_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = naive_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75020,9 +75164,8 @@ static bool mimo2_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = mimo2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75045,9 +75188,8 @@ static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = step37_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75085,9 +75227,8 @@ static bool ling3vl_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling3vl_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75116,9 +75257,8 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     if (e->backend != DS4_BACKEND_CUDA || !need) {
         return false;
     }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) {
             q->fits = 1;
             q->fail_open = 1;
@@ -78166,8 +78306,17 @@ int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len, &info[i],
-                                    err, errlen) != 0) {
+        if (images[i].patches) {
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) {
+                payload_set_err(err, errlen, "invalid Ling image grid");
+                return 1;
+            }
+            info[i] = (ds4_ling3vl_image_info){
+                .resized_width = gw * 16u, .resized_height = gh * 16u,
+                .grid_h = gh, .grid_w = gw, .token_count = gh * gw / 4u};
+        } else if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len,
+                                           &info[i], err, errlen) != 0) {
             return 1;
         }
     }

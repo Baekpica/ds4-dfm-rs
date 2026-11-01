@@ -1696,13 +1696,7 @@ impl ResolvedPlan {
             MaxSeqs::Off => "0".to_string(),
             _ => self.effective.max_seqs.to_string(),
         };
-        let mut out = vec![
-            (
-                "DS4_MEM_FLOOR_GB".into(),
-                self.effective.mem_floor_gb.to_string(),
-            ),
-            ("DS4_SERVER_COALESCE_MAX".into(), coalesce_max),
-        ];
+        let mut out = vec![("DS4_SERVER_COALESCE_MAX".into(), coalesce_max)];
         match self.effective.prefix_reuse {
             ReuseKind::None => {
                 out.push(("DS4_SERVER_FORK".into(), "0".into()));
@@ -4327,7 +4321,6 @@ mod tests {
         assert_eq!(p.effective.max_seqs, 2);
         let env = p.env_overrides();
         assert!(env.iter().any(|(k, v)| k == "DS4_STEP37_BATCH" && v == "1"));
-        assert!(env.iter().any(|(k, _)| k == "DS4_MEM_FLOOR_GB"));
         assert!(p.issues.iter().any(|i| i.code == "prompt_bound"));
     }
 
@@ -4545,14 +4538,11 @@ mod tests {
         let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
         assert_eq!(p.requested.mem_floor_gb, 12);
         assert_eq!(p.effective.mem_floor_gb, 12);
-        assert_eq!(
-            p.env_overrides()
-                .into_iter()
-                .find(|(k, _)| k == "DS4_MEM_FLOOR_GB")
-                .map(|(_, v)| v)
-                .as_deref(),
-            Some("12")
-        );
+        // The floor reaches native as an open option, not through the env.
+        assert!(p
+            .env_overrides()
+            .iter()
+            .all(|(k, _)| k != "DS4_MEM_FLOOR_GB"));
     }
 
     #[test]
