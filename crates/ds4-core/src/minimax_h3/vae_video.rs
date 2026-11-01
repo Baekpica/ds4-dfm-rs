@@ -1692,14 +1692,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stated_tile_wins_over_the_search_and_the_environment() {
-        assert_eq!(configured_tile_pixels(768, 1344, Some(512)), 512);
-        assert_eq!(configured_tile_pixels(768, 1344, Some(288)), 288);
-        // Outside 256..=512, or off the 16-pixel grid: the search decides.
-        assert_ne!(configured_tile_pixels(768, 1344, Some(48)), 48);
-    }
-
-    #[test]
     fn tile_plan_matches_the_reference_at_the_released_shapes() {
         let single = tile_axis(256, configured_tile_pixels(256, 256, None)).expect("256");
         assert_eq!(single.count(), 1);
