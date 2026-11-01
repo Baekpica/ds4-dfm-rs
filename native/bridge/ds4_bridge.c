@@ -1650,34 +1650,6 @@ int ds4_bridge_session_graph_fit_quote(ds4_bridge_model *m, int ctx_size,
     return fits;
 }
 
-int ds4_bridge_encode_chat_prompt(ds4_bridge_model *m, const char *system,
-                                  const char *prompt, int think_mode,
-                                  int32_t *out, int cap, int *n_out,
-                                  char *err, size_t errlen)
-{
-    ds4_tokens tv;
-
-    if (!m || !m->engine) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    if (think_mode < DS4_THINK_NONE || think_mode > DS4_THINK_MAX) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "think_mode out of range");
-        return 1;
-    }
-    if (cap < 0) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "cap is negative");
-        return 1;
-    }
-    memset(&tv, 0, sizeof(tv));
-    ds4_encode_chat_prompt(m->engine, system, prompt ? prompt : "",
-                           (ds4_think_mode)think_mode, &tv);
-    return copy_tokens(&tv, out, cap, n_out, err, errlen);
-}
-
 int ds4_bridge_session_top_logprobs(ds4_bridge_session *s,
                                     ds4_bridge_token_score *out, int k)
 {

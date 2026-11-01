@@ -187,14 +187,13 @@ use std::ptr::{self, NonNull};
 
 use ds4_sys::{
     ds4_bridge_bind_plan, ds4_bridge_bind_plan_check, ds4_bridge_bind_slot,
-    ds4_bridge_distributed_options, ds4_bridge_encode_chat_prompt, ds4_bridge_eval,
-    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio,
-    ds4_bridge_inkling_pixels, ds4_bridge_model, ds4_bridge_model_boot_prewarm,
-    ds4_bridge_model_free, ds4_bridge_model_open, ds4_bridge_model_open_distributed,
-    ds4_bridge_model_open_options, ds4_bridge_model_run_distributed_worker,
-    ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
-    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
-    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_distributed_options, ds4_bridge_eval, ds4_bridge_eval_speculative_argmax,
+    ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio, ds4_bridge_inkling_pixels,
+    ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
+    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
+    ds4_bridge_model_run_distributed_worker, ds4_bridge_model_vision_probe, ds4_bridge_session,
+    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
+    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -2474,24 +2473,24 @@ impl Model {
         prompt: &[u8],
         think_mode: i32,
     ) -> Result<TokenBuffer> {
+        let mode = match think_mode {
+            0 => ChatThinkMode::None,
+            1 => ChatThinkMode::Low,
+            2 => ChatThinkMode::High,
+            3 => ChatThinkMode::Max,
+            _ => {
+                return Err(Error {
+                    code: 1,
+                    message: "invalid thinking mode".into(),
+                })
+            }
+        };
         if self.chat_template.is_some() || self.family != ModelFamily::DeepSeek4 {
             let text = |bytes| {
                 std::str::from_utf8(bytes).map_err(|e| Error {
                     code: 1,
                     message: format!("chat template input is not UTF-8: {e}"),
                 })
-            };
-            let mode = match think_mode {
-                0 => ChatThinkMode::None,
-                1 => ChatThinkMode::Low,
-                2 => ChatThinkMode::High,
-                3 => ChatThinkMode::Max,
-                _ => {
-                    return Err(Error {
-                        code: 1,
-                        message: "invalid thinking mode".into(),
-                    })
-                }
             };
             let mut messages = Vec::new();
             if let Some(system) = system.filter(|s| !s.is_empty()) {
@@ -2500,40 +2499,12 @@ impl Model {
             messages.push(serde_json::json!({"role":"user", "content":text(prompt)?}));
             return self.encode_messages(&messages, mode);
         }
-        let c_system = match system {
-            Some(s) => Some(CString::new(s).map_err(|_| Error {
+        self.vocab
+            .encode_deepseek_prompt(system, prompt, mode)
+            .map_err(|e| Error {
                 code: 1,
-                message: "system contains NUL".into(),
-            })?),
-            None => None,
-        };
-        let c_prompt = CString::new(prompt).map_err(|_| Error {
-            code: 1,
-            message: "prompt contains NUL".into(),
-        })?;
-        // BPE merges only shrink and specials add a bounded prefix.
-        let cap = prompt.len() + system.map_or(0, <[u8]>::len) + 256;
-        let mut out = vec![0i32; cap];
-        let mut n_out = 0i32;
-        let mut err = [0u8; 256];
-        let rc = unsafe {
-            ds4_bridge_encode_chat_prompt(
-                self.raw.as_ptr(),
-                c_system.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
-                c_prompt.as_ptr(),
-                think_mode,
-                out.as_mut_ptr(),
-                cap as i32,
-                &mut n_out,
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
-        };
-        if rc != 0 {
-            return Err(fail(rc, &err));
-        }
-        out.truncate(n_out.max(0) as usize);
-        Ok(TokenBuffer::from_tokens(out))
+                message: format!("DeepSeek prompt encode failed: {e}"),
+            })
     }
 
     pub fn tokenize_text(&self, text: &str) -> Result<TokenBuffer> {

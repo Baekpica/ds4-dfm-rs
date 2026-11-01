@@ -1276,18 +1276,6 @@ extern "C" {
         q: *mut ds4_bridge_graph_fit_quote,
     ) -> c_int;
 
-    pub fn ds4_bridge_encode_chat_prompt(
-        m: *mut ds4_bridge_model,
-        system: *const c_char,
-        prompt: *const c_char,
-        think_mode: c_int,
-        out: *mut i32,
-        cap: c_int,
-        n_out: *mut c_int,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
     pub fn ds4_bridge_session_copy_logits(
         s: *mut ds4_bridge_session,
         out: *mut c_float,

@@ -539,13 +539,6 @@ typedef struct ds4_bridge_graph_fit_quote {
 int ds4_bridge_session_graph_fit_quote(ds4_bridge_model *m, int ctx_size,
                                        ds4_bridge_graph_fit_quote *q);
 
-/* CLI chat-template encode (ds4_encode_chat_prompt): system may be NULL,
- * think_mode is ds4_think_mode 0..3.  Same buffer contract as tokenize. */
-int ds4_bridge_encode_chat_prompt(ds4_bridge_model *m, const char *system,
-                                  const char *prompt, int think_mode,
-                                  int32_t *out, int cap, int *n_out,
-                                  char *err, size_t errlen);
-
 /* Post-prefill distribution head (proof harness --dump-logprobs).
  * Copies up to k entries; returns the count, -1 on a NULL session. */
 typedef struct {
