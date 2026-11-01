@@ -280,7 +280,9 @@ impl Engine {
             .ok_or_else(|| EngineError::new("--steps is outside 2..=1000"))?;
         let selected = reuse_schedule(request.steps, request.reuse)
             .ok_or_else(|| EngineError::new("--reuse is outside 1..=32"))?;
-        let evaluated = selected.iter().filter(|flag| **flag).count();
+        // The refine evaluates once and is not part of the serving schedule, so
+        // the count is added where the route is known.
+        let mut evaluated = selected.iter().filter(|flag| **flag).count();
 
         let shape = temporal(frame_count);
         let (latent_w, latent_h) = canvas.latent();
@@ -566,6 +568,7 @@ impl Engine {
             refine_seconds = refine_started.elapsed().as_secs_f64();
             audio_frozen = fnv_f32(&audio) == draft_audio_hash;
             video = latent;
+            evaluated += 1;
         }
         let denoise_seconds = draft_seconds + refine_seconds;
 

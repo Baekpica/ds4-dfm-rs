@@ -798,11 +798,23 @@ impl Upscaler {
     /// scale` folded in so the device affine is one multiply and one add. Each
     /// block has its own `emb_layers`, so this is per block; the 64-wide
     /// `embed` is the only part the blocks share.
+    ///
+    /// `emb_layers` is **`nn.SiLU()` then `nn.Linear`** - the activation is
+    /// inside the block's own sequential, not in the shared embed MLP
+    /// (`minimax_h3_latent_upscaler_3d.py:168-170`). Applying the linear to the
+    /// raw embedding leaves every block's modulation wrong, and eighteen
+    /// blocks of `h * (1 + scale) + shift` compound it into a field that is
+    /// mostly a per-channel constant: the first two-stage clip decoded to a
+    /// lattice because of exactly this.
     fn modulation(&self, block: &ResBlock, embed: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let width = WIDTH as usize;
+        let mut activated = vec![0.0f32; embed.len()];
+        for (value, hidden) in activated.iter_mut().zip(embed) {
+            *value = *hidden / (1.0 + (-*hidden).exp());
+        }
         let mut projected = block.emb_bias.clone();
         for (row, value) in projected.iter_mut().enumerate() {
-            for (column, hidden) in embed.iter().enumerate() {
+            for (column, hidden) in activated.iter().enumerate() {
                 *value = block.emb[row * 64 + column].mul_add(*hidden, *value);
             }
         }

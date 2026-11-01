@@ -202,6 +202,26 @@ fn fail<T>(detail: impl Into<String>) -> Result<T, String> {
     Err(detail.into())
 }
 
+/// The output's overall deviation over the input's: one for a graph that
+/// returns a latent of the input's own scale, and far from one for a graph
+/// that has lost it.
+fn deviation_ratio(input: &[f32], output: &[f32]) -> f64 {
+    let spread = |values: &[f32]| -> f64 {
+        let mean = values.iter().map(|value| *value as f64).sum::<f64>() / values.len() as f64;
+        let variance = values
+            .iter()
+            .map(|value| (*value as f64 - mean).powi(2))
+            .sum::<f64>()
+            / values.len() as f64;
+        variance.sqrt()
+    };
+    let denominator = spread(input);
+    if denominator == 0.0 {
+        return f64::INFINITY;
+    }
+    spread(output) / denominator
+}
+
 fn run(dir: &Path, d: Dims) -> Result<(), String> {
     let store = Store::open(dir, "latent upscaler")?;
 
@@ -260,7 +280,7 @@ fn run(dir: &Path, d: Dims) -> Result<(), String> {
         if output.time != d.time || output.height != d.out_height || output.width != d.out_width {
             return fail(format!(
                 "geometry {}x{}x{}, expected {}x{}x{}",
-                output.time, output.height, output.width, TIME, HEIGHT_OUT, WIDTH_OUT
+                output.time, output.height, output.width, d.time, d.out_height, d.out_width
             ));
         }
         let mut worst = 0.0f64;
@@ -283,7 +303,25 @@ fn run(dir: &Path, d: Dims) -> Result<(), String> {
         // Each arm names the algorithm it ran on, so a difference between two
         // arms is a difference in arithmetic or in kernel, never in doubt.
         println!("  algo {}", Gpu::lt_algo_report());
-        if relative > bound {
+
+        // A check the transcription cannot make, because a misreading shared
+        // by the transcription and the device would pass the comparison above.
+        // The resizer normalizes per channel and denormalizes with the same
+        // constants, so it returns a latent of the input's own scale: a
+        // deviation ratio far from one is a graph that is not returning a
+        // latent at all, however well it agrees with its own transcription.
+        let spread = deviation_ratio(&latent, &output.values);
+        let plausible = (0.25..=4.0).contains(&spread);
+        println!(
+            "  scale output/input deviation {spread:.3}  {}",
+            if plausible {
+                "ok"
+            } else {
+                "FAIL: not a latent's own scale"
+            }
+        );
+
+        if relative > bound || !plausible {
             failed = true;
         }
     }
@@ -623,8 +661,11 @@ fn reference(store: &Store, latent: &[f32], d: Dims) -> Result<Volume, String> {
                         width_in,
                         width,
                     );
+                    // `emb_layers` is `SiLU()` then `Linear` and the SiLU is
+                    // the block's own (`:168-170`): the shared `embed` is not
+                    // activated for it.
                     let projected = linear(
-                        &embed,
+                        &silu(&embed),
                         &load(store, &format!("{prefix}.emb_layers.1.weight"))?,
                         &load(store, &format!("{prefix}.emb_layers.1.bias"))?,
                         1,
