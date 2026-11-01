@@ -63,7 +63,6 @@ freeze or permission to bind native internals.
 | Function | Meaning |
 |---|---|
 | `ds4_bridge_bind_plan_check` | host inventory + required-name table; 0 if native can consume it |
-| `ds4_bridge_bind_plan_match` | host vs native slot identity (name/need/found/type/dims/offsets/bytes/shard + remap) |
 | `ds4_bridge_model_open` | mmap-backed `ds4_engine_open`; optional `opt->plan` is checked first; optional `opt->tensors` replaces `parse_tensors` (owned name copies); optional `opt->shape` applies the pinned C literal + DeepSeek compress table and skips `config_validate_model`; optional `opt->vocab` applies host token/merge/specials and skips `vocab_load`; optional `opt->bind` is the host name→tensor-dir index so `model_find_tensor` skips the C name walk and the main-model `weights_validate_layout` |
 | `ds4_bridge_model_boot_prewarm` | idempotent `ds4_engine_boot_prewarm`; server calls it after batch placement and before listen/accept |
 | `ds4_bridge_model_free` | `ds4_engine_close` |
@@ -81,24 +80,16 @@ freeze or permission to bind native internals.
 | `ds4_bridge_ling31_trial` | Ling-3.1 recursive drafts and one batched verify; borrowed token/target outputs, 0 for ordinary fallback and -1 on failure |
 | `ds4_bridge_ling31_commit` | keep the accepted prefix of the pending trial; reject rows roll back without re-forward |
 | `ds4_bridge_session_argmax` | greedy next id |
-| `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
 | `ds4_bridge_session_ctx` | session context length |
 | `ds4_bridge_session_rewind` | `ds4_session_rewind` |
 | `ds4_bridge_session_invalidate` | `ds4_session_invalidate` |
 | `ds4_bridge_session_generation` | Inc 5a content generation |
 | `ds4_bridge_session_prefill_cap` | chunk cap used by the native graph |
 | `ds4_bridge_session_exaone_rewind_span` | EXAONE sliding-window reuse span |
-| `ds4_bridge_session_sample` | `ds4_session_sample` (caller-owned rng) |
 | `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials hand their verify rows to the host's `verify` callback (sample-and-match) until cleared (NULL); `ud` must outlive those trials |
 | `ds4_bridge_session_save_payload` | path wrapper over `ds4_session_save_payload` (native writes header+tokens+GPU tail) |
 | `ds4_bridge_session_load_payload` | path wrapper; `payload_bytes` = file size |
 | `ds4_bridge_session_load_payload_range` | path + checked `offset`/`length`; native consumes exactly that embedded DSV4 range |
-| `ds4_bridge_tokenize_text` | caller-owned `int32_t *` + cap + `n_out` |
-| `ds4_bridge_tokenize_rendered_chat` | same buffer contract, special-token path |
-| `ds4_bridge_token_text` | caller-owned byte buffer; C frees the malloc |
-| `ds4_bridge_token_eos` | engine EOS / family EOT |
-| `ds4_bridge_token_is_stop` | `ds4_token_is_stop` (1/0) |
-| `ds4_bridge_model_id` | `ds4_engine_model_id` (syntax dispatch) |
 | `ds4_bridge_spec_snapshot` | cumulative process-global draft/hit/quench counters; individually atomic reads into caller-owned POD |
 | `ds4_bridge_mem_census_snap` | process-global CUDA census image (seqlock + last-stable torn cache); `supported=0` when the backend keeps no census |
 | `ds4_bridge_mem_observe_snap` | typed observation (`status`/`source` + free/total/cuda_free/meminfo) |
@@ -166,8 +157,8 @@ tails stay native.
 The Inc 5 continuation registry (`ds4-server::ContRegistry`) is
 host-owned: publish / resolve / hold / pin / TTL / bank claim do not
 cross FFI. Weight bind and native prefill/eval still go through the
-bridge. `Model` tokenize/stop/eos/`token_text` use the host `Vocab`.
-The bridge tokenize helpers remain for the C engine path.
+bridge. `Model` tokenize/stop/eos/`token_text`, chat prompts and sampling
+use the host `Vocab` and sampler; the bridge carries no tokenizer entry.
 
 Open options stay a small C struct of scalars, `const char *`
 paths, and optional borrowed plan/tensor-dir/shape/vocab/bind pointers

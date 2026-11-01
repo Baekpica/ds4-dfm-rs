@@ -169,9 +169,6 @@ typedef struct {
 
 int ds4_bridge_bind_plan_check(const ds4_bridge_bind_plan *plan,
                                char *err, size_t errlen);
-int ds4_bridge_bind_plan_match(const ds4_bridge_bind_plan *host,
-                               const ds4_bridge_bind_plan *native,
-                               char *err, size_t errlen);
 
 int ds4_bridge_model_open(ds4_bridge_model **out,
                           const ds4_bridge_model_open_options *opt,
@@ -181,12 +178,6 @@ int ds4_bridge_model_open_distributed(
         const ds4_bridge_model_open_options *opt,
         const ds4_bridge_distributed_options *distributed,
         char *err, size_t errlen);
-/* Worker mode stays on the proven C DS4D runtime for this first strangler
- * slice.  Rust owns parsing/lifecycle; wire bytes, reconnect, telemetry,
- * prefetch, forwarding, and snapshot behavior remain unchanged. */
-int ds4_bridge_model_run_distributed_worker(ds4_bridge_model *m,
-                                            int32_t ctx_size,
-                                            char *err, size_t errlen);
 void ds4_bridge_model_boot_prewarm(ds4_bridge_model *m);
 void ds4_bridge_model_free(ds4_bridge_model *m);
 /* Successful drafter IPC import; absence/fallback returns zero. */
@@ -444,7 +435,6 @@ int ds4_bridge_session_layer_slice_reset(ds4_bridge_session *s,
 int ds4_bridge_session_argmax(ds4_bridge_session *s);
 int ds4_bridge_session_argmax_excluding(ds4_bridge_session *s,
                                         int32_t excluded_id);
-int ds4_bridge_session_pos(ds4_bridge_session *s);
 int ds4_bridge_session_ctx(ds4_bridge_session *s);
 /* 1 while the S6 lazy graph alloc is still deferred; a pending session can be
  * re-created at a different ctx for free (ds4_session_graph_pending). */
@@ -459,9 +449,6 @@ int ds4_bridge_session_exaone_rewind_span(ds4_bridge_session *s);
 /* 1 ready, 0 still incomplete, -1 error (same as ds4.h). */
 int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
                                                char *err, size_t errlen);
-int ds4_bridge_session_sample(ds4_bridge_session *s,
-                              float temperature, int top_k, float top_p, float min_p,
-                              uint64_t *rng);
 /* The host's sample-and-match over one trial's verify rows. */
 typedef void (*ds4_bridge_spec_verify_fn)(void *ud, const float *rows, size_t stride,
                                           uint32_t vocab, const int32_t *tokens, uint32_t n,
@@ -508,22 +495,6 @@ int ds4_bridge_session_save_snapshot(ds4_bridge_session *s,
 int ds4_bridge_session_load_snapshot(ds4_bridge_session *s,
                                      const ds4_bridge_snapshot *snap,
                                      char *err, size_t errlen);
-
-/* Caller-owned token / text buffers.  n_out is always written on a
- * successful length discovery, including the "buffer too small" error. */
-int ds4_bridge_tokenize_text(ds4_bridge_model *m, const char *text,
-                             int32_t *out, int cap, int *n_out,
-                             char *err, size_t errlen);
-int ds4_bridge_tokenize_rendered_chat(ds4_bridge_model *m, const char *text,
-                                      int32_t *out, int cap, int *n_out,
-                                      char *err, size_t errlen);
-int ds4_bridge_token_text(ds4_bridge_model *m, int32_t token,
-                          char *out, size_t cap, size_t *n_out,
-                          char *err, size_t errlen);
-int ds4_bridge_token_eos(ds4_bridge_model *m);
-int ds4_bridge_token_is_stop(ds4_bridge_model *m, int32_t token);
-int ds4_bridge_model_id(ds4_bridge_model *m);
-int ds4_bridge_model_routed_quant_bits(ds4_bridge_model *m);
 
 /* Thin wrap of ds4_engine_session_graph_fit_quote. Fields match the
  * native quote; this ABI is copied, not the ds4.h layout. */

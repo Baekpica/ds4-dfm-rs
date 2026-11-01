@@ -14,7 +14,6 @@
 extern unsigned bridge_payload_load_calls;
 extern int64_t bridge_payload_load_offset;
 extern uint64_t bridge_payload_load_bytes;
-extern int bridge_routed_quant_bits;
 extern unsigned bridge_boot_prewarm_calls;
 extern int bridge_drafter_shared;
 extern int bridge_sync_rc;
@@ -40,12 +39,8 @@ extern int bridge_cont_run;
 extern ds4_cont_seq_stats bridge_cont_stats;
 extern int bridge_dist_open_enabled;
 extern int bridge_dist_prepare_calls;
-extern int bridge_dist_run_calls;
-extern int bridge_dist_run_ctx;
-extern int bridge_dist_run_result;
 extern int bridge_dist_route_ready;
 extern ds4_engine_options bridge_dist_engine_options;
-extern ds4_dist_options bridge_dist_run_options;
 
 struct ds4_bridge_model {
     ds4_engine *engine;
@@ -115,8 +110,6 @@ int main(void) {
     char err[64];
     int32_t toks[4];
     int n = -1;
-    char text[8];
-    size_t tn = 99;
     uint64_t rng = 1;
 
     {
@@ -169,35 +162,6 @@ int main(void) {
     }
 
     memset(err, 0, sizeof(err));
-    if (ds4_bridge_tokenize_text(NULL, "hi", toks, 4, &n, err, sizeof(err)) == 0)
-        fail("tokenize_text NULL model");
-    if (n != 0) fail("tokenize_text n_out");
-    if (!strstr(err, "NULL")) fail("tokenize_text err");
-
-    memset(err, 0, sizeof(err));
-    n = -1;
-    if (ds4_bridge_tokenize_rendered_chat(NULL, "hi", toks, 4, &n, err, sizeof(err)) == 0)
-        fail("tokenize_chat NULL model");
-    if (n != 0) fail("tokenize_chat n_out");
-
-    memset(err, 0, sizeof(err));
-    if (ds4_bridge_token_text(NULL, 1, text, sizeof(text), &tn, err, sizeof(err)) == 0)
-        fail("token_text NULL model");
-    if (tn != 0) fail("token_text n_out");
-
-    if (ds4_bridge_token_eos(NULL) != -1) fail("token_eos");
-    if (ds4_bridge_token_is_stop(NULL, 1) != 0) fail("token_is_stop");
-    if (ds4_bridge_model_id(NULL) != -1) fail("model_id");
-    if (ds4_bridge_model_routed_quant_bits(NULL) != 0) fail("routed_quant_bits NULL");
-    memset(err, 0, sizeof(err));
-    if (ds4_bridge_model_run_distributed_worker(NULL, 4096,
-                                                err, sizeof(err)) == 0) {
-        fail("distributed worker NULL model");
-    }
-    if (!strstr(err, "NULL")) {
-        fail("distributed worker NULL err");
-    }
-    memset(err, 0, sizeof(err));
     if (ds4_bridge_session_distributed_route_ready(NULL,
                                                    err, sizeof(err)) != -1) {
         fail("distributed route NULL session");
@@ -212,10 +176,7 @@ int main(void) {
     {
         ds4_engine *fake_native = malloc(1);
         struct ds4_bridge_model fake = {fake_native};
-        if (!fake_native) fail("routed_quant_bits fake model");
-        bridge_routed_quant_bits = 4;
-        if (ds4_bridge_model_routed_quant_bits(&fake) != 4)
-            fail("routed_quant_bits delegation");
+        if (!fake_native) fail("fake model");
         ds4_bridge_model_boot_prewarm(&fake);
         if (bridge_boot_prewarm_calls != 1)
             fail("boot_prewarm delegation");
@@ -249,8 +210,6 @@ int main(void) {
 
         bridge_dist_open_enabled = 1;
         bridge_dist_prepare_calls = 0;
-        bridge_dist_run_calls = 0;
-        bridge_dist_run_result = 0;
         memset(err, 0, sizeof(err));
         if (ds4_bridge_model_open_distributed(&model, &open_opt, &dist,
                                               err, sizeof(err)) != 0 || !model) {
@@ -271,20 +230,9 @@ int main(void) {
             !bridge_dist_engine_options.quality) {
             fail("engine tuning option mapping");
         }
-        if (ds4_bridge_model_run_distributed_worker(model, 4096,
-                                                    err, sizeof(err)) != 0) {
-            fail("distributed worker run");
-        }
-        if (bridge_dist_run_calls != 1 || bridge_dist_run_ctx != 4096 ||
-            bridge_dist_run_options.layers.start != 21 ||
-            !bridge_dist_run_options.layers.has_output) {
-            fail("distributed worker run mapping");
-        }
         ds4_bridge_model_free(model);
         bridge_dist_open_enabled = 0;
     }
-    if (ds4_bridge_session_sample(NULL, 1.0f, 0, 1.0f, 0.05f, &rng) != -1)
-        fail("sample");
     if (ds4_bridge_session_set_spec_sampler(NULL, NULL, NULL) != -1)
         fail("set_spec_sampler");
     if (ds4_bridge_session_sample_excluding(NULL, 1.0f, 0, 1.0f,
@@ -319,7 +267,6 @@ int main(void) {
     }
     if (ds4_bridge_session_argmax_excluding(NULL, 7) != -1)
         fail("argmax_excluding");
-    if (ds4_bridge_session_pos(NULL) != -1) fail("pos");
 
     {
         static int32_t prompt[6800];
