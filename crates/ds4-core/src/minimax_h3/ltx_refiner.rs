@@ -1230,6 +1230,14 @@ fn env_mma() -> bool {
     std::env::var_os("H3_LTX_ATTN_MMA").is_some_and(|value| value != "0")
 }
 
+/// `H3_SOL_MMA=1`: the sparse forward on the tensor cores
+/// (`h3d_sol_ltx_forward_mma`) instead of the scalar walk. Off by default for
+/// the same reason `H3_LTX_ATTN_MMA` is: the scalar kernel is what the
+/// one-block golden pinned bit for bit.
+fn env_sol_mma() -> bool {
+    std::env::var_os("H3_SOL_MMA").is_some_and(|value| value != "0")
+}
+
 /// `transformer.py:399-414`: `x = x + ff(rms_norm(x) * (1 + scale) + shift) *
 /// gate`, the FF a `Linear -> GELU(tanh) -> Linear` at `mult` 4
 /// (`feed_forward.py:4-15`, `gelu_approx.py:10-11`).
@@ -1422,17 +1430,35 @@ impl Attention {
                 // The search and the sparse forward are separate kernels with
                 // separate costs, and only the search repeats per tau.
                 stages.lap(gpu, "sol-search")?;
-                gpu.sol_ltx_forward(
-                    &scratch.attention,
-                    policy.plan,
-                    &scratch.query,
-                    &scratch.key,
-                    &scratch.value,
-                    q_rows,
-                    self.heads,
-                    scale,
-                )
-                .map_err(named)?;
+                // `H3_SOL_MMA=1` walks the same plan on the tensor cores:
+                // 64-row query blocks, a mask word's 32-block fold per MMA
+                // pass, exact blocks in block order. The scalar port costs
+                // 430.8 ms of the 638.0 ms block at 4.76 TFLOPS
+                // (`docs/minimax-h3/stage2-attention-cost-2026-11-01.md`).
+                let sparse = if env_sol_mma() {
+                    gpu.sol_ltx_forward_mma(
+                        &scratch.attention,
+                        policy.plan,
+                        &scratch.query,
+                        &scratch.key,
+                        &scratch.value,
+                        q_rows,
+                        self.heads,
+                        scale,
+                    )
+                } else {
+                    gpu.sol_ltx_forward(
+                        &scratch.attention,
+                        policy.plan,
+                        &scratch.query,
+                        &scratch.key,
+                        &scratch.value,
+                        q_rows,
+                        self.heads,
+                        scale,
+                    )
+                };
+                sparse.map_err(named)?;
             }
             None => {
                 // `H3_LTX_ATTN_MMA=1` swaps the dense core for the token-major

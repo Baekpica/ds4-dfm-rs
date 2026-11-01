@@ -658,6 +658,22 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    /// `h3d_sol_ltx_forward` on the tensor cores: the tower's sparse walk with
+    /// this port's token-major reads. Same plan and mask.
+    fn h3d_sol_ltx_forward_mma(
+        context: *mut Context,
+        output: *mut CTensor,
+        plan: *const SolPlan,
+        query: *const CTensor,
+        key: *const CTensor,
+        value: *const CTensor,
+        sequence: u32,
+        heads: u32,
+        scale: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     fn h3d_add(
         context: *mut Context,
         output: *mut CTensor,
@@ -4185,6 +4201,38 @@ impl Gpu {
                 )
             },
             "Sol-Attn LTX forward",
+        )
+    }
+
+    /// `sol_ltx_forward` on the tensor cores, over the same plan and mask.
+    pub fn sol_ltx_forward_mma(
+        &self,
+        output: &Tensor,
+        plan: &SolPlanBuffers,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        sequence: u32,
+        heads: u32,
+        scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_sol_ltx_forward_mma(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    &plan.plan,
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    sequence,
+                    heads,
+                    scale,
+                    error,
+                    size,
+                )
+            },
+            "Sol-Attn LTX forward (mma)",
         )
     }
 

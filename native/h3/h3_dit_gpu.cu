@@ -7063,6 +7063,27 @@ __device__ __forceinline__ static void h3d_sol_stage(
     }
 }
 
+/* `h3d_sol_stage` for a token-major `[rows][heads][128]` source, the refiner's
+ * layout (`h3d_sol_ltx_pool_kernel`'s read). The only difference is the index:
+ * the head is the stride's inner term here, not its outer one. */
+__device__ __forceinline__ static void h3d_sol_ltx_stage(
+        __nv_bfloat16 (*tile)[H3D_MMA_LD], const __nv_bfloat16 *source,
+        uint32_t head, uint32_t heads, uint32_t rows, uint32_t first,
+        uint32_t count, uint32_t stride, uint32_t thread) {
+    for (uint32_t index = thread; index < count * H3D_MMA_CHUNKS;
+         index += stride) {
+        const uint32_t row = index / H3D_MMA_CHUNKS;
+        const uint32_t chunk = index % H3D_MMA_CHUNKS;
+        const uint32_t at = first + row;
+        uint4 packed = make_uint4(0u, 0u, 0u, 0u);
+        if (at < rows) {
+            packed = *(const uint4 *)(source +
+                ((size_t)at * heads + head) * H3D_SOL_HEAD_DIM + chunk * 8u);
+        }
+        *(uint4 *)&tile[row][chunk * 8u] = packed;
+    }
+}
+
 /* `minBlocksPerMultiprocessor = 3` is load-bearing, not a hint: ptxas then
  * caps the kernel at 168 registers, which is what fits three CTAs of 128
  * threads in the 64K register file. At 176 registers it fits two, and on the
@@ -7813,6 +7834,390 @@ int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
         (const uint32_t *)plan->mask->data, sequence, sequence, heads, blocks,
         h3d_sol_words(sequence), scale);
     return h3d_launch_ok("Sol-Attn LTX forward", error, error_size);
+}
+
+/* -------------------------------------------------------------------------
+ * The same sparse forward on the tensor cores, token-major.
+ *
+ * A port, not a second algorithm. The walk is `h3d_sol_forward_kernel`'s word
+ * for word - one CTA per 64-row query block and head, one warp per 16 of those
+ * rows, a mask word's GROUP of 32 KV blocks folded in a single `P @ vc` pass,
+ * then that group's exact blocks walked in increasing block order - with the
+ * two head-major read indices re-expressed for `[rows][heads][128]`, which is
+ * `h3d_ltx_attention_mma_kernel`'s change exactly. Nothing else moves: the
+ * block mean `kc` and block sum `vc` are already `[head][block][128]`
+ * (`h3d_sol_ltx_pool_kernel`), the mask is already `[q_block][head][word]`,
+ * and the output write is already token-major, so the whole plan is read as
+ * the scalar port left it.
+ *
+ * Why it is worth a kernel: the scalar walk it replaces moves 430.8 ms of the
+ * 638.0 ms refiner block at 4.76 TFLOPS, where the tower's head-major version
+ * of this walk reaches 46-48 TFLOPS on the same shape. The sparse structure is
+ * what makes it cheap rather than the arithmetic: only a mask word's chosen
+ * blocks are walked, and the 32-block fold costs one MMA pass where the scalar
+ * port costs 32.
+ *
+ * The one shape it refuses is the one the scalar port also refuses: the
+ * fragments are cut for head dimension 128, and Sol-Attn is defined at 128
+ * (`sol_attn/interface.py:29-30`).
+ * ------------------------------------------------------------------------- */
+
+__global__ static void __launch_bounds__(H3D_SOLF_WARPS * 32u, 3)
+h3d_sol_ltx_forward_mma_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *query,
+        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        const __nv_bfloat16 *kc, const __nv_bfloat16 *vc,
+        const uint32_t *mask, uint32_t sequence, uint32_t heads,
+        uint32_t blocks, uint32_t words, float scale) {
+    /* The scores' operand tile, aliased per stage: kc while a group's folded
+     * set is summed, then that group's exact key block. */
+    __shared__ __align__(16) __nv_bfloat16 shared_left[H3D_SOL_BLOCK][H3D_MMA_LD];
+    /* The weights' operand tile, aliased the same way: vc, then value. */
+    __shared__ __align__(16) __nv_bfloat16 shared_right[H3D_SOL_BLOCK][H3D_MMA_LD];
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t quad = lane >> 2u;
+    const uint32_t column = (lane & 3u) * 2u;
+    const uint32_t matrix = lane >> 3u;
+    const uint32_t head = blockIdx.y;
+    const uint32_t q_block = blockIdx.x;
+    const float log2_scale = scale * 1.4426950408889634f;
+    const uint32_t first_row = q_block * H3D_SOL_BLOCK + warp * H3D_MMA_M;
+    const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
+    const int live0 = row0 < sequence, live1 = row1 < sequence;
+    /* A row past the end is read from the last real row and never written,
+     * which keeps the CTA's reads in bounds without branching the MMAs. */
+    const uint32_t read0 = live0 ? row0 : sequence - 1u;
+    const uint32_t read1 = live1 ? row1 : sequence - 1u;
+    /* Token-major: the head is the inner term of the row stride. */
+    const __nv_bfloat16 *query0 =
+            query + ((size_t)read0 * heads + head) * H3D_SOL_HEAD_DIM;
+    const __nv_bfloat16 *query1 =
+            query + ((size_t)read1 * heads + head) * H3D_SOL_HEAD_DIM;
+    const uint32_t *plan_word = mask + ((size_t)q_block * heads + head) * words;
+
+    uint32_t a[H3D_MMA_KS][4];
+#pragma unroll
+    for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+        const uint32_t dim = step * 16u + column;
+        a[step][0] = h3d_mma_pair(__bfloat162float(query0[dim]),
+                                  __bfloat162float(query0[dim + 1u]));
+        a[step][1] = h3d_mma_pair(__bfloat162float(query1[dim]),
+                                  __bfloat162float(query1[dim + 1u]));
+        a[step][2] = h3d_mma_pair(__bfloat162float(query0[dim + 8u]),
+                                  __bfloat162float(query0[dim + 9u]));
+        a[step][3] = h3d_mma_pair(__bfloat162float(query1[dim + 8u]),
+                                  __bfloat162float(query1[dim + 9u]));
+    }
+
+    float maximum0 = -INFINITY, maximum1 = -INFINITY;
+    float denominator0 = 0.0f, denominator1 = 0.0f;
+    float result[H3D_MMA_DIMS][4];
+#pragma unroll
+    for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+        result[dim][0] = result[dim][1] = result[dim][2] = result[dim][3] = 0.0f;
+    }
+
+    for (uint32_t word = 0; word < words; ++word) {
+        const uint32_t group_start = word * H3D_SOL_GROUP;
+        const uint32_t rest = blocks - group_start;
+        const uint32_t valid =
+                rest >= H3D_SOL_GROUP ? ~0u : (1u << rest) - 1u;
+        const uint32_t bits = plan_word[word] & valid;
+        const uint32_t folded = valid & ~bits;
+
+        __syncthreads();  /* the previous block's reads of both tiles are done */
+        h3d_sol_stage(shared_left, kc, head, blocks, group_start, H3D_SOL_GROUP,
+                      H3D_SOLF_WARPS * 32u, threadIdx.x);
+        h3d_sol_stage(shared_right, vc, head, blocks, group_start, H3D_SOL_GROUP,
+                      H3D_SOLF_WARPS * 32u, threadIdx.x);
+        __syncthreads();
+
+        /* The folded pass, guarded as `has_approximate` (`fwd.py:256-262`): a
+         * group with nothing folded takes its maximum over columns that are
+         * all masked, so the whole stage is skipped and the running maximum
+         * stands. */
+        if (folded) {
+            float score[H3D_SOLF_POOL][4];
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_POOL; slice++) {
+                score[slice][0] = score[slice][1] = 0.0f;
+                score[slice][2] = score[slice][3] = 0.0f;
+            }
+#pragma unroll
+            for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+                for (uint32_t part = 0; part < H3D_SOLF_POOL / 2; part++) {
+                    const uint32_t row =
+                            part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                    const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                    uint32_t b[4];
+                    h3d_mma_load(b, &shared_left[row][col]);
+                    h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                    h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+                }
+            }
+            /* The scale, then the folded set as the only live columns: -inf is
+             * what the reference's `tl.where(approximate, scores, -inf)`
+             * writes, and it is what zeroes the weights below. */
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_POOL; slice++) {
+                const uint32_t within = slice * 8u + column;
+                score[slice][0] *= log2_scale;
+                score[slice][1] *= log2_scale;
+                score[slice][2] *= log2_scale;
+                score[slice][3] *= log2_scale;
+                if (!(folded & (1u << within))) {
+                    score[slice][0] = -INFINITY;
+                    score[slice][2] = -INFINITY;
+                }
+                if (!(folded & (1u << (within + 1u)))) {
+                    score[slice][1] = -INFINITY;
+                    score[slice][3] = -INFINITY;
+                }
+            }
+            float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_POOL; slice++) {
+                tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+                tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+            }
+            tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+            tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+            tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+            tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+            const float next0 = fmaxf(maximum0, tile0);
+            const float next1 = fmaxf(maximum1, tile1);
+            const float rescale0 = exp2f(maximum0 - next0);
+            const float rescale1 = exp2f(maximum1 - next1);
+
+            float weight[H3D_SOLF_POOL][4];
+            float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_POOL; slice++) {
+                weight[slice][0] = exp2f(score[slice][0] - next0);
+                weight[slice][1] = exp2f(score[slice][1] - next0);
+                weight[slice][2] = exp2f(score[slice][2] - next1);
+                weight[slice][3] = exp2f(score[slice][3] - next1);
+                /* The denominator takes the probability times the block's own
+                 * length, not the probability alone (`fwd.py:126-131`). */
+                const uint32_t within = slice * 8u + column;
+                const float first = h3d_sol_length(group_start + within, sequence);
+                const float second =
+                        h3d_sol_length(group_start + within + 1u, sequence);
+                part0 += weight[slice][0] * first + weight[slice][1] * second;
+                part1 += weight[slice][2] * first + weight[slice][3] * second;
+            }
+            part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+            part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+            part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+            part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+            denominator0 = denominator0 * rescale0 + part0;
+            denominator1 = denominator1 * rescale1 + part1;
+            maximum0 = next0;
+            maximum1 = next1;
+#pragma unroll
+            for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+                result[dim][0] *= rescale0;
+                result[dim][1] *= rescale0;
+                result[dim][2] *= rescale1;
+                result[dim][3] *= rescale1;
+            }
+            /* The fold: P @ vc, P packed from the weights as the A fragments.
+             * A folded block's weight is already zero everywhere the mask does
+             * not set, so this needs no further gating. */
+#pragma unroll
+            for (uint32_t step = 0; step < H3D_SOLF_POOL / 2; step++) {
+                uint32_t p[4];
+                p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+                p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+                p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                    weight[2u * step + 1u][1]);
+                p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                    weight[2u * step + 1u][3]);
+#pragma unroll
+                for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                    const uint32_t row =
+                            step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                    const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                    uint32_t b[4];
+                    h3d_mma_load_trans(b, &shared_right[row][col]);
+                    h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                    h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+                }
+            }
+        }
+
+        /* The group's exact blocks, in increasing block order, one 64-key tile
+         * each (`fwd.py:132-170`). `bits` is the whole CTA's mask word, so the
+         * branch is uniform and the barriers inside stay legal. */
+#pragma unroll 1
+        for (uint32_t offset = 0; offset < H3D_SOL_GROUP; ++offset) {
+            if (!(bits & (1u << offset))) {
+                continue;
+            }
+            const uint32_t kv_first = (group_start + offset) * H3D_SOL_BLOCK;
+            __syncthreads();
+            h3d_sol_ltx_stage(shared_left, key, head, heads, sequence, kv_first,
+                              H3D_SOL_BLOCK, H3D_SOLF_WARPS * 32u, threadIdx.x);
+            h3d_sol_ltx_stage(shared_right, value, head, heads, sequence,
+                              kv_first, H3D_SOL_BLOCK, H3D_SOLF_WARPS * 32u,
+                              threadIdx.x);
+            __syncthreads();
+
+            float score[H3D_SOLF_NS][4];
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_NS; slice++) {
+                score[slice][0] = score[slice][1] = 0.0f;
+                score[slice][2] = score[slice][3] = 0.0f;
+            }
+#pragma unroll
+            for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+                for (uint32_t part = 0; part < H3D_SOLF_NS / 2; part++) {
+                    const uint32_t row =
+                            part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                    const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                    uint32_t b[4];
+                    h3d_mma_load(b, &shared_left[row][col]);
+                    h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                    h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+                }
+            }
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_NS; slice++) {
+                const uint32_t key_index = kv_first + slice * 8u + column;
+                score[slice][0] *= log2_scale;
+                score[slice][1] *= log2_scale;
+                score[slice][2] *= log2_scale;
+                score[slice][3] *= log2_scale;
+                if (key_index >= sequence) {   /* `fwd.py:150-153` */
+                    score[slice][0] = -INFINITY;
+                    score[slice][2] = -INFINITY;
+                }
+                if (key_index + 1u >= sequence) {
+                    score[slice][1] = -INFINITY;
+                    score[slice][3] = -INFINITY;
+                }
+            }
+            float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_NS; slice++) {
+                tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+                tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+            }
+            tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+            tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+            tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+            tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+            const float next0 = fmaxf(maximum0, tile0);
+            const float next1 = fmaxf(maximum1, tile1);
+            const float rescale0 = exp2f(maximum0 - next0);
+            const float rescale1 = exp2f(maximum1 - next1);
+
+            float weight[H3D_SOLF_NS][4];
+            float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+            for (uint32_t slice = 0; slice < H3D_SOLF_NS; slice++) {
+                weight[slice][0] = exp2f(score[slice][0] - next0);
+                weight[slice][1] = exp2f(score[slice][1] - next0);
+                weight[slice][2] = exp2f(score[slice][2] - next1);
+                weight[slice][3] = exp2f(score[slice][3] - next1);
+                part0 += weight[slice][0] + weight[slice][1];
+                part1 += weight[slice][2] + weight[slice][3];
+            }
+            part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+            part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+            part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+            part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+            denominator0 = denominator0 * rescale0 + part0;
+            denominator1 = denominator1 * rescale1 + part1;
+            maximum0 = next0;
+            maximum1 = next1;
+#pragma unroll
+            for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+                result[dim][0] *= rescale0;
+                result[dim][1] *= rescale0;
+                result[dim][2] *= rescale1;
+                result[dim][3] *= rescale1;
+            }
+#pragma unroll
+            for (uint32_t step = 0; step < H3D_SOLF_NS / 2; step++) {
+                uint32_t p[4];
+                p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+                p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+                p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                    weight[2u * step + 1u][1]);
+                p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                    weight[2u * step + 1u][3]);
+#pragma unroll
+                for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                    const uint32_t row =
+                            step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                    const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                    uint32_t b[4];
+                    h3d_mma_load_trans(b, &shared_right[row][col]);
+                    h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                    h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+    if (live0) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row0 * heads + head) * H3D_SOL_HEAD_DIM +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][0] / denominator0);
+            output[at + 1u] = __float2bfloat16(result[dim][1] / denominator0);
+        }
+    }
+    if (live1) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row1 * heads + head) * H3D_SOL_HEAD_DIM +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][2] / denominator1);
+            output[at + 1u] = __float2bfloat16(result[dim][3] / denominator1);
+        }
+    }
+}
+
+int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
+                            const struct h3d_sol_plan *plan,
+                            const h3d_tensor *query, const h3d_tensor *key,
+                            const h3d_tensor *value, uint32_t sequence,
+                            uint32_t heads, float scale, char *error,
+                            size_t error_size) {
+    size_t elements = 0;
+    if (!context || !sequence || !heads ||
+        sequence > UINT32_MAX - (H3D_SOL_BLOCK - 1) ||
+        !h3d_mul_size(sequence, heads, &elements) ||
+        !h3d_mul_size(elements, H3D_SOL_HEAD_DIM, &elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid Sol-Attn forward shape");
+    }
+    if (!h3d_is(output, H3D_BF16, elements) ||
+        !h3d_is(query, H3D_BF16, elements) ||
+        !h3d_is(key, H3D_BF16, elements) ||
+        !h3d_is(value, H3D_BF16, elements) ||
+        !h3d_sol_check(plan, sequence, heads, error, error_size)) {
+        return 0;
+    }
+    const uint32_t blocks = (sequence + H3D_SOL_BLOCK - 1) / H3D_SOL_BLOCK;
+    dim3 grid(blocks, heads);
+    h3d_sol_ltx_forward_mma_kernel<<<grid, H3D_SOLF_WARPS * 32u, 0,
+                                     context->stream>>>(
+        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
+        (const __nv_bfloat16 *)key->data,
+        (const __nv_bfloat16 *)value->data,
+        (const __nv_bfloat16 *)plan->kc->data,
+        (const __nv_bfloat16 *)plan->vc->data,
+        (const uint32_t *)plan->mask->data, sequence, heads, blocks,
+        h3d_sol_words(sequence), scale);
+    return h3d_launch_ok("Sol-Attn LTX forward (mma)", error, error_size);
 }
 
 /* ==========================================================================

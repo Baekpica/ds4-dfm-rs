@@ -1103,6 +1103,16 @@ int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
                         const h3d_tensor *key, const h3d_tensor *value,
                         uint32_t sequence, uint32_t heads, float scale,
                         char *error, size_t error_size);
+/* The same forward on the tensor cores: `h3d_sol_forward_kernel`'s walk -
+ * 64-row query blocks, a 32-block fold per mask word, exact blocks walked in
+ * order - with the token-major reads this port needs. Same plan, same mask,
+ * same numbers up to BF16 fragment rounding; one CTA per 64-query block. */
+int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
+                            const struct h3d_sol_plan *plan,
+                            const h3d_tensor *query, const h3d_tensor *key,
+                            const h3d_tensor *value, uint32_t sequence,
+                            uint32_t heads, float scale, char *error,
+                            size_t error_size);
 
 /* ------------------------------------------------------------------------
  * h3b_* — the H3-to-LTX latent path (`minimax_h3::ltx_adapter`).
