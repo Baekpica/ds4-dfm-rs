@@ -8,6 +8,17 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+## v0.1.5 — 2026-11-01
+
+[Release ledger](docs/releases/v0.1.5.md).
+
+- Adds [MiMo-V2.6-Flash VQ](docs/mimo2-vq.md) (RL and UNCENSORED): GVQ1
+  experts, FP8 full-layer KV, embedded MTP or DFlash, native 1M on the
+  serial lane; MTP context fill from the target ring and E4M3 long prefill.
+- Adds [Ling-3.1-flash-1019 VQ](docs/ling31-flash-vq.md) with 1M YaRN
+  serving, plus Ling-3.1 prefill and MTP decode work.
+- MiniMax-M3.1 VQ prefill and decode work; tool arguments stream and tool
+  projections are validated (issues #116/#117).
 - CI runs four Makefile groups (`ci-lint`, `ci-rust`, `ci-parity`,
   `ci-model-free`) as parallel jobs and holds only checks that cover every
   family; one family's model-free checks are its `gate-<family>` target.
