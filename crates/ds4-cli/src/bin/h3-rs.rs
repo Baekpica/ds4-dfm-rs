@@ -116,6 +116,9 @@ struct Options {
     /// `--vae-workers` (`:1089`): the decode's chunk loop spread over this
     /// many device contexts. One is the reference's own serial loop.
     vae_workers: usize,
+    /// `--vae-tile`: the decoder's spatial tile in pixels. `None` keeps the
+    /// reference's own search, which is what every released shape takes.
+    vae_tile: Option<usize>,
     /// `--crf` / `--preset`: the encoder words on the mux line. The default
     /// is the reference's own pair (`veryfast`, CRF 19), so a request that
     /// says nothing muxes the reference's line.
@@ -436,6 +439,7 @@ fn run() -> Result<ExitCode, String> {
         // decoder on the environment's word.
         vae_arms(&options),
         options.vae_workers,
+        options.vae_tile,
     )
     .map_err(|error| error.to_string())?;
     println!(
@@ -1028,6 +1032,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         jobs: None,
         upscaler: None,
         vae_workers: 1,
+        vae_tile: None,
         encode: Encode::default(),
         preview_dir: None,
         show: false,
@@ -1121,6 +1126,15 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--save-audio" => options.audio_out = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--latent-only" => options.latent_only = true,
             "--jobs" => options.jobs = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--vae-tile" => {
+                let pixels: usize = unsigned(&mut argv, &flag)?
+                    .try_into()
+                    .map_err(|_| "--vae-tile is out of range".to_string())?;
+                if !(256..=512).contains(&pixels) || !pixels.is_multiple_of(16) {
+                    return Err("--vae-tile is 256-512, a multiple of 16".to_string());
+                }
+                options.vae_tile = Some(pixels);
+            }
             "--vae-workers" => {
                 options.vae_workers = unsigned(&mut argv, &flag)?
                     .try_into()
@@ -1180,7 +1194,12 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
                 options.vae_gemm = Some(match value(&mut argv, &flag)?.as_str() {
                     "fp32" => VaeGemm::Fp32,
                     "bf16" => VaeGemm::Reduced,
-                    other => return Err(format!("--vae-gemm must be fp32 or bf16, not {other}")),
+                    "bf16i" => VaeGemm::Full,
+                    other => {
+                        return Err(format!(
+                            "--vae-gemm must be fp32, bf16 or bf16i, not {other}"
+                        ))
+                    }
                 })
             }
             "--text-nvfp4" => {
@@ -1379,6 +1398,11 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --preview-dir PATH        write one PPM preview per denoising step
   --vae-workers N           decode the video through N device contexts, 1-64
                             (default 1, the reference's serial chunk loop)
+  --vae-tile N              the decoder's spatial tile in pixels, 256-512,
+                            a multiple of 16 (default: the reference's search)
+  --vae-gemm fp32|bf16|bf16i  the decoder's GEMM class: fp32 is the reference,
+                            bf16 narrows the compute, bf16i narrows the
+                            operands too and is the fastest storage arm
   --crf N                   x264 quality, 0-51 (default 19, the reference's)
   --preset NAME             x264 preset (default veryfast, the reference's);
                             slow and veryslow keep far more fine texture

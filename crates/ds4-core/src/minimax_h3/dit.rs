@@ -836,7 +836,13 @@ pub enum VaeAttention {
 pub enum VaeGemm {
     #[default]
     Fp32,
+    /// F32 storage, tensor-core compute: the reference's `FAST_16BF` class.
     Reduced,
+    /// BF16 operands and a BF16 output, the `bf16i` arm. Halves the bytes the
+    /// block GEMMs move and is priced at 3.6 ms against 11.3 ms a block
+    /// (`tests/h3/vae_gemm_bm`); the output is narrowed, so it is a rounding
+    /// arm like `Reduced`, not the reference's class.
+    Full,
 }
 
 /// How the core runs: residency, active block count and token pairing
@@ -1835,6 +1841,7 @@ impl Dit {
                 match gemm {
                     VaeGemm::Fp32 => "fp32",
                     VaeGemm::Reduced => "bf16",
+                    VaeGemm::Full => "bf16i",
                 },
             )
             .map_err(DitError::Gpu)?;

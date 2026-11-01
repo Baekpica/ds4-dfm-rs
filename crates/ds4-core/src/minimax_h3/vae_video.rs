@@ -180,7 +180,14 @@ fn tile_count_for_extent(extent: usize, tile_pixels: usize) -> usize {
 /// smallest `tiles * pixels^2`, searching 256..=320 in 16-pixel steps. The
 /// override is the reference's, not this port's: it is how the release picks a
 /// tile size the search cannot, and the only way to ask for one tile.
-fn configured_tile_pixels(height: usize, width: usize) -> usize {
+fn configured_tile_pixels(height: usize, width: usize, stated: Option<usize>) -> usize {
+    if let Some(pixels) = stated {
+        let allowed = (TILE_PIXELS..=TILE_PIXELS_MAX).contains(&pixels)
+            && pixels.is_multiple_of(SPATIAL_RATIO);
+        if allowed {
+            return pixels;
+        }
+    }
     if let Some(value) = std::env::var_os("H3_VAE_TILE_PIXELS") {
         let text = value.to_string_lossy();
         if !text.is_empty() {
@@ -250,7 +257,7 @@ fn tile_axis(extent: usize, tile_pixels: usize) -> Result<TileAxis, VaeError> {
 /// the tile counts. Exposed so a gate can report what it measured instead of
 /// inferring it from the timing line.
 pub fn tile_plan(pixel_h: usize, pixel_w: usize) -> Result<(usize, usize, usize), VaeError> {
-    let pixels = configured_tile_pixels(pixel_h, pixel_w);
+    let pixels = configured_tile_pixels(pixel_h, pixel_w, None);
     let y_axis = tile_axis(pixel_h, pixels)?;
     let x_axis = tile_axis(pixel_w, pixels)?;
     Ok((pixels, y_axis.count(), x_axis.count()))
@@ -335,6 +342,7 @@ fn apply_arms(gpu: &Gpu, arms: Arms) -> Result<(), VaeError> {
             match gemm {
                 VaeGemm::Fp32 => "fp32",
                 VaeGemm::Reduced => "bf16",
+                VaeGemm::Full => "bf16i",
             },
         )?;
     }
@@ -1263,7 +1271,7 @@ impl PreviewDecoder {
         }
         let pixel_h = latent_h * SPATIAL_RATIO;
         let pixel_w = latent_w * SPATIAL_RATIO;
-        let tile_pixels = configured_tile_pixels(pixel_h, pixel_w);
+        let tile_pixels = configured_tile_pixels(pixel_h, pixel_w, None);
         let y_axis = tile_axis(pixel_h, tile_pixels)?;
         let x_axis = tile_axis(pixel_w, tile_pixels)?;
         let (mean, deviation) = latent_normalization(weight_directory)?;
@@ -1347,6 +1355,7 @@ pub fn decode(
         latent_w,
         arms,
         1,
+        None,
     )
 }
 
@@ -1367,6 +1376,7 @@ pub fn decode_with(
     latent_w: usize,
     arms: Arms,
     workers: usize,
+    tile: Option<usize>,
 ) -> Result<Frames, VaeError> {
     let (chunks, output_frames) = chunk_plan(latent_time)?;
     if latent_h < 1 || latent_w < 1 {
@@ -1374,7 +1384,7 @@ pub fn decode_with(
     }
     let pixel_h = latent_h * SPATIAL_RATIO;
     let pixel_w = latent_w * SPATIAL_RATIO;
-    let tile_pixels = configured_tile_pixels(pixel_h, pixel_w);
+    let tile_pixels = configured_tile_pixels(pixel_h, pixel_w, None);
     let y_axis = tile_axis(pixel_h, tile_pixels)?;
     let x_axis = tile_axis(pixel_w, tile_pixels)?;
     if latent_time == 2 && (y_axis.count() > 1 || x_axis.count() > 1) {
@@ -1674,12 +1684,12 @@ mod tests {
 
     #[test]
     fn tile_plan_matches_the_reference_at_the_released_shapes() {
-        let single = tile_axis(256, configured_tile_pixels(256, 256)).expect("256");
+        let single = tile_axis(256, configured_tile_pixels(256, 256, None)).expect("256");
         assert_eq!(single.count(), 1);
         assert_eq!(single.length, 256);
         assert!(single.overlaps.is_empty());
 
-        let wide = configured_tile_pixels(256, 512);
+        let wide = configured_tile_pixels(256, 512, None);
         assert_eq!(wide, 288);
         let axis = tile_axis(512, wide).expect("wide");
         assert_eq!(axis.count(), 2);
