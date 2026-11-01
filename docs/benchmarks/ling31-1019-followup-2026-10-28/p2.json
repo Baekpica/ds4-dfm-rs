@@ -1,0 +1,761 @@
+{
+  "change": "17 warps cover 544 KDA local tasks without a second iteration",
+  "artifact_manifest_sha256": "940c92ca2d347e47b929dceb7d25acc852f31a58c443e368a78d1484bd4265d9",
+  "corpus_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "same_source_diff_sha256": "360f4ea87de97441f045aee1a3cf1712ae0fcd0073e3f0a484a390cfaef8aacb",
+  "stats": {
+    "prefill_tps": {
+      "off": {
+        "raw": [
+          1185.07,
+          1181.27,
+          1187.96
+        ],
+        "median": 1185.07,
+        "min": 1181.27,
+        "max": 1187.96
+      },
+      "on": {
+        "raw": [
+          1203.63,
+          1189.97,
+          1191.26
+        ],
+        "median": 1191.26,
+        "min": 1189.97,
+        "max": 1203.63
+      },
+      "median_gain_pct": 0.5223320141426235,
+      "paired_gain_pct": [
+        1.5661522104179593,
+        0.7364954667434143,
+        0.2777871308798252
+      ]
+    },
+    "gen_tps": {
+      "off": {
+        "raw": [
+          18.93,
+          18.97,
+          18.92
+        ],
+        "median": 18.93,
+        "min": 18.92,
+        "max": 18.97
+      },
+      "on": {
+        "raw": [
+          18.63,
+          18.39,
+          18.92
+        ],
+        "median": 18.63,
+        "min": 18.39,
+        "max": 18.92
+      },
+      "median_gain_pct": -1.5847860538827252,
+      "paired_gain_pct": [
+        -1.5847860538827252,
+        -3.057459146020025,
+        0.0
+      ]
+    },
+    "memory": {
+      "off": [
+        {
+          "name": "p2-off-1",
+          "min_available_gib": 8.575119018554688,
+          "max_psi_full_avg10": 0.0
+        },
+        {
+          "name": "p2-off-2",
+          "min_available_gib": 8.749008178710938,
+          "max_psi_full_avg10": 0.0
+        },
+        {
+          "name": "p2-off-3",
+          "min_available_gib": 8.870658874511719,
+          "max_psi_full_avg10": 0.0
+        }
+      ],
+      "on": [
+        {
+          "name": "p2-on-1",
+          "min_available_gib": 8.872196197509766,
+          "max_psi_full_avg10": 0.0
+        },
+        {
+          "name": "p2-on-2",
+          "min_available_gib": 8.88100814819336,
+          "max_psi_full_avg10": 0.0
+        },
+        {
+          "name": "p2-on-3",
+          "min_available_gib": 8.755123138427734,
+          "max_psi_full_avg10": 0.0
+        }
+      ]
+    }
+  },
+  "receipts": [
+    {
+      "name": "p2-off-1",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "0"
+      },
+      "start": 1793177136.415343,
+      "end": 1793177223.2568412,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1185.07",
+          "gen_tokens": "128",
+          "gen_tps": "18.93",
+          "gen_tps_ss": "18.94",
+          "first_token_sec": "0.0556",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    },
+    {
+      "name": "p2-on-1",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "1"
+      },
+      "start": 1793177223.6259363,
+      "end": 1793177316.9456253,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1203.63",
+          "gen_tokens": "128",
+          "gen_tps": "18.63",
+          "gen_tps_ss": "18.64",
+          "first_token_sec": "0.0544",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    },
+    {
+      "name": "p2-off-2",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "0"
+      },
+      "start": 1793177405.1503801,
+      "end": 1793177498.33117,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1181.27",
+          "gen_tokens": "128",
+          "gen_tps": "18.97",
+          "gen_tps_ss": "18.97",
+          "first_token_sec": "0.0547",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    },
+    {
+      "name": "p2-on-2",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "1"
+      },
+      "start": 1793177317.2867827,
+      "end": 1793177404.7765527,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1189.97",
+          "gen_tokens": "128",
+          "gen_tps": "18.39",
+          "gen_tps_ss": "18.40",
+          "first_token_sec": "0.0564",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    },
+    {
+      "name": "p2-off-3",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "0"
+      },
+      "start": 1793177498.6921608,
+      "end": 1793177591.7555673,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1187.96",
+          "gen_tokens": "128",
+          "gen_tps": "18.92",
+          "gen_tps_ss": "18.93",
+          "first_token_sec": "0.0550",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    },
+    {
+      "name": "p2-on-3",
+      "controls": {
+        "DS4_GLMVQ_KDA_LOCAL17": "1"
+      },
+      "start": 1793177592.127411,
+      "end": 1793177679.5239627,
+      "status": 0,
+      "rows": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1191.26",
+          "gen_tokens": "128",
+          "gen_tps": "18.92",
+          "gen_tps_ss": "18.93",
+          "first_token_sec": "0.0569",
+          "kvcache_bytes": "336951348"
+        }
+      ],
+      "finite_full_vocab_proof": true
+    }
+  ],
+  "exact_proofs": [
+    {
+      "pair": 1,
+      "proof": "cycles-8192.json",
+      "sha256": "d933b762b6ff0354b9c9c46c45a20d2289d8dfe66743418b75fc4b5274d29084"
+    },
+    {
+      "pair": 1,
+      "proof": "frontier_008192.logits.json",
+      "sha256": "8b594cbd7f29aa8af3430a26c6e187db001f7381e2947a9a5c872c5d1998f09b"
+    },
+    {
+      "pair": 1,
+      "proof": "tokens-8192.json",
+      "sha256": "405bab16bc9d70c36ffeaa23dd8787901aaed422a07768501fc513df852865c8"
+    },
+    {
+      "pair": 2,
+      "proof": "cycles-8192.json",
+      "sha256": "d933b762b6ff0354b9c9c46c45a20d2289d8dfe66743418b75fc4b5274d29084"
+    },
+    {
+      "pair": 2,
+      "proof": "frontier_008192.logits.json",
+      "sha256": "8b594cbd7f29aa8af3430a26c6e187db001f7381e2947a9a5c872c5d1998f09b"
+    },
+    {
+      "pair": 2,
+      "proof": "tokens-8192.json",
+      "sha256": "405bab16bc9d70c36ffeaa23dd8787901aaed422a07768501fc513df852865c8"
+    },
+    {
+      "pair": 3,
+      "proof": "cycles-8192.json",
+      "sha256": "d933b762b6ff0354b9c9c46c45a20d2289d8dfe66743418b75fc4b5274d29084"
+    },
+    {
+      "pair": 3,
+      "proof": "frontier_008192.logits.json",
+      "sha256": "8b594cbd7f29aa8af3430a26c6e187db001f7381e2947a9a5c872c5d1998f09b"
+    },
+    {
+      "pair": 3,
+      "proof": "tokens-8192.json",
+      "sha256": "405bab16bc9d70c36ffeaa23dd8787901aaed422a07768501fc513df852865c8"
+    }
+  ],
+  "isolated_pairs": [
+    {
+      "pair": 1,
+      "variant": "base",
+      "ms": [
+        4.931447,
+        4.88166,
+        4.838877,
+        4.865637,
+        4.839656
+      ],
+      "median": 4.865637
+    },
+    {
+      "pair": 1,
+      "variant": "w17",
+      "ms": [
+        4.786571,
+        4.659335,
+        4.635898,
+        4.723742,
+        4.597541
+      ],
+      "median": 4.659335
+    },
+    {
+      "pair": 2,
+      "variant": "w17",
+      "ms": [
+        4.763263,
+        4.615212,
+        4.659925,
+        4.637771,
+        4.599827
+      ],
+      "median": 4.637771
+    },
+    {
+      "pair": 2,
+      "variant": "base",
+      "ms": [
+        4.966472,
+        4.884432,
+        4.842987,
+        4.80141,
+        4.842422
+      ],
+      "median": 4.842987
+    },
+    {
+      "pair": 3,
+      "variant": "base",
+      "ms": [
+        4.957632,
+        4.847626,
+        4.846512,
+        4.897017,
+        4.819921
+      ],
+      "median": 4.847626
+    },
+    {
+      "pair": 3,
+      "variant": "w17",
+      "ms": [
+        4.723514,
+        4.68287,
+        4.61237,
+        4.603997,
+        4.602493
+      ],
+      "median": 4.61237
+    }
+  ],
+  "isolated_ncu_ms": {
+    "off": 4.816,
+    "on": 4.59936
+  },
+  "registers": {
+    "off": 113,
+    "on": 95
+  },
+  "shared_bytes": 98816,
+  "no_spills": true,
+  "extra_allocated_bytes": 0,
+  "regression": [
+    "kda local rows=1 q=2 f=2: records and canary ok",
+    "kda local rows=63 q=2 f=2: records and canary ok",
+    "kda local rows=64 q=2 f=2: records and canary ok",
+    "kda local rows=65 q=2 f=2: records and canary ok",
+    "kda local rows=200 q=2 f=2: records and canary ok",
+    "kda local rows=65 q=4 f=4: records and canary ok",
+    "kda local rows=65 q=4 f=2: records and canary ok",
+    "kda local rows=65 q=2 f=4: records and canary ok",
+    "kda rows=64 state_sd=0.0: output relRMS 0.00134 max 0.0312, state relRMS 0.000209 max 0.000684 ok",
+    "kda rows=200 state_sd=0.3: output relRMS 0.00137 max 0.0625, state relRMS 0.000207 max 0.00059 ok",
+    "kda rows=2048 state_sd=0.3: output relRMS 0.00137 max 0.0625, state relRMS 0.000213 max 0.000766 ok",
+    "  timing rows=2048: local 2.861 ms, scan 1.698 ms (recurrence 38.25 ms)",
+    "kda rows=4096 state_sd=0.3: output relRMS 0.00138 max 0.0625, state relRMS 0.000205 max 0.00066 ok",
+    "  timing rows=4096: local 5.930 ms, scan 3.342 ms (recurrence 74.90 ms)",
+    "all ok"
+  ],
+  "decode_sass": "26 kernels 18792 normalized instructions identical",
+  "fallback_sass": [
+    {
+      "name": "_Z15glmvq_kda_localI13__nv_bfloat16S0_EvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "target": "_Z15glmvq_kda_localI13__nv_bfloat16S0_Lj512EEvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "found": true,
+      "old": 6264,
+      "new": 6264,
+      "exact": true
+    },
+    {
+      "name": "_Z15glmvq_kda_localI13__nv_bfloat16fEvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "target": "_Z15glmvq_kda_localI13__nv_bfloat16fLj512EEvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "found": true,
+      "old": 6240,
+      "new": 6240,
+      "exact": true
+    },
+    {
+      "name": "_Z15glmvq_kda_localIf13__nv_bfloat16EvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "target": "_Z15glmvq_kda_localIf13__nv_bfloat16Lj512EEvPhPKfS3_S3_PKT_S6_S6_PKT0_S3_S3_S3_S3_S3_S3_jjf",
+      "found": true,
+      "old": 6120,
+      "new": 6120,
+      "exact": true
+    },
+    {
+      "name": "_Z15glmvq_kda_localIffEvPhPKfS2_S2_PKT_S5_S5_PKT0_S2_S2_S2_S2_S2_S2_jjf",
+      "target": "_Z15glmvq_kda_localIffLj512EEvPhPKfS2_S2_PKT_S5_S5_PKT0_S2_S2_S2_S2_S2_S2_jjf",
+      "found": true,
+      "old": 6088,
+      "new": 6088,
+      "exact": true
+    }
+  ],
+  "profiles": {
+    "p2-off-profile": {
+      "receipt": {
+        "commit": "3d10153f683b5c693a2a2cc46ff794daaf81a4a5",
+        "binary_sha256": "edf3a91fd3c3c79ea42aaf07e3602158810e32f04d26bcbfd71a589195062c32",
+        "diff_sha256": "360f4ea87de97441f045aee1a3cf1712ae0fcd0073e3f0a484a390cfaef8aacb",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "controls": {
+          "DS4_GLMVQ_PDL": "0",
+          "DS4_GLMVQ_KDA_LOCAL17": "0"
+        },
+        "status": 0,
+        "start": 1793177818.0681305,
+        "end": 1793177913.764161
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6884.095755,
+          "kernel_union_ms": 6839.333675,
+          "kernels": [
+            [
+              "glmvq_kda_local",
+              645.427,
+              126,
+              5122.434,
+              113
+            ],
+            [
+              "l31_residual_rms",
+              298.255,
+              286,
+              1042.848,
+              56
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6860.21558,
+          "kernel_union_ms": 6789.779302,
+          "kernels": [
+            [
+              "glmvq_q4_stream_many",
+              3100.541,
+              8576,
+              361.537,
+              46
+            ],
+            [
+              "l31_residual_rms",
+              80.235,
+              18304,
+              4.383,
+              56
+            ]
+          ]
+        }
+      },
+      "receipt_path": "scratch/ling31-perf-20261028/p2-off-profile.receipt.json",
+      "receipt_sha256": "0ba52b290e94cef9e32eb73971c27b3361f3332843db1623f37a2e05f7455e59"
+    },
+    "p2-on-profile": {
+      "receipt": {
+        "commit": "3d10153f683b5c693a2a2cc46ff794daaf81a4a5",
+        "binary_sha256": "edf3a91fd3c3c79ea42aaf07e3602158810e32f04d26bcbfd71a589195062c32",
+        "diff_sha256": "360f4ea87de97441f045aee1a3cf1712ae0fcd0073e3f0a484a390cfaef8aacb",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "controls": {
+          "DS4_GLMVQ_PDL": "0",
+          "DS4_GLMVQ_KDA_LOCAL17": "1"
+        },
+        "status": 0,
+        "start": 1793177915.4779844,
+        "end": 1793178005.9748495
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6856.487903,
+          "kernel_union_ms": 6812.396669,
+          "kernels": [
+            [
+              "glmvq_kda_local",
+              597.435,
+              126,
+              4741.546,
+              95
+            ],
+            [
+              "l31_residual_rms",
+              296.347,
+              286,
+              1036.18,
+              56
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6989.452002,
+          "kernel_union_ms": 6916.562121,
+          "kernels": [
+            [
+              "glmvq_q4_stream_many",
+              3225.266,
+              8576,
+              376.08,
+              46
+            ],
+            [
+              "l31_residual_rms",
+              81.516,
+              18304,
+              4.453,
+              56
+            ]
+          ]
+        }
+      },
+      "receipt_path": "scratch/ling31-perf-20261028/p2-on-profile.receipt.json",
+      "receipt_sha256": "9a19e2fb39dae5f6ece054c5935d1703597e11580b219636723f14745c413375"
+    },
+    "p2-control-profile": {
+      "receipt": {
+        "commit": "3d10153f683b5c693a2a2cc46ff794daaf81a4a5",
+        "binary_sha256": "edf3a91fd3c3c79ea42aaf07e3602158810e32f04d26bcbfd71a589195062c32",
+        "diff_sha256": "360f4ea87de97441f045aee1a3cf1712ae0fcd0073e3f0a484a390cfaef8aacb",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "controls": {
+          "DS4_GLMVQ_PDL": "0",
+          "DS4_GLMVQ_KDA_LOCAL17": "0"
+        },
+        "status": 0,
+        "start": 1793178377.2874465,
+        "end": 1793178468.017881
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6862.804585,
+          "kernel_union_ms": 6818.618977,
+          "kernels": [
+            [
+              "glmvq_kda_local",
+              637.413,
+              126,
+              5058.831,
+              113
+            ],
+            [
+              "l31_residual_rms",
+              298.461,
+              286,
+              1043.569,
+              56
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6901.025081,
+          "kernel_union_ms": 6829.185496,
+          "kernels": [
+            [
+              "glmvq_q4_stream_many",
+              3097.541,
+              8576,
+              361.187,
+              46
+            ],
+            [
+              "l31_residual_rms",
+              81.691,
+              18304,
+              4.463,
+              56
+            ]
+          ]
+        }
+      },
+      "receipt_path": "scratch/ling31-perf-20261028/p2-control-profile.receipt.json",
+      "receipt_sha256": "036d9d4f70f8bbf19c5ffc5c52c50a80e79ccc36a6ab310437e982ded7f232d5"
+    },
+    "p3-base": {
+      "receipt": {
+        "commit": "3d10153f683b5c693a2a2cc46ff794daaf81a4a5",
+        "binary_sha256": "87dc6680ce917989793af4252f59c05a6b63b42017e442d8b062ddd2390522ac",
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "controls": {
+          "DS4_GLMVQ_PDL": "0"
+        },
+        "status": 0,
+        "start": 1793178983.2644293,
+        "end": 1793179073.271935
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6974.032357,
+          "kernel_union_ms": 6928.239601,
+          "kernels": [
+            [
+              "glmvq_kda_local",
+              627.331,
+              126,
+              4978.819,
+              113
+            ],
+            [
+              "l31_residual_rms",
+              300.113,
+              286,
+              1049.347,
+              56
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 441.410557,
+          "kernel_union_ms": 437.507408,
+          "kernels": [
+            [
+              "glmvq_q4_stream_many",
+              203.606,
+              536,
+              379.862,
+              46
+            ],
+            [
+              "l31_residual_rms",
+              5.264,
+              1144,
+              4.601,
+              56
+            ]
+          ]
+        }
+      },
+      "receipt_path": "scratch/ling31-perf-20261028/p3-base.receipt.json",
+      "receipt_sha256": "111ea2c659cae203d59d57372e3278d9146c47017661df62fef1a03926bb767f"
+    }
+  },
+  "slow_regime": [
+    {
+      "name": "p2-off-profile",
+      "first13_mean": 312.2413846153846,
+      "last54_mean": 370.35091666666665,
+      "selected_ordinal_median_us": {
+        "0": 369.00699999999995,
+        "6": 366.3665,
+        "12": 365.503,
+        "18": 371.24649999999997,
+        "36": 368.4945,
+        "66": 368.5585
+      }
+    },
+    {
+      "name": "p2-on-profile",
+      "first13_mean": 311.4631153846154,
+      "last54_mean": 388.62105555555553,
+      "selected_ordinal_median_us": {
+        "0": 366.34749999999997,
+        "6": 367.22749999999996,
+        "12": 365.93100000000004,
+        "18": 388.331,
+        "36": 389.899,
+        "66": 388.6195
+      }
+    },
+    {
+      "name": "p2-control-profile",
+      "first13_mean": 312.24288461538464,
+      "last54_mean": 370.0779351851852,
+      "selected_ordinal_median_us": {
+        "0": 367.932,
+        "6": 367.3405,
+        "12": 364.156,
+        "18": 370.68399999999997,
+        "36": 369.148,
+        "66": 369.772
+      }
+    },
+    {
+      "name": "p3-base",
+      "first13_mean": 312.32426923076923,
+      "last54_mean": 389.1272962962963,
+      "selected_ordinal_median_us": {
+        "0": 367.981,
+        "6": 366.52599999999995,
+        "12": 364.90999999999997,
+        "18": 389.389,
+        "36": 386.6375,
+        "66": 391.9015
+      }
+    }
+  ],
+  "limits": [
+    "Unprofiled Decode medians 18.93 to 18.63 tok/s; no speed-equivalence or gain claim.",
+    "Clean original 512-thread source reproduces the slower grouped-Q4 regime, so it predates this change.",
+    "Physical placement is a hypothesis, not a demonstrated cause.",
+    "Shared F32/BF16 kernel fixtures pass; full-model performance measured only on this Ling artifact."
+  ],
+  "run_identity": {
+    "base_commit": "3d10153f683b5c693a2a2cc46ff794daaf81a4a5",
+    "binary_sha256": "348271b69e5cfda1f43f3c2354421fd53e23dafa95751494f77999723fc022df",
+    "diff_sha256": "360f4ea87de97441f045aee1a3cf1712ae0fcd0073e3f0a484a390cfaef8aacb",
+    "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+  },
+  "command_example": [
+    "python3",
+    "tools/host_memory_guard.py",
+    "--max-gib",
+    "128",
+    "--high-gib",
+    "128",
+    "--reserve-gib",
+    "2",
+    "--trip-gib",
+    "2",
+    "--psi-full-limit",
+    "40",
+    "--timeout",
+    "900",
+    "--log",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/p2-off-1.memory.jsonl",
+    "--",
+    "taskset",
+    "-c",
+    "5-9,15-19",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/ds4-bench",
+    "--cuda",
+    "-m",
+    "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+    "--prompt-file",
+    "speed-bench/promessi_sposi.txt",
+    "--csv",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/p2-off-1.csv",
+    "--dump-frontier-logits-dir",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/p2-off-1.proof",
+    "--ctx-start",
+    "8192",
+    "--ctx-max",
+    "8192",
+    "--warmup-prefill",
+    "8192",
+    "--gen-tokens",
+    "128"
+  ]
+}

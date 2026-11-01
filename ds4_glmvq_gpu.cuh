@@ -61,6 +61,9 @@ struct ds4_gvq_ctx {
     bool expand_mix;
     bool kda_chunk;
     bool kda_mma;
+    bool kda_local17;
+    bool kda_reload = false;
+    bool kda_conv4 = false;
     bool flash;
     glmvq_launch launch;
     bool index_fused;
@@ -368,6 +371,7 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     if (!flags) { return false; }
     const cudaStream_t stream = ds4_current_stream();
     bool ok = cuda_ok(cudaMemsetAsync(flags->ptr, 0, count * sizeof(uint32_t), stream), "GLM VQ Q4 prefill scan");
+    const char *l31_down = getenv("DS4_LING31_MLP_Q4P");
     for (size_t i = 0; ok && i < count; i++) {
         const glmvq_source &s = ctx->model->source[i];
         // FP8 matrices with 128 x 128 scales fold into the same FP16 operand.
@@ -381,6 +385,8 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
             continue;
         }
         if (ctx->model->records[i].type != GVQ_TYPE_Q4 || !s.data || !glmvq_q4p_fits(s.rows, s.cols)) { continue; }
+        // Ling's shared down needs one Q4_K block beyond a 512-column group.
+        if (s.cols == 1280u && l31_down && !strcmp(l31_down, "0")) { continue; }
         const uint64_t blocks = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK;
         glmvq_q4p_check<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
             (const uint8_t *)s.data, blocks, (uint32_t *)flags->ptr + i);
@@ -469,6 +475,11 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_MMA accepts 0 or 1\n");
         return nullptr;
     }
+    const char *kda_local17 = getenv("DS4_GLMVQ_KDA_LOCAL17");
+    if (kda_local17 && strcmp(kda_local17, "0") && strcmp(kda_local17, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_KDA_LOCAL17 accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
     if (route && strcmp(route, "0") && strcmp(route, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
@@ -486,6 +497,7 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_hc_expand_mix<__nv_bfloat16, __nv_bfloat16>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)glmvq_xmix_smem<__nv_bfloat16>()), "GLM VQ mHC expand mix shared memory");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->kda_local17 = !kda_local17 || strcmp(kda_local17, "0");
     // Decode-width kernels launch with programmatic dependent launch.
     ctx->launch = !pdl || strcmp(pdl, "0") ? GLMVQ_LAUNCH_PDL : GLMVQ_LAUNCH_PLAIN;
     g_gvq_pdl = ctx->launch;
@@ -497,6 +509,14 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_scan<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KSCAN_SMEM), "GLM VQ KDA scan shared memory") &&
@@ -751,7 +771,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     const uint32_t type = ctx->model->records[index].type;
     if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||
         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
-        (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }
+        math > DS4_GVQ_TF32 || !gvq_stream(ctx)) { return 0; }
     if (type == GVQ_TYPE_FP8 && ctx->direct_fp8 && rows <= GLMVQ_FP8_TOKENS && math == DS4_GVQ_BF16) {
         const uint32_t split = glmvq_fp8_split(s.rows, s.cols);
         if (split && glmvq_fp8_fits(s.data, s.scale, input->ptr, out->ptr, s.rows, s.cols)) {
@@ -766,7 +786,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         glmvq_bf16_fits(s.data, input->ptr, out->ptr, s.cols)) {
         ctx->bf16_calls++;
         return cuda_ok(glmvq_bf16_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
-            s.rows, s.cols, math == DS4_GVQ_F32 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows, ctx->launch),
+            s.rows, s.cols, math != DS4_GVQ_BF16 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows, ctx->launch),
             "GLM VQ BF16 decode");
     }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
@@ -825,7 +845,7 @@ extern "C" int ds4_gpu_gvq_linear_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ui
         ctx->restore, GLMVQ_OUT_BF16), "GLM VQ linear BF16 rows");
 }
 
-enum { GVQ_LINEAR_MANY = 4 };
+enum { GVQ_LINEAR_MANY = 5 };
 
 /* Matrices sharing one input. Prefill Q4_K quantizes it to Q8_1 once and
  * BF16 converts it once (each output otherwise as ds4_gpu_gvq_linear, so
@@ -904,6 +924,34 @@ extern "C" int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cons
     if (!gvq_floats(input, (uint64_t)tokens * cols)) { return 0; }
     return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, tokens, ctx->stream,
         &ctx->q4), "GLM VQ Q4 decode many");
+}
+
+// ds4_gpu_gvq_q4_decode_many when every matrix takes glmvq_q4_decode's STAGE
+// kernel at one split: then each output equals its own launch bit for bit.
+// 0 otherwise (small matrices take the scalar kernel).
+extern "C" int ds4_gpu_gvq_q4_decode_group(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens) {
+    if (!ctx || !outs || !weights || !count || count > GLMVQ_Q4_MANY || !tokens || tokens > GLMVQ_Q4_WARPS ||
+        !ctx->direct_q4 || !gvq_stream(ctx)) { return 0; }
+    const void *w[GLMVQ_Q4_MANY];
+    float *y[GLMVQ_Q4_MANY];
+    uint32_t rows[GLMVQ_Q4_MANY], cols = 0, split = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint32_t own = glmvq_q4_split(s.rows, s.cols);
+        const uint64_t staged = (uint64_t)(GLMVQ_Q4_WARPS / own) * s.cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+        const uint64_t bytes = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+        if (ctx->model->records[weights[c]].type != GVQ_TYPE_Q4 || (c && (s.cols != cols || own != split)) ||
+            !gvq_floats(outs[c], (uint64_t)tokens * s.rows) ||
+            glmvq_q4_select(&ctx->q4, (const float *)input->ptr, staged, bytes, tokens) != GLMVQ_Q4_STAGE) { return 0; }
+        cols = s.cols;
+        split = own;
+        w[c] = s.data; y[c] = (float *)outs[c]->ptr; rows[c] = s.rows;
+    }
+    if (!gvq_floats(input, (uint64_t)tokens * cols)) { return 0; }
+    return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, tokens, ctx->stream,
+        &ctx->q4, split), "GLM VQ Q4 decode group");
 }
 
 // Up to eight tokens of one Q4_K matrix on the SIMT decode kernels, whatever
@@ -1048,11 +1096,35 @@ extern "C" int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_
         glmvq_q4p_bytes(rows, ctx->model->source[weight].cols) <= ctx->scratch->bytes;
 }
 
+// A BF16 weight over BF16 input rows above decode widths: glmvq_gemm's BF16
+// GEMM without its input conversion (the same operands), widened into out.
+static int gvq_bf16_weight_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const glmvq_source &s,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    const uint64_t ny = (uint64_t)rows * s.rows;
+    if (!gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, ny) ||
+        ctx->scratch->bytes < ny * sizeof(__nv_bfloat16) || !gvq_stream(ctx)) { return 0; }
+    auto *y = (__nv_bfloat16 *)ctx->scratch->ptr;
+    const float alpha = 1.0f, beta = 0.0f;
+    if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+            &alpha, s.data, CUDA_R_16BF, s.cols, input->ptr, CUDA_R_16BF, s.cols, &beta, y, CUDA_R_16BF, s.rows,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 rows")) { return 0; }
+    glmvq_convert<<<(ny + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+        y, (float *)out->ptr, ny);
+    return cuda_ok(cudaGetLastError(), "GLM VQ BF16 rows widen");
+}
+
 // BF16 input rows go straight to the q4p FP16 preparation (the values are
-// BF16-rounded either way, so the FP16 operand is unchanged).
+// BF16-rounded either way, so the FP16 operand is unchanged), or to a BF16
+// weight's cuBLAS GEMM.
 extern "C" int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
         const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows) {
     if (in_rows == DS4_GVQ_ROWS_F32) { return ds4_gpu_gvq_linear(ctx, out, weight, input, rows, DS4_GVQ_BF16); }
+    if (!ctx || weight >= ctx->model->source.size()) { return 0; }
+    const glmvq_source &w = ctx->model->source[weight];
+    if (ctx->model->records[weight].type == GVQ_TYPE_BF16 && w.storage == GLMVQ_WEIGHT_BF16 && w.data &&
+        rows > GLMVQ_DOT_TOKENS) {
+        return gvq_bf16_weight_rows(ctx, out, w, input, rows);
+    }
     if (!ds4_gpu_gvq_bf16_input(ctx, weight, rows) || !gvq_stream(ctx)) { return 0; }
     const glmvq_source &s = ctx->model->source[weight];
     if (!gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
@@ -1071,6 +1143,42 @@ extern "C" int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *ou
         !gvq_q4p_ready(ctx, &weight, 1, input, &out, rows)) { return 0; }
     return in_rows == DS4_GVQ_ROWS_BF16 ? gvq_q4p_run<__nv_bfloat16, __nv_bfloat16>(ctx, &out, &weight, 1, input, rows)
                                         : gvq_q4p_run<__nv_bfloat16, float>(ctx, &out, &weight, 1, input, rows);
+}
+
+// BF16 weights times BF16 input rows into F32 rows on tensor cores (exact
+// products, F32 accumulation: DS4_GVQ_TF32's class). 0 for other weights
+// and decode widths.
+extern "C" int ds4_gpu_gvq_linear_rows_f32(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || rows <= GLMVQ_DOT_TOKENS || weight >= ctx->model->source.size() || !gvq_stream(ctx)) { return 0; }
+    const glmvq_source &s = ctx->model->source[weight];
+    if (ctx->model->records[weight].type != GVQ_TYPE_BF16 || s.storage != GLMVQ_WEIGHT_BF16 || !s.data ||
+        !gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, (uint64_t)rows * s.rows)) { return 0; }
+    const float alpha = 1.0f, beta = 0.0f;
+    return cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+        &alpha, s.data, CUDA_R_16BF, s.cols, input->ptr, CUDA_R_16BF, s.cols, &beta, out->ptr, CUDA_R_32F, s.rows,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 rows into F32");
+}
+
+// Q4_K matrices sharing BF16 input rows into F32 or BF16 rows: q4p prepares
+// the BF16 values once. 0 when q4p does not take every weight at `rows`.
+extern "C" int ds4_gpu_gvq_linear_many_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_rows out_rows) {
+    if (!ctx || !outs || !weights || !count || count > GVQ_LINEAR_MANY || !gvq_stream(ctx)) { return 0; }
+    const bool bf16 = out_rows == DS4_GVQ_ROWS_BF16;
+    uint32_t cols = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (!ds4_gpu_gvq_bf16_input(ctx, weights[c], rows)) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint64_t n = (uint64_t)rows * s.rows;
+        if ((c && s.cols != cols) || !gvq_floats(outs[c], bf16 ? n / 2 : n)) { return 0; }
+        cols = s.cols;
+    }
+    if (!gvq_floats(input, (uint64_t)rows * cols / 2) || !gvq_q4p_ready(ctx, weights, count, input, outs, rows)) {
+        return 0;
+    }
+    return bf16 ? gvq_q4p_run<__nv_bfloat16, __nv_bfloat16>(ctx, outs, weights, count, input, rows)
+                : gvq_q4p_run<float, __nv_bfloat16>(ctx, outs, weights, count, input, rows);
 }
 
 extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
@@ -1605,6 +1713,10 @@ extern "C" uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads) {
     return std::max(planes + (uint64_t)rows * heads * sizeof(float), records);
 }
 
+extern "C" uint64_t ds4_gpu_gvq_kda_mma_bytes(uint32_t rows, uint32_t heads) {
+    return rows < GLMVQ_KC ? 0 : (uint64_t)((rows + GLMVQ_KC - 1) / GLMVQ_KC) * heads * GLMVQ_KR_BYTES;
+}
+
 extern "C" int ds4_gpu_gvq_kda_fused(ds4_gvq_ctx *ctx, uint32_t rows) {
     return ctx && ctx->kda_mma && rows >= GLMVQ_KC;
 }
@@ -1632,7 +1744,10 @@ extern "C" int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_
     auto *records = (uint8_t *)ctx->scratch->ptr;
     auto local = [&](auto *qkv, auto *f) {
         using Q = std::remove_cv_t<std::remove_pointer_t<decltype(qkv)>>;
-        glmvq_kda_local<<<dim3((uint32_t)chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM, stream>>>(records,
+        using F = std::remove_cv_t<std::remove_pointer_t<decltype(f)>>;
+        auto kernel = ctx->kda_local17 ? glmvq_kda_local<Q, F> : glmvq_kda_local<Q, F, GLMVQ_KINPUT>;
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PLAIN, kernel, dim3((uint32_t)chunks, heads),
+            ctx->kda_local17 ? GLMVQ_KLOCAL : GLMVQ_KINPUT, GLMVQ_KLOCAL_SMEM, stream, records,
             (const float *)q_tail->ptr, (const float *)k_tail->ptr, (const float *)v_tail->ptr,
             qkv, (const Q *)k->ptr, (const Q *)v->ptr, f, (const float *)beta->ptr,
             (const float *)q_weight->ptr, (const float *)k_weight->ptr, (const float *)v_weight->ptr,
@@ -1734,7 +1849,16 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
             (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
         if (chunked >= 0) { return chunked; }
     }
-    glmvq_launch_kernel(gvq_mode(rows), glmvq_kda, heads, GLMVQ_KDA_DIM, 0, ds4_current_stream(), (float *)out->ptr,
+    auto kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>) : glmvq_kda<false>;
+    if (ctx->kda_conv4 && glmvq_kda_conv4_fits((const float *)q_tail->ptr, (const float *)k_tail->ptr,
+            (const float *)v_tail->ptr, (const float *)q_weight->ptr, (const float *)k_weight->ptr,
+            (const float *)v_weight->ptr, shot)) {
+        kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD, GLMVQ_KDA_VECTOR>
+            : glmvq_kda<true, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>)
+            : glmvq_kda<false, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>;
+    }
+    glmvq_launch_kernel(gvq_mode(rows), kernel, heads, GLMVQ_KDA_DIM, 0,
+        ds4_current_stream(), (float *)out->ptr,
         (float *)state->ptr, (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
         (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
         (const float *)forget->ptr, (const float *)beta->ptr,

@@ -48859,11 +48859,13 @@ __global__ static void exaone_moe_combine_kernel(
 
 /* Plain RMSNorm with weight, no residual add.  The fused add form above
  * covers every layer boundary; this one is for the first norm of a block,
- * where there is nothing to add yet. */
+ * where there is nothing to add yet.  BF16 weights (MiMo's VQ release)
+ * widen exactly, so both weight types run the same arithmetic. */
+template <typename W = float>
 __global__ static void exaone_rms_norm_kernel(
         float *out,
         const float *x,
-        const float *w,
+        const W *w,
         uint32_t n,
         uint32_t n_tokens,
         float eps) {
@@ -48886,7 +48888,7 @@ __global__ static void exaone_rms_norm_kernel(
     }
     __syncthreads();
     const float scale = rsqrtf(sh[0] / (float)n + eps);
-    for (uint32_t i = tid; i < n; i += nth) dst[i] = (src[i] * scale) * w[i];
+    for (uint32_t i = tid; i < n; i += nth) dst[i] = (src[i] * scale) * (float)w[i];
 }
 
 /* Elementwise residual add over n_tokens rows. */
@@ -48921,6 +48923,32 @@ extern "C" int ds4_gpu_exaone_rms_norm_tensor(
     exaone_rms_norm_kernel<<<n_tokens, 1024, 0, cuda_decode_stream()>>>(
             (float *)out->ptr, (const float *)x->ptr, w, n, n_tokens, eps);
     return cuda_ok(cudaGetLastError(), "exaone rms norm");
+}
+
+extern "C" int ds4_gpu_exaone_rms_norm_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                n,
+        uint32_t                n_tokens,
+        float                   eps) {
+    if (!out || !x || !model_map || n == 0u || n_tokens == 0u ||
+        out->bytes < (uint64_t)n * n_tokens * sizeof(float) ||
+        x->bytes < (uint64_t)n * n_tokens * sizeof(float) ||
+        weight_offset > model_size ||
+        (uint64_t)n * sizeof(__nv_bfloat16) > model_size - weight_offset) {
+        return 0;
+    }
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+            model_map, weight_offset, (uint64_t)n * sizeof(__nv_bfloat16),
+            ds4_tensor_device_idx(out), "exaone_norm_bf16");
+    if (!w) return 0;
+    cuda_norm_q8_invalidate(out->ptr);
+    exaone_rms_norm_kernel<<<n_tokens, 1024, 0, cuda_decode_stream()>>>(
+            (float *)out->ptr, (const float *)x->ptr, w, n, n_tokens, eps);
+    return cuda_ok(cudaGetLastError(), "exaone rms norm bf16");
 }
 
 extern "C" int ds4_gpu_exaone_add_tensor(
@@ -49488,6 +49516,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_ling31_gpu.cuh"
 #include "ds4_beam_gpu.cuh"
+#include "ds4_mimo2vq_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
 #include "ds4_mimo2_gpu.cuh"
 #include "ds4_iquest_gpu.cuh"

@@ -60,6 +60,62 @@ static bool mimo2_dflash_bind(ds4_mimo2_dflash *d, const ds4_model *m) {
     return true;
 }
 
+/* The VQ release's drafter part (Rust hashed it with the release): the same
+ * five layers under HF names `dflash.*`, Q8_0 matrices, BF16 norms and
+ * sinks, and its own mask-token embedding row. */
+static const ds4_tensor *m2df_vq(const ds4_model *m, const char *fmt, unsigned il,
+                                 uint32_t type, unsigned d0, unsigned d1) {
+    char name[96];
+    snprintf(name, sizeof(name), fmt, il);
+    const ds4_tensor *t = m2df_tensor(m, name, d1 ? 2 : 1, d0, d1);
+    return t && t->type == type ? t : NULL;
+}
+
+static void m2df_widen(float *out, const ds4_model *m, const ds4_tensor *t, unsigned n) {
+    const uint16_t *bf16 = (const uint16_t *)(m->map + t->abs_offset);
+    for (unsigned i = 0; i < n; i++) {
+        const uint32_t bits = (uint32_t)bf16[i] << 16;
+        memcpy(&out[i], &bits, sizeof(float));
+    }
+}
+
+static bool mimo2vq_dflash_bind(ds4_mimo2_dflash *d, const ds4_model *m) {
+    ds4_str arch = {0}, role = {0};
+    uint32_t mask = 0;
+    memset(d, 0, sizeof(*d));
+    if (!m || !model_get_string(m, "general.architecture", &arch) || !ds4_streq(arch, "mimo2_vq") ||
+        !model_get_string(m, "mimo2_vq.part_role", &role) || !ds4_streq(role, "drafter") ||
+        !model_get_u32(m, "mimo2_vq.mask_token_id", &mask) || mask != 151675) { return false; }
+    enum { Q8 = DS4_TENSOR_Q8_0, BF = DS4_TENSOR_BF16 };
+    d->model = m;
+    d->fc = m2df_vq(m, "dflash.fc.weight", 0, Q8, 20480, 4096);
+    d->hidden_norm = m2df_vq(m, "dflash.hidden_norm.weight", 0, BF, 4096, 0);
+    d->output_norm = m2df_vq(m, "dflash.norm.weight", 0, BF, 4096, 0);
+    d->mask = m2df_vq(m, "dflash.mask_embedding", 0, BF, 4096, 0);
+    if (!d->fc || !d->hidden_norm || !d->output_norm || !d->mask) { return false; }
+    for (unsigned il = 0; il < 5; il++) {
+        d->attn_norm[il] = m2df_vq(m, "dflash.layers.%u.input_layernorm.weight", il, BF, 4096, 0);
+        d->q[il] = m2df_vq(m, "dflash.layers.%u.self_attn.q_proj.weight", il, Q8, 4096, 8192);
+        d->k[il] = m2df_vq(m, "dflash.layers.%u.self_attn.k_proj.weight", il, Q8, 4096, 1024);
+        d->v[il] = m2df_vq(m, "dflash.layers.%u.self_attn.v_proj.weight", il, Q8, 4096, 1024);
+        d->o[il] = m2df_vq(m, "dflash.layers.%u.self_attn.o_proj.weight", il, Q8, 8192, 4096);
+        d->q_norm[il] = m2df_vq(m, "dflash.layers.%u.self_attn.q_norm.weight", il, BF, 128, 0);
+        d->k_norm[il] = m2df_vq(m, "dflash.layers.%u.self_attn.k_norm.weight", il, BF, 128, 0);
+        d->sinks[il] = m2df_vq(m, "dflash.layers.%u.self_attn.attention_sink_bias", il, BF, 64, 0);
+        d->ffn_norm[il] = m2df_vq(m, "dflash.layers.%u.post_attention_layernorm.weight", il, BF, 4096, 0);
+        d->gate[il] = m2df_vq(m, "dflash.layers.%u.mlp.gate_proj.weight", il, Q8, 4096, 16384);
+        d->up[il] = m2df_vq(m, "dflash.layers.%u.mlp.up_proj.weight", il, Q8, 4096, 16384);
+        d->down[il] = m2df_vq(m, "dflash.layers.%u.mlp.down_proj.weight", il, Q8, 16384, 4096);
+        if (!d->attn_norm[il] || !d->q[il] || !d->k[il] || !d->v[il] || !d->o[il] ||
+            !d->q_norm[il] || !d->k_norm[il] || !d->sinks[il] || !d->ffn_norm[il] ||
+            !d->gate[il] || !d->up[il] || !d->down[il]) { return false; }
+        m2df_widen(d->q_weight[il], m, d->q_norm[il], 128);
+        m2df_widen(d->k_weight[il], m, d->k_norm[il], 128);
+        m2df_widen(d->sink[il], m, d->sinks[il], 64);
+    }
+    return true;
+}
+
 #else
 
 #define MIMO2_DFLASH_HOST_FNS
@@ -124,6 +180,21 @@ static bool mimo2_dflash_window_ready(const ds4_mimo2_graph *g, unsigned start) 
     return true;
 }
 
+/* VQ noise rows: the base embedding of the anchor token, then the drafter's
+ * own mask row in every proposal slot (the release keeps mask_embedding in
+ * its drafter part; the base table's row 151675 is not that embedding). */
+static bool mimo2vq_dflash_noise(ds4_mimo2_graph *g, const ds4_engine *e, const ds4_mimo2_dflash *d,
+                                 int first, unsigned n, ds4_gpu_tensor *noise) {
+    const uint64_t row = (uint64_t)DF_H * sizeof(uint16_t);
+    const uint8_t *table = e->model.map + e->weights.token_embd->abs_offset;
+    memcpy(g->host_embed, table + (uint64_t)first * row, row);
+    for (unsigned r = 1; r < n; r++) {
+        memcpy((uint8_t *)g->host_embed + r * row, d->model->map + d->mask->abs_offset, row);
+    }
+    return ds4_gpu_tensor_write(g->embed, 0, g->host_embed, n * row) &&
+        ds4_gpu_qwen4exp_bf16_to_f32_tensor(noise, g->embed, (uint64_t)n * DF_H);
+}
+
 static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_mimo2_graph *g = &s->mimo2_graph;
     const ds4_mimo2_dflash *d = &s->engine->dflash;
@@ -152,7 +223,6 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_gpu_tensor *up = ds4_gpu_tensor_alloc((uint64_t)n * DF_FF * sizeof(float));
     ds4_gpu_tensor *mid = ds4_gpu_tensor_alloc((uint64_t)n * DF_FF * sizeof(float));
     ds4_gpu_tensor *ffn = ds4_gpu_tensor_alloc((uint64_t)n * DF_H * sizeof(float));
-    float *host_cat = malloc((size_t)ctx * 5 * DF_H * sizeof(float));
     float *hq = malloc((size_t)n * DF_Q * sizeof(float));
     float *hk = malloc(((size_t)ctx + n) * DF_KV * sizeof(float));
     float *hv = malloc(((size_t)ctx + n) * DF_KV * sizeof(float));
@@ -162,30 +232,27 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     const char *cpu_env = getenv("DS4_MIMO2_DFLASH_CPU");
     const int cpu_attn = cpu_env && cpu_env[0] == '1' && cpu_env[1] == '\0';
     bool ok = cat && proj && noise && normed && q && k_ctx && v_ctx && k_noise && v_noise &&
-        attn && gate && up && mid && ffn && host_cat && hq && hk && hv && ho && k_pos;
+        attn && gate && up && mid && ffn && hq && hk && hv && ho && k_pos;
     if (ok) {
-        for (unsigned i = 0; i < ctx; i++) {
-            const unsigned slot = ctx_pos[i] % DF_WIN;
-            ok = ds4_gpu_tensor_read(g->dflash_tap,
-                ((uint64_t)slot * 5) * DF_H * sizeof(float),
-                host_cat + (size_t)i * 5 * DF_H,
-                5ull * DF_H * sizeof(float));
-            if (!ok) { break; }
-        }
+        // The context's taps are consecutive ring slots: at most two copies.
+        const uint64_t slot_bytes = 5ull * DF_H * sizeof(float);
+        const unsigned first_slot = begin % DF_WIN;
+        const unsigned head = ctx < DF_WIN - first_slot ? ctx : DF_WIN - first_slot;
+        ok = ds4_gpu_tensor_copy(cat, 0, g->dflash_tap, first_slot * slot_bytes, head * slot_bytes) &&
+            (head == ctx || ds4_gpu_tensor_copy(cat, head * slot_bytes, g->dflash_tap, 0,
+                (uint64_t)(ctx - head) * slot_bytes));
     }
-    ok = ok && ds4_gpu_tensor_write(cat, 0, host_cat, (uint64_t)ctx * 5 * DF_H * sizeof(float)) &&
-        plain_graph_matmul_tensor(proj, d->model, d->fc, 20480, DF_H, cat, ctx) &&
-        ds4_gpu_exaone_rms_norm_tensor(proj, proj, d->model->map, d->model->size,
-            d->hidden_norm->abs_offset, DF_H, ctx, 1e-6f);
+    ok = ok && plain_graph_matmul_tensor(proj, d->model, d->fc, 20480, DF_H, cat, ctx) &&
+        mimo2_norm(proj, proj, d->model, d->hidden_norm, ctx);
     ids[0] = first;
     for (unsigned i = 1; i < n; i++) { ids[i] = DF_MASK; }
     ok = ok && ds4_gpu_tensor_write(g->tokens, 0, ids, n * sizeof(int)) &&
-        ds4_gpu_embed_tokens_quant_tensor(noise, g->tokens, s->engine->model.map,
-            s->engine->model.size, base->token_embd->abs_offset, base->token_embd->type,
-            DS4_N_VOCAB, n, DF_H);
+        (d->mask ? mimo2vq_dflash_noise(g, s->engine, d, first, n, noise)
+                 : ds4_gpu_embed_tokens_quant_tensor(noise, g->tokens, s->engine->model.map,
+                       s->engine->model.size, base->token_embd->abs_offset, base->token_embd->type,
+                       DS4_N_VOCAB, n, DF_H));
     for (unsigned il = 0; ok && il < 5; il++) {
-        ok = ds4_gpu_exaone_rms_norm_tensor(normed, noise, d->model->map, d->model->size,
-                d->attn_norm[il]->abs_offset, DF_H, n, 1e-6f) &&
+        ok = mimo2_norm(normed, noise, d->model, d->attn_norm[il], n) &&
             plain_graph_matmul_tensor(q, d->model, d->q[il], DF_H, DF_Q, normed, n) &&
             plain_graph_matmul_tensor(k_noise, d->model, d->k[il], DF_H, DF_KV, normed, n) &&
             plain_graph_matmul_tensor(v_noise, d->model, d->v[il], DF_H, DF_KV, normed, n) &&
@@ -203,9 +270,12 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
                 ds4_gpu_tensor_read(v_noise, 0, hv + (size_t)ctx * DF_KV, (uint64_t)n * DF_KV * sizeof(float));
             if (!ok) { break; }
             float q_weight[DF_HD], k_weight[DF_HD], sinks[DF_QH];
-            memcpy(q_weight, (const char *)d->model->map + d->q_norm[il]->abs_offset, sizeof(q_weight));
-            memcpy(k_weight, (const char *)d->model->map + d->k_norm[il]->abs_offset, sizeof(k_weight));
-            memcpy(sinks, (const char *)d->model->map + d->sinks[il]->abs_offset, sizeof(sinks));
+            memcpy(q_weight, d->mask ? (const void *)d->q_weight[il]
+                : (const char *)d->model->map + d->q_norm[il]->abs_offset, sizeof(q_weight));
+            memcpy(k_weight, d->mask ? (const void *)d->k_weight[il]
+                : (const char *)d->model->map + d->k_norm[il]->abs_offset, sizeof(k_weight));
+            memcpy(sinks, d->mask ? (const void *)d->sink[il]
+                : (const char *)d->model->map + d->sinks[il]->abs_offset, sizeof(sinks));
             for (unsigned row = 0; row < n * DF_QH; row++) { df_rms(hq + row * DF_HD, q_weight, DF_HD); }
             for (unsigned row = 0; row < (ctx + n) * DF_KH; row++) { df_rms(hk + row * DF_HD, k_weight, DF_HD); }
             for (unsigned i = 0; i < n; i++) { df_rope(hq + (size_t)i * DF_Q, DF_QH, start + i); }
@@ -218,35 +288,52 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
             df_attn(ho, hq, hk, hv, sinks, k_pos, start, n, ctx + n);
             ok = ds4_gpu_tensor_write(attn, 0, ho, (uint64_t)n * DF_Q * sizeof(float));
         } else {
+            const bool widened = d->mask != NULL;
             ok = ds4_gpu_mimo2_dflash_attn(attn, q, k_ctx, k_noise, v_ctx, v_noise,
-                    (const float *)((const char *)d->model->map + d->q_norm[il]->abs_offset),
-                    (const float *)((const char *)d->model->map + d->k_norm[il]->abs_offset),
-                    (const float *)((const char *)d->model->map + d->sinks[il]->abs_offset),
+                    widened ? d->q_weight[il]
+                            : (const float *)((const char *)d->model->map + d->q_norm[il]->abs_offset),
+                    widened ? d->k_weight[il]
+                            : (const float *)((const char *)d->model->map + d->k_norm[il]->abs_offset),
+                    widened ? d->sink[il]
+                            : (const float *)((const char *)d->model->map + d->sinks[il]->abs_offset),
                     start, n, ctx) == 2;
         }
         ok = ok &&
             plain_graph_matmul_tensor(ffn, d->model, d->o[il], DF_Q, DF_H, attn, n) &&
             ds4_gpu_dots3_scale_tensor(ffn, 1.0f, (uint64_t)n * DF_H) &&
             ds4_gpu_exaone_add_tensor(noise, ffn, (uint64_t)n * DF_H) &&
-            ds4_gpu_exaone_rms_norm_tensor(normed, noise, d->model->map, d->model->size,
-                d->ffn_norm[il]->abs_offset, DF_H, n, 1e-6f) &&
+            mimo2_norm(normed, noise, d->model, d->ffn_norm[il], n) &&
             plain_graph_matmul_tensor(gate, d->model, d->gate[il], DF_H, DF_FF, normed, n) &&
             plain_graph_matmul_tensor(up, d->model, d->up[il], DF_H, DF_FF, normed, n) &&
             ds4_gpu_step37_swiglu(mid, gate, up, NULL, DF_FF, n, 0) &&
             plain_graph_matmul_tensor(ffn, d->model, d->down[il], DF_FF, DF_H, mid, n) &&
             ds4_gpu_exaone_add_tensor(noise, ffn, (uint64_t)n * DF_H);
     }
-    ok = ok && ds4_gpu_exaone_rms_norm_tensor(normed, noise, d->model->map, d->model->size,
-            d->output_norm->abs_offset, DF_H, n, 1e-6f);
+    ok = ok && mimo2_norm(normed, noise, d->model, d->output_norm, n);
+    /* Proposal rows 1..n-1 through the head in one matmul; the qkv scratch
+     * is free until the verify forward. */
+    const uint64_t logit_bytes = (uint64_t)(n - 1) * DS4_N_VOCAB * sizeof(float);
+    ds4_gpu_tensor *rows = ok ? ds4_gpu_tensor_view(normed, DF_H * sizeof(float),
+        (uint64_t)(n - 1) * DF_H * sizeof(float)) : NULL;
+    ok = ok && rows;
+    if (ok && ds4_gpu_tensor_bytes(g->qkv) >= logit_bytes) {
+        ok = plain_graph_matmul_tensor(g->qkv, &s->engine->model, base->output, DF_H, DS4_N_VOCAB,
+                rows, n - 1) &&
+            ds4_gpu_tensor_read(g->qkv, 0, g->verify_logits, logit_bytes);
+    } else {
+        for (unsigned row = 1; ok && row < n; row++) {
+            ds4_gpu_tensor *one = ds4_gpu_tensor_view(normed, (uint64_t)row * DF_H * sizeof(float),
+                DF_H * sizeof(float));
+            ok = one && plain_graph_matmul_tensor(g->logits, &s->engine->model, base->output,
+                    DF_H, DS4_N_VOCAB, one, 1) &&
+                ds4_gpu_tensor_read(g->logits, 0, g->verify_logits + (size_t)(row - 1) * DS4_N_VOCAB,
+                    (uint64_t)DS4_N_VOCAB * sizeof(float));
+            ds4_gpu_tensor_free(one);
+        }
+    }
+    ds4_gpu_tensor_free(rows);
     for (unsigned row = 1; ok && row < n; row++) {
-        ds4_gpu_tensor *one = ds4_gpu_tensor_view(normed, (uint64_t)row * DF_H * sizeof(float),
-            DF_H * sizeof(float));
-        ok = one && plain_graph_matmul_tensor(g->logits, &s->engine->model, base->output,
-                DF_H, DS4_N_VOCAB, one, 1) &&
-            ds4_gpu_tensor_read(g->logits, 0, s->logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
-        ds4_gpu_tensor_free(one);
-        if (!ok) { break; }
-        const int id = df_argmax(s->logits);
+        const int id = df_argmax(g->verify_logits + (size_t)(row - 1) * DS4_N_VOCAB);
         if (id < 0) { ok = false; break; }
         g->trial[row] = id;
     }
@@ -255,7 +342,7 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_gpu_tensor_free(v_ctx); ds4_gpu_tensor_free(k_noise); ds4_gpu_tensor_free(v_noise);
     ds4_gpu_tensor_free(attn); ds4_gpu_tensor_free(gate); ds4_gpu_tensor_free(up);
     ds4_gpu_tensor_free(mid); ds4_gpu_tensor_free(ffn);
-    free(host_cat); free(hq); free(hk); free(hv); free(ho); free(k_pos);
+    free(hq); free(hk); free(hv); free(ho); free(k_pos);
     return ok;
 }
 

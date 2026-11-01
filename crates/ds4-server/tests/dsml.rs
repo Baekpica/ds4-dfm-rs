@@ -71,26 +71,6 @@ fn dsml_states_match_c() {
     }
 }
 
-#[test]
-fn sampling_override_matches_c() {
-    for name in [
-        "override-required",
-        "override-think-cap",
-        "override-tool-result",
-        "cap-low-128",
-        "cap-high-128",
-        "cap-max-600",
-    ] {
-        assert_script(name);
-    }
-    let req = dsml_dump_script("override-required");
-    assert_eq!(req.trim(), "103 204");
-    let think = dsml_dump_script("override-think-cap");
-    assert_eq!(think.trim(), "0 305");
-    let tr = dsml_dump_script("override-tool-result");
-    assert_eq!(tr.trim(), "0 305");
-}
-
 /// The tool-syntax greedy question (the engine's v41_syntax_greedy +
 /// test_syntax_greedy_spaced_dsml, server_generate_v41.c): the tag, the
 /// parameter head and the JSON punctuation take the raw argmax; the string

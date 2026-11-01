@@ -1,8 +1,24 @@
 //! Original Qwen2-style vocabulary; input grammar stays in official Jinja.
+//! The mixed GGUF carries it as metadata; the VQ release ships the source
+//! tokenizer.json (Beam's Qwen2 pipeline, 32 added tokens).
 use super::{GgufFile, TokError, Vocab};
+use std::path::Path;
+
+const VOCAB: usize = 152_576;
+const ADDED: usize = 32;
+
+pub(super) fn tables(root: &Path) -> Result<super::glm_vq::Tables, TokError> {
+    let invalid = |_| TokError::InvalidTokenizer("MiMo source tokenizer");
+    let bytes = crate::mimo2_vq::asset(root, "tokenizer.json").map_err(invalid)?;
+    super::beam::qwen2(&bytes, ADDED, VOCAB)
+        .map_err(|_| TokError::InvalidTokenizer("MiMo source tokenizer"))
+}
 
 pub(super) fn specials(v: &mut Vocab, g: &GgufFile) -> Result<(), TokError> {
-    if g.get_string("tokenizer.ggml.pre") != Some(b"qwen2") || v.tokens.len() != 152576 {
+    // A VQ part has no tokenizer metadata: tables() checked the pipeline.
+    let source = g.get_string("general.architecture") == Some(b"mimo2_vq")
+        || g.get_string("tokenizer.ggml.pre") == Some(b"qwen2");
+    if !source || v.tokens.len() != VOCAB {
         return Err(TokError::InvalidTokenizer("MiMo vocabulary/pretokenizer"));
     }
     v.bos_id = -1; // Tokenizer adds no BOS; generation_config's fallback is not input grammar.

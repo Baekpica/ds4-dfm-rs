@@ -1,0 +1,178 @@
+{
+  "name": "final-mtp2-gate",
+  "command": [
+    "python3",
+    "tools/host_memory_guard.py",
+    "--max-gib",
+    "128",
+    "--high-gib",
+    "128",
+    "--reserve-gib",
+    "2",
+    "--trip-gib",
+    "2",
+    "--psi-full-limit",
+    "40",
+    "--timeout",
+    "900",
+    "--log",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/final-mtp2-gate.memory.jsonl",
+    "--",
+    "taskset",
+    "-c",
+    "5-9,15-19",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/tests/ling31_mtp_gate",
+    "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+    "tests/fixtures/ling31/evaluation-token-ids.json",
+    "2",
+    "192"
+  ],
+  "start": 1793191402.6420953,
+  "commit": "e01b409ddb413fdcc7c275eb008745f8629f35c2",
+  "binary_sha256": "2e7c0e6f7a445e10fb39bc3d085336d03ac37837a830e2dfafe3e680a806219b",
+  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": 0,
+  "end": 1793191593.0334334,
+  "results": [
+    {
+      "id": "screen_arithmetic",
+      "tokens": 1,
+      "speculative_calls": 1,
+      "tokens_per_call": 1.0,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "screen_ko",
+      "tokens": 8,
+      "speculative_calls": 3,
+      "tokens_per_call": 2.6666666666666665,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "screen_reason",
+      "tokens": 79,
+      "speculative_calls": 29,
+      "tokens_per_call": 2.7241379310344827,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_ko",
+      "tokens": 89,
+      "speculative_calls": 47,
+      "tokens_per_call": 1.8936170212765957,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_en",
+      "tokens": 63,
+      "speculative_calls": 28,
+      "tokens_per_call": 2.25,
+      "max_gap": 0.125,
+      "over_tie": 0
+    },
+    {
+      "id": "held_zh",
+      "tokens": 65,
+      "speculative_calls": 33,
+      "tokens_per_call": 1.9696969696969697,
+      "max_gap": 0.125,
+      "over_tie": 0
+    },
+    {
+      "id": "held_code",
+      "tokens": 53,
+      "speculative_calls": 18,
+      "tokens_per_call": 2.9444444444444446,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_math",
+      "tokens": 192,
+      "speculative_calls": 72,
+      "tokens_per_call": 2.6666666666666665,
+      "max_gap": 0.25,
+      "over_tie": 0
+    },
+    {
+      "id": "held_json",
+      "tokens": 22,
+      "speculative_calls": 8,
+      "tokens_per_call": 2.75,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_ko_summary",
+      "tokens": 111,
+      "speculative_calls": 42,
+      "tokens_per_call": 2.642857142857143,
+      "max_gap": 0.125,
+      "over_tie": 0
+    },
+    {
+      "id": "held_ko_free",
+      "tokens": 192,
+      "speculative_calls": 103,
+      "tokens_per_call": 1.8640776699029127,
+      "max_gap": 0.375,
+      "over_tie": 0
+    },
+    {
+      "id": "held_thinking_off",
+      "tokens": 130,
+      "speculative_calls": 47,
+      "tokens_per_call": 2.765957446808511,
+      "max_gap": 0.5,
+      "over_tie": 0
+    },
+    {
+      "id": "held_thinking_on",
+      "tokens": 192,
+      "speculative_calls": 69,
+      "tokens_per_call": 2.782608695652174,
+      "max_gap": 0.125,
+      "over_tie": 0
+    },
+    {
+      "id": "held_tool_call",
+      "tokens": 28,
+      "speculative_calls": 11,
+      "tokens_per_call": 2.5454545454545454,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_tool_followup",
+      "tokens": 32,
+      "speculative_calls": 11,
+      "tokens_per_call": 2.909090909090909,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "id": "held_multiturn",
+      "tokens": 55,
+      "speculative_calls": 27,
+      "tokens_per_call": 2.037037037037037,
+      "max_gap": 0.0,
+      "over_tie": 0
+    },
+    {
+      "drafts": 2,
+      "tokens": 1312,
+      "speculative_calls": 549,
+      "tokens_per_call": 2.389799635701275,
+      "max_gap": 0.5,
+      "over_tie": 0,
+      "tie": 0.5
+    }
+  ],
+  "available_gib_min": 6.696052551269531,
+  "psi_full_avg10_max": 0.0,
+  "log_sha256": "a77d3a5fbf681193ec8389fff8ab95dbb2505b75c2b48eb8328b59427416ea4a"
+}

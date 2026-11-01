@@ -336,8 +336,203 @@ static void run_moe(void) {
     puts("MINIMAX_MOE_API_PASS: cur/norm exact, dead output untouched, unsupported formats rejected");
 }
 
+static double score_fp8(unsigned code) {
+    return code < 8 ? code / 512. : ldexp(1. + (code & 7) / 8., (int)(code >> 3) - 7);
+}
+
+static double attn_value(const uint8_t *pages, unsigned block, unsigned head, unsigned token, unsigned dim) {
+    const double levels[] = {0, .5, 1, 1.5, 2, 3, 4, 6};
+    const uint8_t *v = pages + ((size_t)block * 4 + head) * DS4_MINIMAX_KV_PAGE + DS4_MINIMAX_KV_PAGE / 2;
+    const unsigned code = (v[token * 64 + dim / 2] >> (4 * (dim % 2))) & 15;
+    return levels[code & 7] * (code & 8 ? -1 : 1) * score_fp8(v[128 * 64 + token * 8 + dim / 16]);
+}
+
+static void run_attn(void) {
+    CHECK(getenv("DS4_MINIMAX_ATTN_PACK") && !getenv("DS4_MINIMAX_ATTN_SIMT"));
+    const unsigned cases[][2] = {{9, 125}, {31, 2047}, {33, 8191}, {2048, 63488}};
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const unsigned rows = cases[c][0], pos = cases[c][1], nb = (pos + rows + 127) / 128;
+        const size_t count = (size_t)rows * 64 * 128, bytes = count * sizeof(float);
+        const size_t page_bytes = (size_t)nb * 4 * DS4_MINIMAX_KV_PAGE, bn = (size_t)rows * 4 * 16;
+        float *q = malloc(bytes), *reference = malloc(bytes);
+        uint16_t *q16 = malloc(count * sizeof(uint16_t));
+        uint8_t *pages = malloc(page_bytes), *reverse = malloc(page_bytes), *got = malloc(bytes + 16);
+        int32_t *blocks = malloc(bn * sizeof(int32_t)), *table = malloc(nb * sizeof(int32_t));
+        CHECK(q && reference && q16 && pages && reverse && got && blocks && table);
+        for (size_t i = 0; i < count; i++) {
+            q16[i] = bf16(i < 64 * 128 ? 0.f : ((int)((i * 37) % 1021) - 510) / 1024.f);
+            q[i] = widen(q16[i]);
+        }
+        unsigned seed = 47;
+        for (unsigned b = 0; b < nb; b++) for (unsigned h = 0; h < 4; h++) for (unsigned side = 0; side < 2; side++) {
+            uint8_t *p = pages + ((size_t)b * 4 + h) * DS4_MINIMAX_KV_PAGE + side * DS4_MINIMAX_KV_PAGE / 2;
+            for (unsigned i = 0; i < 128 * 72; i++) {
+                seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                p[i] = i < 128 * 64 ? (uint8_t)seed : (uint8_t)(0x20 + seed % 25);
+            }
+        }
+        for (unsigned r = 0; r < rows; r++) for (unsigned h = 0; h < 4; h++) {
+            const unsigned last = (pos + r) / 128, n = last < 15 ? last + 1 : 16;
+            for (unsigned j = 0; j < 16; j++) {
+                blocks[((size_t)r * 4 + h) * 16 + j] = j >= n ? -1 : n == 1 ? 0 : (int32_t)(j * last / (n - 1));
+            }
+        }
+        for (unsigned b = 0; b < nb; b++) {
+            table[b] = (int32_t)(nb - b - 1);
+            memcpy(reverse + (size_t)table[b] * 4 * DS4_MINIMAX_KV_PAGE,
+                pages + (size_t)b * 4 * DS4_MINIMAX_KV_PAGE, 4 * DS4_MINIMAX_KV_PAGE);
+        }
+        ds4_gpu_tensor *qt = tensor(bytes, q), *out = tensor(bytes + 16, NULL), *pool = tensor(page_bytes, pages);
+        ds4_gpu_tensor *bt = tensor(bn * sizeof(int32_t), blocks), *tt = tensor(nb * sizeof(int32_t), table);
+        uint64_t hash = 1469598103934665603ull;
+        for (unsigned indirect = 0; indirect < 2; indirect++) {
+            CHECK(ds4_gpu_tensor_write(pool, 0, indirect ? reverse : pages, page_bytes));
+            for (unsigned flags = 0; flags < 4; flags++) {
+                const bool qb = (flags & DS4_MINIMAX_BF16_Q) != 0, hb = (flags & DS4_MINIMAX_BF16_HEADS) != 0;
+                CHECK(ds4_gpu_tensor_write(qt, 0, qb ? (void *)q16 : (void *)q, count * (qb ? 2 : 4)));
+                memset(got, 0xa5, bytes + 16); CHECK(ds4_gpu_tensor_write(out, 0, got, bytes + 16));
+                CHECK(ds4_gpu_minimax_attn(out, qt, pool, indirect ? tt : NULL, bt, NULL, rows, pos, flags));
+                CHECK(ds4_gpu_tensor_read(out, 0, got, bytes + 16));
+                for (size_t i = count * (hb ? 2 : 4); i < bytes + 16; i++) { CHECK(got[i] == 0xa5); }
+                for (size_t i = 0; i < count; i++) {
+                    const float v = hb ? widen(((uint16_t *)got)[i]) : ((float *)got)[i];
+                    CHECK(isfinite(v) && fabsf(v) <= 6.01f);
+                    if (!indirect && !flags) {
+                        reference[i] = v; uint32_t bits; memcpy(&bits, &v, sizeof(bits));
+                        hash = (hash ^ bits) * 1099511628211ull;
+                    } else { CHECK(v == reference[i]); }
+                }
+            }
+        }
+        // A zero query attends uniformly, including its causal partial block.
+        for (unsigned h = 0; h < 4; h++) for (unsigned d = 0; d < 128; d++) {
+            double sum = 0; unsigned n = 0;
+            for (unsigned j = 0; j < 16 && blocks[h * 16 + j] >= 0; j++) {
+                const unsigned b = (unsigned)blocks[h * 16 + j];
+                for (unsigned k = 0; k < 128 && b * 128 + k <= pos; k++) { sum += attn_value(pages, b, h, k, d); n++; }
+            }
+            const double expected = sum / n;
+            CHECK(fabs(reference[(size_t)h * 16 * 128 + d] - expected) < .00002 + .005 * fabs(expected));
+        }
+        printf("MINIMAX_ATTN_PASS rows=%u pos=%u hash=%016llx\n", rows, pos, (unsigned long long)hash);
+        ds4_gpu_tensor_free(qt); ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(pool);
+        ds4_gpu_tensor_free(bt); ds4_gpu_tensor_free(tt);
+        free(q); free(reference); free(q16); free(pages); free(reverse); free(got); free(blocks); free(table);
+    }
+}
+
+static void score_quantize(float *q, size_t count) {
+    const double levels[] = {0, .5, 1, 1.5, 2, 3, 4, 6};
+    for (size_t g = 0; g < count; g += 16) {
+        float amax = 0;
+        for (unsigned i = 0; i < 16; i++) {
+            q[g + i] = widen(bf16(q[g + i]));
+            amax = fmaxf(amax, fabsf(q[g + i]));
+        }
+        // Compare in input units so -ffast-math cannot move a nearest-even tie via reciprocal division.
+        const double wanted = fmaxf(amax, 6.f / 512.f);
+        unsigned sc = 0;
+        for (unsigned i = 1; i < 127; i++) {
+            const double d = fabs(6 * score_fp8(i) - wanted), old = fabs(6 * score_fp8(sc) - wanted);
+            if (d < old || (d == old && !(i & 1))) { sc = i; }
+        }
+        const double scale = score_fp8(sc);
+        for (unsigned i = 0; i < 16; i++) {
+            const double v = q[g + i];
+            unsigned code = 0;
+            for (unsigned j = 1; j < 8; j++) {
+                const double d = fabs(fabs(v) - levels[j] * scale), old = fabs(fabs(v) - levels[code] * scale);
+                if (d < old || (d == old && !(j & 1))) { code = j; }
+            }
+            q[g + i] = (float)(levels[code] * scale * (v < 0 ? -1 : 1));
+        }
+    }
+}
+
+static void run_score(void) {
+    CHECK(getenv("DS4_MINIMAX_SCORE_FP4"));
+    const unsigned cases[][2] = {{9, 2047}, {31, 2039}, {33, 4081}, {128, 65408}, {2048, 63488}, {9, 1048567}};
+    const double levels[] = {0, .5, 1, 1.5, 2, 3, 4, 6};
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const unsigned rows = cases[c][0], pos = cases[c][1], total = pos + rows;
+        const unsigned stride = (total + DS4_MINIMAX_BLOCK - 1) / DS4_MINIMAX_BLOCK;
+        const size_t qn = (size_t)rows * DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_HEAD;
+        const size_t sn = (size_t)rows * DS4_MINIMAX_KV_HEADS * stride;
+        const size_t bn = (size_t)rows * DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_TOPK;
+        float *q = malloc(qn * sizeof(float)), *scores = calloc(sn, sizeof(float));
+        uint8_t *keys = malloc((size_t)total * DS4_MINIMAX_FP4_ROW);
+        int32_t *blocks = malloc(bn * sizeof(int32_t));
+        CHECK(q && scores && keys && blocks);
+        unsigned seed = 42;
+        for (size_t i = 0; i < qn; i++) { q[i] = ((int)(rand_r(&seed) % 4097) - 2048) / 1024.f; }
+        for (unsigned i = 0; i < DS4_MINIMAX_HEAD; i++) {
+            q[i] = 0;
+            q[DS4_MINIMAX_HEAD + i] *= 1e-4f;  // exercise the encoder's minimum scale
+        }
+        for (unsigned t = 0; t < total; t++) {
+            for (unsigned d = 0; d < DS4_MINIMAX_FP4_ROW; d++) {
+                keys[(size_t)t * DS4_MINIMAX_FP4_ROW + d] = d < DS4_MINIMAX_FP4_DATA ?
+                    (uint8_t)rand_r(&seed) : (uint8_t)(0x28 + rand_r(&seed) % 17);
+            }
+        }
+        ds4_gpu_tensor *query = tensor(qn * sizeof(float), q), *pool = tensor((size_t)total * DS4_MINIMAX_FP4_ROW, keys);
+        ds4_gpu_tensor *score = tensor(sn * sizeof(float), scores), *picked = tensor(bn * sizeof(int32_t), NULL);
+        CHECK(ds4_gpu_minimax_select(picked, score, rows, query, pool, rows, pos));
+        CHECK(ds4_gpu_tensor_read(score, 0, scores, sn * sizeof(float)));
+        CHECK(ds4_gpu_tensor_read(picked, 0, blocks, bn * sizeof(int32_t)));
+        for (size_t i = 0; i < qn; i++) { q[i] = widen(bf16(q[i])); }
+        if (!getenv("DS4_MINIMAX_SCORE_FP4") || strcmp(getenv("DS4_MINIMAX_SCORE_FP4"), "0") != 0) {
+            for (size_t i = 0; i < qn; i += 16) {
+                float high[16], low[16];
+                memcpy(high, q + i, sizeof(high));
+                score_quantize(high, 16);
+                for (unsigned j = 0; j < 16; j++) { low[j] = q[i + j] - high[j]; }
+                score_quantize(low, 16);
+                for (unsigned j = 0; j < 16; j++) { q[i + j] = high[j] + low[j]; }
+            }
+        }
+        const unsigned probes[] = {0, rows / 2, rows - 1};
+        for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+            const unsigned row = probes[i], own = (pos + row) / DS4_MINIMAX_BLOCK;
+            for (unsigned h = 0; h < DS4_MINIMAX_KV_HEADS; h++) {
+                const int32_t *list = blocks + ((size_t)row * DS4_MINIMAX_KV_HEADS + h) * DS4_MINIMAX_TOPK;
+                CHECK(list[DS4_MINIMAX_TOPK - 1] == (int32_t)own);
+                for (unsigned j = 1; j < DS4_MINIMAX_TOPK; j++) { CHECK(list[j - 1] < list[j]); }
+                const unsigned bs[] = {0, own / 2, own};
+                for (unsigned j = 0; j < sizeof(bs) / sizeof(bs[0]); j++) {
+                    const unsigned b = bs[j];
+                    double best = -INFINITY;
+                    for (unsigned t = b * DS4_MINIMAX_BLOCK; t < (b + 1) * DS4_MINIMAX_BLOCK && t <= pos + row; t++) {
+                        double sum = 0;
+                        for (unsigned d = 0; d < DS4_MINIMAX_HEAD; d++) {
+                            const uint8_t *key = keys + (size_t)t * DS4_MINIMAX_FP4_ROW;
+                            const unsigned code = (key[d / 2] >> (4 * (d % 2))) & 15;
+                            const unsigned sc = key[DS4_MINIMAX_FP4_DATA + d / 16];
+                            const double scale = ldexp(1. + (sc & 7) / 8., (int)(sc >> 3) - 7);
+                            sum += q[((size_t)row * DS4_MINIMAX_KV_HEADS + h) * DS4_MINIMAX_HEAD + d] *
+                                scale * levels[code & 7] * (code & 8 ? -1 : 1);
+                        }
+                        if (sum > best) { best = sum; }
+                    }
+                    const double got = scores[((size_t)row * DS4_MINIMAX_KV_HEADS + h) * stride + b];
+                    if (fabs(got - best) >= 1e-4) {
+                        fprintf(stderr, "score row=%u head=%u block=%u got=%.12g expected=%.12g error=%.12g\n",
+                            row, h, b, got, best, got - best);
+                    }
+                    CHECK(fabs(got - best) < 1e-4);
+                }
+            }
+        }
+        printf("MINIMAX_SCORE rows=%u pos=%u CPU_scores_and_causal_selection PASS\n", rows, pos);
+        ds4_gpu_tensor_free(query); ds4_gpu_tensor_free(pool); ds4_gpu_tensor_free(score); ds4_gpu_tensor_free(picked);
+        free(q); free(keys); free(scores); free(blocks);
+    }
+}
+
 int main(int argc, char **argv) {
     CHECK(argc <= 2 && ds4_gpu_init());
+    if (argc == 2 && !strcmp(argv[1], "attention")) { run_attn(); ds4_gpu_cleanup(); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "score")) { run_score(); ds4_gpu_cleanup(); return 0; }
     if (argc == 2 && !strcmp(argv[1], "moe")) { run_moe(); ds4_gpu_cleanup(); return 0; }
     if (argc == 2 && !strcmp(argv[1], "proj")) {
         run_proj(); ds4_gpu_cleanup(); puts("MINIMAX_PROJ_PASS"); return 0;

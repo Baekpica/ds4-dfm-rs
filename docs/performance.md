@@ -282,17 +282,56 @@ extend serving limits, vision or long-context quality qualification.
 A.X-K2 with GVQ1 routed experts (10-bit on layers 16, 20, …, 40, 9-bit on the
 other 53) and Q4_K/Q8_0 nonexperts
 ([model card](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF)) recorded
-**370.2 prefill / 14.91 decode** across the 32 frontiers of the
-[2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-27/README.md)
-(431.2 / 15.21 to 32K), medians of three run means in three fresh
-`ds4-bench` processes on one DGX Spark / GB10 (`a4a7659b`). Prefill falls
-from 581.4 at 2K to 272.1 at 64K, where the DSA indexer scores every causal
-key per row and layer; decode falls from 15.59 to 14.40. The release has no
-drafter. The [A.X-K2 page](axk2-vq.md) records the execution paths, the
-decode round, the quality receipt and the levers. Throughput does not
-qualify serving limits or long-context quality.
+**387.4 prefill / 15.25 decode** across the 32 frontiers of the
+[October 29 2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-29/README.md)
+(452.9 / 15.57 to 32K), medians of three run means in three fresh
+`ds4-bench` processes on one DGX Spark / GB10, measured code `8bb463ed`.
+Every frontier adds 2,048 prompt tokens over the cached prefix and generates
+128 forced greedy tokens. CPU 9 is fixed; busy SM clocks are 2,184–2,190 MHz
+under the unchanged 300–2,200 MHz policy. Run means span 386.94–388.50
+prefill and 15.02–15.29 decode; the remaining decode variation and observed
+power-cap samples are retained in the receipt.
 
-![A.X-K2 VQ prefill and decode on one DGX Spark](benchmarks/axk2-vq-spark-64k-2026-10-27/throughput.png)
+Prefill falls from 602.4 at 2K to 282.6 at 64K, where the DSA indexer scores
+every causal key per row and layer; decode falls from 15.95 to 14.71. The
+[campaign](axk2-optimization-2026-10-29.md) records three prefill and three
+decode adoptions, their separate paired gains and resource costs. The
+[October 27 sweep](benchmarks/axk2-vq-spark-64k-2026-10-27/README.md) remains
+historical; no cumulative A/B percentage is inferred from it. The release
+has no drafter. The [A.X-K2 page](axk2-vq.md) retains the dated quality and
+serving receipts; this text throughput campaign does not extend them.
+
+![A.X-K2 VQ prefill and decode on one DGX Spark](benchmarks/axk2-vq-spark-64k-2026-10-29/throughput.png)
+
+## MiMo-V2.6-Flash VQ
+
+MiMo-V2.6-Flash-RL UNCENSORED with GVQ1 routed experts (13-bit on all 47
+MoE layers, an 8-bit residual stage on 32) and Q8_0 nonexperts
+([model card](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF);
+the [RL release](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF)
+shares its runtime and shapes) recorded **1,294.9 prefill / 23.96 decode**
+without drafting across the 32 frontiers of the
+[October 31 2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-31/README.md)
+(2K–32K: 1,400.4 / 24.46), and **1,292.2 / 26.35** with two embedded MTP
+drafts, the server default. These are medians of three run means in three
+fresh `ds4-bench` processes per variant on one DGX Spark / GB10, measured
+code `2fa8c08e`: 2,048-token incremental prefills and 128 forced greedy
+tokens per frontier. Busy SM clocks 2,177–2,190 MHz under the
+300–2,200 MHz policy; minimum available memory 23.31 GiB, PSI 0.
+
+Prefill falls from 1,492.2 at 2K to 1,106.1 at 64K (25.9% lower), decode
+from 24.86 to 23.04. The October 30 sweep measured 1,226.5 / 23.97 and
+998.0 at 64K: full-layer prefill now scores E4M3 queries against the stored
+E4M3 keys, and the MTP blocks see the prompt within their 128-position
+window. MTP decode on this forced novel continuation follows each
+frontier's acceptance (22.8–32.4; mean gain 10%); on chat prompts two
+drafts decode 25.4–36.3 tok/s against 24.9–25.1 plain
+([optimization report](mimo2-vq-optimization-2026-10-31.md)). The
+[MiMo VQ page](mimo2-vq.md) records the execution paths, serving plans and
+quality gates. Throughput does not qualify serving limits or long-context
+quality.
+
+![MiMo-V2.6-Flash VQ prefill and decode on one DGX Spark](benchmarks/mimo2-vq-spark-64k-2026-10-31/throughput.png)
 
 ## DeepSeek V4.1
 

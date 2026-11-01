@@ -688,6 +688,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
             return Self::load_tables(&g, family, Some(minimax::tables(path)?));
         }
+        if family == ModelFamily::Mimo2 && path.is_dir() {
+            let g = crate::mimo2_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("MiMo release metadata"))?;
+            return Self::load_tables(&g, family, Some(mimo2::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -1163,6 +1168,32 @@ impl Vocab {
             }
         }
         Ok(())
+    }
+
+    /// DeepSeek V4 one-shot prompt, as ds4.c `encode_chat_prompt`: BOS,
+    /// effort, system, user turn, assistant opener. V4 ships
+    /// `encoding_dsv4.py`, not Jinja; other families render their Jinja.
+    pub fn encode_deepseek_prompt(
+        &self,
+        system: Option<&[u8]>,
+        prompt: &[u8],
+        mode: ChatThinkMode,
+    ) -> Result<TokenBuffer, TokError> {
+        if self.family != ModelFamily::DeepSeek4 {
+            return Err(TokError::InvalidTokenizer(
+                "one-shot prompts without Jinja are DeepSeek V4 only",
+            ));
+        }
+
+        let mut tokens = TokenBuffer::new();
+        self.chat_begin(&mut tokens)?;
+        self.chat_append_effort_prefix(&mut tokens, mode);
+        if let Some(system) = system.filter(|s| !s.is_empty()) {
+            self.chat_append_message(&mut tokens, "system", system)?;
+        }
+        self.chat_append_message(&mut tokens, "user", prompt)?;
+        self.chat_append_assistant_prefix(&mut tokens, mode)?;
+        Ok(tokens)
     }
 
     fn require_chat_ids(&self, ids: &[(i32, &str)]) -> Result<(), TokError> {

@@ -36,7 +36,7 @@ enum { GLMVQ_Q4P_BM = 128, GLMVQ_Q4P_BN = 128, GLMVQ_Q4P_BK = 64, GLMVQ_Q4P_STAG
        GLMVQ_Q4P_CONSUMERS = 256, GLMVQ_Q4P_PRODUCERS = 128,
        GLMVQ_Q4P_THREADS = GLMVQ_Q4P_CONSUMERS + GLMVQ_Q4P_PRODUCERS,
        GLMVQ_Q4P_NT = 8, GLMVQ_Q4P_GROUP = 8, GLMVQ_Q4P_PREP = 128,
-       GLMVQ_Q4P_COLS = GLMVQ_Q4P_PREP * 4, GLMVQ_Q4P_SHIFT = 6 };
+       GLMVQ_Q4P_SHIFT = 6 };
 // A: [m tile 8][sub-block 2][k16 half 2][lane 32] fragments of 16 bytes.
 static constexpr uint32_t GLMVQ_Q4P_A = GLMVQ_Q4P_BM * GLMVQ_Q4P_BK * sizeof(__half);
 static constexpr uint32_t GLMVQ_Q4P_B = GLMVQ_Q4P_BN * GLMVQ_Q4P_BK * sizeof(__half);
@@ -181,7 +181,7 @@ __device__ __forceinline__ void glmvq_q4p_mma(float c[4], const uint4 &a, uint32
         : "r"(a.x), "r"(a.y), "r"(a.z), "r"(a.w), "r"(b0), "r"(b1));
 }
 
-/* y[token][row] for rows multiple of 128 and cols of 512, as F32 or as the
+/* y[token][row] for rows multiple of 128 and cols of 256, as F32 or as the
  * BF16 rounding decode and verify store. Fragment lane (g, c) owns elements
  * 8c..8c+7 of every sub-block: bytes 8c..8c+7 of a row's qs chunk and one
  * 16-byte token load, in the q4m element order. */
@@ -422,7 +422,7 @@ __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t 
 }
 
 static bool glmvq_q4p_fits(uint32_t rows, uint32_t cols) {
-    return rows % GLMVQ_Q4P_BM == 0 && cols % GLMVQ_Q4P_COLS == 0;
+    return rows % GLMVQ_Q4P_BM == 0 && cols % GLMVQ_Q4_BLOCK == 0;
 }
 
 // Prepared-input bytes for `tokens` rows of `cols`: FP16 values and scales.

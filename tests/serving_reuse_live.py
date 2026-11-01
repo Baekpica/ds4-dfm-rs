@@ -32,6 +32,8 @@ PROFILES = {
     # serving.family on the Spark, 2026-10-18).
     "glm": {"names": ["glm5-next", "GLM-5.3-Flash-VQ"], "reuse": "partial"},
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
+    # MiMo-V2.6-Flash: the mixed artifact and its VQ release (serving.rs plan names).
+    "mimo2": {"names": ["mimo2", "mimo2_vq"], "reuse": "partial"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
 FIXTURE_SCHEMA = "serving-reuse-live-v7"

@@ -1,8 +1,8 @@
 # DwarfStar / ds4-dfm-rs
 
 **DwarfStar** (`ds4`) runs a deliberately limited set of large open-weight
-models on local machines. Model loading, chat templates, tool calls, KV reuse,
-the HTTP server and the coding agent are built and tested together.
+models on local machines. Model loading, chat templates, tool calls, KV reuse
+and the HTTP server are built and tested together.
 
 `ds4-dfm-rs` is the independent Rust-host continuation of
 [`Baekpica/ds4`](https://github.com/Baekpica/ds4). Rust owns the host and serving
@@ -18,7 +18,8 @@ is the 128 GB NVIDIA DGX Spark / GB10. Support is specific to the
 <a id="so-what-can-i-do-with-this-software"></a>
 
 - Serve OpenAI Chat, Completions and Responses, or Anthropic Messages.
-- Run the CLI and built-in DeepSeek DSML coding agent.
+- Connect agents and tool frameworks over those APIs; the server frames tool
+  calls and never executes them.
 - Use official [chat templates](docs/chat-templates.md), tool history and REPL turns.
 - Keep conversations through persistent banks, prefix reuse and disk checkpoints
   where the model's state contract supports them.
@@ -54,7 +55,8 @@ documented whole-model results are omitted.
 | Ling-3.1-flash VQ v2 + Q4_K/FP8 | 774.1 | 17.70 | [2K–64K sweep, plain; MTP 2 to 32K: 23.58](docs/performance.md#ling-31-flash-vq) |
 | Beam-1.0 VQ (12/13-bit GVQ1 + Q4_K) | 830.4 | 15.86 | [2K–64K sweep, plain; DFlash2 on chat: 30.9](docs/performance.md#beam-10-vq) |
 | MiniMax-M3.1 Flash VQ (13-bit GVQ1 + R8 + Q4_K) | 1,011.0 | 22.10 | [2K–64K sweep, DSpark 3 gated, 512K session](docs/performance.md#minimax-m31-flash-vq) |
-| A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 370.2 | 14.91 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
+| A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 387.4 | 15.25 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
+| MiMo-V2.6-Flash VQ (13-bit GVQ1 + R8 + Q8_0) | 1,294.9 | 23.96 | [2K–64K sweep, plain; MTP 2: 26.35](docs/performance.md#mimo-v26-flash-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
@@ -99,8 +101,8 @@ make cuda-spark
 | `make` on macOS | Inherited Metal backend |
 | `make cpu` | CPU reference and diagnostics |
 
-Production binaries are `ds4`, `ds4-server`, `ds4-bench` and `ds4-agent`, all
-Rust hosts. The `*-c` binaries and `ds4-eval` remain C behavior oracles.
+Production binaries are `ds4`, `ds4-server` and `ds4-bench`, all Rust hosts.
+The `*-c` binaries and `ds4-eval` remain C behavior oracles.
 The old `*-rs` names are compatibility aliases.
 
 ### Run and verify
@@ -187,6 +189,7 @@ collection. Feature and context limits remain specific to each artifact.
 | A.X-K2 VQ | `axk2_vq` (GVQ1 release directory) | [Baekpica 9/10-bit VQ experts + Q4_K/Q8_0 nonexperts](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF) | [MLA with the DSA indexer, FP8 latent and key rows, native 262K in one bank, Hermes tools, no drafter; 2K–64K measured](docs/axk2-vq.md) |
 | MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
+| MiMo-V2.6-Flash VQ (RL, UNCENSORED) | `mimo2_vq` (GVQ1 release directory) | [Baekpica RL VQ](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF) / [UNCENSORED VQ](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF) experts (R13+8 on 32 layers) + Q8_0 nonexperts | [FP8 full-layer KV, Q8_0 vision/audio, embedded MTP or DFlash, native 1M on the serial lane; 2K–64K measured](docs/mimo2-vq.md) |
 | Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |
 | IQuest-Q1 | `iquest_q1` | [Baekpica mixed quant](https://huggingface.co/Baekpica/IQuest-Q1-Mixed-Quant-GGUF) | [Hybrid Q8 KV, banks and embedded MTP; bounded Spark thinking-mode gates](docs/iquest-q1.md) |
 
@@ -242,8 +245,8 @@ for CLI, HTTP, cache and distributed contracts.
 ## Architecture
 
 ```text
-CLI / HTTP / agent → ds4-core → ds4-sys → native CUDA / MMQ / VMM
-                    Rust host policy      native compute and GPU state
+CLI / HTTP → ds4-core → ds4-sys → native CUDA / MMQ / VMM
+            Rust host policy      native compute and GPU state
 ```
 
 Rust owns catalog validation, rendering, admission, scheduling, model/session
@@ -269,9 +272,9 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 
 <a id="status"></a>
 
-The current repository version is **v0.1.4**. Its
-[ledger](docs/releases/v0.1.4.md) collects the model and VQ additions,
-measured inference work, and audit repairs since v0.1.3. Earlier ledgers
+The current repository version is **v0.1.5**. Its
+[ledger](docs/releases/v0.1.5.md) collects the VQ family additions, sampled
+speculation and standard sampling since v0.1.4. Earlier ledgers
 preserve the Rust baseline, performance workflow, shared Jinja and serving
 qualification. Dated reports retain their recorded build, artifact and
 workload; they do not describe live processes.

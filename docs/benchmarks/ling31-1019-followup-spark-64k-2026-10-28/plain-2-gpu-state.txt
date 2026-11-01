@@ -1,0 +1,73 @@
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Wed Oct 28 22:08:29 2026
+Driver Version                                         : 615.71.10 [Deprecated; will be removed in CUDA 14.0. Use KMD Version instead]
+CUDA Version                                           : 13.4 [Deprecated; will be removed in CUDA 14.0. Use CUDA UMD Version instead]
+KMD Version                                            : 615.71.10
+CUDA UMD Version                                       : 13.4
+
+Attached GPUs                                          : 1
+GPU 0000000F:01:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 400464229 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Temperature
+        GPU Current Temp                               : 70 C
+        GPU Current T.Limit Temp                       : 21 C
+        GPU Shutdown T.Limit Temp Specification        : N/A
+        GPU Slowdown T.Limit Temp Specification        : N/A
+        GPU Max Operating T.Limit Temp Specification   : 0 C
+        GPU Target Temperature Specification           : N/A
+        Memory Current Temp                            : N/A
+        Memory Max Operating T.Limit Temp Specification: N/A
+    Clocks
+        Graphics                                       : 2190 MHz
+        SM                                             : 2190 MHz
+        Memory                                         : N/A
+        Video                                          : 1833 MHz
+    Applications Clocks
+        Graphics                                       : Requested functionality has been deprecated
+        Memory                                         : Requested functionality has been deprecated
+    Default Applications Clocks
+        Graphics                                       : Requested functionality has been deprecated
+        Memory                                         : Requested functionality has been deprecated
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 3003 MHz
+        SM                                             : 3003 MHz
+        Memory                                         : N/A
+        Video                                          : 3003 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : N/A
+    SM Clock Samples
+        Duration                                       : N/A
+        Number of Samples                              : N/A
+        Max                                            : N/A
+        Min                                            : N/A
+        Avg                                            : N/A
+    Memory Clock Samples
+        Duration                                       : N/A
+        Number of Samples                              : N/A
+        Max                                            : N/A
+        Min                                            : N/A
+        Avg                                            : N/A
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A

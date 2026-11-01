@@ -22,8 +22,10 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
-/// Ling-3.1's max_position_embeddings (rope_scaling null).
-const LING31_CTX_MAX: u32 = 262_144;
+/// Ling-3.1's max_position_embeddings (rope_scaling null), the default.
+/// Larger contexts select YaRN factor 4 (official SGLang recipe) up to 1M.
+pub(crate) const LING31_NATIVE_CTX: u32 = 262_144;
+const LING31_CTX_MAX: u32 = 4 * LING31_NATIVE_CTX;
 /// Beam's max_position_embeddings: NoPE full layers, no RoPE scaling.
 const BEAM_CTX_MAX: u32 = 1_048_576;
 /// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
@@ -657,17 +659,15 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 /// contract defaults to it (GLM VQ follows max_position_embeddings); None
 /// keeps the host default.
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
-    if matches!(
-        caps.family,
+    match caps.family {
+        // YaRN rotates every cached key differently: opt in with --ctx.
+        ModelFamily::Ling31Vq => Some(LING31_NATIVE_CTX),
         ModelFamily::Glm53Vq
-            | ModelFamily::Ling31Vq
-            | ModelFamily::BeamVq
-            | ModelFamily::MinimaxVq
-            | ModelFamily::Axk2Vq
-    ) {
-        caps.ctx_max
-    } else {
-        None
+        | ModelFamily::BeamVq
+        | ModelFamily::MinimaxVq
+        | ModelFamily::Axk2Vq => caps.ctx_max,
+        ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
+        _ => None,
     }
 }
 
@@ -815,6 +815,30 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_banks: Some(crate::naive::QUALIFIED_BANKS),
             qualified_prompt: Some(crate::naive::QUALIFIED_PROMPT),
             media_serial: false,
+        },
+        // The VQ release runs the same lanes under its own gates: two-bank
+        // HTTP reuse and disk restore, and two embedded drafts on the serial
+        // lane (docs/benchmarks/mimo2-vq-serving-2026-10-30). Auto drafts
+        // there, so the default 1M plan is one serial sequence.
+        ModelFamily::Mimo2 if variant == Variant::Mimo26FlashVq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::OptIn,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Serial,
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::mimo2::INDEX_LIMIT),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: true,
         },
         // Target banks run without MTP; media and speculation use serial.
         ModelFamily::Mimo2 => ServingCaps {
@@ -1618,6 +1642,7 @@ impl ServingCaps {
             Variant::Step37Flash => "step35",
             Variant::Ling30FlashVl => "bailingmoe3",
             Variant::Mimo26Flash => "mimo2",
+            Variant::Mimo26FlashVq => "mimo2_vq",
             Variant::Qwen35_27B => "qwen35",
             Variant::NaiveN05Flash => "naive_n05_flash",
             Variant::IQuestQ1 => "iquest_q1",
@@ -3595,6 +3620,14 @@ mod tests {
         assert_eq!(native_ctx_default(vq), Some(1_048_576));
         let source = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
         assert_eq!(native_ctx_default(source), None);
+    }
+
+    #[test]
+    fn mimo_vq_context_defaults_to_native() {
+        let vq = serving_caps(ModelFamily::Mimo2, Variant::Mimo26FlashVq);
+        assert_eq!(native_ctx_default(vq), Some(1_048_576));
+        let mixed = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
+        assert_eq!(native_ctx_default(mixed), None);
     }
 
     #[test]

@@ -77,7 +77,7 @@ static int ling31_session_eval(ds4_session *s, int token, char *err, size_t errl
 #ifndef __APPLE__
 /* MTP trial: recursive drafts from the last hidden row, then one batched
  * verify of first + drafts. The caller commits the matching prefix. */
-static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
+int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
         int *tokens, int *target, int capacity, char *err, size_t errlen) {
     if (!ds4_session_is_ling31(s) || !tokens || !target || capacity < 1 ||
         first < 0 || (uint32_t)first >= DS4_N_VOCAB) {
@@ -111,6 +111,14 @@ static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
         ling31_session_fail(s, err, errlen);
         return -1;
     }
+    if (spec_sampling(&s->spec)) {
+        const float *rows = spec_host_rows(g->mtp_logits, DS4_N_VOCAB, n);
+        if (!rows) {
+            ling31_session_fail(s, err, errlen);
+            return -1;
+        }
+        spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, g->mtp_trial, n, target);
+    }
     g->position = start + n;
     g->mtp_len = start + n - 1u;
     g->mtp_start = start;
@@ -120,7 +128,7 @@ static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
     return (int)n;
 }
 
-static int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen) {
     ds4_ling31_graph *g = &s->ling31_graph;
     if (!ds4_session_is_ling31(s) || !s->checkpoint_valid || !g->mtp_n || keep < 1 ||
         (uint32_t)keep > g->mtp_n || (uint32_t)s->checkpoint.len != g->mtp_start) {
@@ -135,5 +143,17 @@ static int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t
         fprintf(stderr, "ds4: Ling-3.1 MTP keep=%d pos=%u\n", keep, g->position);
     }
     return 0;
+}
+#else
+int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
+        int *tokens, int *target, int capacity, char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)capacity;
+    payload_set_err(err, errlen, "Ling-3.1 MTP requires CUDA");
+    return -1;
+}
+int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "Ling-3.1 MTP requires CUDA");
+    return 1;
 }
 #endif

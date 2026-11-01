@@ -27,9 +27,10 @@ ds4_l31_moe *ds4_gpu_l31_moe_create(ds4_gvq_ctx *gvq, uint32_t rows);
 void ds4_gpu_l31_moe_free(ds4_l31_moe *moe);
 /* `matrices` holds the layer's gate[512], up[512], down[512] GVQ indices.
  * `shared` (optional) is the shared expert's output, added after the routed
- * F32 sum is rounded. `clamp` is +inf on unclamped layers. */
+ * F32 sum is rounded. `clamp` is +inf on unclamped layers. BF16 input rows
+ * take the grouped prefill paths only (0 at decode and verify widths). */
 int ds4_gpu_l31_moe(ds4_l31_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
-    const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+    ds4_gvq_rows in_rows, const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
     const uint32_t *matrices, uint32_t rows, float clamp, const ds4_gpu_tensor *shared);
 
 /* SwiGLU and fused Q4_K gate/up (decode/verify widths) in Ling's clamp form. */
@@ -37,6 +38,8 @@ int ds4_gpu_l31_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit, ds4_gvq_rows out_rows);
 int ds4_gpu_l31_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, uint32_t up,
     const ds4_gpu_tensor *input, uint32_t rows, float limit);
+int ds4_gpu_l31_mlp(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t down,
+    const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up, uint32_t rows, float limit);
 
 /* BF16 k_b [heads][latent][nope] and v_b [heads][value][latent] from the FP8
  * kv_b [heads*(nope+value), latent] (FP8 x scale, then BF16 RNE). */
@@ -83,10 +86,19 @@ int ds4_gpu_l31_latent_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
 int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *k_pe,
     const ds4_gpu_tensor *kv_norm, const ds4_gpu_tensor *kv_raw, uint32_t rows, uint32_t pos0,
     uint32_t cap, ds4_l31_latent mode);
+typedef enum {
+    DS4_L31_RES_F32, DS4_L31_RES_PACK, DS4_L31_RES_BF16
+} ds4_l31_residual;
+
 /* cur = bf16(cur + branch) and norm = weighted RMS of cur (BF16 weight
- * `weight`), bit-identical to the separate add, rounding and RMS kernels. */
+ * `weight`) as F32 or BF16 rows, bit-identical to the separate add,
+ * rounding and RMS kernels. */
 int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, uint32_t weight, uint32_t rows, uint32_t width, float eps);
+    ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, ds4_l31_residual mode,
+    uint32_t weight, uint32_t rows, uint32_t width, float eps);
+/* Add the last branch to compact cur and restore each original F32 row. */
+int ds4_gpu_l31_residual_unpack(ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+    uint32_t rows, uint32_t width);
 
 #ifdef __cplusplus
 }

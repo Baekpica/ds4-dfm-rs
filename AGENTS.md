@@ -1,9 +1,11 @@
 # Repository instructions
 
 `ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM.
-The default `ds4`, `ds4-server`, `ds4-bench`, and `ds4-agent` are Rust hosts.
+The default `ds4`, `ds4-server` and `ds4-bench` are Rust hosts; ds4 is a
+serving engine, and agents or frameworks connect over HTTP.
 CUDA/MMQ/VMM and hardware-specific kernels remain native. C executables
-with `-c` suffixes are retained behavior oracles, not the production hosts.
+with `-c` suffixes are deprecated: they keep the C sampler and the old
+sampling policy and no longer track the Rust hosts.
 
 Start with [README.md](README.md), the [documentation index](docs/README.md),
 and the [architecture](docs/rust-migration/ARCHITECTURE.md).
@@ -26,7 +28,8 @@ name them too.
 | Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
 | Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
-| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md) |
+| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
+| C sources, the native bridge or host logic still in C | [Architecture](docs/rust-migration/ARCHITECTURE.md), [FFI contract](docs/rust-migration/FFI_CONTRACT.md), [C continuation](docs/rust-migration/C_CONTINUATION.md): move host logic to Rust; never extend deprecated C |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
@@ -110,6 +113,14 @@ owns the tool loop.
 - Price what grows with context before fixed weights: Ling-3.1's BF16 latent
   KV (2.53 GiB per 262K bank) forced serial 512-row prefill; FP8 rows admit
   2,048-row banks.
+- A serial lane must resume at the common prefix, not only on extension:
+  agent clients re-render the last answer, so an extend-only sync prefilled
+  every MiMo turn from zero (cached_tokens 0 even for an identical resend).
+  Positional and SWA state rewinds while the ring, counted from the newest
+  row written, holds the window, never below a restored snapshot (it holds
+  one window); drafter windows re-run below the prefix. The host asks native
+  for the kept rows: a host mirror lost the high-water mark across rewinds.
+  Gate with an identical resend and a re-rendered continuation.
 - Recurrent-state (KDA, linear-attention) payloads restore only a prompt that
   extends the saved history: test disk restore with the next turn; re-sending
   a turn always misses.
@@ -125,6 +136,17 @@ When optimizing inference performance, prioritize end-to-end execution-path effi
 
 - **GB10 clock prerequisite.** Keep the reference host at 300–2200 MHz for stable absolute performance and to reduce the DGX Spark trip risk reported by the operator. The operator-enabled `nvidia-clocks.service` applies persistence mode and this range automatically at boot. Do not ask the user to set clocks on each run or reboot when the service is enabled and successful; verify its status/current-boot journal read-only and record the boot identity and observed busy SM clocks. Do not stop/restart the service (`ExecStop` resets clocks), change/reset its policy, or let a profiler override it. Investigate a missing/failed service or conflicting observations before requesting user action. Missing historical clock metadata does not prove a different policy. See the [clock policy](docs/gb10-hardware.md#clock-policy-and-measurement-stability). (Codex learning)
 - **Absolute stability before adoption.** Evaluate absolute prefill/decode rates and their repeat ranges alongside paired gains/losses. If absolute levels drift materially, explain clock/throttling, thermal, memory/PSI, cache, competing-work or speculative-acceptance differences before deciding. Preserve raw samples and disclose unresolved variability; a favorable percentage or smoothed graph cannot establish stability. (Codex learning)
+
+- **Never chase bit identity for speed.** Do not restrict, redesign, delay
+  or reject a speed change to keep outputs bit-identical, and do not spend
+  effort making a faster path bit-identical. A change that moves rounding or
+  accumulation order is judged by its output against a noise floor measured
+  on this host from an existing configuration change (prefill: chunk-size
+  frontier KL; decode: teacher-forced NLL and top-1 against an accepted
+  arithmetic switch). Bit identity is only a free convenience of pure
+  scheduling changes. A gate's fixed tie or threshold is not a noise floor:
+  when an order change crosses one, compare against the reference before
+  calling it a bug.
 
 Follow this evidence-driven sequence for every optimization round, regardless of tool:
 
@@ -233,7 +255,8 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   Record load time and PSI; prefer repeated fast-load runs.
 - **Numerical tolerance.** Use an existing configuration change as the noise
   reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
-  Keep bit identity when only scheduling changes; it makes A/B trivial.
+  Pure scheduling changes come out bit-identical for free, which makes their
+  A/B trivial; never pay speed or effort for bit identity elsewhere.
 - **Noise grows with context.** Ling-3.1's 1,024- vs 2,048-row chunk KL is
   0.0002 at 32K and 0.08 at 128K (argmax flip). Gate KV and weight formats
   against it at the same long frontiers, plus teacher-forced NLL after
@@ -246,8 +269,7 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **MTP verify widths are their own regime.** A 2-4 row forward falls off
   every one-row direct kernel onto convert + cuBLAS unless each kernel takes
   rows; that fallback was 15 of 70 ms per GLM one-draft step. Give direct
-  kernels a token loop that reuses each weight load and keeps the one-row
-  FMA order, so verify rows equal decode rows bit for bit and A/B stays exact.
+  kernels a token loop that reuses each weight load.
 - **Expert overlap decides draft depth.** Consecutive GLM tokens share few of
   their top-8 experts (4 rows: ~26 unique of 32), so routed-expert bytes grow
   almost linearly with verify rows; an expert-union kernel saved under 10%.
@@ -255,7 +277,9 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **Drafts need the prompt.** A draft layer whose KV starts at decode drafts
   blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
   Fill its KV during prefill. Check generated text for loops: a repeating
-  bench continuation accepts ~100% and overstates MTP gains.
+  bench continuation accepts ~100% and overstates MTP gains. Sliding-window
+  draft blocks see only their window: MiMo's (128 positions) gained 5-8%
+  acceptance from the prompt and verify rows.
 - **Peaks.** Per SM and clock `mma.sync` does 1,024 F16/BF16 FLOP, 2,048
   FP8/INT8 and 4,096 NVFP4: ~108 / 215 TFLOPS at the 2.19 GHz cap, 128 / 255
   / 509 at ~2.5 GHz; cuBLAS BF16 65–90 TFLOPS. Streaming reads 231–246 GB/s
@@ -391,6 +415,42 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   rank-16 BF16 projections (458 KB) in one block took 42 µs per row;
   recomputing the norm in 16 blocks for `W_down` and splitting `W_up` over
   28 took 13 µs, bit-identical.
+- **TF32 is exact for BF16 values.** An F32 GEMM whose operands are
+  BF16-rounded (norm rows, widened BF16 weights) runs on TF32 tensor cores
+  with exact products: Ling-3.1's router 1.43 → 0.66 ms per 4,096 rows
+  (BF16 rows on BF16 MMA: 0.36 ms).
+- **Hold a recurrent state column in registers across verify rows.**
+  Ling-3.1's KDA verify re-read and re-wrote its F32 state per row through
+  L2: three rows 127 → 97 µs per layer, MTP decode +4.5%.
+  One decode row at 255 registers lost 1.5%: dispatch by rows.
+- **Group decode launches only where PDL cannot overlap them.** One token's
+  five KDA projections in one stream launch: decode +3.3%; the same grouping
+  on q4m at verify widths: 7% in a harness, 0% in the model.
+- **Probe a decode access pattern's read-only ceiling.** 240-byte rows per
+  warp capped a read-only probe at 191 GB/s; the expert down kernel ran
+  within 10% of it, so no prefetch variant could win.
+- **GQA decode attention is an MMA.** MiMo's 16 query heads per KV head are
+  the m16 rows of an f16 MMA over one row of FP8 codes; choosing the k order
+  per lane (dims 48t..48t+47 of a key, values 16g..16g+15) makes fragments
+  contiguous. Lanes loading their own 16-byte segments capped a read-only
+  probe at 150 GB/s; a block staging whole rows with contiguous cp.async
+  reached 182-191 (64K-256K), 4.4x the per-key shuffle walk.
+- **Widen an FP8 KV tile once per head pair.** Eight warps over two query
+  heads of one KV head, the next tile's codes in registers during the MMAs:
+  MiMo's prefill attention 8.9 -> 68-74 TFLOPS. A second f16 component of Q
+  and P bought nothing against E4M3 keys; against exact f16 keys it did.
+  E4M3 Q (one scale per row and head) makes the stored keys MMA fragments
+  without widening: 69 -> 95 TFLOPS at 64K. Its error on random rows was
+  100x f16 Q's, yet NLL pairs after 32K and 131K prompts stayed inside the
+  accepted switches' band: gate operand formats on the model.
+- **Run ncu with `--clock-control none`.** Its default locks the base
+  clock for the profile (2.40 GHz on GB10, above the 2,200 MHz policy).
+- **Host sampling is decode time once drafts verify sampled rows.** Sorting
+  MiMo's 152,576 logits for top-p took 13 ms per draw on a Grace core, and a
+  sampled MTP2 step draws up to four times: 127 ms against 79 greedy.
+  Sorting the head first (tokens ≥ 1e-3 of the top probability, the full
+  order's prefix) took the step to 83 ms: sampled code 18.4 → 32.7 tok/s.
+  Time a sampled request whenever drafting or the sampler changes.
 
 # Agent Notes
 
@@ -447,15 +507,15 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## Layout
 
-- `crates/ds4-cli`: production CLI, benchmark and coding agent.
+- `crates/ds4-cli`: production CLI and benchmark.
 - `crates/ds4-server`: HTTP, admission, scheduling, streaming and tools.
 - `crates/ds4-core`: model/session ownership, host catalog and tokenizer.
-- `crates/ds4-kv`, `ds4-dist`, `ds4-web`: KV policy, distributed runtime and web helpers.
+- `crates/ds4-kv`, `ds4-dist`: KV policy and distributed runtime.
 - `crates/ds4-sys` + `native/bridge`: narrow native inference boundary.
 - `crates/ds4-perf`: standalone inspect/scout/compare/optimize workflow.
 - `crates/ds4-perf-gpu`: optional profiling-only CUDA calibration/CUPTI helper.
 - `ds4.c`: native engine, GPU state/execution and retained compatibility helpers.
-- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_agent.c`: C host oracles.
+- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`: deprecated C host oracles.
 - `ds4_ling3vl_*.inc` / `ds4_ling3vl_gpu.cuh`: Ling-3.0-flash-VL graph,
   bank runtime, image spans and vision tower. Its KDA, latent-attention and
   routed-MoE stages reuse the Solar/GLM, Motif and Step primitives; only the
@@ -491,6 +551,8 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## MTP / compressed-KV decode rules
 
+- Drafts verify against the request's sampler at every temperature; never gate drafting on temperature, thinking or a forced control prefix. A trial draws its verify rows with `spec_sample_rows` (sample-and-match, every draw spent; only an uncut prefix's last draw is the next token); a forced position ends the prefix before commit through the host's `limit`: [sampled speculation](docs/speculative-sampling.md). Greedy-only verification and whole-request prefix gates once left MTP off for every thinking request and every agent turn with tool results.
+- `--mtp-mode on` removes `DS4_MTP_SPEC_DISABLE` from the environment: an A/B that sets the switch beside the flag drafts in both runs (MiMo timed the same twice). An off run drops the drafting flags and passes `--mtp-mode off`.
 - Lossless = verified tokens AND committed compressed-KV == the accepted-prefix transition. Not bit-identity (cross-width MoE order differs), not tokens alone (carried state sets future logits).
 - Emit compressor state in the verify forward, roll back rejects; never re-emit in a second pass (a commit-reforward emit was ~100% wrong).
 - Gate on ‖Δcompressed-cache‖ and long context, not short-prompt tokens — short context hides cache corruption behind raw/windowed KV.

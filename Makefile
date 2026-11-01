@@ -115,51 +115,53 @@ endif
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
         pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-engram test-ds41-forward \
-        rust-bridge ds4-rs ds4-bench-rs ds4-agent-rs ds4-server-rs test-kv-parity test-web-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-agent-parity test-session-parity
+        rust-bridge ds4-rs ds4-bench-rs ds4-server-rs test-kv-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-session-parity
+
+# The C host executables are deprecated: Rust owns host behavior
+# (CONTRIBUTING.md); they build only on request and get no features.
+C_HOST_DEPRECATED = @echo "warning: $@ is a deprecated C host; use the Rust host" >&2
 
 ifeq ($(UNAME_S),Darwin)
-all: ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent
+all: ds4-eval ds4 ds4-server ds4-bench
 
 help:
 	@echo "DS4 build targets:"
-	@echo "  make              Build Metal C oracles (ds4-*-c) + Rust defaults + ./ds4-eval"
-	@echo "  make cpu          Build CPU-only C oracles (ds4-*-c) + ./ds4-eval"
+	@echo "  make              Build the Rust hosts + ./ds4-eval (Metal)"
+	@echo "  make cpu          Build the deprecated CPU-only C oracles (ds4-*-c) + ./ds4-eval"
 	@echo "  make test         Build and run tests"
 	@echo "  make rust-bridge  Compile native/bridge/ds4_bridge.o (Rust FFI skeleton)"
 	@echo "  make test-kv-parity  C↔Rust KVC 4-way matrix (Phase 4)"
-	@echo "  make test-web-parity C↔Rust web encode/wire + mock CDP (Phase 5)"
 	@echo "  make test-dist-parity C↔Rust DS4D codecs + blocking runtime (Phase 6)"
 	@echo "  make test-route-parity C↔Rust route_decide reason table (Phase 7)"
 	@echo "  make test-server-parity C↔Rust HTTP door + parsers + tools + live tool stream + corrective retry + continuation + memgov /metrics (Phase 7)"
 	@echo "  make test-catalog-parity C↔Rust shape catalog + mmap GGUF identify + tensor inventory + bind plan + host bind lookup + host load apply + host validate + host vocab apply + host layout + MTP/DSpark sibling catalogs (Phase 8)"
 	@echo "  make test-tokenizer-parity C↔Rust tokenizer encode/decode/stop (Phase 8)"
-	@echo "  make test-agent-parity C↔Rust one-turn agent prompt/projector (agent shadow)"
 	@echo "  make test-session-parity C↔Rust session ledger / DSV4 prefix (Phase 8)"
-	@echo "  make ds4-c        Build C oracle ./ds4-c"
+	@echo "  make ds4-c        Build the deprecated C oracle ./ds4-c"
 	@echo "  make ds4-rs       Deprecated alias for ./ds4 (Rust default)"
 	@echo "  make clean        Remove build outputs"
 
 ds4-c: ds4_cli.o linenoise.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(CC) $(CFLAGS) -o $@ ds4_cli.o linenoise.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 ds4-server-c: ds4_server.o ds4_kvstore.o rax.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(CC) $(CFLAGS) -o $@ ds4_server.o ds4_kvstore.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 ds4-bench-c: ds4_bench.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(CC) $(CFLAGS) -o $@ ds4_bench.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 ds4-eval: ds4_eval.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ ds4_eval.o $(CORE_OBJS) $(METAL_LDLIBS)
 
-ds4-agent-c: ds4_agent.o ds4_web.o ds4_kvstore.o linenoise.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ ds4_agent.o ds4_web.o ds4_kvstore.o linenoise.o $(CORE_OBJS) $(METAL_LDLIBS)
-
-cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_web.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(CC) $(CFLAGS) -o ds4-c ds4_cli_cpu.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-server-c ds4_server_cpu.o ds4_kvstore.o rax.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-bench-c ds4_bench_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-eval ds4_eval_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
-	$(CC) $(CFLAGS) -o ds4-agent-c ds4_agent_cpu.o ds4_web.o ds4_kvstore.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 
 cuda-regression:
 	@echo "cuda-regression requires a CUDA build"
@@ -181,16 +183,14 @@ help:
 	@echo "  make test                Build and run tests (reuses the last cuda-* configuration)"
 	@echo "  make rust-bridge         Compile native/bridge/ds4_bridge.o (Rust FFI skeleton)"
 	@echo "  make ds4 / ds4-server    Build Rust defaults (Cargo bin names stay *-rs)"
-	@echo "  make ds4-c / ds4-server-c Build C oracles"
+	@echo "  make ds4-c / ds4-server-c Build the deprecated C oracles"
 	@echo "  make ds4-rs              Deprecated alias that copies ./ds4"
 	@echo "  make test-kv-parity      C↔Rust KVC 4-way matrix (Phase 4)"
-	@echo "  make test-web-parity     C↔Rust web encode/wire + mock CDP (Phase 5)"
 	@echo "  make test-dist-parity    C↔Rust DS4D codecs + blocking runtime (Phase 6)"
 	@echo "  make test-route-parity   C↔Rust route_decide reason table (Phase 7)"
 	@echo "  make test-server-parity  C↔Rust HTTP door + parsers + tools + live tool stream + corrective retry + continuation + memgov /metrics (Phase 7)"
 	@echo "  make test-catalog-parity C↔Rust shape catalog + mmap GGUF identify + tensor inventory + bind plan + host bind lookup + host load apply + host validate + host vocab apply + host layout + MTP/DSpark sibling catalogs (Phase 8)"
 	@echo "  make test-tokenizer-parity C↔Rust tokenizer encode/decode/stop (Phase 8)"
-	@echo "  make test-agent-parity   C↔Rust one-turn agent prompt/projector (agent shadow)"
 	@echo "  make test-session-parity C↔Rust session ledger / DSV4 prefix (Phase 8)"
 	@echo "  make proof-rust-cuda-opp-c C→Rust OPP-C host parity (oracle ./ds4-c, candidate ./ds4)"
 	@echo "  make ds4-server-rs       Deprecated alias that copies ./ds4-server"
@@ -204,11 +204,11 @@ help:
 # erase it), so spark defines travel via NVCC_EXTRA_FLAGS instead.
 cuda-spark:
 	@printf '%s\n' '# written by make cuda-spark (see the config include note in Makefile)' 'CUDA_ARCH := sm_121' 'NVCC_EXTRA_FLAGS :=' > .ds4-cuda-config.mk
-	$(MAKE) -B ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
+	$(MAKE) -B ds4-eval ds4 ds4-server ds4-bench $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
 
 cuda-generic:
 	@printf '%s\n' '# written by make cuda-generic (see the config include note in Makefile)' 'CUDA_ARCH := native' > .ds4-cuda-config.mk
-	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=native
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench $(CUDA_EXTRA_BINS) CUDA_ARCH=native
 
 cuda:
 	@if [ -z "$(strip $(CUDA_ARCH))" ]; then \
@@ -217,29 +217,29 @@ cuda:
 		exit 2; \
 	fi
 	@printf '%s\n' '# written by make cuda (see the config include note in Makefile)' 'CUDA_ARCH := $(strip $(CUDA_ARCH))' > .ds4-cuda-config.mk
-	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
 
 ds4-c: ds4_cli.o linenoise.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 ds4-server-c: ds4_server.o ds4_kvstore.o rax.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 ds4-bench-c: ds4_bench.o $(CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 ds4-eval: ds4_eval.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
-ds4-agent-c: ds4_agent.o ds4_web.o ds4_kvstore.o linenoise.o $(CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_web.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
+	$(C_HOST_DEPRECATED)
 	$(CC) $(CFLAGS) -o ds4-c ds4_cli_cpu.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-server-c ds4_server_cpu.o ds4_kvstore.o rax.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-bench-c ds4_bench_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-eval ds4_eval_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
-	$(CC) $(CFLAGS) -o ds4-agent-c ds4_agent_cpu.o ds4_web.o ds4_kvstore.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 
 cuda-regression: tests/cuda_long_context_smoke
 	./tests/cuda_long_context_smoke
@@ -331,8 +331,8 @@ native/bridge/ds4_bridge.o: native/bridge/ds4_bridge.c native/bridge/ds4_bridge.
 	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ native/bridge/ds4_bridge.c
 
 # Phase 9: Rust host is the default name. Cargo [[bin]] stays *-rs;
-# Makefile copies onto ./ds4 ./ds4-server ./ds4-bench ./ds4-agent.
-# C oracles are ./ds4-c ./ds4-server-c ./ds4-bench-c ./ds4-agent-c.
+# Makefile copies onto ./ds4 ./ds4-server ./ds4-bench.
+# C oracles are ./ds4-c ./ds4-server-c ./ds4-bench-c.
 # ./ds4-eval stays C.
 DS4_RS_ROOT := $(abspath .)
 DS4_RS_LINK_OBJS := native/bridge/ds4_bridge.o $(CORE_OBJS)
@@ -363,13 +363,6 @@ ds4: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-rs" $@
-
-ds4-agent: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
-	cargo rustc -p ds4-cli --bin ds4-agent-rs --release --features native -- \
-		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
-		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
-		$(DS4_RS_LIBS)
-	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-agent-rs" $@
 
 .PHONY: ds4-perf ds4-perf-gpu
 ds4-perf:
@@ -670,13 +663,6 @@ tests/parity/kv_c_oracle: tests/parity/kv_c_oracle.c tests/parity/kv_c_stubs.c d
 test-kv-parity: tests/parity/kv_c_oracle
 	DS4_KV_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/kv_c_oracle cargo test -p ds4-kv
 
-# Phase 5: C encode/wire oracle + Rust search/visit against a mock CDP.
-tests/parity/web_c_oracle: tests/parity/web_c_oracle.c
-	$(CC) $(CFLAGS) -o $@ tests/parity/web_c_oracle.c
-
-test-web-parity: tests/parity/web_c_oracle
-	DS4_WEB_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/web_c_oracle cargo test -p ds4-web
-
 # Phase 6: explicit DS4D integer codecs vs C htonl records.
 tests/parity/dist_c_oracle: tests/parity/dist_c_oracle.c
 	$(CC) $(CFLAGS) -o $@ tests/parity/dist_c_oracle.c -lm
@@ -770,10 +756,6 @@ tests/parity/tokenizer_c_oracle: tests/parity/tokenizer_c_oracle.c ds4.c ds4.h n
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
-tests/parity/agent_c_oracle: tests/parity/agent_c_oracle.c ds4_agent.c
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-catalog-parity: tests/parity/shape_c_oracle tests/parity/catalog_c_oracle tests/parity/tensor_c_oracle tests/parity/bind_c_oracle tests/parity/bind_lookup_c_oracle tests/parity/load_c_oracle tests/parity/validate_c_oracle tests/parity/layout_c_oracle tests/parity/vocab_c_oracle tests/parity/tokenizer_c_oracle tests/parity/session_c_oracle tests/parity/payload_c_oracle
 	DS4_SHAPE_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/shape_c_oracle \
 	DS4_CATALOG_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/catalog_c_oracle \
@@ -793,10 +775,6 @@ test-tokenizer-parity: tests/parity/tokenizer_c_oracle tests/parity/vocab_c_orac
 	DS4_TOKENIZER_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/tokenizer_c_oracle \
 	DS4_VOCAB_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/vocab_c_oracle \
 		cargo test -p ds4-core --test tokenizer
-
-test-agent-parity: test-tokenizer-parity tests/parity/agent_c_oracle
-	DS4_AGENT_C_ORACLE=$(DS4_RS_ROOT)/tests/parity/agent_c_oracle \
-		cargo test -p ds4-cli --lib agent::
 
 tests/parity/session_c_oracle: tests/parity/session_c_oracle.c ds4.c ds4.h native/bridge/ds4_host_load.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
@@ -820,9 +798,6 @@ ds4-server: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 # Transition aliases. Prefer the default names.
 ds4-rs: ds4
 	cp -f ds4 $@
-
-ds4-agent-rs: ds4-agent
-	cp -f ds4-agent $@
 
 ds4-bench-rs: ds4-bench
 	cp -f ds4-bench $@
@@ -857,12 +832,6 @@ ds4_bench.o: ds4_bench.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.
 
 ds4_eval.o: ds4_eval.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_eval.c
-
-ds4_agent.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h ds4_web.h linenoise.h
-	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_agent.c
-
-ds4_web.o: ds4_web.c ds4_web.h
-	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_web.c
 
 ds4_kvstore.o: ds4_kvstore.c ds4_kvstore.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_kvstore.c
@@ -961,9 +930,6 @@ ds4_bench_cpu.o: ds4_bench.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 
 ds4_eval_cpu.o: ds4_eval.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_eval.c
-
-ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h ds4_web.h linenoise.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_agent.c
 
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) $(DEPFLAGS) -c -o $@ ds4_metal.m
@@ -1069,7 +1035,8 @@ test-mmq-parity: tests/test_mmq_parity
 tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter-out ds4_cuda.o,$(DS4_CUDA_CORE_OBJS))
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
-.PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish
+.PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
+	test-mimo2-sync-keep
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1081,6 +1048,70 @@ test-vq-source-release:
 
 test-family-cont-spec-finish:
 	python3 tests/test_family_cont_spec_finish.py
+
+test-mimo2-sync-keep:
+	python3 tests/test_mimo2_sync_keep.py
+
+# CI. The workflow runs exactly the four ci-* targets, one parallel job each.
+# CI holds only checks that cover every family; a new check joins a group
+# here, never a workflow step:
+#   ci-lint        formatting, Clippy and type checks (native host included)
+#   ci-rust        serialized Rust workspace tests
+#   ci-parity      C oracle <-> Rust host parity, one make run (no repeats)
+#   ci-model-free  shared native gates that need no model
+# A check of one family's own code is that family's gate-<family> target,
+# run when the family changes; no family has a CI job of its own.
+CI_PARITY := test-kv-parity test-dist-parity test-server-parity \
+	test-catalog-parity test-tokenizer-parity test-session-parity
+CI_MODEL_FREE := test-model-registration test-vq-source-release \
+	test-family-cont-spec-finish
+
+.PHONY: ci ci-lint ci-rust ci-parity ci-model-free test-iquest-model-free \
+	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2
+ci: ci-lint ci-rust ci-parity ci-model-free
+
+gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
+	test-ds41-gr-forward test-ds41-boundary test-ds41-history test-ds41-trace \
+	test-ds41-kv-rows test-ds41-rollback test-ds41-vision-gate
+gate-iquest: test-iquest-model-free
+gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref
+gate-glm53: test-glm53-fit
+gate-mimo2: test-mimo2-sync-keep
+
+ci-lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --locked
+	cargo check --workspace --all-targets --locked
+	cargo check -p ds4-server --lib --bin ds4-server-rs --features native --locked
+
+# Workspace tests compare against the oracles; built ones only, no parity run.
+CI_ORACLES := tests/parity/admit_c_oracle \
+	tests/parity/bind_c_oracle tests/parity/bind_lookup_c_oracle \
+	tests/parity/bridge_null_oracle tests/parity/catalog_c_oracle \
+	tests/parity/cont_c_oracle tests/parity/dist_c_oracle \
+	tests/parity/dsml_c_oracle tests/parity/kv_c_oracle \
+	tests/parity/layout_c_oracle tests/parity/load_c_oracle \
+	tests/parity/memgov_c_oracle tests/parity/parse_c_oracle \
+	tests/parity/payload_c_oracle tests/parity/render_c_oracle \
+	tests/parity/retry_c_oracle tests/parity/route_c_oracle \
+	tests/parity/server_c_oracle tests/parity/session_c_oracle \
+	tests/parity/shape_c_oracle tests/parity/stream_c_oracle \
+	tests/parity/tensor_c_oracle tests/parity/tokenizer_c_oracle \
+	tests/parity/tool_stream_c_oracle tests/parity/validate_c_oracle \
+	tests/parity/vocab_c_oracle
+
+ci-rust: $(CI_ORACLES)
+	cargo test --workspace --locked -- --test-threads=1
+
+ci-parity: $(CI_PARITY)
+
+ci-model-free: $(CI_MODEL_FREE)
+
+test-iquest-model-free:
+	cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
+	python3 tests/test_iquest_weight_policy.py
+	python3 tests/test_iquest_prefix_compare.py
+	python3 tests/test_iquest_http_live.py
 
 # Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
 # own reference code, reached through the DS4_TEST_HOOKS entry points, so the
@@ -1876,6 +1907,13 @@ tests/minimax_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_quality" $@
 
+tests/mimo2_vq_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example mimo2_vq_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/mimo2_vq_quality" $@
+
 tests/axk2_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example axk2_quality --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
@@ -1978,6 +2016,9 @@ tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh 
 test-ling31-residual: tests/test_ling31_residual
 	./tests/test_ling31_residual
 
+tests/test_ling31_mlp: tests/test_ling31_mlp.cu cuda/l31_swiglu.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
 tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/l31_latent.cuh ds4_ling31.h cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -Xptxas -v -o $@ $< 2> $@.ptxas || { cat $@.ptxas >&2; exit 1; }
 	@grep -A1 "l31_fa_kernel" $@.ptxas | grep -E "registers|spill" || true
@@ -1987,6 +2028,18 @@ test-ling31-flash: tests/test_ling31_flash
 	./tests/test_ling31_flash
 
 tests/test_axk2_topk: tests/test_axk2_topk.cu cuda/axk2_topk.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+tests/test_axk2_flash: tests/test_axk2_flash.cu cuda/axk2_flash.cuh cuda/l31_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/l31_latent.cuh ds4_axk2.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+tests/test_axk2_q8: tests/test_axk2_q8.cu cuda/axk2_q8.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+tests/test_axk2_decode: tests/test_axk2_decode.cu cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+tests/test_axk2_norm: tests/test_axk2_norm.cu cuda/axk2_norm.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_axk2.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
 .PHONY: test-axk2-topk
@@ -2108,6 +2161,14 @@ test-minimax-artifacts: tests/test_minimax_artifacts
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
 
+# MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
+tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+.PHONY: test-mimo2-ga8
+test-mimo2-ga8: tests/mimo2_ga8
+	./tests/mimo2_ga8
+
 # R13+8 residual stage: restore bits, decode/verify experts and FP8 prefill MMA.
 tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_mma8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
@@ -2155,11 +2216,13 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh 
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh cuda/l31_swiglu.cuh
 BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payload.inc ds4_beam_session.inc ds4_beam_draft.inc \
 	ds4_beam_batch.inc ds4_beam_bank_payload.inc
 ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_beam.h ds4_beam_gpu.cuh cuda/beam_mma8w.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_mimo2vq.h ds4_mimo2vq_gpu.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/minimax_mma8w.cuh
+ds4.o ds4_cpu.o: ds4_mimo2vq.h ds4_mimo2vq_bind.inc
 MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_minimax_graph.inc \
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
 	ds4_minimax_draft.inc ds4_minimax_vision.inc
@@ -2168,7 +2231,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
+ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/axk2_flash.cuh cuda/axk2_q8.cuh cuda/axk2_norm.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
 	cuda/l31_flash.cuh cuda/l31_latent.cuh
 
 tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
@@ -2568,13 +2631,13 @@ BUILD_OBJECTS := \
     cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq_d2r.o \
     cuda/mmq/ds4_repack.o cuda/mmq/mmid.o cuda/mmq/mmvq.o cuda/mmq/quantize.o \
     cuda/mmq/test/test_inkling_batch.o cuda/mmq/test/test_mmq_parity.o cuda/qwen38_ple.o ds4.o \
-    ds4_agent.o ds4_agent_cpu.o ds4_bench.o ds4_bench_cpu.o ds4_cli.o ds4_cli_cpu.o ds4_cpu.o \
+    ds4_bench.o ds4_bench_cpu.o ds4_cli.o ds4_cli_cpu.o ds4_cpu.o \
     ds4_cuda.o ds4_cuda_range_test.o ds4_cuda_test_hooks.o ds4_distributed.o ds4_eval.o ds4_eval_cpu.o ds4_kvstore.o ds4_metal.o \
-    ds4_ple.o ds4_server.o ds4_server_cpu.o ds4_test.o ds4_web.o linenoise.o \
+    ds4_ple.o ds4_server.o ds4_server_cpu.o ds4_test.o linenoise.o \
     native/bridge/ds4_bridge.o rax.o tests/bench_glm53_stream.o tests/cuda_long_context_smoke.o \
     tests/cuda_tokentile_ldmatrix.o tests/naive_banks.o tests/naive_dense.o \
     tests/naive_draft_graph.o tests/naive_graph.o tests/naive_trial.o tests/naive_trial_live.o \
-    tests/parity/admit_c_oracle.o tests/parity/agent_c_oracle.o tests/parity/bind_c_oracle.o \
+    tests/parity/admit_c_oracle.o tests/parity/bind_c_oracle.o \
     tests/parity/bind_lookup_c_oracle.o tests/parity/bridge_null_oracle.o \
     tests/parity/bridge_null_stubs.o tests/parity/catalog_c_oracle.o tests/parity/cont_c_oracle.o \
     tests/parity/dist_c_oracle.o tests/parity/dsml_c_oracle.o tests/parity/kv_c_oracle.o \
@@ -2584,7 +2647,7 @@ BUILD_OBJECTS := \
     tests/parity/server_c_oracle.o tests/parity/session_c_oracle.o tests/parity/shape_c_oracle.o \
     tests/parity/stream_c_oracle.o tests/parity/tensor_c_oracle.o tests/parity/tokenizer_c_oracle.o \
     tests/parity/tool_stream_c_oracle.o tests/parity/validate_c_oracle.o \
-    tests/parity/vocab_c_oracle.o tests/parity/web_c_oracle.o tests/test_cuda_artifact_scope.o \
+    tests/parity/vocab_c_oracle.o tests/test_cuda_artifact_scope.o \
     tests/test_cuda_span_lease.o tests/test_dots3_batch.o tests/test_dots3_checkpoint.o \
     tests/test_dots3_mtp.o tests/test_dots3_resident.o tests/test_exaone_batch.o \
     tests/test_exaone_checkpoint.o tests/test_exaone_forward.o tests/test_exaone_kernels.o \
@@ -2618,7 +2681,7 @@ BUILD_OBJECTS := \
     tests/test_step37_spec.o tests/test_step37_vision.o
 
 BUILD_PROGRAMS := \
-    ds4 ds4-agent ds4-agent-c ds4-agent-rs ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
+    ds4 ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
     ds4-eval ds4-rs ds4-server ds4-server-c ds4-server-rs ds4_cpu ds4_native ds4_server_test \
     ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
     tests/beam_mtp_gate tests/beam_quality tests/bench_glm53_attention tests/bench_glm53_pool \
@@ -2630,13 +2693,13 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality \
+    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
     tests/naive_primitives tests/naive_router_profile tests/naive_serve_gate tests/naive_softmax \
     tests/naive_state tests/naive_sum_profile tests/naive_swiglu_profile tests/naive_trial \
-    tests/naive_trial_live tests/parity/admit_c_oracle tests/parity/agent_c_oracle \
+    tests/naive_trial_live tests/parity/admit_c_oracle \
     tests/parity/bind_c_oracle tests/parity/bind_lookup_c_oracle tests/parity/bridge_null_oracle \
     tests/parity/catalog_c_oracle tests/parity/cont_c_oracle tests/parity/dist_c_oracle \
     tests/parity/dsml_c_oracle tests/parity/kv_c_oracle tests/parity/layout_c_oracle \
@@ -2645,7 +2708,7 @@ BUILD_PROGRAMS := \
     tests/parity/route_c_oracle tests/parity/server_c_oracle tests/parity/session_c_oracle \
     tests/parity/shape_c_oracle tests/parity/stream_c_oracle tests/parity/tensor_c_oracle \
     tests/parity/tokenizer_c_oracle tests/parity/tool_stream_c_oracle tests/parity/validate_c_oracle \
-    tests/parity/vocab_c_oracle tests/parity/web_c_oracle tests/test_cuda_artifact_scope \
+    tests/parity/vocab_c_oracle tests/test_cuda_artifact_scope \
     tests/test_cuda_span_lease tests/test_deepseek_budget tests/test_dots3_batch \
     tests/test_dots3_checkpoint tests/test_dots3_cuda tests/test_dots3_loader tests/test_dots3_mtp \
     tests/test_dots3_mtp_guards tests/test_dots3_resident tests/test_dots3_tokenizer \
@@ -2673,7 +2736,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_axk2_topk \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

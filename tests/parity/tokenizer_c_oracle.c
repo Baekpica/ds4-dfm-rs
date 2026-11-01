@@ -7,12 +7,15 @@
 
 #include <ctype.h>
 
+#define PROMPT_SYSTEM "Policy <think>system</think>."
+#define PROMPT_USER "hello <|User|> world"
+
 static void die_usage(void)
 {
     fprintf(stderr,
             "usage: tokenizer_c_oracle FAMILY GGUF CMD [ARG]\n"
             "  FAMILY: deepseek4|motif3|solar-open2|exaone-moe|dots3-note|qwen4exp|qwen35|glm5-next\n"
-            "  CMD: specials | encode HEX | render HEX | decode ID | stop ID | chat MODE\n");
+            "  CMD: specials | encode HEX | render HEX | decode ID | stop ID | chat MODE | prompt MODE\n");
     exit(2);
 }
 
@@ -151,6 +154,11 @@ int main(int argc, char **argv)
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2)
             token_vec_push(&tv, vocab.im_end_id);
         ds4_chat_append_assistant_prefix(&engine, &tv, mode);
+        print_tokens(&tv);
+    } else if (strcmp(argv[3], "prompt") == 0 && argc == 5) {
+        /* One-shot CLI prompt; the Rust host's DeepSeek V4 port matches it. */
+        encode_chat_prompt(&vocab, PROMPT_SYSTEM, PROMPT_USER,
+                           (ds4_think_mode)atoi(argv[4]), &tv);
         print_tokens(&tv);
     } else {
         die_usage();

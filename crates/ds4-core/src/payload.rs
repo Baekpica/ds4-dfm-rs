@@ -5,6 +5,7 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use crate::serving::LING31_NATIVE_CTX;
 use crate::session::SessionLedger;
 use crate::shape::ModelFamily;
 
@@ -25,6 +26,8 @@ pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
 const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
+// The VQ release's FP8 full-layer rows; native restore checks the format.
+const LAYOUT_MIMO2_FP8: u32 = 0x334f_4d49; /* "IMO3" */
 const LAYOUT_IQUEST: u32 = 0x3151_5149;
 const LAYOUT_NAIVE: u32 = 0x3530_4e4e;
 const LAYOUT_NAIVE_DRAFT: u32 = 0x4430_4e4e;
@@ -77,7 +80,7 @@ impl PayloadLayout {
             LAYOUT_LING3VL => Self::Ling3Vl,
             LAYOUT_INKLING => Self::Inkling,
             LAYOUT_IQUEST => Self::IQuestQ1,
-            LAYOUT_MIMO2 => Self::Mimo2,
+            LAYOUT_MIMO2 | LAYOUT_MIMO2_FP8 => Self::Mimo2,
             LAYOUT_NAIVE | LAYOUT_NAIVE_DRAFT => Self::Naive,
             LAYOUT_GLM_COMPACT
             | LAYOUT_GLM_EXPANDED
@@ -141,6 +144,8 @@ impl PayloadLayout {
             // Dense-only VQ sessions skip pool construction. Growing across
             // that boundary requires replay, not a byte restore.
             Self::Glm53Vq => saved > ctx || (saved > GLMVQ_DENSE_KEYS) != (ctx > GLMVQ_DENSE_KEYS),
+            // Rope keys carry the saved context's table (YaRN past 262,144).
+            Self::Ling31Vq => (saved > LING31_NATIVE_CTX) != (ctx > LING31_NATIVE_CTX),
             _ => false,
         }
     }
@@ -385,6 +390,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
 fn mimo_payload_magic_is_mimo() {
     let mut fields = [0u32; U32_FIELDS];
     fields[5] = LAYOUT_MIMO2;
+    assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
+    fields[5] = LAYOUT_MIMO2_FP8;
     assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
     assert_eq!(PayloadLayout::Mimo2.family(), ModelFamily::Mimo2);
 }
@@ -836,6 +843,12 @@ mod tests {
         );
         assert!(read(&prefix, ModelFamily::Ling31Vq, 2).is_err());
         assert!(read(&prefix, ModelFamily::Ling3Vl, 262144).is_err());
+        // Rope keys never cross the YaRN boundary (factor 1 vs 4).
+        assert!(read(&prefix, ModelFamily::Ling31Vq, 262145).is_err());
+        let mut yarn = prefix.clone();
+        yarn.fields[2] = 524288;
+        assert!(read(&yarn, ModelFamily::Ling31Vq, 262144).is_err());
+        assert!(read(&yarn, ModelFamily::Ling31Vq, 1048576).is_ok());
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::Ling31Vq, 262144).is_err());

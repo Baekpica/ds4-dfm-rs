@@ -27,7 +27,6 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
-use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
@@ -314,9 +313,20 @@ pub trait DecodeIo {
         Ok(())
     }
     fn eval(&mut self, token: i32) -> Result<(), GenerateError>;
-    /// Commit a nonempty greedy prefix bounded by the positive budget.
+    /// Commit a nonempty speculative prefix bounded by the positive budget:
+    /// `first`, then the drafts the target's draws with `sampler` accept
+    /// (argmax at temperature 0; the next ordinary sample repeats the last
+    /// draw). `allow` sees each committed token's text and says whether the
+    /// next position may take a draft; a stop token ends the prefix.
     /// Implementations may include EOS as the final accepted token.
-    fn eval_greedy(&mut self, first: i32, _budget: i32) -> Result<Vec<i32>, GenerateError> {
+    fn eval_spec(
+        &mut self,
+        first: i32,
+        _budget: i32,
+        _sampler: ds4_core::Sampler,
+        _rng: &mut u64,
+        _allow: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<Vec<i32>, GenerateError> {
         self.eval(first)?;
         Ok(vec![first])
     }
@@ -650,6 +660,24 @@ fn cold_sync(io: &mut impl SerialKvIo, tokens: &[i32]) -> Result<i32, GenerateEr
     io.note_reuse(ReuseTaken::Cold);
     io.sync(tokens)?;
     Ok(0)
+}
+
+/// A prompt that leaves the live tokens (an agent client re-rendering the
+/// last answer): engines that rewind (MiMo, EXAONE) keep the common prefix.
+#[cfg(any(feature = "native", test))]
+fn rewound_sync(
+    io: &mut impl SerialKvIo,
+    live: &[i32],
+    tokens: &[i32],
+) -> Result<i32, GenerateError> {
+    let common = live.iter().zip(tokens).take_while(|(a, b)| a == b).count();
+    let start = io.sync_start(tokens);
+    if start <= 0 || start as usize > common {
+        return cold_sync(io, tokens);
+    }
+    let cached = record_prefix_reuse(io, tokens, common);
+    io.sync(tokens)?;
+    Ok(cached)
 }
 
 #[cfg(any(feature = "native", test))]
@@ -1035,11 +1063,11 @@ fn disk_sync_prompt_impl(
     }
 
     let Some(store) = store else {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     };
     store.continued_last_store_tokens = 0;
     let Some((model_id, quant_bits, ctx)) = identity else {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     };
     if policy.save_current {
         let _ = try_store_live(
@@ -1053,7 +1081,7 @@ fn disk_sync_prompt_impl(
         );
     }
     if !policy.load {
-        return cold_sync(io, canonical_tokens);
+        return rewound_sync(io, &live, canonical_tokens);
     }
     let candidate = match store.text_prefix_candidate(prompt, model_id, quant_bits, ctx) {
         Ok(candidate) => candidate,
@@ -1518,18 +1546,8 @@ pub(crate) fn prepare_required_prefixes(
         && parsed.has_tools
         && parsed.tool_choice == ToolChoice::Auto
         && !think_mode_enabled(parsed.think_mode);
-    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto {
+    if parsed.tool_choice != ToolChoice::Required && !mimo_auto {
         return Ok(());
-    }
-    let format = chat_format_for_syntax(syntax);
-    if !mimo_auto && parsed.required_think_end_prefix.is_empty() {
-        let toks = tokenize(think_end(format).as_bytes())?;
-        if toks.is_empty() {
-            return Err(GenerateError::Engine(
-                "failed to tokenize thinking control prefix".into(),
-            ));
-        }
-        parsed.required_think_end_prefix = toks;
     }
     if (parsed.tool_choice == ToolChoice::Required || mimo_auto)
         && parsed.required_tool_prefix.is_empty()
@@ -1797,32 +1815,14 @@ fn decode_pass(
         if continued_decode_allowed(acc) {
             store_continued_best_effort(engine);
         }
-        let mut temperature = parsed.temperature;
-        let mut top_k = parsed.top_k;
-        let mut top_p = parsed.top_p;
-        let mut min_p = parsed.min_p;
-        // IQuest and GLM-5.3 use the requested sampler in both channels.
-        // Greedy thinking must remain eligible for their embedded MTP paths.
-        if think_mode_enabled(parsed.think_mode)
-            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
-        {
-            temperature = DEFAULT_TEMPERATURE;
-            top_k = 0;
-            top_p = DEFAULT_TOP_P;
-            min_p = DEFAULT_MIN_P;
-        }
+        // The request's sampler in every channel (vLLM, SGLang).
+        let (temperature, top_k, top_p, min_p) =
+            (parsed.temperature, parsed.top_k, parsed.top_p, parsed.min_p);
         let policy = SamplePolicy {
             tool_choice: parsed.tool_choice,
-            has_tool_results: parsed.has_tool_results,
-            think_mode: parsed.think_mode,
-            max_tokens: parsed.max_tokens,
             required_tool_prefix: &parsed.required_tool_prefix,
-            required_think_end_prefix: &parsed.required_think_end_prefix,
         };
         let ov = acc.sampling_override(&policy);
-        if matches!(ov, SampleOverride::Greedy) {
-            temperature = 0.0;
-        }
         let eos = engine.eos_id();
         if parsed.eos_policy != EosPolicy::Default && eos < 0 {
             return Err(GenerateError::Engine(
@@ -1861,24 +1861,37 @@ fn decode_pass(
             break;
         }
         let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
-        // Forced control prefixes can change policy between tokens. Only
-        // an unconstrained greedy segment may be committed ahead of output.
+        // Drafts verify against this step's sampler. A copy of the
+        // accumulator replays each committed token: the prefix ends before a
+        // position this loop would force (a control token, tool syntax's
+        // argmax under sampling) or never reach (past a closed DSML call).
         let prefix_start = engine.pos();
-        let accepted = if temperature <= 0.0
-            && parsed.eos_policy == EosPolicy::Default
-            && matches!(ov, SampleOverride::None)
-            && parsed.required_tool_prefix.is_empty()
-            && parsed.required_think_end_prefix.is_empty()
-        {
-            let accepted = engine.eval_greedy(token, budget)?;
-            if engine.last_eval_speculated() {
-                *speculation = true;
-            }
-            accepted
-        } else {
-            engine.eval(token)?;
-            vec![token]
-        };
+        let accepted =
+            if parsed.eos_policy == EosPolicy::Default && matches!(ov, SampleOverride::None) {
+                let sampler = ds4_core::Sampler {
+                    temperature,
+                    top_k,
+                    top_p,
+                    min_p,
+                };
+                let dsml = req.chat_format == ChatFormat::DeepSeek;
+                let mut probe = acc.clone();
+                let mut allow = |piece: &[u8]| {
+                    probe.feed(piece, &[]);
+                    if dsml && probe.track_tools && probe.saw_tool_end {
+                        return false;
+                    }
+                    probe.sampling_override(&policy) == SampleOverride::None
+                };
+                let accepted = engine.eval_spec(token, budget, sampler, rng, &mut allow)?;
+                if engine.last_eval_speculated() {
+                    *speculation = true;
+                }
+                accepted
+            } else {
+                engine.eval(token)?;
+                vec![token]
+            };
         if accepted.is_empty() || accepted.len() > budget as usize || accepted[0] != token {
             engine.invalidate();
             return Err(GenerateError::Engine("invalid greedy prefix result".into()));
@@ -4502,6 +4515,18 @@ impl<'a> NativeDecode<'a> {
         result
     }
 
+    /// Whether this family drafts on the serial lane (its drafter loaded).
+    fn serial_spec_ready(&mut self) -> Result<bool, GenerateError> {
+        let family = self.model.family();
+        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
+        Ok(serial_mtp_ready(
+            family,
+            self.model.mtp().is_some() || self.model.dspark().is_some(),
+            dots3,
+            self.model.mtp_draft_tokens(),
+        ) && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none())
+    }
+
     fn session(&mut self) -> Result<&mut ds4_core::Session<'a>, GenerateError> {
         if self.session.is_none() {
             let s = self
@@ -4976,24 +5001,36 @@ impl DecodeIo for NativeDecode<'_> {
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 
-    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        let family = self.model.family();
-        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
-        if !serial_mtp_ready(
-            family,
-            self.model.mtp().is_some() || self.model.dspark().is_some(),
-            dots3,
-            self.model.mtp_draft_tokens(),
-        ) || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
-        {
+    fn eval_spec(
+        &mut self,
+        first: i32,
+        budget: i32,
+        sampler: ds4_core::Sampler,
+        rng: &mut u64,
+        allow: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<Vec<i32>, GenerateError> {
+        if !self.serial_spec_ready()? {
             self.speculated = false;
             self.eval(first)?;
             return Ok(vec![first]);
         }
         self.speculated = true;
-        let eos = self.model.token_eos();
+        let model = self.model;
+        let eos = model.token_eos();
+        // The position after token i takes a draft only when token i is no
+        // stop token and the host's policy, fed its text, leaves it free.
+        let mut limit = |prefix: &[i32]| {
+            for (index, &token) in prefix[..prefix.len() - 1].iter().enumerate() {
+                let free = !model.token_is_stop(token)
+                    && model.token_text(token).is_ok_and(|piece| allow(&piece));
+                if !free {
+                    return index + 1;
+                }
+            }
+            prefix.len()
+        };
         self.session()?
-            .eval_speculative_argmax(first, budget, eos)
+            .eval_speculative(first, budget, eos, sampler, rng, &mut limit)
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 
@@ -5970,6 +6007,35 @@ mod disk_sync_tests {
                     "none"
                 }
             );
+            assert_eq!(io.syncs, [tokens]);
+        }
+    }
+
+    #[test]
+    fn live_reuse_counts_rewound_prefix() {
+        // An agent client re-renders the last answer: the prompt leaves the
+        // live tokens at 500; an engine that rewinds (MiMo, EXAONE) keeps 500.
+        for (start, cached, taken) in [(500, 500, ReuseTaken::Exact), (0, 0, ReuseTaken::Cold)] {
+            let live = vec![1; 600];
+            let mut tokens = vec![1; 500];
+            tokens.extend([2; 40]);
+            let mut io = FakeSerial::new(&live, b"prefix");
+            io.planned_start = Some(start);
+            let actual = super::disk_sync_template(
+                &mut io,
+                None,
+                0,
+                2,
+                b"other",
+                &tokens,
+                DiskSyncPolicy {
+                    save_current: false,
+                    load: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(actual, cached, "start={start}");
+            assert_eq!(io.reuse, taken);
             assert_eq!(io.syncs, [tokens]);
         }
     }
@@ -7117,7 +7183,10 @@ mod disk_sync_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };

@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <cuda_fp16.h>
+#include <cuda_fp8.h>
 
 /* The projection is dead after this add; avoid its scaled write/read pass.
  * Keep the two FP32 roundings from the separate scale and residual kernels. */
@@ -163,6 +164,47 @@ __global__ static void mimo2_kv_store(
     const float value = col < kw ? k[(uint64_t)row * kw + col]
                                 : v[(uint64_t)row * vw + col - kw];
     cache[slot * stride + col] = __float2half_rn(value);
+}
+
+/* The VQ release's full-attention rows (its FP8 GA cache contract): E4M3 K
+ * heads (192 each), E4M3 V heads (128 each), then one f16 scale per K head
+ * and per V head, 1,296 B for four heads. Scale = f16(amax / 448) per
+ * (token, head) and codes saturate to +-448, the handoff's kv_sim('fp8');
+ * a zero head stores zero codes and a zero scale. */
+enum { M2_FP8_HEADS = 4, M2_FP8_KEYS = M2_FP8_HEADS * 192, M2_FP8_SCALES = M2_FP8_KEYS + M2_FP8_HEADS * 128,
+       M2_FP8_ROW = M2_FP8_SCALES + 2 * M2_FP8_HEADS * 2 };
+
+__device__ __forceinline__ float m2_e4m3(uint8_t code) {
+    return __half2float(__half(__nv_cvt_fp8_to_halfraw(code, __NV_E4M3)));
+}
+
+// K (part 0) or V (part 1) scale of `head` in a stored FP8 row.
+__device__ __forceinline__ float m2_fp8_scale(const uint8_t *row, unsigned part, unsigned head) {
+    return __half2float(reinterpret_cast<const __half *>(row + M2_FP8_SCALES)[part * M2_FP8_HEADS + head]);
+}
+
+// One block per row; warp w < 4 stores K head w, warp 4 + h V head h.
+__global__ static void mimo2_kv_store_fp8(
+        uint8_t *cache, const float *k, const float *v,
+        unsigned rows, const unsigned *positions, unsigned capacity) {
+    const unsigned row = blockIdx.x, warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+    if (row >= rows) { return; }
+    const bool key = warp < M2_FP8_HEADS;
+    const unsigned head = warp % M2_FP8_HEADS, width = key ? 192 : 128;
+    const float *src = key ? k + (uint64_t)row * M2_FP8_KEYS + head * 192
+                           : v + (uint64_t)row * M2_FP8_HEADS * 128 + head * 128;
+    float amax = 0.0f;
+    for (unsigned i = lane; i < width; i += 32) { amax = fmaxf(amax, fabsf(src[i])); }
+    for (unsigned step = 16; step; step /= 2) { amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, step)); }
+    // __fdiv_rn: the reference's IEEE division under --use_fast_math.
+    const __half scale = __float2half_rn(__fdiv_rn(amax, 448.0f));
+    const float s = __half2float(scale);
+    uint8_t *dst = cache + (uint64_t)(positions[row] % capacity) * M2_FP8_ROW;
+    uint8_t *codes = dst + (key ? head * 192 : M2_FP8_KEYS + head * 128);
+    for (unsigned i = lane; i < width; i += 32) {
+        codes[i] = s > 0.0f ? (uint8_t)__nv_cvt_float_to_fp8(__fdiv_rn(src[i], s), __NV_SATFINITE, __NV_E4M3) : 0;
+    }
+    if (!lane) { reinterpret_cast<__half *>(dst + M2_FP8_SCALES)[warp] = scale; }
 }
 
 /* Correctness path for asymmetric GQA. One warp owns a query head and walks
@@ -474,11 +516,15 @@ __global__ static void mimo2_attn_l2(
  * DS4_MIMO2_ATTN_SPLIT=0 keeps the walk. One row at 32K: 31 ms -> 1 ms. */
 enum { M2_DECODE_SPLITS = 32 };
 
+/* FP8: the VQ release's full rows, widened to f16 tiles with their head
+ * scales as they are staged. */
+template <bool FP8 = false>
 __global__ static void mimo2_attn_split(
         float *partial_max, float *partial_den, float *partial_acc,
-        const float *q, const __half *cache, const float *sinks,
+        const float *q, const void *cache_raw, const float *sinks,
         const unsigned *positions, unsigned kv_heads, unsigned capacity,
         int nsplit, int vec) {
+    const __half *cache = static_cast<const __half *>(cache_raw);
     enum { HEADS = 64, KEY = 192, VALUE = 128, WARP = 32, GROUP = 16, TILE = 32 };
     if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
         m2_kernel_tag = vec ? 4 : 3;
@@ -509,7 +555,18 @@ __global__ static void mimo2_attn_split(
         __shared__ __align__(32) __half smv[TILE * VALUE];
         for (unsigned base = begin; base <= end; base += TILE) {
             const unsigned nkeys = end - base + 1 < TILE ? end - base + 1 : TILE;
-            if (vec) {
+            if constexpr (FP8) {
+                const uint8_t *rows8 = static_cast<const uint8_t *>(cache_raw);
+                for (unsigned i = threadIdx.x; i < nkeys * KEY; i += blockDim.x) {
+                    const uint8_t *row = rows8 + (uint64_t)((base + i / KEY) % capacity) * M2_FP8_ROW;
+                    smk[i] = __float2half_rn(m2_e4m3(row[kv_head * KEY + i % KEY]) * m2_fp8_scale(row, 0, kv_head));
+                }
+                for (unsigned i = threadIdx.x; i < nkeys * VALUE; i += blockDim.x) {
+                    const uint8_t *row = rows8 + (uint64_t)((base + i / VALUE) % capacity) * M2_FP8_ROW;
+                    smv[i] = __float2half_rn(m2_e4m3(row[M2_FP8_KEYS + kv_head * VALUE + i % VALUE]) *
+                        m2_fp8_scale(row, 1, kv_head));
+                }
+            } else if (vec) {
                 const unsigned k_groups = nkeys * (KEY / 16);
                 const unsigned v_groups = nkeys * (VALUE / 16);
                 for (unsigned i = threadIdx.x; i < k_groups; i += blockDim.x) {
