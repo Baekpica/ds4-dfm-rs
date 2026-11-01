@@ -310,8 +310,12 @@ fn run(dir: &Path, d: Dims) -> Result<(), String> {
         // constants, so it returns a latent of the input's own scale: a
         // deviation ratio far from one is a graph that is not returning a
         // latent at all, however well it agrees with its own transcription.
+        //
+        // Measured: 3.0 on this gate's own near-constant input (detail
+        // synthesis dominates a latent with little structure), 1.1 on a real
+        // 22 x 22 draft, and 8 to 20 when the blocks' modulation was wrong.
         let spread = deviation_ratio(&latent, &output.values);
-        let plausible = (0.25..=4.0).contains(&spread);
+        let plausible = (0.25..=6.0).contains(&spread);
         println!(
             "  scale output/input deviation {spread:.3}  {}",
             if plausible {
