@@ -123,9 +123,17 @@ commit. The anchor delivers the same guarantee with the graph the port already
 has, and the two are not exclusive: the anchor stays useful under image
 conditioning for clips whose *later* frames drift.
 
+`docs/minimax-h3/frames/anchor-before-after-2026-11-01.png` is the same draft
+through both masks at 2.5 s and 4.0 s: the release's one draws the heavier
+animal, the anchor draws the draft's fox. Stage 1 is deterministic, so the
+recipe's own draft (`/mnt/h3/recipe.bin`, sha256 `2cb3e8d2...`) is the same
+latent in `id-sol.mp4` and in `recipe-anchored.mp4`; only the mask differs.
+
 ## 7. Where the evidence lives
 
-Spark, `~/ds4-sol-h3/outputs/`: `id-transfer.mp4`, `id-sol.mp4`,
+Spark, `~/ds4-sol-h3/outputs/`: `recipe-anchored.mp4` (the whole recipe at
+anchor 0.7: stage 1 76.448 s, stage 2 172.027 s, 248.478 s total),
+`id-transfer.mp4`, `id-sol.mp4`,
 `id-dense.mp4`, `id-anchor-0.7.mp4`, `id-anchor-0.5.mp4`, `id-anchor-0.3.mp4`,
 `id-seed7-release.mp4`, `id-seed7-anchor.mp4`, with four frames each
 (`-0.5`, `-2.0`, `-2.5`, `-4.0`). Scripts: `scratch/identity-arms.sh`,
