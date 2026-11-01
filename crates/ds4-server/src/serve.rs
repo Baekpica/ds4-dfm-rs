@@ -79,6 +79,8 @@ pub struct ServerConfig {
     pub max_effort_default: bool,
     pub ctx: i32,
     pub default_tokens: i32,
+    /// Request-omitted sampling: server flags over the model's own values.
+    pub sampling: crate::sampling::SamplingDefaults,
     pub eos_policy: EosPolicy,
     pub cors: bool,
     pub codex_models_json: Option<String>,
@@ -181,6 +183,7 @@ impl Default for ServerConfig {
             max_effort_default: false,
             ctx: 8192,
             default_tokens: 393216,
+            sampling: Default::default(),
             eos_policy: EosPolicy::Default,
             cors: false,
             codex_models_json: None,
@@ -1261,7 +1264,7 @@ fn prepare_client(
                 default_model: cfg.model_id.clone(),
                 default_tokens: cfg.default_tokens,
                 default_effort: default_effort(cfg),
-                default_temp: crate::parse::default_temperature(),
+                sampling: cfg.sampling,
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
             };
@@ -3798,7 +3801,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };
@@ -3904,7 +3910,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };
@@ -3959,7 +3968,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 8,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };

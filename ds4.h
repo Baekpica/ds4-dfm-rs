@@ -1397,6 +1397,13 @@ int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
                       int top_k, float top_p, float min_p, uint64_t *rng);
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng);
+/* The host's sampler: one draw from `logits` (excluded ids, -1 unused;
+ * -1 when every token is excluded). Rust hosts register `sample::draw`, so
+ * every native draw (serial, banks, verify rows) is the Rust sampler. */
+typedef int (*ds4_host_sample_fn)(const float *logits, uint32_t n_vocab, float temperature,
+                                  int top_k, float top_p, float min_p, uint64_t *rng,
+                                  int excluded0, int excluded1);
+void ds4_set_host_sampler(ds4_host_sample_fn fn);
 /* The host's sample-and-match over one trial's verify rows: row i (after
  * tokens[..=i]) at rows + i * stride; fills target[0..n). */
 typedef void (*ds4_spec_verify_fn)(void *ud, const float *rows, size_t stride, uint32_t vocab,

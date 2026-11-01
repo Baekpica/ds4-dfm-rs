@@ -401,6 +401,10 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     (void)s; (void)temperature; (void)top_k; (void)top_p; (void)min_p; (void)rng;
     STUB("ds4_session_sample");
 }
+void ds4_set_host_sampler(ds4_host_sample_fn fn) {
+    (void)fn;
+    STUB("ds4_set_host_sampler");
+}
 void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud) {
     (void)s; (void)verify; (void)ud;
     STUB("ds4_session_set_spec_sampler");

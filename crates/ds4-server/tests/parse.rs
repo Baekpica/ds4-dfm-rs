@@ -47,7 +47,7 @@ fn env() -> ParseEnv {
         default_model: "deepseek-v4-flash".into(),
         default_tokens: 393216,
         default_effort: ds4_server::ThinkMode::Low,
-        default_temp: ds4_server::default_temperature(),
+        sampling: Default::default(),
         live_ids: Vec::new(),
         engine_defaults: false,
     }
@@ -124,11 +124,25 @@ fn assert_err_eq(surface: &str, body: &str, expect: &str) {
     );
 }
 
+/// The C oracle keeps its old request defaults (seed 0, min_p 0.05); the
+/// Rust host takes the model's and a fresh seed, so parity skips those two.
+fn structural(dump: &str) -> String {
+    dump.split(' ')
+        .map(|f| {
+            f.split('\n')
+                .filter(|l| !l.starts_with("seed=") && !l.starts_with("min_p="))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn assert_ok_eq(surface: &str, body: &str) -> ParsedRequest {
     let (rust, c) = both(surface, body);
     let rust = rust.unwrap_or_else(|e| panic!("rust {surface} {body}: {e}"));
     assert!(c.starts_with("OK\n"), "{surface} {body}: {c}");
-    assert_eq!(dump(&rust), c, "{surface} {body}");
+    assert_eq!(structural(&dump(&rust)), structural(&c), "{surface} {body}");
     rust
 }
 
@@ -248,7 +262,7 @@ fn accepted_response_format_is_not_a_render_input() {
     )
     .unwrap();
 
-    assert_eq!(dump(&plain), dump(&text));
+    assert_eq!(structural(&dump(&plain)), structural(&dump(&text)));
     assert_eq!(plain.tool_schemas, text.tool_schemas);
     assert!(plain.tool_schemas.is_empty());
     assert_eq!(plain.messages.len(), text.messages.len());
@@ -1036,8 +1050,7 @@ fn engine_defaults_think_and_sampling() {
             .think_mode,
         ThinkMode::None
     );
-    // min_p defaults to the engine's 0.0 on this scope; the port's own default
-    // (0.05) stays for the other families.
+    // min_p defaults to OpenAI's 0.0 unless the model or a flag sets it.
     assert_eq!(
         chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).min_p,
         0.0
@@ -1046,7 +1059,7 @@ fn engine_defaults_think_and_sampling() {
         parse_chat_request(&env(), r#"{"messages":[{"role":"user","content":"hi"}]}"#)
             .unwrap()
             .min_p,
-        0.05
+        0.0
     );
     // The penalties and DRY land on the request.
     let r = chat(
@@ -1369,13 +1382,4 @@ fn numeric_effort_is_v41_only() {
         Some(5)
     );
     assert!(parse_chat_request(&env(), body).is_err());
-}
-
-/// MiMo's card sets temperature 1.0 and top-p 0.95; thinking keeps them.
-#[test]
-fn mimo_thinking_keeps_request_sampler() {
-    use ds4_server::parse::fixed_thinking_sampling;
-    use ds4_server::render::ModelSyntax;
-    assert!(!fixed_thinking_sampling(ModelSyntax::Mimo2));
-    assert!(fixed_thinking_sampling(ModelSyntax::DeepSeek));
 }

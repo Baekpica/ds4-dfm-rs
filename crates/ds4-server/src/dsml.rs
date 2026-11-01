@@ -3,8 +3,6 @@
 //! request sampler. Required tool / think-end prefixes force exact tokens.
 
 use crate::parse::ToolChoice;
-use crate::route::ThinkMode;
-use crate::stream::ChatFormat;
 use crate::tool_stream::DsmlSyntax;
 use crate::tools::{
     dsml_attr, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_END_SPACED, DSML_INVOKE_START,
@@ -625,25 +623,9 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
     }
 }
 
-pub fn agent_turn_reasoning_cap(think_mode: ThinkMode, max_tokens: i32) -> i32 {
-    let reserve = 64;
-    let budget_cap = if max_tokens > reserve {
-        max_tokens - reserve
-    } else {
-        0
-    };
-    let effort_cap = match think_mode {
-        ThinkMode::High => 256,
-        ThinkMode::Max => 512,
-        _ => 64,
-    };
-    budget_cap.min(effort_cap)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleOverride {
     None,
-    Greedy,
     Token(i32),
 }
 
@@ -651,7 +633,6 @@ impl SampleOverride {
     pub fn as_c_int(self) -> i32 {
         match self {
             Self::None => SAMPLE_OVERRIDE_NONE,
-            Self::Greedy => SAMPLE_OVERRIDE_GREEDY,
             Self::Token(t) => t + 2,
         }
     }
@@ -659,61 +640,33 @@ impl SampleOverride {
 
 pub struct SamplePolicy<'a> {
     pub tool_choice: ToolChoice,
-    pub has_tool_results: bool,
-    pub think_mode: ThinkMode,
-    pub max_tokens: i32,
     pub required_tool_prefix: &'a [i32],
-    pub required_think_end_prefix: &'a [i32],
 }
 
+/// Constrained positions are only those the request asks for: after
+/// thinking, `tool_choice` "required" forces the tool-call opener (vLLM's
+/// guided decoding), and a MiMo marker the model chose completes its XML
+/// head. Every other position, thinking included, takes the request's
+/// sampler.
 pub fn sampling_override(
     track_tools: bool,
     saw_tool_start: bool,
     thinking_inside: bool,
-    completion: i32,
-    chat_format: ChatFormat,
-    dsml: DsmlDecodeState,
     tool_pos: &mut i32,
-    think_pos: &mut i32,
     p: &SamplePolicy<'_>,
 ) -> SampleOverride {
-    let prefix_in_flight = *tool_pos > 0 && (*tool_pos as usize) < p.required_tool_prefix.len();
-    let required_pending = p.tool_choice == ToolChoice::Required
-        && track_tools
-        && (!saw_tool_start || prefix_in_flight);
-    // MiMo auto chooses the marker; only then complete its XML head.
-    let auto_body_pending = p.tool_choice == ToolChoice::Auto
-        && track_tools
-        && saw_tool_start
-        && !thinking_inside
-        && (*tool_pos as usize) < p.required_tool_prefix.len();
-    let reserve_post_thinking = required_pending || p.has_tool_results;
-    if reserve_post_thinking && thinking_inside {
-        if completion >= agent_turn_reasoning_cap(p.think_mode, p.max_tokens)
-            && (*think_pos as usize) < p.required_think_end_prefix.len()
-        {
-            let token = p.required_think_end_prefix[*think_pos as usize];
-            *think_pos += 1;
-            return SampleOverride::Token(token);
-        }
+    if thinking_inside || !track_tools || (*tool_pos as usize) >= p.required_tool_prefix.len() {
         return SampleOverride::None;
     }
-    if (required_pending || auto_body_pending)
-        && (*tool_pos as usize) < p.required_tool_prefix.len()
-    {
-        let token = p.required_tool_prefix[*tool_pos as usize];
-        *tool_pos += 1;
-        return SampleOverride::Token(token);
+    let required_pending =
+        p.tool_choice == ToolChoice::Required && (!saw_tool_start || *tool_pos > 0);
+    let auto_body_pending = p.tool_choice == ToolChoice::Auto && saw_tool_start;
+    if !required_pending && !auto_body_pending {
+        return SampleOverride::None;
     }
-    let state = if track_tools && chat_format == ChatFormat::DeepSeek {
-        dsml
-    } else {
-        DsmlDecodeState::Outside
-    };
-    if state.is_tool() && !state.uses_payload_sampling() {
-        return SampleOverride::Greedy;
-    }
-    SampleOverride::None
+    let token = p.required_tool_prefix[*tool_pos as usize];
+    *tool_pos += 1;
+    SampleOverride::Token(token)
 }
 
 pub fn dump_script(name: &str) -> String {
@@ -724,12 +677,6 @@ pub fn dump_script(name: &str) -> String {
         "state-json-struct" => dump_state(state_json_struct()),
         "state-json-string" => dump_state(state_json_string()),
         "state-done" => dump_state(state_done()),
-        "override-required" => dump_override_required(),
-        "override-think-cap" => dump_override_think_cap(),
-        "override-tool-result" => dump_override_tool_result(),
-        "cap-low-128" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::Low, 128)),
-        "cap-high-128" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::High, 128)),
-        "cap-max-600" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::Max, 600)),
         "glm-boundaries-token" => dump_glm_boundaries(false),
         "glm-boundaries-byte" => dump_glm_boundaries(true),
         "glm-control-text" => dump_glm_control_text(),
@@ -842,175 +789,35 @@ fn dump_state(raw: String) -> String {
     format!("ref={} tracker={}\n", ref_state.name(), tr.decode.name())
 }
 
-fn dump_override_required() -> String {
-    let p = SamplePolicy {
-        tool_choice: ToolChoice::Required,
-        has_tool_results: false,
-        think_mode: ThinkMode::None,
-        max_tokens: 128,
-        required_tool_prefix: &[101, 202],
-        required_think_end_prefix: &[],
-    };
-    let mut tool_pos = 0;
-    let mut think_pos = 0;
-    let a = sampling_override(
-        true,
-        false,
-        false,
-        0,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    let b = sampling_override(
-        true,
-        false,
-        false,
-        0,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    format!("{} {}\n", a.as_c_int(), b.as_c_int())
-}
-
-fn dump_override_think_cap() -> String {
-    let p = SamplePolicy {
-        tool_choice: ToolChoice::Required,
-        has_tool_results: false,
-        think_mode: ThinkMode::Low,
-        max_tokens: 128,
-        required_tool_prefix: &[],
-        required_think_end_prefix: &[303],
-    };
-    let mut tool_pos = 0;
-    let mut think_pos = 0;
-    let none = sampling_override(
-        true,
-        false,
-        true,
-        0,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    let forced = sampling_override(
-        true,
-        false,
-        true,
-        64,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    format!("{} {}\n", none.as_c_int(), forced.as_c_int())
-}
-
-fn dump_override_tool_result() -> String {
-    let p = SamplePolicy {
-        tool_choice: ToolChoice::Auto,
-        has_tool_results: true,
-        think_mode: ThinkMode::Low,
-        max_tokens: 128,
-        required_tool_prefix: &[],
-        required_think_end_prefix: &[303],
-    };
-    let mut tool_pos = 0;
-    let mut think_pos = 0;
-    let a = sampling_override(
-        false,
-        false,
-        true,
-        63,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    let b = sampling_override(
-        false,
-        false,
-        true,
-        64,
-        ChatFormat::DeepSeek,
-        DsmlDecodeState::Outside,
-        &mut tool_pos,
-        &mut think_pos,
-        &p,
-    );
-    format!("{} {}\n", a.as_c_int(), b.as_c_int())
-}
-
 #[cfg(test)]
 mod override_tests {
-    use super::{sampling_override, DsmlDecodeState, SampleOverride, SamplePolicy};
+    use super::{sampling_override, SampleOverride, SamplePolicy};
     use crate::parse::ToolChoice;
-    use crate::route::ThinkMode;
-    use crate::stream::ChatFormat;
 
     #[test]
     fn required_prefix_finishes_after_tool_start() {
         let policy = SamplePolicy {
             tool_choice: ToolChoice::Required,
-            has_tool_results: false,
-            think_mode: ThinkMode::None,
-            max_tokens: 128,
             required_tool_prefix: &[101, 202],
-            required_think_end_prefix: &[],
         };
         let mut tool_pos = 0;
-        let mut think_pos = 0;
-        let mut sample = |saw_tool_start| {
-            sampling_override(
-                true,
-                saw_tool_start,
-                false,
-                tool_pos,
-                ChatFormat::Qwen4Exp,
-                DsmlDecodeState::Outside,
-                &mut tool_pos,
-                &mut think_pos,
-                &policy,
-            )
-        };
-        assert_eq!(sample(false), SampleOverride::Token(101));
-        assert_eq!(sample(true), SampleOverride::Token(202));
+        let mut sample =
+            |saw, thinking| sampling_override(true, saw, thinking, &mut tool_pos, &policy);
+        // Thinking keeps the request's sampler; no reasoning cap closes it.
+        assert_eq!(sample(false, true), SampleOverride::None);
+        assert_eq!(sample(false, false), SampleOverride::Token(101));
+        assert_eq!(sample(true, false), SampleOverride::Token(202));
+        assert_eq!(sample(true, false), SampleOverride::None);
     }
 
     #[test]
     fn auto_tool_start_forces_function_prefix() {
         let policy = SamplePolicy {
             tool_choice: ToolChoice::Auto,
-            has_tool_results: false,
-            think_mode: ThinkMode::None,
-            max_tokens: 128,
             required_tool_prefix: &[202],
-            required_think_end_prefix: &[],
         };
         let mut tool_pos = 0;
-        let mut think_pos = 0;
-        let mut sample = |saw_tool_start| {
-            sampling_override(
-                true,
-                saw_tool_start,
-                false,
-                0,
-                ChatFormat::Qwen4Exp,
-                DsmlDecodeState::Outside,
-                &mut tool_pos,
-                &mut think_pos,
-                &policy,
-            )
-        };
+        let mut sample = |saw| sampling_override(true, saw, false, &mut tool_pos, &policy);
         assert_eq!(sample(false), SampleOverride::None);
         assert_eq!(sample(true), SampleOverride::Token(202));
         assert_eq!(sample(true), SampleOverride::None);

@@ -22,6 +22,9 @@ extern "C" fn ds4_bridge_bind_plan_check(
 }
 
 #[no_mangle]
+extern "C" fn ds4_bridge_set_host_sampler(_: *const std::ffi::c_void) {}
+
+#[no_mangle]
 extern "C" fn ds4_bridge_model_open(
     _: *mut *mut ds4_bridge_model,
     _: *const ds4_bridge_model_open_options,

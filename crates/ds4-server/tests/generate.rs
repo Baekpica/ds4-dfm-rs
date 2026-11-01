@@ -28,7 +28,10 @@ fn env() -> ParseEnv {
         default_model: "ds4".into(),
         default_tokens: 16,
         default_effort: ThinkMode::None,
-        default_temp: 0.0,
+        sampling: ds4_server::sampling::SamplingDefaults {
+            temperature: 0.0,
+            ..Default::default()
+        },
         live_ids: Vec::new(),
         engine_defaults: false,
     }
@@ -735,7 +738,7 @@ fn mtp_tool_tail_undrafted() {
 /// Structural tool syntax takes the argmax: a sampled prefix ends at the
 /// call marker before commit, while a greedy one drafts through it.
 #[test]
-fn mtp_prefix_cuts_at_tool_syntax() {
+fn mtp_prefix_spans_tool_syntax() {
     let pieces: [&[u8]; 5] = [
         b"Calling.",
         "<｜DSML｜tool_calls>".as_bytes(),
@@ -761,12 +764,14 @@ fn mtp_prefix_cuts_at_tool_syntax() {
         .unwrap();
         assert_eq!(result.finish, "tool_calls");
         assert_eq!(result.tool_ids.len(), 1);
-        let first = engine.prefix_lengths[0];
-        if temperature > 0.0 {
-            assert_eq!(first, 2, "{:?}", engine.prefix_lengths);
-        } else {
-            assert_eq!(first, pieces.len(), "{:?}", engine.prefix_lengths);
-        }
+        // Tool syntax samples with the request's sampler, so no position
+        // ends the accepted prefix at either temperature.
+        assert_eq!(
+            engine.prefix_lengths[0],
+            pieces.len(),
+            "{:?}",
+            engine.prefix_lengths
+        );
     }
 }
 
@@ -807,8 +812,8 @@ fn mtp_disconnect() {
 
 #[test]
 fn mtp_sampling_policy() {
-    // Every request speculates: against its sampler (thinking: the fixed
-    // tuple), and with a forced control prefix that has not yet started.
+    // Every request speculates against its own sampler, thinking and agent
+    // turns with tool results included.
     for mode in 0..3 {
         let mut parsed = user_req();
         let temperature = match mode {
@@ -818,11 +823,11 @@ fn mtp_sampling_policy() {
             }
             1 => {
                 parsed.think_mode = ThinkMode::Low;
-                ds4_server::parse::DEFAULT_TEMPERATURE
+                parsed.temperature = 0.4;
+                0.4
             }
             _ => {
                 parsed.has_tool_results = true;
-                parsed.required_think_end_prefix = vec![7];
                 0.0
             }
         };
@@ -851,9 +856,8 @@ fn mtp_sampling_policy() {
 }
 
 #[test]
-fn iquest_thinking_sampling() {
+fn thinking_keeps_the_requested_sampler() {
     use ds4_core::chat_template::{RenderClock, Template};
-    use ds4_server::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
     let iquest = ds4_core::Variant::IQuestQ1 as i32;
     let glm = ds4_core::Variant::Glm53FlashVq as i32;
     for model_id in [iquest, glm, 0] {
@@ -885,11 +889,7 @@ fn iquest_thinking_sampling() {
                 &mut out,
             )
             .unwrap();
-            let expected = if model_id == iquest || model_id == glm {
-                (temperature, 9, 0.9, 0.03)
-            } else {
-                (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
-            };
+            let expected = (temperature, 9, 0.9, 0.03);
             assert!(!engine.sample_params.is_empty());
             assert!(
                 engine

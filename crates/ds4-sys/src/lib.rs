@@ -1120,6 +1120,23 @@ extern "C" {
         rng: *mut u64,
     ) -> c_int;
 
+    /// Every native draw goes through `f` (process-wide).
+    pub fn ds4_bridge_set_host_sampler(
+        f: Option<
+            unsafe extern "C" fn(
+                *const c_float,
+                u32,
+                c_float,
+                c_int,
+                c_float,
+                c_float,
+                *mut u64,
+                i32,
+                i32,
+            ) -> c_int,
+        >,
+    );
+
     pub fn ds4_bridge_session_set_spec_sampler(
         s: *mut ds4_bridge_session,
         verify: Option<

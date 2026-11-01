@@ -9,35 +9,12 @@ use crate::json::{
     json_string, Json,
 };
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
-use crate::render::{ModelSyntax, DSML_IMAGE};
+use crate::render::DSML_IMAGE;
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, RequestedEffort, ThinkMode,
     WireSurface,
 };
 use std::sync::Arc;
-
-pub const DEFAULT_TEMPERATURE: f32 = 1.0;
-pub const DEFAULT_TOP_P: f32 = 1.0;
-pub const DEFAULT_MIN_P: f32 = 0.05;
-
-/// Thinking requests sample with the fixed tuple above, whatever the client
-/// sent (the C server's rule for its DeepSeek family).  IQuest, GLM-5.3, MiMo,
-/// Beam and MiniMax keep the request's sampler instead: their client must be
-/// able to lower the temperature (Beam always writes its analysis channel),
-/// and MiMo's card recommends temperature 1.0 with top-p 0.95.  An omitted
-/// value still takes the defaults above, so such a request samples as before.
-/// Drafts verify against whichever sampler applies.
-pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
-    !matches!(
-        syntax,
-        ModelSyntax::IQuestQ1
-            | ModelSyntax::Glm53
-            | ModelSyntax::Mimo2
-            | ModelSyntax::BeamVq
-            | ModelSyntax::MinimaxVq
-            | ModelSyntax::Axk2Vq
-    )
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EosPolicy {
@@ -141,7 +118,8 @@ pub struct ParseEnv {
     pub default_model: String,
     pub default_tokens: i32,
     pub default_effort: ThinkMode,
-    pub default_temp: f32,
+    /// Values a request omits: server flags over the model's own.
+    pub sampling: crate::sampling::SamplingDefaults,
     /// LIVE call ids for this surface at parse time (C `*_live_has_call_id`).
     pub live_ids: Vec<String>,
     /// The engine's request-omitted defaults for its own model set (unit H):
@@ -162,19 +140,11 @@ impl Default for ParseEnv {
             default_model: "deepseek-v4-flash".into(),
             default_tokens: 393216,
             default_effort: ThinkMode::Low,
-            default_temp: default_temperature(),
+            sampling: Default::default(),
             live_ids: Vec::new(),
             engine_defaults: false,
         }
     }
-}
-
-pub fn default_temperature() -> f32 {
-    std::env::var("DS4_SERVER_DEFAULT_TEMP")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_TEMPERATURE)
 }
 
 #[derive(Debug, Clone)]
@@ -222,7 +192,6 @@ pub struct ParsedRequest {
     /// the prompt offers.
     pub forced_tool: Option<String>,
     pub required_tool_prefix: Vec<i32>,
-    pub required_think_end_prefix: Vec<i32>,
     pub stops: Vec<String>,
     pub reasoning_summary_emit: bool,
     pub responses_requires_live_tool_state: bool,
@@ -250,15 +219,11 @@ impl ParsedRequest {
             model_from_request: false,
             max_tokens: env.default_tokens,
             max_tokens_set: false,
-            top_k: 0,
-            temperature: env.default_temp,
-            top_p: DEFAULT_TOP_P,
-            min_p: if env.engine_defaults {
-                0.0
-            } else {
-                DEFAULT_MIN_P
-            },
-            seed: 0,
+            top_k: env.sampling.top_k,
+            temperature: env.sampling.temperature,
+            top_p: env.sampling.top_p,
+            min_p: env.sampling.min_p,
+            seed: crate::sampling::next_seed(),
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
             dry_multiplier: 0.0,
@@ -276,7 +241,6 @@ impl ParsedRequest {
             tool_choice: ToolChoice::Auto,
             forced_tool: None,
             required_tool_prefix: Vec::new(),
-            required_think_end_prefix: Vec::new(),
             stops: Vec::new(),
             reasoning_summary_emit: false,
             responses_requires_live_tool_state: false,
@@ -3317,7 +3281,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             json_int(&mut p).map(|v| r.top_k = v).is_some()
         } else if key == "seed" {
             json_number(&mut p)
-                .map(|v| r.seed = if v > 0.0 { v as u64 } else { 0 })
+                .map(|v| r.seed = crate::sampling::request_seed(v))
                 .is_some()
         } else if key == "stream" {
             json_bool(&mut p).map(|v| r.stream = v).is_some()
@@ -3499,7 +3463,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
             json_int(&mut p).map(|v| r.top_k = v).is_some()
         } else if key == "seed" {
             json_number(&mut p)
-                .map(|v| r.seed = if v > 0.0 { v as u64 } else { 0 })
+                .map(|v| r.seed = crate::sampling::request_seed(v))
                 .is_some()
         } else if key == "stream" {
             json_bool(&mut p).map(|v| r.stream = v).is_some()

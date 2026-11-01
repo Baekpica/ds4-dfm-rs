@@ -8,6 +8,23 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Sampling follows vLLM/SGLang. Values a request omits come from new
+  `--temp`/`--top-p`/`--top-k`/`--min-p` flags, then the model's
+  `generation_config.json` (else GGUF `general.sampling.*`), then OpenAI's;
+  `max_new_tokens` there sets the default `max_tokens`. The old fallback was
+  top-p 1.0 with min-p 0.05 whatever the model recommended. A request
+  without a seed gets a fresh one (it reused one fixed stream, so a looping
+  answer looped again on every retry); `--seed` seeds that sequence.
+- Every position samples with the request's values. Removed: the fixed
+  thinking sampler for families outside a list, argmax inside DeepSeek tool
+  syntax, and the agent-turn reasoning cap that closed thinking after
+  64-512 tokens with a forced `</think>` (a C-server Solar workaround, no
+  model's official behavior). `tool_choice` "required" and MiMo's chosen
+  XML head stay forced.
+- One sampler: native draws (bank lanes, verify rows, `sample_excluding`)
+  call back into Rust `sample::draw`. The C sampler and the `-c` oracle
+  executables are deprecated; parity cases for the removed policy are gone.
+
 - MiMo's serial lane resumes a prompt that leaves the live tokens at their
   common prefix instead of prefilling from zero. Agent clients re-render the
   last answer, so every turn missed: a Hermes tool turn re-prefilled 13-26K

@@ -22,6 +22,9 @@ the same object plus `last_request`.
 | `--prefix-reuse off\|exact\|partial\|auto` | Conversation reuse policy | `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL` |
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
 | `--mtp PATH`, `--mtp-draft N` | Sidecar and draft length | |
+| `--temp`, `--top-p`, `--top-k`, `--min-p` | Values a request omits ([sampling](#sampling)) | `DS4_SERVER_DEFAULT_TEMP` (deprecated) |
+| `--tokens` / `-n` | `max_tokens` a request omits; else the model's `max_new_tokens`, else 393,216 | |
+| `--seed N` | Seeds the per-request seed sequence | |
 | `--ignore-eos-in-reasoning` | Suppress EOS/EOT while the reasoning block is open | |
 | `--ignore-eos` | Suppress EOS/EOT for the whole generation | |
 | `--kv-disk-dir`, `--kv-disk-space-mb` | Persistent checkpoint store | `--kv-disk-space 32G` |
@@ -111,13 +114,32 @@ attestation. Inputs must remain unchanged during model open. Legacy records
 without this identity miss safely; all identities share the directory budget.
 Native restore holds the validated file open through the payload read.
 
+### Sampling
+
+A request's own values win. Omitted ones come from the server flags, then
+the model's `generation_config.json` (beside the model, else the GGUF's
+`general.sampling.*`), then OpenAI's (temperature 1, top-p 1, top-k and
+min-p off), as vLLM's `--generation-config auto` and SGLang's
+`--sampling-defaults model`. `max_new_tokens` there is the default
+`max_tokens`; `do_sample` is ignored. Startup prints the result.
+
+Every position samples with the request's values, thinking and tool syntax
+included; only `tool_choice` "required" (the call opener after thinking)
+and MiMo's chosen XML head are forced. No reasoning budget closes thinking.
+
+A request without a seed, or with a negative one, gets a fresh seed;
+`--seed` makes that sequence reproducible. One sampler, `ds4-core`
+`sample::draw`, makes every draw: serial and bank lanes and draft verify
+rows (native code calls it back).
+
 ### Draft execution
 
 MTP weights loaded is not "this request speculated". Drafts verify
 against the request's sampler at every temperature, and a forced position
-(control token, tool syntax's argmax under sampling, a closed DSML call, a
-stop token) ends the prefix before commit:
-[sampled speculation](speculative-sampling.md).
+(control token, a closed DSML call, a stop token) ends the prefix before
+commit: [sampled speculation](speculative-sampling.md). `--mtp-mode on`
+fails at startup where the plan cannot draft (lane, backend, missing or
+unexecuted weights); it never falls back silently.
 
 ## Inspect
 

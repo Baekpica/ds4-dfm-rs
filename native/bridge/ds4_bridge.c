@@ -1224,6 +1224,11 @@ int ds4_bridge_session_sample(ds4_bridge_session *s,
     return ds4_session_sample(s->session, temperature, top_k, top_p, min_p, rng);
 }
 
+void ds4_bridge_set_host_sampler(ds4_bridge_host_sample_fn fn)
+{
+    ds4_set_host_sampler(fn);
+}
+
 int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s,
                                         ds4_bridge_spec_verify_fn verify, void *ud)
 {

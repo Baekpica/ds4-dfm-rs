@@ -24,7 +24,6 @@ use crate::generate::{
     prepare_required_prefixes, render_prompt_ex, responses_ids, stream_req_from_parsed,
     GenerateError, GenerateOutcome,
 };
-use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 #[cfg(feature = "native")]
 use crate::render::render_live_tool_tail;
@@ -98,7 +97,6 @@ pub struct ContStepper {
     prompt_preserves_reasoning: bool,
     parsed_max_tokens: i32,
     required_tool_prefix: Vec<i32>,
-    required_think_end_prefix: Vec<i32>,
     tool_replay: Option<(Vec<ToolCall>, String)>,
     started: bool,
     #[cfg(any(feature = "native", test))]
@@ -207,7 +205,6 @@ impl ContStepper {
                 prompt_preserves_reasoning: prompt_preserves_reasoning(parsed),
                 parsed_max_tokens: parsed.max_tokens,
                 required_tool_prefix: parsed.required_tool_prefix.clone(),
-                required_think_end_prefix: parsed.required_think_end_prefix.clone(),
                 tool_replay: None,
                 started: true,
                 #[cfg(any(feature = "native", test))]
@@ -246,16 +243,11 @@ impl ContStepper {
         w.out
     }
 
-    /// Per-token sampling override, same policy the serial `decode_pass`
-    /// consults (required prefixes + DSML structural greedy).
+    /// Per-token forced tokens, the policy the serial `decode_pass` consults.
     pub fn sample_override(&mut self) -> SampleOverride {
         let policy = SamplePolicy {
             tool_choice: self.tool_choice,
-            has_tool_results: self.has_tool_results,
-            think_mode: self.think_mode,
-            max_tokens: self.parsed_max_tokens,
             required_tool_prefix: &self.required_tool_prefix,
-            required_think_end_prefix: &self.required_think_end_prefix,
         };
         self.acc.sampling_override(&policy)
     }
@@ -266,16 +258,9 @@ impl ContStepper {
             .unwrap_or(-1)
     }
 
-    /// Match serial sampling: IQuest and GLM-5.3 keep the requested sampler
-    /// in thinking; other families retain their legacy thinking defaults.
+    /// The request's sampler in every channel, as the serial lane.
     pub fn sampling(&self, parsed: &ParsedRequest) -> (f32, i32, f32, f32) {
-        if think_mode_enabled(parsed.think_mode)
-            && fixed_thinking_sampling(syntax_for_model_id(self.model_id))
-        {
-            (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
-        } else {
-            (parsed.temperature, parsed.top_k, parsed.top_p, parsed.min_p)
-        }
+        (parsed.temperature, parsed.top_k, parsed.top_p, parsed.min_p)
     }
 
     pub fn feed(&mut self, piece: &[u8]) -> ContStep {
@@ -1691,8 +1676,7 @@ mod native {
 
     use ds4_core::{
         qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDone, ContDriver,
-        QwenImageInput, ReuseKind, ReuseMiss, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY,
-        CONT_SAMPLE_NONE,
+        QwenImageInput, ReuseKind, ReuseMiss, ReuseTaken, Vocab, CONT_SAMPLE_NONE,
     };
 
     use crate::serve_static::{BatchStatic, CoalesceLimits, StaticExec, StaticJob, StaticRow};
@@ -2027,7 +2011,6 @@ mod native {
         fn sample_override(&mut self) -> i32 {
             match self.stepper.sample_override() {
                 SampleOverride::None => CONT_SAMPLE_NONE,
-                SampleOverride::Greedy => CONT_SAMPLE_GREEDY,
                 SampleOverride::Token(token) => ds4_core::cont_sample_token(token),
             }
         }
@@ -4085,7 +4068,7 @@ mod bank_tests {
     }
 
     #[test]
-    fn iquest_thinking_sampling() {
+    fn thinking_keeps_the_requested_sampler() {
         let glm = ds4_core::Variant::Glm53FlashVq as i32;
         for model_id in [ds4_core::Variant::IQuestQ1 as i32, glm, 2] {
             for temperature in [0.0, 0.4] {
@@ -4104,13 +4087,7 @@ mod bank_tests {
                     1,
                     8192,
                 );
-                let expected = if model_id == ds4_core::Variant::IQuestQ1 as i32 || model_id == glm
-                {
-                    (temperature, 9, 0.9, 0.03)
-                } else {
-                    (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
-                };
-                assert_eq!(stepper.sampling(&parsed), expected);
+                assert_eq!(stepper.sampling(&parsed), (temperature, 9, 0.9, 0.03));
             }
         }
     }
@@ -4370,7 +4347,6 @@ mod bank_tests {
         cont_prompt_tokens(&RequiredPrefixExec, &mut parsed).unwrap();
 
         assert_eq!(parsed.required_tool_prefix, [101]);
-        assert_eq!(parsed.required_think_end_prefix, [202]);
     }
 
     #[test]
