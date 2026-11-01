@@ -96,6 +96,8 @@ void ds4_host_shape_clear(void);
  * strings/specials and skips C vocab_load.  Pointers stay borrowed for
  * the engine lifetime (Rust Model owns Vocab).  The C CLI/server leave
  * this NULL. */
+#define DS4_HOST_MAX_STOPS 8
+
 typedef struct {
     const char *ptr; /* borrowed; empty token still has a non-NULL ptr */
     uint64_t len;
@@ -147,6 +149,10 @@ typedef struct {
     int32_t dots3_endofsystem_id;
     int32_t dots3_endofuser_id;
     int32_t dots3_endoftext_id;
+    /* Vocab::is_stop over the whole vocabulary: native stops where the
+     * host does instead of using its own family table. */
+    uint32_t n_stop;
+    int32_t stop[DS4_HOST_MAX_STOPS];
 } ds4_host_vocab;
 
 void ds4_host_vocab_install(const ds4_host_vocab *v);

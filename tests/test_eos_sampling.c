@@ -67,6 +67,16 @@ int main(void) {
     CHECK(sample_top_p_min_p_override_excluding(logits, 4, 0.0f, 0,
           1.0f, 0.0f, &rng, DS4_SAMPLE_OVERRIDE_TOKEN(3), 1, &mimo) == 3);
 
+    /* A Rust host's stop set replaces the family table: Naive's EOT is a
+     * stop there, so an EOS policy excludes it with EOS. */
+    g_ds4_shape = DS4_SHAPE_NAIVE_N05_FLASH;
+    const ds4_vocab naive = {.eos_id = 1, .eot_id = 2, .n_stop = 2, .stop = {1, 2}};
+    CHECK(vocab_token_is_generation_stop(&naive, naive.eot_id));
+    CHECK(!vocab_token_is_generation_stop(&naive, 3));
+    CHECK(sample_eot_exclusion(&naive, naive.eos_id) == naive.eot_id);
+    const ds4_vocab naive_c = {.eos_id = 1, .eot_id = 2};
+    CHECK(sample_eot_exclusion(&naive_c, naive_c.eos_id) == -1);
+
     const float only_eos[] = {-INFINITY, 9.0f, -INFINITY};
     CHECK(sample_top_p_min_p_excluding(only_eos, 3, 0.0f, 0, 1.0f, 0.0f,
                                        &rng, 1, -1) == -1);

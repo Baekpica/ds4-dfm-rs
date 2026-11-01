@@ -215,6 +215,7 @@ use ds4_sys::{
     ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
     DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
     DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
+    DS4_HOST_MAX_STOPS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1011,7 +1012,23 @@ fn bools_to_u8(src: &[bool; 256]) -> [u8; 256] {
     out
 }
 
-fn pack_host_vocab(v: &Vocab) -> FfiVocab {
+/// `Vocab::is_stop` over the whole vocabulary: native ends static rows and
+/// excludes EOT under an EOS policy with the host's set.
+fn host_stops(v: &Vocab) -> Result<(u32, [i32; DS4_HOST_MAX_STOPS])> {
+    let mut stops = [-1; DS4_HOST_MAX_STOPS];
+    let mut n = 0usize;
+    for token in (0..v.n_vocab()).filter(|&token| v.is_stop(token)) {
+        let slot = stops.get_mut(n).ok_or_else(|| Error {
+            code: 1,
+            message: format!("more than {DS4_HOST_MAX_STOPS} stop tokens"),
+        })?;
+        *slot = token;
+        n += 1;
+    }
+    Ok((n as u32, stops))
+}
+
+fn pack_host_vocab(v: &Vocab) -> Result<FfiVocab> {
     let tokens: Vec<ds4_host_str> = v
         .tokens()
         .iter()
@@ -1029,6 +1046,7 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         })
         .collect();
     let user_defined = v.user_defined_ids();
+    let (n_stop, stop) = host_stops(v)?;
     let raw = ds4_host_vocab {
         n_vocab: tokens.len() as u32,
         tokens: tokens.as_ptr(),
@@ -1075,13 +1093,15 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         dots3_endofsystem_id: v.dots3_endofsystem_id,
         dots3_endofuser_id: v.dots3_endofuser_id,
         dots3_endoftext_id: v.dots3_endoftext_id,
+        n_stop,
+        stop,
     };
-    FfiVocab {
+    Ok(FfiVocab {
         tokens,
         merges,
         user_defined,
         raw,
-    }
+    })
 }
 
 impl FfiVocab {
@@ -1775,7 +1795,7 @@ impl Model {
             ling_open_check(backend, &tuning, dspark_path, distributed)?;
         }
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
-        let mut ffi_vocab = pack_host_vocab(&vocab);
+        let mut ffi_vocab = pack_host_vocab(&vocab)?;
         // Ling-3.1 maps its MTP part only when the open drafts with it;
         // MiniMax its DSpark drafter part.
         let inventory = if identified.shape.family == ModelFamily::Ling31Vq {

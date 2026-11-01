@@ -37640,6 +37640,9 @@ struct ds4_vocab {
     int dots3_endofsystem_id;
     int dots3_endofuser_id;
     int dots3_endoftext_id;
+    /* Rust hosts: their stop set (Vocab::is_stop); 0 = the family table. */
+    uint32_t n_stop;
+    int stop[DS4_HOST_MAX_STOPS];
     str_i32_table token_to_id;
     str_i32_table merge_rank;
     /* USER_DEFINED tokens, matched as literal text before the regex split.
@@ -39829,6 +39832,9 @@ static void model_apply_host_vocab(ds4_vocab *vocab) {
     vocab->dots3_endofsystem_id = h->dots3_endofsystem_id;
     vocab->dots3_endofuser_id = h->dots3_endofuser_id;
     vocab->dots3_endoftext_id = h->dots3_endoftext_id;
+    if (h->n_stop > DS4_HOST_MAX_STOPS) ds4_die("host stop set is too large");
+    vocab->n_stop = h->n_stop;
+    for (i = 0; i < h->n_stop; i++) vocab->stop[i] = h->stop[i];
 }
 
 static void vocab_free(ds4_vocab *vocab) {
@@ -40682,6 +40688,12 @@ char *ds4_token_text(ds4_engine *e, int token, size_t *len) {
 
 static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
     if (!vocab || token < 0) return false;
+    if (vocab->n_stop) {
+        for (uint32_t i = 0; i < vocab->n_stop; i++) {
+            if (token == vocab->stop[i]) return true;
+        }
+        return false;
+    }
     if (token == vocab->eos_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         /* The source EOS list includes next-user/tool-observation roles.
@@ -65049,6 +65061,16 @@ static void family_cont_publish_generated(
  * residual/MoE graph and select mutable state through bank-aware CUDA kernels.
  * The scalar one-bank path remains the correctness and low-concurrency fast
  * path; lifecycle, history, sampling, and callbacks are identical on both. */
+/* Static rows have no on_token listener, so they end at the host's stop
+ * set here; streaming rows leave every stop but EOS to the host, which
+ * sees the token text (Beam's <|call|> must reach its tool parser). */
+static bool host_static_stop(const ds4_batch_ctx *ctx,
+                             int (*on_token)(void *ud, void *user, int token),
+                             int token) {
+    return !on_token && ctx->e->vocab.n_stop &&
+           vocab_token_is_generation_stop(&ctx->e->vocab, token);
+}
+
 static int solar_engine_continuous_generate(
         ds4_batch_ctx *ctx,
         int (*admit)(void *ud, ds4_cont_request *req),
@@ -65437,7 +65459,7 @@ static int solar_engine_continuous_generate(
                     sb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == sb->eos;
+                    const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, sb->user, token);
                     if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -65532,7 +65554,7 @@ static int solar_engine_continuous_generate(
             sb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == sb->eos;
+            const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, sb->user, token);
             if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -66034,7 +66056,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         emitted++;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         if (finish || aborted || cb->generated_len >= cb->max_new) {
             finished = true;
@@ -66095,7 +66117,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         cb->current = token;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         finished = finish || aborted || cb->generated_len >= cb->max_new;
     }
@@ -66848,7 +66870,7 @@ static int family_banked_engine_continuous_generate(
                     cb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == cb->eos;
+                    const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, cb->user, token);
                     if (hit_eos || cb->generated_len >= cb->max_new ||
@@ -66987,7 +67009,7 @@ static int family_banked_engine_continuous_generate(
             cb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == cb->eos;
+            const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, cb->user, token);
             if (hit_eos || cb->generated_len >= cb->max_new || aborted) {
@@ -67015,7 +67037,7 @@ static int family_banked_engine_continuous_generate(
                 cb->current = token;
                 ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                 ds4_metrics_window_add(1u, 0u, 0u);
-                const bool next_eos = token == cb->eos;
+                const bool next_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                 const bool next_aborted = !next_eos && on_token &&
                     !on_token(ud, cb->user, token);
                 if (next_eos || cb->generated_len >= cb->max_new ||

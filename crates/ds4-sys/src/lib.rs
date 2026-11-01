@@ -489,6 +489,8 @@ pub struct ds4_host_str {
     pub len: u64,
 }
 
+pub const DS4_HOST_MAX_STOPS: usize = 8;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ds4_host_vocab {
@@ -537,6 +539,8 @@ pub struct ds4_host_vocab {
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
+    pub n_stop: u32,
+    pub stop: [i32; DS4_HOST_MAX_STOPS],
 }
 
 #[repr(C)]

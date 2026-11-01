@@ -24,6 +24,11 @@ for exact provenance. Historical entries retain their original scope.
   and switch, governor modes) reach native as open options instead of
   environment variables. An L1 budget refusal fails the model open (exit
   1) instead of `_exit(137)`.
+- Native stops where the Rust host does: the host stop set reaches native at
+  model open. Static batch rows end at the host's stop tokens and report
+  `stop` (they decoded to the token budget and reported `length`); GLM VQ
+  user/observation and K2 `im_end` stop natively; an EOS policy also
+  excludes Naive's EOT.
 
 ## v0.1.5 — 2026-11-01
 
