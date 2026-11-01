@@ -15,8 +15,9 @@ native; the Rust host owns lifecycle and policy.
 
 A family addition validates the GGUF shape and tensor inventory, tokenizer and
 input/output protocol, native state lifecycle and serving eligibility. Promotion
-requires loader, forward, API, state/KV and measured performance gates. Preserve
-the C oracles and original goldens rather than refreshing away drift.
+requires loader, forward, API, state/KV and measured performance gates. Keep
+original goldens rather than refreshing away drift; a deliberate Rust change
+deletes its C-oracle parity case instead of mirroring into C.
 
 ## Ownership and execution
 
@@ -73,14 +74,15 @@ another imperative input renderer.
 `make` builds Rust production names `ds4`, `ds4-server`, `ds4-bench`, and
 `ds4-agent` when a backend build is selected. Cargo retains the `*-rs` binary
 names; Make provides those names as compatibility aliases. `ds4-c`,
-`ds4-server-c`, `ds4-bench-c`, and `ds4-agent-c` remain C behavior oracles.
-`ds4-eval` and native family/kernel tests also remain native.
+`ds4-c`, `ds4-server-c`, `ds4-bench-c`, and `ds4-agent-c` are deprecated:
+Rust owns host behavior, and they receive no features or fixes.
+`ds4-eval` and native family/kernel tests remain native.
 
 `ds4_cuda.cu`, `cuda/mmq/`, and other hardware kernels are not Rust migration
-targets. Native helper and oracle retention is intentional; it is not a claim
-that inference has no C/CUDA dependency. Retire a C host oracle only after
-its Rust replacement has unit/live parity, performance and soak evidence;
-keep the baseline reachable in Git.
+targets. Host logic still in native C (such as the C sampler, now replaced by a Rust
+callback) is deprecated and moves to Rust when touched; native code keeps
+only tensor and device work. The deprecated oracles stay in Git as a frozen
+baseline until removed.
 
 ### Native sources and tests
 
