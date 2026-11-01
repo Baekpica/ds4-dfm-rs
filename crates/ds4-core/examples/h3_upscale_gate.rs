@@ -31,9 +31,32 @@ const WIDTH_IN: usize = 2;
 const HEIGHT_OUT: usize = 4;
 const WIDTH_OUT: usize = 4;
 
+/// The shape the transcription is asked about. The released resizer is not
+/// shape-fixed, and the engine calls it at shapes this gate's 2 x 2 x 2 never
+/// covered; `--shape` is how a shape gets checked instead of only timed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Dims {
+    time: usize,
+    height: usize,
+    width: usize,
+    out_height: usize,
+    out_width: usize,
+}
+
+impl Dims {
+    const RELEASED: Dims = Dims {
+        time: TIME,
+        height: HEIGHT,
+        width: WIDTH_IN,
+        out_height: HEIGHT_OUT,
+        out_width: WIDTH_OUT,
+    };
+}
+
 fn main() {
     let mut dir: Option<PathBuf> = None;
     let mut bench: Option<(usize, usize, usize)> = None;
+    let mut dims = Dims::RELEASED;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -51,6 +74,24 @@ fn main() {
                 }
                 bench = Some((shape[0], shape[1], shape[2]));
             }
+            "--shape" => {
+                let values: Vec<usize> = argv
+                    .by_ref()
+                    .take(5)
+                    .filter_map(|value| value.parse().ok())
+                    .collect();
+                if values.len() != 5 {
+                    eprintln!("--shape wants time height width out_height out_width");
+                    std::process::exit(2);
+                }
+                dims = Dims {
+                    time: values[0],
+                    height: values[1],
+                    width: values[2],
+                    out_height: values[3],
+                    out_width: values[4],
+                };
+            }
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -60,7 +101,7 @@ fn main() {
     let dir = dir.unwrap_or_else(|| PathBuf::from("/mnt/h3-artifacts/models/latent_upscale"));
     let outcome = match bench {
         Some((time, height, width)) => bench_run(&dir, time, height, width),
-        None => run(&dir),
+        None => run(&dir, dims),
     };
     match outcome {
         Ok(()) => {}
@@ -161,12 +202,12 @@ fn fail<T>(detail: impl Into<String>) -> Result<T, String> {
     Err(detail.into())
 }
 
-fn run(dir: &Path) -> Result<(), String> {
+fn run(dir: &Path, d: Dims) -> Result<(), String> {
     let store = Store::open(dir, "latent upscaler")?;
 
     // Deterministic input, channel-major and already in the model's own value
     // range: the mean plus a small offset on the standard deviation.
-    let voxels = TIME * HEIGHT * WIDTH_IN;
+    let voxels = d.time * d.height * d.width;
     let mut latent = vec![0.0f32; LATENT_CHANNELS * voxels];
     for channel in 0..LATENT_CHANNELS {
         for voxel in 0..voxels {
@@ -175,8 +216,8 @@ fn run(dir: &Path) -> Result<(), String> {
         }
     }
 
-    let reference = reference(&store, &latent)?;
-    if reference.len() != LATENT_CHANNELS * TIME * HEIGHT_OUT * WIDTH_OUT {
+    let reference = reference(&store, &latent, d)?;
+    if reference.len() != LATENT_CHANNELS * d.time * d.out_height * d.out_width {
         return fail("reference length differs");
     }
     let scale = reference
@@ -206,10 +247,17 @@ fn run(dir: &Path) -> Result<(), String> {
             .map_err(|detail| detail.to_string())?;
         let started = std::time::Instant::now();
         let output = upscaler
-            .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)
+            .upscale(
+                &latent,
+                d.time,
+                d.height,
+                d.width,
+                d.out_height,
+                d.out_width,
+            )
             .map_err(|detail| detail.to_string())?;
         let elapsed = started.elapsed();
-        if output.time != TIME || output.height != HEIGHT_OUT || output.width != WIDTH_OUT {
+        if output.time != d.time || output.height != d.out_height || output.width != d.out_width {
             return fail(format!(
                 "geometry {}x{}x{}, expected {}x{}x{}",
                 output.time, output.height, output.width, TIME, HEIGHT_OUT, WIDTH_OUT
@@ -230,7 +278,7 @@ fn run(dir: &Path) -> Result<(), String> {
             "{name:<13} {:>8?}  max |device - reference| {worst:.3e}, relative {relative:.3e} \
              (worst channel {})  {verdict}",
             elapsed,
-            worst_at / (TIME * HEIGHT_OUT * WIDTH_OUT)
+            worst_at / (d.time * d.out_height * d.out_width)
         );
         // Each arm names the algorithm it ran on, so a difference between two
         // arms is a difference in arithmetic or in kernel, never in doubt.
@@ -471,7 +519,7 @@ fn resize(
     output
 }
 
-fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
+fn reference(store: &Store, latent: &[f32], d: Dims) -> Result<Volume, String> {
     let width = WIDTH as usize;
     let embed_in_w = load(store, "embed.0.weight")?;
     let embed_in_b = load(store, "embed.0.bias")?;
@@ -479,7 +527,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
     let embed_out_b = load(store, "embed.2.bias")?;
 
     // Normalize on the host, exactly as the node does, then go time-major.
-    let voxels = TIME * HEIGHT * WIDTH_IN;
+    let voxels = d.time * d.height * d.width;
     let mut current = vec![0.0f64; latent.len()];
     for channel in 0..LATENT_CHANNELS {
         for voxel in 0..voxels {
@@ -489,7 +537,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
         }
     }
 
-    let scale = (WIDTH_OUT as f64 / WIDTH_IN as f64 + HEIGHT_OUT as f64 / HEIGHT as f64) / 2.0;
+    let scale = (d.out_width as f64 / d.width as f64 + d.out_height as f64 / d.height as f64) / 2.0;
     let hidden = linear(&[scale - 1.0], &embed_in_w, &embed_in_b, 1, 1, 64);
     let hidden = silu(&hidden);
     let embed = linear(&hidden, &embed_out_w, &embed_out_b, 1, 64, 64);
@@ -498,9 +546,9 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
         &current,
         &load(store, "conv_in.weight")?,
         &load(store, "conv_in.bias")?,
-        TIME,
-        HEIGHT,
-        WIDTH_IN,
+        d.time,
+        d.height,
+        d.width,
         LATENT_CHANNELS,
         width,
         3,
@@ -516,7 +564,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &volume,
                         &load(store, &format!("{prefix}.norm.weight"))?,
                         &load(store, &format!("{prefix}.norm.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -526,7 +574,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &activated,
                         &load(store, &format!("{prefix}.dwconv.weight"))?,
                         &load(store, &format!("{prefix}.dwconv.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -535,7 +583,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &depthwise,
                         &load(store, &format!("{prefix}.pwconv.weight"))?,
                         &load(store, &format!("{prefix}.pwconv.bias"))?,
-                        TIME * height * width_in,
+                        d.time * height * width_in,
                         width,
                         width,
                     );
@@ -549,7 +597,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &volume,
                         &load(store, &format!("{prefix}.in_layers.0.weight"))?,
                         &load(store, &format!("{prefix}.in_layers.0.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -559,7 +607,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &activated,
                         &load(store, &format!("{prefix}.in_layers.2.weight"))?,
                         &load(store, &format!("{prefix}.in_layers.2.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -570,7 +618,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &convolved,
                         &load(store, &format!("{prefix}.out_norm.weight"))?,
                         &load(store, &format!("{prefix}.out_norm.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -593,7 +641,7 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
                         &activated,
                         &load(store, &format!("{prefix}.out_layers.2.weight"))?,
                         &load(store, &format!("{prefix}.out_layers.2.bias"))?,
-                        TIME,
+                        d.time,
                         height,
                         width_in,
                         width,
@@ -610,19 +658,25 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
             Ok(volume)
         };
 
-    current = run_blocks("in_blocks", current, HEIGHT, WIDTH_IN)?;
+    current = run_blocks("in_blocks", current, d.height, d.width)?;
     current = resize(
-        &current, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT, width,
+        &current,
+        d.time,
+        d.height,
+        d.width,
+        d.out_height,
+        d.out_width,
+        width,
     );
-    current = run_blocks("out_blocks", current, HEIGHT_OUT, WIDTH_OUT)?;
+    current = run_blocks("out_blocks", current, d.out_height, d.out_width)?;
 
     let normalized = group_norm(
         &current,
         &load(store, "norm_out.weight")?,
         &load(store, "norm_out.bias")?,
-        TIME,
-        HEIGHT_OUT,
-        WIDTH_OUT,
+        d.time,
+        d.out_height,
+        d.out_width,
         width,
     );
     let activated = silu(&normalized);
@@ -630,16 +684,16 @@ fn reference(store: &Store, latent: &[f32]) -> Result<Volume, String> {
         &activated,
         &load(store, "conv_out.weight")?,
         &load(store, "conv_out.bias")?,
-        TIME,
-        HEIGHT_OUT,
-        WIDTH_OUT,
+        d.time,
+        d.out_height,
+        d.out_width,
         width,
         LATENT_CHANNELS,
         3,
     );
 
     // Back to channel-major and denormalized.
-    let out_voxels = TIME * HEIGHT_OUT * WIDTH_OUT;
+    let out_voxels = d.time * d.out_height * d.out_width;
     let mut values = vec![0.0f64; output.len()];
     for channel in 0..LATENT_CHANNELS {
         for voxel in 0..out_voxels {
