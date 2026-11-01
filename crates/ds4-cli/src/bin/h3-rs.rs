@@ -113,6 +113,9 @@ struct Options {
     /// request in the list takes the release's route: the line's canvas is the
     /// draft's, the latent is doubled, and the doubled canvas is decoded.
     upscaler: Option<PathBuf>,
+    /// `--vae-workers` (`:1089`): the decode's chunk loop spread over this
+    /// many device contexts. One is the reference's own serial loop.
+    vae_workers: usize,
     /// `--crf` / `--preset`: the encoder words on the mux line. The default
     /// is the reference's own pair (`veryfast`, CRF 19), so a request that
     /// says nothing muxes the reference's line.
@@ -422,7 +425,7 @@ fn run() -> Result<ExitCode, String> {
     }
 
     let started = Instant::now();
-    let decoded = vae_video::decode(
+    let decoded = vae_video::decode_with(
         &component("video_vae/source"),
         &video,
         shape.video_t as usize,
@@ -432,6 +435,7 @@ fn run() -> Result<ExitCode, String> {
         // travel with the call; setting them on the DiT's context leaves the
         // decoder on the environment's word.
         vae_arms(&options),
+        options.vae_workers,
     )
     .map_err(|error| error.to_string())?;
     println!(
@@ -1023,6 +1027,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         latent_only: false,
         jobs: None,
         upscaler: None,
+        vae_workers: 1,
         encode: Encode::default(),
         preview_dir: None,
         show: false,
@@ -1116,6 +1121,14 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--save-audio" => options.audio_out = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--latent-only" => options.latent_only = true,
             "--jobs" => options.jobs = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--vae-workers" => {
+                options.vae_workers = unsigned(&mut argv, &flag)?
+                    .try_into()
+                    .map_err(|_| "--vae-workers is larger than 64".to_string())?;
+                if options.vae_workers < 1 || options.vae_workers > 64 {
+                    return Err("--vae-workers is 1-64".to_string());
+                }
+            }
             "--upscaler" => options.upscaler = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--crf" => {
                 options.encode.crf = unsigned(&mut argv, &flag)?
@@ -1364,6 +1377,8 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
                             canvas is the draft's and the doubled canvas is
                             decoded (the release's route)
   --preview-dir PATH        write one PPM preview per denoising step
+  --vae-workers N           decode the video through N device contexts, 1-64
+                            (default 1, the reference's serial chunk loop)
   --crf N                   x264 quality, 0-51 (default 19, the reference's)
   --preset NAME             x264 preset (default veryfast, the reference's);
                             slow and veryslow keep far more fine texture

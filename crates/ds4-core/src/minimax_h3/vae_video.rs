@@ -142,6 +142,7 @@ fn upload_f32(gpu: &Gpu, tensor: &Tensor, values: &[f32]) -> Result<(), VaeError
 }
 
 /// The spatial tile plan for one axis (`tile_axis`, `h3_video_vae.c:692-731`).
+#[derive(Clone)]
 struct TileAxis {
     starts: Vec<usize>,
     /// One entry fewer than `starts`; the last tile has no following overlap.
@@ -1338,6 +1339,35 @@ pub fn decode(
     latent_w: usize,
     arms: Arms,
 ) -> Result<Frames, VaeError> {
+    decode_with(
+        weight_directory,
+        latent,
+        latent_time,
+        latent_h,
+        latent_w,
+        arms,
+        1,
+    )
+}
+
+/// [`decode`] with the chunk loop spread over `workers` device contexts.
+///
+/// The chunks are independent: `decode_chunk` reads the latent and its own
+/// chunk index and nothing else, and the five-frame overlap between neighbours
+/// is blended afterwards from their own outputs (`:1105-1113`). Each worker
+/// builds its own decoder, and so its own context and stream, because a
+/// context is one stream: fifteen tiles waiting behind each other in one
+/// stream is the whole cost of this phase. The frames do not depend on the
+/// worker count - a worker only changes who runs a chunk, not what it runs.
+pub fn decode_with(
+    weight_directory: &Path,
+    latent: &[f32],
+    latent_time: usize,
+    latent_h: usize,
+    latent_w: usize,
+    arms: Arms,
+    workers: usize,
+) -> Result<Frames, VaeError> {
     let (chunks, output_frames) = chunk_plan(latent_time)?;
     if latent_h < 1 || latent_w < 1 {
         return fail("invalid video VAE latent shape");
@@ -1430,25 +1460,184 @@ pub fn decode(
     }
 
     let frame_elements = pixel_h * pixel_w * 3;
+    let decoded = if workers > 1 && chunks > 1 {
+        let plan = Plan {
+            latent_time,
+            latent_h,
+            latent_w,
+            y_axis: y_axis.clone(),
+            x_axis: x_axis.clone(),
+            mean: decoder.mean.clone(),
+            deviation: decoder.deviation.clone(),
+        };
+        decode_chunks(weight_directory, latent, &plan, arms, chunks, workers)?
+    } else {
+        let mut decoded = Vec::with_capacity(chunks);
+        for chunk in 0..chunks {
+            decoded.push(decode_chunk(
+                &decoder,
+                &scratch,
+                latent,
+                latent_time,
+                chunk,
+                latent_h,
+                latent_w,
+                &y_axis,
+                &x_axis,
+                FIRST_CHUNK_FRAMES,
+                None,
+            )?);
+        }
+        decoded
+    };
+
+    assemble(decoded, chunks, frame_elements, output_frames, pixel_h, pixel_w)
+}
+
+/// What a worker needs to know that does not depend on which chunk it takes.
+struct Plan {
+    latent_time: usize,
+    latent_h: usize,
+    latent_w: usize,
+    y_axis: TileAxis,
+    x_axis: TileAxis,
+    mean: Vec<f32>,
+    deviation: Vec<f32>,
+}
+
+/// The chunk loop spread over `workers` contexts. Each worker builds its own
+/// decoder, takes chunks from a shared counter, and leaves the frames in their
+/// own slot, so the assembly reads them in clip order whatever the order they
+/// finished in.
+fn decode_chunks(
+    weight_directory: &Path,
+    latent: &[f32],
+    plan: &Plan,
+    arms: Arms,
+    chunks: usize,
+    workers: usize,
+) -> Result<Vec<Frames>, VaeError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let next = AtomicUsize::new(0);
+    let slots: Mutex<Vec<Option<Frames>>> = Mutex::new((0..chunks).map(|_| None).collect());
+    let failure: Mutex<Option<String>> = Mutex::new(None);
+
+    let record = |error: VaeError| {
+        let mut slot = failure.lock().expect("decode workers do not panic");
+        if slot.is_none() {
+            *slot = Some(error.0);
+        }
+    };
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(chunks) {
+            scope.spawn(|| {
+                let mut decoder: Option<Decoder> = None;
+                let mut scratch: Option<TileScratch> = None;
+                loop {
+                    if failure
+                        .lock()
+                        .expect("decode workers do not panic")
+                        .is_some()
+                    {
+                        return;
+                    }
+                    let chunk = next.fetch_add(1, Ordering::Relaxed);
+                    if chunk >= chunks {
+                        return;
+                    }
+                    if decoder.is_none() {
+                        let built = Decoder::load(
+                            weight_directory,
+                            plan.y_axis.length / SPATIAL_RATIO,
+                            plan.x_axis.length / SPATIAL_RATIO,
+                            plan.mean.clone(),
+                            plan.deviation.clone(),
+                            arms,
+                        )
+                        .and_then(|decoder| {
+                            let scratch =
+                                TileScratch::new(&decoder.gpu, decoder.patches, decoder.sequence)?;
+                            Ok((decoder, scratch))
+                        });
+                        match built {
+                            Ok((held, held_scratch)) => {
+                                decoder = Some(held);
+                                scratch = Some(held_scratch);
+                            }
+                            Err(error) => {
+                                record(error);
+                                return;
+                            }
+                        }
+                    }
+                    let frames = decode_chunk(
+                        decoder.as_ref().expect("the decoder was just built"),
+                        scratch.as_ref().expect("the scratch was just built"),
+                        latent,
+                        plan.latent_time,
+                        chunk,
+                        plan.latent_h,
+                        plan.latent_w,
+                        &plan.y_axis,
+                        &plan.x_axis,
+                        FIRST_CHUNK_FRAMES,
+                        None,
+                    );
+                    match frames {
+                        Ok(frames) => {
+                            slots
+                                .lock()
+                                .expect("decode workers do not panic")[chunk] = Some(frames);
+                        }
+                        Err(error) => {
+                            record(error);
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(detail) = failure.into_inner().expect("decode workers do not panic") {
+        return fail(detail);
+    }
+
+    slots
+        .into_inner()
+        .expect("decode workers do not panic")
+        .into_iter()
+        .enumerate()
+        .map(|(chunk, frames)| {
+            frames.ok_or_else(|| VaeError(format!("chunk {chunk} decoded nothing")))
+        })
+        .collect()
+}
+
+/// `:1105-1113`: each chunk owns `CHUNK_STRIDE` new frames and its first
+/// `CHUNK_OVERLAP` fade from the previous chunk's tail with `frame / 5`.
+fn assemble(
+    decoded: Vec<Frames>,
+    chunks: usize,
+    frame_elements: usize,
+    output_frames: usize,
+    pixel_h: usize,
+    pixel_w: usize,
+) -> Result<Frames, VaeError> {
+    if decoded.len() != chunks {
+        return fail(format!(
+            "video VAE decoded {} chunks, expected {chunks}",
+            decoded.len()
+        ));
+    }
+
     let mut final_rgb = vec![0.0f32; output_frames * frame_elements];
     let mut overlap = vec![0.0f32; CHUNK_OVERLAP * frame_elements];
 
-    for chunk in 0..chunks {
-        let mut decoded = decode_chunk(
-            &decoder,
-            &scratch,
-            latent,
-            latent_time,
-            chunk,
-            latent_h,
-            latent_w,
-            &y_axis,
-            &x_axis,
-            FIRST_CHUNK_FRAMES,
-            None,
-        )?;
-        // `:1105-1113`: the repeated 5 frames fade from the previous chunk's
-        // tail into this chunk's own prediction.
+    for (chunk, mut decoded) in decoded.into_iter().enumerate() {
         if chunk > 0 {
             for frame in 0..CHUNK_OVERLAP {
                 let alpha = frame as f32 / CHUNK_OVERLAP as f32;
@@ -1467,6 +1656,7 @@ pub fn decode(
                 [CHUNK_STRIDE * frame_elements..(CHUNK_STRIDE + CHUNK_OVERLAP) * frame_elements],
         );
     }
+
     let base = chunks * CHUNK_STRIDE * frame_elements;
     final_rgb[base..base + CHUNK_OVERLAP * frame_elements].copy_from_slice(&overlap);
 
