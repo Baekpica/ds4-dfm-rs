@@ -455,17 +455,6 @@ tests/h3/vae_gemm_bm: tests/h3/vae_gemm_bm.cu native/h3/h3_dit_gpu.cu native/h3/
 tests/h3/refiner_gemm_bm: tests/h3/refiner_gemm_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
 
-# The refiner's dense attention in both arithmetic classes on the same
-# operands: the scalar token-major walk the golden pinned, against the
-# token-major tensor-core port, at the square and the cross shape.
-tests/h3/ltx_attn_bm: tests/h3/ltx_attn_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
-
-# The refiner's Sol-Attn sparse forward in both arithmetic classes, on one
-# plan built by the real search entry, at each of the release's three taus.
-tests/h3/sol_ltx_bm: tests/h3/sol_ltx_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
-
 # Sol-Attn's search step at a denoise shape: the four routing kernels timed
 # separately, then priced against the dense attention at the same shape.
 tests/h3/sol_route_bm: tests/h3/sol_route_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
@@ -550,6 +539,13 @@ h3-rs h3-server-rs: $(DS4_RS_SOURCES)
 	cargo rustc -p $(H3_PACKAGE) --bin $@ --release --features native -- \
 		$(H3_LINK_ARGS) $(H3_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/$@" $@
+
+# Merging a few-step adapter is shard I/O and BF16 arithmetic, no device work,
+# but it links the same way so one toolchain builds every H3 host.
+h3-lora-merge: $(H3_OBJS) $(DS4_RS_SOURCES)
+	cargo rustc -p ds4-cli --bin h3-lora-merge --release --features native -- \
+		$(H3_LINK_ARGS) $(H3_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-lora-merge" $@
 
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
@@ -2782,7 +2778,7 @@ BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
     tests/h3/native_test tests/h3/attn_bm tests/h3/attn_f32_bm \
     tests/h3/vae_gemm_bm tests/h3/sol_route_bm tests/h3/sol_forward_bm \
     tests/h3/elementwise_bm tests/h3/linear_fp8_bm \
-    tests/h3/refiner_gemm_bm tests/h3/ltx_attn_bm tests/h3/sol_ltx_bm \
+    tests/h3/refiner_gemm_bm \
     tools/minimax_h3/ppm_diff
 DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
 -include $(wildcard $(DEPFILES))

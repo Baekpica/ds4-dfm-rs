@@ -602,6 +602,21 @@ fn destination(module: &str, bias: bool) -> Result<(String, Rows), MergeError> {
     } else if let Some(rest) = module.strip_prefix("token_refiner.refiner_blocks.") {
         let (index, rest) = split_index(rest)?;
         (format!("token_refiner.blocks.{index}."), rest)
+    } else if let Some(rest) = module.strip_prefix("token_refiner.blocks.") {
+        // Already in the served namespace: a few-step adapter such as
+        // `larryvrh/MiniMax-H3-Turbo-Lora` states its deltas against the
+        // tensors this engine loads, not against the diffusers packaging.
+        let (index, rest) = split_index(rest)?;
+        (format!("token_refiner.blocks.{index}."), rest)
+    } else if let Some(rest) = module.strip_prefix("blocks.") {
+        let (index, rest) = split_index(rest)?;
+        (format!("blocks.{index}."), rest)
+    } else if module == "final_layer.adaln_proj.linear" {
+        // The one served global projection that carries a low-rank delta.
+        return Ok((
+            format!("{module}.{}", if bias { "bias" } else { "weight" }),
+            Rows::Identity,
+        ));
     } else {
         return Err(MergeError::Unresolved {
             key: module.to_string(),
@@ -633,6 +648,13 @@ fn destination(module: &str, bias: bool) -> Result<(String, Rows), MergeError> {
         )),
         "norm1" if !bias => identity(format!("{prefix}norm1.weight")),
         "norm2" if !bias => identity(format!("{prefix}norm2.weight")),
+        // The served namespace's own names. A fused `qkv_proj` already holds
+        // `[q | k | v]` head-major and `fc1` already holds the fused gate/up
+        // pair, so each delta adds row for row with nothing reordered.
+        "attn.qkv_proj" if !bias => identity(format!("{prefix}attn.qkv_proj.weight")),
+        "attn.out_proj" if !bias => identity(format!("{prefix}attn.out_proj.weight")),
+        "mlp.fc1" if !bias => identity(format!("{prefix}mlp.fc1.weight")),
+        "mlp.fc2" if !bias => identity(format!("{prefix}mlp.fc2.weight")),
         other => {
             return Err(MergeError::Unresolved {
                 key: module.to_string(),
