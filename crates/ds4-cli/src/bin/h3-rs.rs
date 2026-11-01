@@ -1371,7 +1371,6 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --vae-attention scalar|tensor  decoder attention kernel; unset keeps
                             H3_VAE_ATTENTION's word, else the reference's scalar
                             path; tensor is faster, not portable
-  --vae-gemm fp32|bf16      decoder GEMM; unset keeps H3_VAE_GEMM's word, else
                             the reference's fp32 rounding; bf16 is one
                             tensor-core computation below its scale
                             (window from H3_TOKEN_REDUCTION_* env)

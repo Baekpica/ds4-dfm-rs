@@ -1384,7 +1384,7 @@ pub fn decode_with(
     }
     let pixel_h = latent_h * SPATIAL_RATIO;
     let pixel_w = latent_w * SPATIAL_RATIO;
-    let tile_pixels = configured_tile_pixels(pixel_h, pixel_w, None);
+    let tile_pixels = configured_tile_pixels(pixel_h, pixel_w, tile);
     let y_axis = tile_axis(pixel_h, tile_pixels)?;
     let x_axis = tile_axis(pixel_w, tile_pixels)?;
     if latent_time == 2 && (y_axis.count() > 1 || x_axis.count() > 1) {
@@ -1681,6 +1681,23 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stated_tile_wins_over_the_search_and_the_environment() {
+        assert_eq!(configured_tile_pixels(768, 1344, Some(512)), 512);
+        assert_eq!(configured_tile_pixels(768, 1344, Some(320)), 320);
+        assert_eq!(configured_tile_pixels(768, 1344, Some(288)), 288);
+        // Outside 256..=512, or off the 16-pixel grid: the search decides.
+        assert_ne!(configured_tile_pixels(768, 1344, Some(48)), 48);
+    }
+
+    #[test]
+    fn a_stated_tile_wins_over_the_search_and_the_environment() {
+        assert_eq!(configured_tile_pixels(768, 1344, Some(512)), 512);
+        assert_eq!(configured_tile_pixels(768, 1344, Some(288)), 288);
+        // Outside 256..=512, or off the 16-pixel grid: the search decides.
+        assert_ne!(configured_tile_pixels(768, 1344, Some(48)), 48);
+    }
 
     #[test]
     fn tile_plan_matches_the_reference_at_the_released_shapes() {
