@@ -354,9 +354,10 @@ impl Upscaler {
     pub fn open(dir: &Path, gpu: Gpu) -> Result<Upscaler, UpscaleError> {
         let mode = std::env::var("H3_UPSCALER_GEMM").unwrap_or_default();
         // `f16` halves the operands the convolutions' GEMM reads and moves it to
-        // the half-precision tensor cores; `t*` is the TF32 class, `f*` or
-        // unset the F32 one.
-        let half = mode.starts_with('h') || mode.starts_with('H');
+        // the half-precision tensor cores; `t*` is the TF32 class, plain `f32`
+        // (and unset) the F32 one. `f16` is tested first: it starts with the
+        // same letter `f32` does.
+        let half = mode.starts_with("f16") || mode.starts_with("h");
         let tf32 = half || mode.starts_with('t') || mode.starts_with('T') || mode.is_empty();
         // The measured arms: fp32 rows 12.36 s, fp32 columns 12.36 s, tf32 rows
         // 12.31 s, tf32 columns 7.51 s, at 2.2e-6, 2.2e-6, 6.1e-5 and 6.1e-5
