@@ -252,6 +252,11 @@ pub struct Upscaler {
     /// a TF32 product carries the same ten mantissa bits. `fp32` is the arm to
     /// compare against, and the gate's default.
     tf32: bool,
+    /// `H3_UPSCALER_ORIENT=columns` asks cuBLASLt the transposed question,
+    /// which is the same product on the same bytes: the row-major heuristic
+    /// answers with a SIMT SGEMM (`magma_sgemmEx_kernel`), and the column-major
+    /// one is a different search.
+    columns: bool,
 }
 
 /// One block's position: `true` is a `TemporalConv`.
@@ -329,12 +334,30 @@ impl Upscaler {
         let tf32 = std::env::var("H3_UPSCALER_GEMM")
             .map(|value| value.starts_with('t') || value.starts_with('T'))
             .unwrap_or(true);
-        Self::open_with(dir, gpu, tf32)
+        let columns = std::env::var("H3_UPSCALER_ORIENT")
+            .map(|value| value.starts_with('c') || value.starts_with('C'))
+            .unwrap_or(false);
+        Self::open_with(dir, gpu, tf32, columns)
+    }
+
+    /// The arm this resizer runs its convolutions on, for a log or a bench.
+    pub fn arm(&self) -> &'static str {
+        match (self.tf32, self.columns) {
+            (false, false) => "fp32 rows",
+            (true, false) => "tf32 rows",
+            (false, true) => "fp32 columns",
+            (true, true) => "tf32 columns",
+        }
     }
 
     /// The same load with the GEMM arm stated instead of read from the
     /// environment, so a gate can hold it fixed.
-    pub fn open_with(dir: &Path, gpu: Gpu, tf32: bool) -> Result<Upscaler, UpscaleError> {
+    pub fn open_with(
+        dir: &Path,
+        gpu: Gpu,
+        tf32: bool,
+        columns: bool,
+    ) -> Result<Upscaler, UpscaleError> {
         let store = Store::open(dir, "latent upscaler")?;
         let host = |name: &str, shape: &[u64]| -> Result<Vec<f32>, UpscaleError> {
             let bytes = store.raw(name, shape)?;
@@ -444,6 +467,7 @@ impl Upscaler {
         Ok(Upscaler {
             gpu,
             tf32,
+            columns,
             conv_in,
             in_blocks,
             out_blocks,
@@ -778,6 +802,7 @@ impl Upscaler {
             SCRATCH_TILE,
             scratch,
             self.tf32,
+            self.columns,
         ))?;
         Ok(output)
     }

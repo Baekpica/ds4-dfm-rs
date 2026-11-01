@@ -584,6 +584,61 @@ static int h3d_linear_lt(h3d_context *context, void *output, const void *input,
                                  error, error_size);
 }
 
+/* The same product with the matrix on the other side: `C[rows, dim] =
+ * input[rows, k] * weight[dim, k]^T` is, byte for byte, the column-major
+ * product `C'[dim, rows] = weight[dim, k] * input[rows, k]^T`, because a
+ * column-major [dim, rows] buffer read row-major is [rows, dim]. cuBLASLt's
+ * heuristic answers a row-major problem with TRANSB by picking a SIMT SGEMM
+ * (`magma_sgemmEx_kernel`, 69.5% of this stage's device time), and this asks
+ * it the transposed question instead: no layout attribute at all, TRANSA on
+ * the weight, and the output written straight into the caller's row-major
+ * buffer. */
+static int h3d_linear_lt_columns(h3d_context *context, void *output,
+                                 const void *input, const void *weight,
+                                 uint32_t rows, uint32_t input_dim,
+                                 uint32_t output_dim, cudaDataType_t type,
+                                 cublasComputeType_t compute, char *error,
+                                 size_t error_size) {
+    cublasLtMatmulDesc_t operation = NULL;
+    cublasLtMatrixLayout_t input_layout = NULL;
+    cublasLtMatrixLayout_t weight_layout = NULL;
+    cublasLtMatrixLayout_t output_layout = NULL;
+    cublasOperation_t transpose = CUBLAS_OP_T;
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    cublasStatus_t status = cublasLtMatmulDescCreate(&operation, compute,
+                                                     CUDA_R_32F);
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatmulDescSetAttribute(
+            operation, CUBLASLT_MATMUL_DESC_TRANSA, &transpose,
+            sizeof(transpose));
+    }
+    // The weight's rows are its output channels; transposed it is [dim, k].
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&weight_layout, type, input_dim,
+                                            output_dim, input_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&input_layout, type, input_dim,
+                                            rows, input_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&output_layout, type, output_dim,
+                                            rows, output_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatmul(context->blas, operation, &alpha, weight,
+                                weight_layout, input, input_layout, &beta,
+                                output, output_layout, output, output_layout,
+                                NULL, NULL, 0, context->stream);
+    }
+    if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
+    if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
+    if (input_layout) cublasLtMatrixLayoutDestroy(input_layout);
+    if (operation) cublasLtMatmulDescDestroy(operation);
+    return h3d_blas_ok(status, "cuBLASLt column linear", error, error_size);
+}
+
 /* `h3_linear_bias_kernel` (`:783-791`): the bias is added to the already
  * rounded output, then rounded again. Two roundings, as in the reference. */
 template <typename T>
@@ -7214,8 +7269,8 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *bias, uint32_t depth, uint32_t height,
                     uint32_t width, uint32_t input_channels,
                     uint32_t output_channels, uint32_t kernel, uint32_t tile,
-                    const h3d_tensor *scratch, uint32_t tf32, char *error,
-                    size_t error_size) {
+                    const h3d_tensor *scratch, uint32_t tf32,
+                    uint32_t orientation, char *error, size_t error_size) {
     if (!context || !depth || !height || !width || !input_channels ||
         !output_channels || !kernel || !tile) {
         return h3d_set_error(error, error_size, "invalid Conv3d shape");
@@ -7273,12 +7328,22 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
             break;
         }
         if (timed) cudaEventRecord(marks[1 + 2 * (size_t)step], context->stream);
-        if (!h3d_linear_lt_compute(
-                context, (char *)output->data + begin * output_channels * 4,
-                scratch->data, weight->data, (uint32_t)count, columns_per_row,
-                output_channels, CUDA_R_32F,
-                tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F, error,
-                error_size)) {
+        cublasComputeType_t compute =
+            tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+        int gemm = orientation
+            ? h3d_linear_lt_columns(context,
+                                    (char *)output->data +
+                                        begin * output_channels * 4,
+                                    scratch->data, weight->data, (uint32_t)count,
+                                    columns_per_row, output_channels, CUDA_R_32F,
+                                    compute, error, error_size)
+            : h3d_linear_lt_compute(
+                  context,
+                  (char *)output->data + begin * output_channels * 4,
+                  scratch->data, weight->data, (uint32_t)count,
+                  columns_per_row, output_channels, CUDA_R_32F, compute, error,
+                  error_size);
+        if (!gemm) {
             failed = 1;
             break;
         }

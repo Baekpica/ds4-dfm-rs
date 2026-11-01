@@ -1043,8 +1043,8 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *bias, uint32_t depth, uint32_t height,
                     uint32_t width, uint32_t input_channels,
                     uint32_t output_channels, uint32_t kernel, uint32_t tile,
-                    const h3d_tensor *scratch, uint32_t tf32, char *error,
-                    size_t error_size);
+                    const h3d_tensor *scratch, uint32_t tf32,
+                    uint32_t orientation, char *error, size_t error_size);
 
 /* Phase timing for `h3d_conv3d_gemm`, in seconds of device time: [im2col,
  * GEMM, bias]. `timing` turns the sampling on (and returns the previous
