@@ -8,6 +8,13 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Removes the built-in coding agent (`ds4-agent`, `ds4-agent-c`, the
+  `ds4-web` crate and their parity oracles). ds4 is a serving engine:
+  agents and tool frameworks connect over HTTP and own their tool loop.
+- DeepSeek V4 CLI and bench prompts encode on the host; the native bridge
+  drops twelve entries the Rust host no longer calls (tokenizer, stop/EOS,
+  C sampler, session position, model id, distributed worker).
+
 ## v0.1.5 — 2026-11-01
 
 [Release ledger](docs/releases/v0.1.5.md).

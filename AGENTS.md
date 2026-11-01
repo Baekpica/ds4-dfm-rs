@@ -1,7 +1,8 @@
 # Repository instructions
 
 `ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM.
-The default `ds4`, `ds4-server`, `ds4-bench`, and `ds4-agent` are Rust hosts.
+The default `ds4`, `ds4-server` and `ds4-bench` are Rust hosts; ds4 is a
+serving engine, and agents or frameworks connect over HTTP.
 CUDA/MMQ/VMM and hardware-specific kernels remain native. C executables
 with `-c` suffixes are deprecated: they keep the C sampler and the old
 sampling policy and no longer track the Rust hosts.
@@ -28,6 +29,7 @@ name them too.
 | Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
 | Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
+| C sources, the native bridge or host logic still in C | [Architecture](docs/rust-migration/ARCHITECTURE.md), [FFI contract](docs/rust-migration/FFI_CONTRACT.md), [C continuation](docs/rust-migration/C_CONTINUATION.md): move host logic to Rust; never extend deprecated C |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
@@ -505,15 +507,15 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## Layout
 
-- `crates/ds4-cli`: production CLI, benchmark and coding agent.
+- `crates/ds4-cli`: production CLI and benchmark.
 - `crates/ds4-server`: HTTP, admission, scheduling, streaming and tools.
 - `crates/ds4-core`: model/session ownership, host catalog and tokenizer.
-- `crates/ds4-kv`, `ds4-dist`, `ds4-web`: KV policy, distributed runtime and web helpers.
+- `crates/ds4-kv`, `ds4-dist`: KV policy and distributed runtime.
 - `crates/ds4-sys` + `native/bridge`: narrow native inference boundary.
 - `crates/ds4-perf`: standalone inspect/scout/compare/optimize workflow.
 - `crates/ds4-perf-gpu`: optional profiling-only CUDA calibration/CUPTI helper.
 - `ds4.c`: native engine, GPU state/execution and retained compatibility helpers.
-- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_agent.c`: C host oracles.
+- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`: deprecated C host oracles.
 - `ds4_ling3vl_*.inc` / `ds4_ling3vl_gpu.cuh`: Ling-3.0-flash-VL graph,
   bank runtime, image spans and vision tower. Its KDA, latent-attention and
   routed-MoE stages reuse the Solar/GLM, Motif and Step primitives; only the

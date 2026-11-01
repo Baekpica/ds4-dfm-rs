@@ -80,6 +80,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Repository instructions](../AGENTS.md) | Shared development and agent rules |
 | [Architecture](rust-migration/ARCHITECTURE.md) | Rust/native ownership, crates and source layout |
 | [FFI contract](rust-migration/FFI_CONTRACT.md) | Opaque inference boundary |
+| [C continuation](rust-migration/C_CONTINUATION.md) | Remaining C: native by necessity, deprecated, gaps Rust takes next |
 | [ds4-perf](ds4-perf.md) | Inspect, scout, compare, optimize and serving workloads |
 | [Optimization playbook](prefill-decode-optimization-playbook.md) | Execution-path diagnosis and numerical proof |
 | [Speed benchmarks](../speed-bench/README.md) | Manual sweep CSVs and plotting |

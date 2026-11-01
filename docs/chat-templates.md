@@ -63,7 +63,8 @@ template; the verified sidecar takes precedence.
 
 **DeepSeek V4 is an encoder exception.** Its pinned official tree provides
 [`encoding_dsv4.py`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/60d8d70770c6776ff598c94bb586a859a38244f1/encoding/encoding_dsv4.py),
-not an official Jinja. The existing native encoder remains available, and the
+not an official Jinja. The host encodes it with a Rust port of the native
+encoder, checked against `ds4.c` by the tokenizer oracle; the
 historical embedded Jinja is not selected automatically. No replacement Jinja
 was invented or downloaded from a different family.
 
@@ -109,9 +110,8 @@ the complete rendered token sequence; a matching text prefix alone is not
 sufficient. Changed prefixes are refilled. Invalid tool output is discarded
 before a non-streaming correction retry re-renders the valid conversation.
 
-The built-in `ds4-agent` executor implements DeepSeek DSML and rejects other
-families before loading weights. Use HTTP tool clients for their supported
-output protocols. The retained imperative renderers serve the DeepSeek
+Tool loops run in HTTP clients for each family's output protocol; the
+server frames calls and never executes them. The retained imperative renderers serve the DeepSeek
 exception and C parity fixtures, not the production Jinja path.
 
 ## Verification

@@ -64,7 +64,7 @@ terminal:
 
 ```sh
 make CUDA=1 CUDA_ARCH=sm_121a -j1 \
-  ds4 ds4-server ds4-bench ds4-agent ds4_weight_server
+  ds4 ds4-server ds4-bench ds4_weight_server
 mkdir -p /tmp/ds4-glm53
 python3 tools/host_memory_guard.py --max-gib 104 --high-gib 100 \
   --reserve-gib 12 --trip-gib 8 --timeout 0 \

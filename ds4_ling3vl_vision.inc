@@ -1,9 +1,9 @@
 /* Ling-3.0-flash-VL image spans: M-RoPE coordinates and projected rows.
  *
- * Rust owns decoding, bounds and placeholder markup; this boundary
- * independently re-checks the span geometry before any device write, because
- * a wrong span silently corrupts both the embedding rows and every later
- * position. */
+ * Rust owns bounds and placeholder markup; this file still decodes the image
+ * (stb_image). This boundary independently re-checks the span geometry
+ * before any device write, because a wrong span silently corrupts both the
+ * embedding rows and every later position. */
 
 #include "ds4_ling3vl_rope.h"
 

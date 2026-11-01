@@ -16,8 +16,6 @@
 
 struct ds4_bridge_model {
     ds4_engine *engine;
-    ds4_dist_options distributed;
-    int distributed_set;
 };
 
 struct ds4_bridge_session {
@@ -84,73 +82,6 @@ int ds4_bridge_bind_plan_check(const ds4_bridge_bind_plan *plan,
             set_err(err, errlen, "bad-ndim");
             return 1;
         }
-    }
-    return 0;
-}
-
-int ds4_bridge_bind_plan_match(const ds4_bridge_bind_plan *host,
-                               const ds4_bridge_bind_plan *native,
-                               char *err, size_t errlen)
-{
-    uint32_t i, d;
-
-    if (!host || !native) {
-        set_err(err, errlen, "plan-null");
-        return 1;
-    }
-    if (host->n_slots != native->n_slots) {
-        set_err(err, errlen, "count-mismatch");
-        return 1;
-    }
-    for (i = 0; i < host->n_slots; i++) {
-        const ds4_bridge_bind_slot *h = &host->slots[i];
-        const ds4_bridge_bind_slot *n = &native->slots[i];
-        if (!h->name || !n->name || strcmp(h->name, n->name) != 0) {
-            set_err(err, errlen, "name-mismatch");
-            return 1;
-        }
-        if (h->required != n->required) {
-            set_err(err, errlen, "need-mismatch");
-            return 1;
-        }
-        if (h->found != n->found) {
-            set_err(err, errlen, "found-mismatch");
-            return 1;
-        }
-        if (!h->found) continue;
-        if (h->type != n->type) {
-            set_err(err, errlen, "type-mismatch");
-            return 1;
-        }
-        if (h->ndim != n->ndim) {
-            set_err(err, errlen, "dim-mismatch");
-            return 1;
-        }
-        for (d = 0; d < h->ndim && d < DS4_BRIDGE_MAX_DIMS; d++) {
-            if (h->dim[d] != n->dim[d]) {
-                set_err(err, errlen, "dim-mismatch");
-                return 1;
-            }
-        }
-        if (h->rel_offset != n->rel_offset || h->abs_offset != n->abs_offset) {
-            set_err(err, errlen, "offset-mismatch");
-            return 1;
-        }
-        if (h->bytes != n->bytes) {
-            set_err(err, errlen, "bytes-mismatch");
-            return 1;
-        }
-        if (h->shard != n->shard) {
-            set_err(err, errlen, "shard-mismatch");
-            return 1;
-        }
-    }
-    if (host->n_shards != native->n_shards ||
-        host->data_pos != native->data_pos ||
-        host->alignment != native->alignment ||
-        host->page != native->page) {
-        set_err(err, errlen, "data-mismatch");
-        return 1;
     }
     return 0;
 }
@@ -276,10 +207,6 @@ static int model_open_impl(ds4_bridge_model **out,
         return 1;
     }
     m->engine = engine;
-    if (distributed) {
-        m->distributed = dist;
-        m->distributed_set = 1;
-    }
     *out = m;
     return 0;
 }
@@ -298,34 +225,6 @@ int ds4_bridge_model_open_distributed(
         char *err, size_t errlen)
 {
     return model_open_impl(out, opt, distributed, err, errlen);
-}
-
-int ds4_bridge_model_run_distributed_worker(ds4_bridge_model *m,
-                                            int32_t ctx_size,
-                                            char *err, size_t errlen)
-{
-    ds4_dist_generation_options gen;
-    int rc;
-    if (!m || !m->engine) {
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    if (!m->distributed_set ||
-        m->distributed.role != DS4_DISTRIBUTED_WORKER) {
-        set_err(err, errlen, "model is not a distributed worker");
-        return 1;
-    }
-    if (ctx_size <= 0) {
-        set_err(err, errlen, "ctx_size must be positive");
-        return 1;
-    }
-    memset(&gen, 0, sizeof(gen));
-    gen.ctx_size = ctx_size;
-    rc = ds4_dist_run(m->engine, &m->distributed, &gen);
-    if (rc != 0) {
-        set_err(err, errlen, "distributed worker stopped with an error");
-    }
-    return rc;
 }
 
 int ds4_bridge_drafter_shared(ds4_bridge_model *m)
@@ -1146,12 +1045,6 @@ int ds4_bridge_session_argmax(ds4_bridge_session *s)
     return ds4_session_argmax_excluding(s->session, (int)excluded_id);
 }
 
-int ds4_bridge_session_pos(ds4_bridge_session *s)
-{
-    if (!s || !s->session) return -1;
-    return ds4_session_pos(s->session);
-}
-
 int ds4_bridge_session_ctx(ds4_bridge_session *s)
 {
     if (!s || !s->session) return -1;
@@ -1214,14 +1107,6 @@ int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
         return -1;
     }
     return ds4_session_distributed_route_ready(s->session, err, errlen);
-}
-
-int ds4_bridge_session_sample(ds4_bridge_session *s,
-                              float temperature, int top_k, float top_p, float min_p,
-                              uint64_t *rng)
-{
-    if (!s || !s->session) return -1;
-    return ds4_session_sample(s->session, temperature, top_k, top_p, min_p, rng);
 }
 
 void ds4_bridge_set_host_sampler(ds4_bridge_host_sample_fn fn)
@@ -1507,130 +1392,6 @@ int ds4_bridge_session_load_snapshot(ds4_bridge_session *s,
     return ds4_session_load_snapshot(s->session, &snap->snapshot, err, errlen);
 }
 
-static int copy_tokens(ds4_tokens *tv, int32_t *out, int cap, int *n_out,
-                       char *err, size_t errlen)
-{
-    if (!n_out) {
-        ds4_tokens_free(tv);
-        set_err(err, errlen, "n_out is NULL");
-        return 1;
-    }
-    *n_out = tv->len;
-    if (tv->len > cap) {
-        ds4_tokens_free(tv);
-        set_err(err, errlen, "token buffer too small");
-        return 1;
-    }
-    if (tv->len > 0 && !out) {
-        ds4_tokens_free(tv);
-        set_err(err, errlen, "tokens is NULL");
-        return 1;
-    }
-    if (tv->len > 0) {
-        memcpy(out, tv->v, (size_t)tv->len * sizeof(int32_t));
-    }
-    ds4_tokens_free(tv);
-    return 0;
-}
-
-int ds4_bridge_tokenize_text(ds4_bridge_model *m, const char *text,
-                             int32_t *out, int cap, int *n_out,
-                             char *err, size_t errlen)
-{
-    ds4_tokens tv;
-
-    if (!m || !m->engine) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    if (cap < 0) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "cap is negative");
-        return 1;
-    }
-    memset(&tv, 0, sizeof(tv));
-    ds4_tokenize_text(m->engine, text ? text : "", &tv);
-    return copy_tokens(&tv, out, cap, n_out, err, errlen);
-}
-
-int ds4_bridge_tokenize_rendered_chat(ds4_bridge_model *m, const char *text,
-                                      int32_t *out, int cap, int *n_out,
-                                      char *err, size_t errlen)
-{
-    ds4_tokens tv;
-
-    if (!m || !m->engine) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    if (cap < 0) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "cap is negative");
-        return 1;
-    }
-    memset(&tv, 0, sizeof(tv));
-    ds4_tokenize_rendered_chat(m->engine, text ? text : "", &tv);
-    return copy_tokens(&tv, out, cap, n_out, err, errlen);
-}
-
-int ds4_bridge_token_text(ds4_bridge_model *m, int32_t token,
-                          char *out, size_t cap, size_t *n_out,
-                          char *err, size_t errlen)
-{
-    size_t len = 0;
-    char *piece;
-
-    if (!m || !m->engine) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    piece = ds4_token_text(m->engine, (int)token, &len);
-    if (!piece) {
-        if (n_out) *n_out = 0;
-        if (out && cap > 0) out[0] = '\0';
-        return 0;
-    }
-    if (n_out) *n_out = len;
-    if (len >= cap) {
-        free(piece);
-        set_err(err, errlen, "token text buffer too small");
-        return 1;
-    }
-    if (out) {
-        memcpy(out, piece, len);
-        out[len] = '\0';
-    }
-    free(piece);
-    return 0;
-}
-
-int ds4_bridge_token_eos(ds4_bridge_model *m)
-{
-    if (!m || !m->engine) return -1;
-    return ds4_token_eos(m->engine);
-}
-
-int ds4_bridge_token_is_stop(ds4_bridge_model *m, int32_t token)
-{
-    if (!m || !m->engine) return 0;
-    return ds4_token_is_stop(m->engine, (int)token) ? 1 : 0;
-}
-
-int ds4_bridge_model_id(ds4_bridge_model *m)
-{
-    if (!m || !m->engine) return -1;
-    return ds4_engine_model_id(m->engine);
-}
-
-int ds4_bridge_model_routed_quant_bits(ds4_bridge_model *m)
-{
-    if (!m || !m->engine) return 0;
-    return ds4_engine_routed_quant_bits(m->engine);
-}
-
 int ds4_bridge_session_graph_fit_quote(ds4_bridge_model *m, int ctx_size,
                                        ds4_bridge_graph_fit_quote *q)
 {
@@ -1648,34 +1409,6 @@ int ds4_bridge_session_graph_fit_quote(ds4_bridge_model *m, int ctx_size,
     q->avail_bytes = native.avail_bytes;
     q->deficit_bytes = native.deficit_bytes;
     return fits;
-}
-
-int ds4_bridge_encode_chat_prompt(ds4_bridge_model *m, const char *system,
-                                  const char *prompt, int think_mode,
-                                  int32_t *out, int cap, int *n_out,
-                                  char *err, size_t errlen)
-{
-    ds4_tokens tv;
-
-    if (!m || !m->engine) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "model is NULL");
-        return 1;
-    }
-    if (think_mode < DS4_THINK_NONE || think_mode > DS4_THINK_MAX) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "think_mode out of range");
-        return 1;
-    }
-    if (cap < 0) {
-        if (n_out) *n_out = 0;
-        set_err(err, errlen, "cap is negative");
-        return 1;
-    }
-    memset(&tv, 0, sizeof(tv));
-    ds4_encode_chat_prompt(m->engine, system, prompt ? prompt : "",
-                           (ds4_think_mode)think_mode, &tv);
-    return copy_tokens(&tv, out, cap, n_out, err, errlen);
 }
 
 int ds4_bridge_session_top_logprobs(ds4_bridge_session *s,

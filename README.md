@@ -1,8 +1,8 @@
 # DwarfStar / ds4-dfm-rs
 
 **DwarfStar** (`ds4`) runs a deliberately limited set of large open-weight
-models on local machines. Model loading, chat templates, tool calls, KV reuse,
-the HTTP server and the coding agent are built and tested together.
+models on local machines. Model loading, chat templates, tool calls, KV reuse
+and the HTTP server are built and tested together.
 
 `ds4-dfm-rs` is the independent Rust-host continuation of
 [`Baekpica/ds4`](https://github.com/Baekpica/ds4). Rust owns the host and serving
@@ -18,7 +18,8 @@ is the 128 GB NVIDIA DGX Spark / GB10. Support is specific to the
 <a id="so-what-can-i-do-with-this-software"></a>
 
 - Serve OpenAI Chat, Completions and Responses, or Anthropic Messages.
-- Run the CLI and built-in DeepSeek DSML coding agent.
+- Connect agents and tool frameworks over those APIs; the server frames tool
+  calls and never executes them.
 - Use official [chat templates](docs/chat-templates.md), tool history and REPL turns.
 - Keep conversations through persistent banks, prefix reuse and disk checkpoints
   where the model's state contract supports them.
@@ -100,8 +101,8 @@ make cuda-spark
 | `make` on macOS | Inherited Metal backend |
 | `make cpu` | CPU reference and diagnostics |
 
-Production binaries are `ds4`, `ds4-server`, `ds4-bench` and `ds4-agent`, all
-Rust hosts. The `*-c` binaries and `ds4-eval` remain C behavior oracles.
+Production binaries are `ds4`, `ds4-server` and `ds4-bench`, all Rust hosts.
+The `*-c` binaries and `ds4-eval` remain C behavior oracles.
 The old `*-rs` names are compatibility aliases.
 
 ### Run and verify
@@ -244,8 +245,8 @@ for CLI, HTTP, cache and distributed contracts.
 ## Architecture
 
 ```text
-CLI / HTTP / agent → ds4-core → ds4-sys → native CUDA / MMQ / VMM
-                    Rust host policy      native compute and GPU state
+CLI / HTTP → ds4-core → ds4-sys → native CUDA / MMQ / VMM
+            Rust host policy      native compute and GPU state
 ```
 
 Rust owns catalog validation, rendering, admission, scheduling, model/session

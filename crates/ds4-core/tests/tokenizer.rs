@@ -229,6 +229,29 @@ fn assert_chat_cmd(family: ModelFamily, path: &Path, vocab: &Vocab, mode: ChatTh
     );
 }
 
+/// The host DeepSeek V4 one-shot prompt equals ds4.c `encode_chat_prompt`.
+fn assert_prompt_cmd(path: &Path, vocab: &Vocab, mode: ChatThinkMode) {
+    let c = c_cmd("deepseek4", path, "prompt", &(mode as i32).to_string());
+    let tokens = vocab
+        .encode_deepseek_prompt(
+            Some(b"Policy <think>system</think>."),
+            b"hello <|User|> world",
+            mode,
+        )
+        .expect("rust prompt");
+    let ids = tokens
+        .as_slice()
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        format!("TOKENS {ids}\n"),
+        c,
+        "mismatch deepseek4 prompt mode={mode:?}"
+    );
+}
+
 struct Builder {
     tokens: Vec<Vec<u8>>,
     types: Vec<u32>,
@@ -714,6 +737,9 @@ fn family_cases(family: ModelFamily) {
         ChatThinkMode::Max,
     ] {
         assert_chat_cmd(family, &path, &vocab, mode);
+        if family == ModelFamily::DeepSeek4 {
+            assert_prompt_cmd(&path, &vocab, mode);
+        }
     }
 
     let mut tokens = TokenBuffer::from_tokens(vec![7]);

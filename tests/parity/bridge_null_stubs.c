@@ -19,7 +19,6 @@
 unsigned bridge_payload_load_calls;
 int64_t bridge_payload_load_offset;
 uint64_t bridge_payload_load_bytes;
-int bridge_routed_quant_bits;
 unsigned bridge_boot_prewarm_calls;
 int bridge_drafter_shared;
 int bridge_sync_rc;
@@ -45,12 +44,8 @@ int bridge_cont_run;
 ds4_cont_seq_stats bridge_cont_stats;
 int bridge_dist_open_enabled;
 int bridge_dist_prepare_calls;
-int bridge_dist_run_calls;
-int bridge_dist_run_ctx;
-int bridge_dist_run_result;
 int bridge_dist_route_ready;
 ds4_engine_options bridge_dist_engine_options;
-ds4_dist_options bridge_dist_run_options;
 
 static ds4_session_progress_fn bridge_progress;
 static void *bridge_progress_ud;
@@ -95,10 +90,6 @@ bool ds4_engine_drafter_shared(ds4_engine *e) {
     return e && bridge_drafter_shared;
 }
 int ds4_engine_model_id(ds4_engine *e) { (void)e; STUB("ds4_engine_model_id"); }
-int ds4_engine_routed_quant_bits(ds4_engine *e) {
-    if (!e) STUB("ds4_engine_routed_quant_bits");
-    return bridge_routed_quant_bits;
-}
 int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
                                        ds4_session_graph_fit_quote *q) {
     (void)e; (void)ctx_size; (void)q;
@@ -372,7 +363,6 @@ int ds4_session_argmax(ds4_session *s) { (void)s; STUB("ds4_session_argmax"); }
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id) {
     (void)s; (void)excluded_id; STUB("ds4_session_argmax_excluding");
 }
-int ds4_session_pos(ds4_session *s) { (void)s; STUB("ds4_session_pos"); }
 int ds4_session_ctx(ds4_session *s) { (void)s; STUB("ds4_session_ctx"); }
 int ds4_session_graph_pending(const ds4_session *s) {
     (void)s; STUB("ds4_session_graph_pending");
@@ -395,11 +385,6 @@ int ds4_session_distributed_route_ready(ds4_session *s, char *err, size_t errlen
         STUB("ds4_session_distributed_route_ready");
     }
     return bridge_dist_route_ready;
-}
-int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p,
-                       float min_p, uint64_t *rng) {
-    (void)s; (void)temperature; (void)top_k; (void)top_p; (void)min_p; (void)rng;
-    STUB("ds4_session_sample");
 }
 void ds4_set_host_sampler(ds4_host_sample_fn fn) {
     (void)fn;
@@ -454,14 +439,6 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap,
     STUB("ds4_session_load_snapshot");
 }
 void ds4_session_snapshot_free(ds4_session_snapshot *snap) { (void)snap; }
-void ds4_tokenize_text(ds4_engine *e, const char *text, ds4_tokens *out) {
-    (void)e; (void)text; (void)out; STUB("ds4_tokenize_text");
-}
-void ds4_encode_chat_prompt(ds4_engine *e, const char *system, const char *prompt,
-                            ds4_think_mode think_mode, ds4_tokens *out) {
-    (void)e; (void)system; (void)prompt; (void)think_mode; (void)out;
-    STUB("ds4_encode_chat_prompt");
-}
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
     (void)s; (void)out; (void)k; STUB("ds4_session_top_logprobs");
 }
@@ -472,17 +449,6 @@ int ds4_session_output_head_bench(ds4_session *s, int iters, FILE *fp,
                                   char *err, size_t errlen) {
     (void)s; (void)iters; (void)fp; (void)err; (void)errlen;
     STUB("ds4_session_output_head_bench");
-}
-void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out) {
-    (void)e; (void)text; (void)out; STUB("ds4_tokenize_rendered_chat");
-}
-void ds4_tokens_free(ds4_tokens *tv) { (void)tv; STUB("ds4_tokens_free"); }
-char *ds4_token_text(ds4_engine *e, int token, size_t *len) {
-    (void)e; (void)token; (void)len; STUB("ds4_token_text");
-}
-int ds4_token_eos(ds4_engine *e) { (void)e; STUB("ds4_token_eos"); }
-bool ds4_token_is_stop(ds4_engine *e, int token) {
-    (void)e; (void)token; STUB("ds4_token_is_stop");
 }
 
 int ds4_batch_ctx_create_fit(ds4_engine *e, int ctx_size, int max_seq,
@@ -677,17 +643,6 @@ int ds4_dist_prepare_engine_options(const ds4_dist_options *opt,
                               opt->role == DS4_DISTRIBUTED_COORDINATOR;
     }
     return 0;
-}
-
-int ds4_dist_run(ds4_engine *engine, const ds4_dist_options *opt,
-                 const ds4_dist_generation_options *gen) {
-    if (!engine || !opt || !gen) {
-        STUB("ds4_dist_run");
-    }
-    bridge_dist_run_calls++;
-    bridge_dist_run_options = *opt;
-    bridge_dist_run_ctx = gen->ctx_size;
-    return bridge_dist_run_result;
 }
 
 /* ---- V4.1 (ds41) run surface (ds41_forward.h) -----------------------------
