@@ -74,28 +74,23 @@ pub fn qwen_image_pixel_hash(data: &[u8]) -> Result<u64> {
     Ok(vit_image::pixel_hash(&rgb))
 }
 
-/// Rows for native, packed at admission so a queued request holds only its
-/// bytes. All images go back to back in one buffer, which native reads in
-/// place. None hands the bytes to native, whose decode then reports the
-/// failure or the geometry change on the request.
-fn pack_qwen(images: &[QwenImageInput]) -> Option<Vec<f32>> {
-    let dim = vit_image::row_values(Tower::Qwen);
-    let plans = images
-        .iter()
-        .map(|image| {
-            let plan = vit_image::probe(Tower::Qwen, &image.data).ok()?;
-            ((plan.grid_h, plan.grid_w) == (image.grid_h, image.grid_w)).then_some(plan)
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let rows: usize = plans.iter().map(|p| (p.grid_h * p.grid_w) as usize).sum();
-    let mut out = vec![0f32; rows * dim];
-    let mut rest = &mut out[..];
-    for (image, plan) in images.iter().zip(&plans) {
-        let (head, tail) = rest.split_at_mut((plan.grid_h * plan.grid_w) as usize * dim);
-        vit_image::pack_into(Tower::Qwen, &image.data, plan, head).ok()?;
-        rest = tail;
-    }
-    Some(out)
+/// Native's call, past the request's admission and memory check, to decode,
+/// resize and pack one image into the rows it allocated (it frees them after
+/// upload). Nonzero fails the request.
+unsafe extern "C" fn tramp_pack_qwen(ud: *mut c_void, out: *mut f32, values: u64) -> c_int {
+    let image = &*(ud as *const QwenImageInput);
+    let Ok(len) = usize::try_from(values) else {
+        return 1;
+    };
+    let out = std::slice::from_raw_parts_mut(out, len);
+    let packed = catch_unwind(AssertUnwindSafe(|| {
+        let plan = vit_image::probe(Tower::Qwen, &image.data).ok()?;
+        if (plan.grid_h, plan.grid_w) != (image.grid_h, image.grid_w) {
+            return None;
+        }
+        vit_image::pack_into(Tower::Qwen, &image.data, &plan, out).ok()
+    }));
+    i32::from(!matches!(packed, Ok(Some(()))))
 }
 
 /// One admission. `tokens` moves into the batch context and stays alive
@@ -186,7 +181,6 @@ pub trait ContDriver {
 struct LiveAdmit {
     tokens: Vec<i32>,
     images: Vec<QwenImageInput>,
-    patches: Option<Vec<f32>>,
 }
 
 struct TrampCtx<'a> {
@@ -207,29 +201,21 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     let entry = t.live.entry(user).or_insert_with(|| LiveAdmit {
         tokens: Vec::new(),
         images: Vec::new(),
-        patches: None,
     });
     entry.tokens = a.tokens;
     entry.images = a.images;
-    entry.patches = pack_qwen(&entry.images);
     let r = &mut *req;
     r.tokens = entry.tokens.as_ptr();
     r.n = entry.tokens.len() as i32;
-    let dim = vit_image::row_values(Tower::Qwen);
-    let mut row = 0usize;
     for (dst, image) in r.images.iter_mut().zip(&entry.images) {
-        let at = row * dim;
-        row += (image.grid_h * image.grid_w) as usize;
         *dst = ds4_bridge_qwen_image_input {
             data: image.data.as_ptr(),
             data_len: image.data.len(),
             token_offset: image.token_offset,
             grid_h: image.grid_h,
             grid_w: image.grid_w,
-            patches: entry
-                .patches
-                .as_ref()
-                .map_or(std::ptr::null(), |rows| rows[at..].as_ptr()),
+            pack: Some(tramp_pack_qwen),
+            pack_ud: image as *const QwenImageInput as *mut c_void,
         };
     }
     r.image_count = entry.images.len() as u32;
@@ -723,6 +709,8 @@ mod tests {
         static STATIC_INPUT: RefCell<Vec<(Vec<i32>, i32, i32)>> = const { RefCell::new(Vec::new()) };
         static STATIC_OUTPUT_CAP: Cell<i32> = const { Cell::new(0) };
         static CONT_INPUT: RefCell<Option<(Vec<i32>, Vec<u8>, u32, u32, u32)>> = const { RefCell::new(None) };
+        /// The first image's pack result: return code and the rows it wrote.
+        static CONT_PACKED: RefCell<Option<(c_int, Vec<f32>)>> = const { RefCell::new(None) };
     }
 
     #[no_mangle]
@@ -789,6 +777,14 @@ mod tests {
                     *input.borrow_mut() =
                         Some((tokens, data, image.token_offset, image.grid_h, image.grid_w));
                 });
+                // Native packs during admission, into rows it owns.
+                let packed = image.pack.map(|pack| {
+                    let rows = (image.grid_h * image.grid_w) as usize;
+                    let mut out = vec![f32::NAN; rows * 1536];
+                    let rc = pack(image.pack_ud, out.as_mut_ptr(), out.len() as u64);
+                    (rc, out)
+                });
+                CONT_PACKED.with(|p| *p.borrow_mut() = packed);
             }
             if let Some(on_admitted) = req.on_admitted {
                 on_admitted(ud, req.user, req.n_cached, req.n - req.n_cached, 0);
@@ -960,6 +956,47 @@ mod tests {
             CONT_INPUT.with(|input| input.borrow().clone()).unwrap(),
             (vec![10, 20], vec![1, 2, 3], 11, 32, 16)
         );
+    }
+
+    /// Native asks for the rows after admission and gets exactly what
+    /// `vit_image::pack` makes; a payload that does not decode fails.
+    #[test]
+    fn continuous_admit_packs_qwen_rows_on_request() {
+        struct Driver(Option<ContAdmit>);
+        impl ContDriver for Driver {
+            fn admit(&mut self) -> Option<ContAdmit> {
+                self.0.take()
+            }
+            fn on_token(&mut self, _user: usize, _token: i32) -> bool {
+                true
+            }
+            fn on_done(&mut self, _user: usize, _tokens: &[i32], _finish: i32, _stats: ContDone) {}
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/qwen-images/small.png"
+        );
+        let data = std::fs::read(path).unwrap();
+        let plan = vit_image::probe(Tower::Qwen, &data).unwrap();
+        let want = vit_image::pack(Tower::Qwen, &data, &plan).unwrap();
+        for (bytes, ok) in [(data.clone(), true), (vec![1, 2, 3], false)] {
+            let mut admit = ContAdmit::cold(7, vec![10, 20], 1);
+            admit.images.push(QwenImageInput {
+                data: bytes.into(),
+                token_offset: 11,
+                grid_h: plan.grid_h,
+                grid_w: plan.grid_w,
+            });
+            CONT_PACKED.with(|p| *p.borrow_mut() = None);
+            fake_batch()
+                .continuous_generate(&mut Driver(Some(admit)))
+                .unwrap();
+            let (rc, rows) = CONT_PACKED.with(|p| p.borrow_mut().take()).unwrap();
+            assert_eq!(rc == 0, ok);
+            if ok {
+                assert_eq!(rows, want);
+            }
+        }
     }
 
     #[test]

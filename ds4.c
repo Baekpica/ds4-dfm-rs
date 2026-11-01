@@ -27155,8 +27155,6 @@ typedef struct {
     int32_t *width_positions;
     int32_t *segment_start;
     int32_t *segment_end;
-    /* Host-packed contiguous images: patches borrow the host's rows. */
-    bool patches_borrowed;
 } ds4_qwen_vision_host;
 
 static void qwen4exp_vision_host_free(ds4_qwen_vision_host *h) {
@@ -27167,7 +27165,7 @@ static void qwen4exp_vision_host_free(ds4_qwen_vision_host *h) {
     free(h->height_positions);
     free(h->position_weights);
     free(h->position_indices);
-    if (!h->patches_borrowed) free(h->patches);
+    free(h->patches);
     memset(h, 0, sizeof(*h));
 }
 
@@ -27179,8 +27177,8 @@ static bool qwen4exp_vision_host_prepare(
     ds4_qwen_image_info info[4];
     uint64_t patch_rows = 0u, feature_rows = 0u;
     for (uint32_t i = 0; i < image_count; i++) {
-        if (images[i].patches) {
-            /* A Rust host probed and packed it at admission. */
+        if (images[i].pack) {
+            /* A Rust host probed it; it packs the rows below. */
             const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
             if (!gh || !gw || (gh & 1u) || (gw & 1u)) return false;
             info[i] = (ds4_qwen_image_info){.grid_h = gh, .grid_w = gw,
@@ -27206,16 +27204,8 @@ static bool qwen4exp_vision_host_prepare(
     }
     host->patch_rows = (uint32_t)patch_rows;
     host->feature_rows = (uint32_t)feature_rows;
-    /* A Rust host packs a request's images back to back: read them in place. */
-    host->patches_borrowed = images[0].patches != NULL;
-    for (uint32_t i = 0, row = 0; i < image_count; i++) {
-        if (images[i].patches != images[0].patches + (size_t)row * DS4_QWEN_VISION_PATCH_DIM)
-            host->patches_borrowed = false;
-        row += info[i].grid_h * info[i].grid_w;
-    }
-    host->patches = host->patches_borrowed
-        ? (float *)images[0].patches
-        : xmalloc((size_t)patch_rows * DS4_QWEN_VISION_PATCH_DIM * sizeof(float));
+    host->patches = xmalloc((size_t)patch_rows *
+                            DS4_QWEN_VISION_PATCH_DIM * sizeof(float));
     host->position_indices = xmalloc((size_t)patch_rows * 4u * sizeof(int32_t));
     host->position_weights = xmalloc((size_t)patch_rows * 4u * sizeof(float));
     host->height_positions = xmalloc((size_t)patch_rows * sizeof(int32_t));
@@ -27225,7 +27215,17 @@ static bool qwen4exp_vision_host_prepare(
 
     uint32_t patch_base = 0u;
     for (uint32_t image_i = 0; image_i < image_count; image_i++) {
-        const float *packed = images[image_i].patches;
+        const bool packed = images[image_i].pack != NULL;
+        const uint64_t values = (uint64_t)info[image_i].grid_h * info[image_i].grid_w *
+                                DS4_QWEN_VISION_PATCH_DIM;
+        /* The host decodes into these rows only now, past admission and the
+         * memory check; they go with the rest of host after upload. */
+        if (packed && images[image_i].pack(images[image_i].pack_ud,
+                host->patches + (size_t)patch_base * DS4_QWEN_VISION_PATCH_DIM, values) != 0) {
+            if (error && error_size) snprintf(error, error_size, "PNG/JPEG decode failed");
+            qwen4exp_vision_host_free(host);
+            return false;
+        }
         uint8_t *resized = NULL;
         if (!packed) {
             int width = 0, height = 0, channels = 0;
@@ -27264,11 +27264,7 @@ static bool qwen4exp_vision_host_prepare(
                         const uint32_t row = patch_base + local++;
                         float *dst = host->patches +
                             (size_t)row * DS4_QWEN_VISION_PATCH_DIM;
-                        if (packed) {
-                            if (!host->patches_borrowed)
-                                memcpy(dst, packed + (size_t)(local - 1u) * DS4_QWEN_VISION_PATCH_DIM,
-                                       DS4_QWEN_VISION_PATCH_DIM * sizeof(float));
-                        } else for (uint32_t c = 0; c < 3u; c++) {
+                        if (!packed) for (uint32_t c = 0; c < 3u; c++) {
                             for (uint32_t temporal = 0; temporal < 2u; temporal++) {
                                 (void)temporal;
                                 for (uint32_t py = 0; py < 16u; py++) {

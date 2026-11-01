@@ -1960,7 +1960,8 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
         req->images[i].token_offset = br.images[i].token_offset;
         req->images[i].grid_h = br.images[i].grid_h;
         req->images[i].grid_w = br.images[i].grid_w;
-        req->images[i].patches = br.images[i].patches;
+        req->images[i].pack = br.images[i].pack;
+        req->images[i].pack_ud = br.images[i].pack_ud;
     }
     req->image_count = br.image_count;
     req->max_new = br.max_new;

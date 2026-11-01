@@ -286,7 +286,7 @@ pub fn pixel_hash(rgb: &Rgb) -> u64 {
 }
 
 /// Values in one patch row: channels x frames x patch area.
-pub fn row_values(tower: Tower) -> usize {
+fn row_values(tower: Tower) -> usize {
     let (patch, frames) = match tower {
         Tower::Qwen => (VIT_PATCH, 2),
         Tower::Ling => (VIT_PATCH, 1),

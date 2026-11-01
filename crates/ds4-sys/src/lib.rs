@@ -292,7 +292,9 @@ pub struct ds4_bridge_qwen_image_input {
     pub token_offset: u32,
     pub grid_h: u32,
     pub grid_w: u32,
-    pub patches: *const f32,
+    /// Host packer, called once native admitted the request; data unused.
+    pub pack: Option<unsafe extern "C" fn(*mut c_void, *mut f32, u64) -> c_int>,
+    pub pack_ud: *mut c_void,
 }
 
 #[repr(C)]

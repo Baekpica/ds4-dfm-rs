@@ -42,7 +42,7 @@ No features or fixes; frozen until removed. Rust hosts do not reach them.
 | `ds4.c` C sampler body | `ds4-core::sample` | C hosts, `ds4-eval`; Rust registers the host sampler at open |
 | `ds4.c` family stop table (`vocab_token_is_generation_stop`) | `Vocab::is_stop`, passed at open | C hosts |
 | `ds4.c` sidecar `parse_tensors`, the `DS4_DSPARK_MODEL` fallback, the MiMo VQ audio-path rule | `ds4-core` sidecar inventories, passed at open | C hosts |
-| `ds4.c` Qwen/Ling/GLM image probes, stb_image decode, resize and patch packing, the Qwen pixel hash | `ds4-core::vit_image` (JPEG through libjpeg-turbo as PIL decodes it; native reads the packed rows in place and adds the tower's positions) | C hosts, `tests/vit_image_ref` |
+| `ds4.c` Qwen/Ling/GLM image probes, stb_image decode, resize and patch packing, the Qwen pixel hash | `ds4-core::vit_image` (JPEG through libjpeg-turbo as PIL decodes it; native adds the tower's positions and asks for Qwen rows after admission) | C hosts, `tests/vit_image_ref` |
 | `ds4_distributed.c` worker runtime, one-shot coordinator, CLI parsing (3.1K lines) | `ds4-dist` | C hosts, `ds4-eval` |
 | `tests/parity/*_c_oracle.c` | — | frozen copies for `make ci-parity` |
 

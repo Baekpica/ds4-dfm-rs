@@ -571,7 +571,9 @@ typedef struct {
     uint32_t token_offset;
     uint32_t grid_h;
     uint32_t grid_w;
-    const float *patches;     /* rows packed by the host; data unused */
+    /* Host packer, called once native admitted the request; data unused. */
+    int (*pack)(void *ud, float *out, uint64_t values);
+    void *pack_ud;
 } ds4_bridge_qwen_image_input;
 
 

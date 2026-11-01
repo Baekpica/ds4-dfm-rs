@@ -78,8 +78,11 @@ typedef struct {
     uint32_t token_offset;
     uint32_t grid_h;
     uint32_t grid_w;
-    /* Rust hosts: rows packed for the tower (vit_image.rs); data unused. */
-    const float *patches;
+    /* Rust hosts: decode, resize and pack this image's `values` floats of
+     * rows into `out` (vit_image.rs) once native has admitted the request
+     * and checked memory; nonzero on failure. data is then unused. */
+    int (*pack)(void *ud, float *out, uint64_t values);
+    void *pack_ud;
 } ds4_qwen_image_input;
 
 /* Ling-3.0-flash-VL shares Qwen3-VL's preprocessing shape but not its pixel
