@@ -30,6 +30,9 @@ struct h3d_tensor {
     void *data;
     size_t elements;
     int dtype;
+    /* The stream the allocation was made on, so `h3d_free` can hand the block
+     * back to that stream's pool instead of synchronizing the device. */
+    cudaStream_t stream;
 };
 
 /* The video VAE decoder's bench options. Every field defaults to the path the
@@ -230,6 +233,15 @@ h3d_context *h3d_create(char *error, size_t error_size) {
         h3d_destroy(context);
         return NULL;
     }
+    /* The default pool keeps a freed block for the next caller instead of
+     * returning it to the driver, which is what makes stream-ordered reuse
+     * cheap: the threshold is the amount the pool may hold, not a cache hint. */
+    cudaMemPool_t pool = NULL;
+    if (cudaDeviceGetDefaultMemPool(&pool, 0) == cudaSuccess && pool) {
+        unsigned long long threshold = (unsigned long long)12 << 30;
+        cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold,
+                                &threshold);
+    }
     cublasStatus_t blas = cublasLtCreate(&context->blas);
     if (blas != CUBLAS_STATUS_SUCCESS) {
         h3d_set_error(error, error_size, "create cuBLASLt handle: status %d",
@@ -276,18 +288,35 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
     tensor->dtype = dtype;
     if (elements) {
         size_t bytes = elements * h3d_dtype_size(dtype);
-        if (!h3d_cuda_ok(cudaMalloc(&tensor->data, bytes), "allocate tensor",
-                         error, error_size)) {
+        /* Stream-ordered allocation: `cudaMalloc` and `cudaFree` synchronize
+         * the device, and the resizer allocates and frees a 500 MB buffer five
+         * or six times per block. nsys charged 910 frees 2.27 s and 910
+         * mallocs 1.29 s of host time on a quarter-size volume, as gaps the
+         * kernels could not fill. The default pool keeps the block for the next
+         * caller (`h3d_create` raises its release threshold), so a free costs a
+         * push on the stream. */
+        if (!h3d_cuda_ok(cudaMallocAsync(&tensor->data, bytes, context->stream),
+                         "allocate tensor", error, error_size)) {
             free(tensor);
             return NULL;
         }
+        tensor->stream = context->stream;
     }
     return tensor;
 }
 
 void h3d_free(h3d_tensor *tensor) {
     if (!tensor) return;
-    if (tensor->data) cudaFree(tensor->data);
+    if (tensor->data) {
+        /* A context destroyed before its tensors leaves no stream to order the
+         * free on; the plain free is the fallback, and it is what a caller that
+         * never had a stream gets too. */
+        if (!tensor->stream ||
+            cudaFreeAsync(tensor->data, tensor->stream) != cudaSuccess) {
+            cudaFree(tensor->data);
+        }
+        cudaGetLastError();
+    }
     free(tensor);
 }
 
