@@ -12,57 +12,21 @@ concurrency:
   group: host-parity-${{ github.ref }}
   cancel-in-progress: true
 
+# One job per Makefile `ci-*` group; add checks to the groups, not here.
 jobs:
-  host-parity:
+  ci:
+    name: ${{ matrix.group }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [ci-lint, ci-rust, ci-parity, ci-model-free]
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
       - name: Install host test dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked
-      - name: C and Rust host parity
-        run: |
-          make test-kv-parity
-          make test-web-parity
-          make test-dist-parity
-          make test-server-parity
-          make test-catalog-parity
-          make test-tokenizer-parity
-          make test-session-parity
-          make test-agent-parity
-      - name: Serialized workspace tests
-        run: cargo test --workspace --locked -- --test-threads=1
-      - name: Model-free V41 lifecycle and state
-        run: |
-          make test-model-registration test-vq-source-release test-ds41-bridge-lifetime \
-            test-ds41-kv-import test-ds41-moe-fork test-ds41-gr-forward \
-            test-ds41-boundary test-ds41-history test-ds41-trace \
-            test-ds41-kv-rows test-ds41-rollback test-ds41-vision-gate
-      - name: IQuest model-free checks
-        run: |
-          cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
-          python3 tests/test_iquest_weight_policy.py
-          python3 tests/test_iquest_prefix_compare.py
-          python3 tests/test_iquest_http_live.py
-      - name: PLE storage formats
-        run: make test-ple-formats
-      - name: GLM bank fallback
-        run: make test-glm53-fit
-      - name: Bank speculative finish
-        run: make test-family-cont-spec-finish
-      - name: MiMo serial rewind
-        run: make test-mimo2-sync-keep
-      - name: Bonsai CPU reference
-        run: make pq2-0-test test-qwen35-ref
-      - name: All host targets
-        run: cargo check --workspace --all-targets --locked
-      # `native` is off by default, so the production host is otherwise
-      # never type-checked here. Linking still needs the CUDA objects.
-      - name: Native serving host
-        run: cargo check -p ds4-server --lib --bin ds4-server-rs --features native --locked
+      - name: Run ${{ matrix.group }}
+        run: make ${{ matrix.group }}

@@ -1396,6 +1396,7 @@ int ds4_session_argmax(ds4_session *s);
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
                       int top_k, float top_p, float min_p, uint64_t *rng);
+/* DEPRECATED: the C host oracles' draw. Rust hosts sample with sample::draw. */
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng);
 /* The host's sampler: one draw from `logits` (excluded ids, -1 unused;
  * -1 when every token is excluded). Rust hosts register `sample::draw`, so

@@ -8,6 +8,14 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- CI runs four Makefile groups (`ci-lint`, `ci-rust`, `ci-parity`,
+  `ci-model-free`) as parallel jobs and holds only checks that cover every
+  family; one family's model-free checks are its `gate-<family>` target.
+  Fixes the agent shell-job test that read a job's exit before its watcher
+  reported it.
+- Host behavior has one Rust implementation ([CONTRIBUTING](CONTRIBUTING.md)).
+  The C host executables and C host logic Rust owns are deprecated: they
+  build only on request, print a notice, and receive no features or fixes.
 - Sampling follows vLLM/SGLang. Values a request omits come from new
   `--temp`/`--top-p`/`--top-k`/`--min-p` flags, then the model's
   `generation_config.json` (else GGUF `general.sampling.*`), then OpenAI's;

@@ -281,7 +281,12 @@ mod tests {
                 "{action}"
             );
             if let Some(job) = table.jobs.first_mut() {
+                // The watcher reports after the reap that removed /proc/<pid>.
                 job.poll();
+                while job.running && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                    job.poll();
+                }
                 assert!(!job.running && !job.timed_out);
                 assert_eq!(job.exit_status, if action == "exit" { 7 } else { 137 });
             }
