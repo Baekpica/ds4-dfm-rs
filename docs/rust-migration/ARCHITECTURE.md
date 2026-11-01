@@ -84,7 +84,8 @@ tool loop.
 targets. Host logic still in native C (such as the C sampler, now replaced by a Rust
 callback) is deprecated and moves to Rust when touched; native code keeps
 only tensor and device work. The deprecated oracles stay in Git as a frozen
-baseline until removed.
+baseline until removed. [C continuation](C_CONTINUATION.md) classifies the
+remaining C: native by necessity, deprecated, or a gap on the Rust path.
 
 ### Native sources and tests
 

@@ -29,6 +29,7 @@ name them too.
 | Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
 | Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
+| C sources, the native bridge or host logic still in C | [Architecture](docs/rust-migration/ARCHITECTURE.md), [FFI contract](docs/rust-migration/FFI_CONTRACT.md), [C continuation](docs/rust-migration/C_CONTINUATION.md): move host logic to Rust; never extend deprecated C |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
