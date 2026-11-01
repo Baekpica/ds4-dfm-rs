@@ -26,7 +26,7 @@ use ds4_core::minimax_h3::dit::{
 use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest, Upscale};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
-use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
+use ds4_core::minimax_h3::render::{check_frames, Canvas, Encode, Preset, RgbFrames};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
@@ -113,6 +113,10 @@ struct Options {
     /// request in the list takes the release's route: the line's canvas is the
     /// draft's, the latent is doubled, and the doubled canvas is decoded.
     upscaler: Option<PathBuf>,
+    /// `--crf` / `--preset`: the encoder words on the mux line. The default
+    /// is the reference's own pair (`veryfast`, CRF 19), so a request that
+    /// says nothing muxes the reference's line.
+    encode: Encode,
     /// `--preview-dir` (`main.c:58`, `:340`, `:493`).
     preview_dir: Option<PathBuf>,
     /// `--show` (`main.c:59`, `:541-560`).
@@ -494,6 +498,7 @@ fn run() -> Result<ExitCode, String> {
         small(waveform.samples, "audio samples")?,
         small(waveform.channels, "audio channels")?,
         small(waveform.sample_rate, "sample rate")?,
+        options.encode,
     )?;
     println!(
         "VIDEO path={} width={} height={} frames={} fps={} sample_rate={} seconds={:.3}",
@@ -575,6 +580,7 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
             vae_gemm: options.vae_gemm,
             upscale: upscale.clone(),
             text_encoder: options.text_encoder.clone(),
+            encode: options.encode,
             output: job.output.clone(),
         };
 
@@ -1017,6 +1023,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         latent_only: false,
         jobs: None,
         upscaler: None,
+        encode: Encode::default(),
         preview_dir: None,
         show: false,
         zoom: 2,
@@ -1110,6 +1117,20 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--latent-only" => options.latent_only = true,
             "--jobs" => options.jobs = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--upscaler" => options.upscaler = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--crf" => {
+                options.encode.crf = unsigned(&mut argv, &flag)?
+                    .try_into()
+                    .map_err(|_| "--crf is larger than 51".to_string())?;
+                if options.encode.crf > 51 {
+                    return Err("--crf is larger than 51".to_string());
+                }
+            }
+            "--preset" => {
+                let name = value(&mut argv, &flag)?;
+                options.encode.preset = Preset::parse(&name).ok_or_else(|| {
+                    format!("--preset: {name} is not an libx264 preset (--help)")
+                })?;
+            }
             "--preview-dir" => options.preview_dir = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--show" => options.show = true,
             "--zoom" => {
@@ -1343,6 +1364,9 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
                             canvas is the draft's and the doubled canvas is
                             decoded (the release's route)
   --preview-dir PATH        write one PPM preview per denoising step
+  --crf N                   x264 quality, 0-51 (default 19, the reference's)
+  --preset NAME             x264 preset (default veryfast, the reference's);
+                            slow and veryslow keep far more fine texture
   --show                    display a preview frame per step (Kitty/iTerm2)
   --zoom N                  preview zoom for the terminal (default 2)
   --info                    resolve the device, components and geometry, run nothing

@@ -22,6 +22,7 @@ use std::process::ExitCode;
 
 use ds4_core::minimax_h3::dit::{Attention, VaeAttention, VaeGemm};
 use ds4_core::minimax_h3::engine::{EngineHandle, RenderReport, RenderRequest, Upscale};
+use ds4_core::minimax_h3::render::Encode;
 use ds4_core::minimax_h3::text_forward::Encoder;
 
 /// The release's stage-1 canvas is 672x384x124; the gate only needs a shape
@@ -180,6 +181,7 @@ fn main() -> ExitCode {
                 checkpoint: checkpoint.clone(),
             }),
             text_encoder: encoder.clone(),
+            encode: Encode::default(),
             output: dir.join(format!("turn-{turn}.mp4")),
         };
         let started = std::time::Instant::now();

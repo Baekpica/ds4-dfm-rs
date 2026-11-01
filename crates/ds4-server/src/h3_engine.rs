@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest};
 use ds4_core::minimax_h3::local_api::{Plan, ReferenceKind};
 use ds4_core::minimax_h3::reference;
+use ds4_core::minimax_h3::render::Encode;
 use ds4_core::minimax_h3::text_forward::Encoder;
 
 use crate::h3_video::{MediaFile, RenderError, Renderer, RendererState};
@@ -98,6 +99,7 @@ impl Renderer for EngineRenderer {
             vae_attention: spec.vae_attention,
             vae_gemm: spec.vae_gemm,
             text_encoder: self.text_encoder.clone(),
+            encode: Encode::default(),
             output: output.to_path_buf(),
         };
         let report = self

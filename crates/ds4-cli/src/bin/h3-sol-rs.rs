@@ -36,7 +36,7 @@ use ds4_core::minimax_h3::ltx_refiner::{
 use ds4_core::minimax_h3::ltx_stage2::Stage2;
 use ds4_core::minimax_h3::ltx_vae::{pixel_shape, release_latent, LtxVae, RELEASE_LATENT};
 use ds4_core::minimax_h3::prompt_cache::{self, FIXED_PROMPT};
-use ds4_core::minimax_h3::render::{mux_mp4, RgbFrames};
+use ds4_core::minimax_h3::render::{mux_mp4, Encode, RgbFrames};
 use ds4_core::minimax_h3::torch_file::TorchDtype;
 use ds4_core::minimax_h3::vae_video;
 use ds4_core::minimax_h3::vision::bf16_to_f32;
@@ -463,6 +463,7 @@ fn decode_h3(
         samples,
         options.channels,
         options.rate,
+        Encode::default(),
     )?;
     println!("H3-VIDEO path={}", options.output.display());
 
@@ -513,6 +514,7 @@ fn decode_and_mux(gpu: &Gpu, options: &Options, latent: &Tensor) -> Result<(), S
         samples,
         options.channels,
         options.rate,
+        Encode::default(),
     )?;
     println!(
         "VIDEO path={} seconds={:.3}",

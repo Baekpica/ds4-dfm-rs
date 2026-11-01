@@ -404,8 +404,79 @@ pub fn interleave_pcm(pcm: &[f32], samples: i32, channels: i32) -> Result<Vec<f3
     Ok(interleaved)
 }
 
+/// The encoder settings the mux line carries. The reference pins `veryfast`
+/// and CRF 19 (`h3_ffmpeg.c:679-694`), and those stay the default so a request
+/// that says nothing muxes the reference's line. Raising either is the only
+/// lever between the decoded frames and the delivered file: `crf` costs bits,
+/// `preset` costs encode time, and neither touches the graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encode {
+    pub crf: u8,
+    pub preset: Preset,
+}
+
+impl Default for Encode {
+    fn default() -> Self {
+        Encode {
+            crf: 19,
+            preset: Preset::Veryfast,
+        }
+    }
+}
+
+/// The libx264 speed presets, slowest last, as x264 names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    Ultrafast,
+    Superfast,
+    Veryfast,
+    Faster,
+    Fast,
+    Medium,
+    Slow,
+    Slower,
+    Veryslow,
+    Placebo,
+}
+
+impl Preset {
+    /// The CLI's spelling, refused rather than passed through: an unknown
+    /// preset would only surface as an ffmpeg error after the whole render.
+    pub fn parse(text: &str) -> Option<Preset> {
+        Some(match text {
+            "ultrafast" => Preset::Ultrafast,
+            "superfast" => Preset::Superfast,
+            "veryfast" => Preset::Veryfast,
+            "faster" => Preset::Faster,
+            "fast" => Preset::Fast,
+            "medium" => Preset::Medium,
+            "slow" => Preset::Slow,
+            "slower" => Preset::Slower,
+            "veryslow" => Preset::Veryslow,
+            "placebo" => Preset::Placebo,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Preset::Ultrafast => "ultrafast",
+            Preset::Superfast => "superfast",
+            Preset::Veryfast => "veryfast",
+            Preset::Faster => "faster",
+            Preset::Fast => "fast",
+            Preset::Medium => "medium",
+            Preset::Slow => "slow",
+            Preset::Slower => "slower",
+            Preset::Veryslow => "veryslow",
+            Preset::Placebo => "placebo",
+        }
+    }
+}
+
 /// The ffmpeg argument vector the reference builds (`h3_ffmpeg.c:679-694`),
-/// kept separate so it can be compared with the reference line by line.
+/// kept separate so it can be compared with the reference line by line. The
+/// encoder words come from `encode`, whose default is the reference's pair.
 pub fn mux_args(
     path: &Path,
     width: i32,
@@ -413,6 +484,7 @@ pub fn mux_args(
     sample_rate: i32,
     channels: i32,
     audio_fd: i32,
+    encode: Encode,
 ) -> Vec<String> {
     vec![
         "-y".to_string(),
@@ -443,9 +515,9 @@ pub fn mux_args(
         "-c:v".to_string(),
         "libx264".to_string(),
         "-preset".to_string(),
-        "veryfast".to_string(),
+        encode.preset.as_str().to_string(),
         "-crf".to_string(),
-        "19".to_string(),
+        encode.crf.to_string(),
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
         "-af".to_string(),
@@ -474,6 +546,7 @@ pub fn mux_mp4(
     samples: i32,
     channels: i32,
     sample_rate: i32,
+    encode: Encode,
 ) -> Result<(), String> {
     if frames.frames() < 1 || frames.width() < 2 || frames.height() < 2 {
         return Err("invalid FFmpeg A/V output arguments".to_string());
@@ -502,6 +575,7 @@ pub fn mux_mp4(
         sample_rate,
         channels,
         audio_fd,
+        encode,
     );
     let (audio_read, audio_write) =
         io::pipe().map_err(|error| format!("cannot create FFmpeg A/V pipes: {error}"))?;
@@ -647,6 +721,7 @@ mod tests {
                 3200,
                 2,
                 32000,
+                Encode::default(),
             );
             let _ = std::fs::remove_file(path);
             if mode == "early-exit" {
@@ -802,7 +877,15 @@ mod tests {
 
     #[test]
     fn mux_args_match_the_reference_spelling() {
-        let args = mux_args(Path::new("out.mp4"), 512, 288, 32000, 2, 3);
+        let args = mux_args(
+            Path::new("out.mp4"),
+            512,
+            288,
+            32000,
+            2,
+            3,
+            Encode::default(),
+        );
         assert_eq!(args[0], "-y");
         assert!(args.windows(2).any(|pair| pair == ["-crf", "19"]));
         assert!(args.windows(2).any(|pair| pair == ["-preset", "veryfast"]));
@@ -811,5 +894,18 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["-af", "alimiter=limit=0.5:level=disabled"]));
         assert_eq!(args[args.len() - 1], "out.mp4");
+    }
+
+    #[test]
+    fn encode_carries_the_operators_pair_and_refuses_unknown_presets() {
+        let encode = Encode {
+            crf: 14,
+            preset: Preset::parse("slow").expect("slow is a preset"),
+        };
+        let args = mux_args(Path::new("out.mp4"), 512, 288, 32000, 2, 3, encode);
+        assert!(args.windows(2).any(|pair| pair == ["-crf", "14"]));
+        assert!(args.windows(2).any(|pair| pair == ["-preset", "slow"]));
+        assert_eq!(Preset::parse("sloooow"), None);
+        assert_eq!(Preset::parse("veryfast").map(Preset::as_str), Some("veryfast"));
     }
 }

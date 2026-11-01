@@ -26,7 +26,7 @@ use super::ltx_adapter::{self, Arm as UpscalerArm, Upscaler};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
 use super::reference::{self, fnv_f32};
-use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
+use super::render::{check_frames, mux_mp4, Canvas, Encode, RgbFrames};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding, Encoder};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
@@ -64,6 +64,10 @@ pub struct RenderRequest {
     /// The video decoder's GEMM mode; `Fp32` is the reference rounding, and
     /// `None` leaves `H3_VAE_GEMM`'s word.
     pub vae_gemm: Option<VaeGemm>,
+    /// The encoder the mux line carries. The default is the reference's pair
+    /// (`veryfast`, CRF 19); an operator raises it to spend the render's own
+    /// headroom on the delivered file.
+    pub encode: Encode,
     /// The release's second stage (`runtime/stage2.py:58-76`): the denoised
     /// latent is doubled by the H3 upscaler and that latent is decoded instead
     /// of the draft. `None` decodes the draft, which is the one-shot route.
@@ -485,6 +489,7 @@ impl Engine {
             small(waveform.samples)?,
             small(waveform.channels)?,
             small(waveform.sample_rate)?,
+            request.encode,
         )
         .map_err(|error| EngineError::new(format!("mux: {error}")))?;
         let mux_seconds = mux_started.elapsed().as_secs_f64();
