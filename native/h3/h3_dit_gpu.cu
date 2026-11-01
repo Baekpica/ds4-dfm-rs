@@ -6936,14 +6936,18 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
  * uncoalesced write or a division per element, and at these sizes both cost
  * far more than the copy. */
 __global__ static void h3d_im2col3d_kernel(
-    float *columns, const float *input, uint32_t depth, uint32_t height,
-    uint32_t width, uint32_t channels, uint32_t row_begin, uint32_t rows) {
+    float *columns, const float *input, uint32_t height, uint32_t width,
+    uint32_t out_height, uint32_t out_width, uint32_t channels,
+    uint32_t row_begin, uint32_t rows) {
     if (blockIdx.x >= rows) return;
     uint32_t row = row_begin + blockIdx.x;
-    uint32_t x = row % width;
-    uint32_t rest = row / width;
-    uint32_t y = rest % height;
-    uint32_t t = rest / height;
+    // The row index walks the output volume; `height` and `width` are the
+    // padded strides the source is addressed with, and they differ by the
+    // kernel's own reach.
+    uint32_t x = row % out_width;
+    uint32_t rest = row / out_width;
+    uint32_t y = rest % out_height;
+    uint32_t t = rest / out_height;
     float *destination = columns + (size_t)blockIdx.x * channels * 27;
     for (uint32_t tap = 0; tap < 27; tap++) {
         uint32_t kt = tap / 9, ky = (tap / 3) % 3, kx = tap % 3;
@@ -6957,7 +6961,6 @@ __global__ static void h3d_im2col3d_kernel(
             out[channel] = source[channel];
         }
     }
-    (void)depth;
 }
 
 /* `out[channel] += bias[channel]`, the epilogue the conv's GEMM leaves open. */
@@ -7012,8 +7015,9 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
         size_t count = rows - begin < tile ? rows - begin : tile;
         size_t elements = count * columns_per_row;
         h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
-            (float *)scratch->data, (const float *)input->data, depth, height,
-            width, input_channels, (uint32_t)begin, (uint32_t)count);
+            (float *)scratch->data, (const float *)input->data, height, width,
+            out_height, out_width, input_channels, (uint32_t)begin,
+            (uint32_t)count);
         if (!h3d_launch_ok("Conv3d im2col", error, error_size)) return 0;
         if (!h3d_linear_lt_compute(
                 context, (char *)output->data + begin * output_channels * 4,
