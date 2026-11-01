@@ -67,6 +67,15 @@ latent.
 
 ## 5. The question that decides the plan
 
+**Corrected 2026-11-01: this section's arithmetic is off by 1000x and its
+conclusion is withdrawn.** One refiner step does read all 48 blocks - 34.58 GiB
+measured from the loader - but 37.13 GB at this host's 246 GB/s is **0.151 s**,
+not the 136 s the "0.7-1.0 TB/s" figure implies, and none of it is a wall. The
+step is compute-bound at 9-14 TFLOPS against a 128.4 TFLOPS BF16 peak, which is
+what the profile was wanted for; `refiner-update-anatomy-2026-11-01.md` has the
+phase split, the per-block table and the corrected reasoning. The paragraph
+below is kept as written, dated, with the correction above it.
+
 One refiner step must read the transformer it uses: 48 blocks sum to 34.6 GiB
 BF16 in the header of `ltx-2.5-22b-dev-transformer-bf16.safetensors`, of which
 the video-only branch is about 24 GiB. Our 36.8 s per step then implies an
@@ -103,7 +112,14 @@ identical) publishes 56 s with a share per phase. Reading those shares:
 | MP4 + audio mux | 1.3 % | 0.73 | 0.86 |
 | request overhead | 0.9 % | 0.51 | 35.14 + ~42 (model loads) |
 
-Stage 1 is at parity (1.08x). The refinement bar is not: three passes of the
+Stage 1 is at parity (1.08x). **The refinement conclusion below is withdrawn
+(2026-11-01):** 3 x 34.6 GiB over 24.71 s is 4.51 **GB/s**, not TB/s, so the
+bar is nowhere near a streaming limit; at 8.24 s per update it asks for 50-73
+TFLOPS, which is inside the 65-90 TFLOPS cuBLAS reaches on this part
+(`refiner-update-anatomy-2026-11-01.md` §4). The bar stands; our achieved rate
+is 5x off it. The paragraph below is kept as written, dated.
+
+The old text: three passes of the
 22B BF16 transformer is 3 x 34.6 GiB = 104 GiB, and 24.71 s for that is
 4.5 TB/s against this host's measured 241-246 GB/s (`docs/gb10-hardware.md`).
 Either their stage 2 runs different weights or the bar is not this artifact
