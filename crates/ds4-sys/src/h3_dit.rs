@@ -1273,6 +1273,9 @@ pub enum Dtype {
     I8,
     /// Its int32 accumulator.
     I32,
+    /// IEEE half: the resizer's F16 operand route, where the weight is stored
+    /// as the checkpoint has it and the GEMM accumulates in F32.
+    F16,
 }
 
 impl Dtype {
@@ -1284,13 +1287,14 @@ impl Dtype {
             Dtype::Fp8 => 3,
             Dtype::I8 => 4,
             Dtype::I32 => 5,
+            Dtype::F16 => 6,
         }
     }
 
     /// Bytes per element, so a host slice can be checked before a copy.
     pub fn size(self) -> usize {
         match self {
-            Dtype::Bf16 => 2,
+            Dtype::Bf16 | Dtype::F16 => 2,
             Dtype::F32 | Dtype::U32 | Dtype::I32 => 4,
             Dtype::Fp8 | Dtype::I8 => 1,
         }

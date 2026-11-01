@@ -49,6 +49,11 @@ enum h3d_dtype {
     H3D_FP8 = 3,
     H3D_I8 = 4,
     H3D_I32 = 5,
+    /* F16 exists for the resizer's half-precision operand route: the
+     * checkpoint is already F16, so the weight costs nothing to store that way
+     * and the tensor cores that take F16 operands run the GEMM faster than the
+     * TF32 ones. The accumulator and everything downstream stay F32. */
+    H3D_F16 = 6,
 };
 
 /* Sol-Attn's fixed shapes (`techniques/sparse_backends/sol_attn/preprocess.py`

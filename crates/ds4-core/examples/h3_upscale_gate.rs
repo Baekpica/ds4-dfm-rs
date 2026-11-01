@@ -183,25 +183,27 @@ fn run(dir: &Path) -> Result<(), String> {
         .iter()
         .fold(0.0f64, |worst, value| worst.max(value.abs()));
 
-    // Every arm the resizer can run, each against the same reference. The two
-    // F32 arms are the arithmetic the port was verified on; the TF32 arms are
-    // the reference implementation's own class (it computes in F16, ten
-    // mantissa bits) and only reach a tensor-core kernel on the column-major
-    // orientation, where the GEMM is 2.2x faster. A bound per arm, so a faster
-    // arm has to say what it costs.
-    let arms: [(&str, bool, bool, f64); 4] = [
-        ("fp32 rows", false, false, 5e-4),
-        ("fp32 columns", false, true, 5e-4),
-        ("tf32 rows", true, false, 5e-4),
-        ("tf32 columns", true, true, 5e-4),
+    // Every arm the resizer can run, each against the same reference (name,
+    // tf32, columns, half, bound). The two F32 arms are the arithmetic the port
+    // was verified on; the TF32 arms are the reference implementation's own
+    // class (it computes in F16, ten mantissa bits) and only reach a tensor-core
+    // kernel on the column-major orientation; the F16 arm stores the operands
+    // the way the checkpoint does. A bound per arm, so a faster arm has to say
+    // what it costs.
+    let arms: [(&str, bool, bool, bool, f64); 5] = [
+        ("fp32 rows", false, false, false, 5e-4),
+        ("fp32 columns", false, true, false, 5e-4),
+        ("tf32 rows", true, false, false, 5e-4),
+        ("tf32 columns", true, true, false, 5e-4),
+        ("fp16 columns", true, true, true, 5e-4),
     ];
     let mut failed = false;
-    for (name, tf32, columns, bound) in arms {
+    for (name, tf32, columns, half, bound) in arms {
         // One context per arm: `Gpu` owns its stream and the resizer owns the
         // context, so an arm that shares one cannot hold it across the loop.
         let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
-        let upscaler =
-            Upscaler::open_with(dir, gpu, tf32, columns).map_err(|detail| detail.to_string())?;
+        let upscaler = Upscaler::open_with(dir, gpu, tf32, columns, half)
+            .map_err(|detail| detail.to_string())?;
         let started = std::time::Instant::now();
         let output = upscaler
             .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)
@@ -240,7 +242,7 @@ fn run(dir: &Path) -> Result<(), String> {
     if failed {
         return fail("an arm is outside its bound");
     }
-    println!("PASS {voxels} voxels, {} arms", 4);
+    println!("PASS {voxels} voxels, {} arms", arms.len());
     Ok(())
 }
 

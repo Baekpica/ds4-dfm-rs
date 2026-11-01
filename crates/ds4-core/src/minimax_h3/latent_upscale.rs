@@ -142,6 +142,21 @@ fn f32_alloc(gpu: &Gpu, elements: usize) -> Result<Tensor, UpscaleError> {
     device(gpu.alloc(Dtype::F32, elements))
 }
 
+fn f16_alloc(gpu: &Gpu, elements: usize) -> Result<Tensor, UpscaleError> {
+    device(gpu.alloc(Dtype::F16, elements))
+}
+
+/// Upload half words exactly as the checkpoint holds them. `u16` is
+/// little-endian here and the store's shards are too, so no byte is touched.
+fn upload_bits(gpu: &Gpu, tensor: &Tensor, words: &[u16]) -> Result<(), UpscaleError> {
+    // SAFETY: `u16` has no padding or invalid bit patterns, so reinterpreting
+    // the slice as bytes is sound; the bytes are only read.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(words.as_ptr() as *const u8, std::mem::size_of_val(words))
+    };
+    device(gpu.upload(tensor, bytes))
+}
+
 fn upload_f32(gpu: &Gpu, tensor: &Tensor, values: &[f32]) -> Result<(), UpscaleError> {
     // SAFETY: f32 has no padding or invalid bit patterns, so reinterpreting the
     // slice as bytes is sound; the bytes are only read.
@@ -257,6 +272,12 @@ pub struct Upscaler {
     /// answers with a SIMT SGEMM (`magma_sgemmEx_kernel`), and the column-major
     /// one is a different search.
     columns: bool,
+    /// `H3_UPSCALER_GEMM=f16` keeps the convolution operands in half: the
+    /// weight is already F16 in the checkpoint, the activation is rounded from
+    /// F32 by the pad kernel, and the GEMM accumulates in F32. The im2col
+    /// moves half the bytes and the tensor cores that take F16 operands run
+    /// the product faster than the TF32 ones.
+    half: bool,
 }
 
 /// One block's position: `true` is a `TemporalConv`.
@@ -267,14 +288,14 @@ pub fn temporal_at(index: usize) -> bool {
 /// `[out, in, kt, ky, kx]` to `[out, kt, ky, kx, in]`: the column order the
 /// im2col emits, so the copy out of the padded volume is coalesced and the
 /// GEMM reads the weight without a transpose. Done once, at load.
-fn permute_kernel(
-    weight: &[f32],
+fn permute_kernel<T: Copy + Default>(
+    weight: &[T],
     output_channels: usize,
     input_channels: usize,
     kernel: usize,
-) -> Vec<f32> {
+) -> Vec<T> {
     let taps = kernel * kernel * kernel;
-    let mut permuted = vec![0.0f32; weight.len()];
+    let mut permuted = vec![T::default(); weight.len()];
     for out in 0..output_channels {
         for inside in 0..input_channels {
             for tap in 0..taps {
@@ -331,9 +352,12 @@ impl Upscaler {
     /// Open the released checkpoint in `dir`. The store is the video VAE's: a
     /// directory of shards with exact shape checks per tensor.
     pub fn open(dir: &Path, gpu: Gpu) -> Result<Upscaler, UpscaleError> {
-        let tf32 = std::env::var("H3_UPSCALER_GEMM")
-            .map(|value| value.starts_with('t') || value.starts_with('T'))
-            .unwrap_or(true);
+        let mode = std::env::var("H3_UPSCALER_GEMM").unwrap_or_default();
+        // `f16` halves the operands the convolutions' GEMM reads and moves it to
+        // the half-precision tensor cores; `t*` is the TF32 class, `f*` or
+        // unset the F32 one.
+        let half = mode.starts_with('h') || mode.starts_with('H');
+        let tf32 = half || mode.starts_with('t') || mode.starts_with('T') || mode.is_empty();
         // The measured arms: fp32 rows 12.36 s, fp32 columns 12.36 s, tf32 rows
         // 12.31 s, tf32 columns 7.51 s, at 2.2e-6, 2.2e-6, 6.1e-5 and 6.1e-5
         // relative error against the f64 reference. The column-major request is
@@ -343,11 +367,18 @@ impl Upscaler {
         let columns = std::env::var("H3_UPSCALER_ORIENT")
             .map(|value| value.starts_with('c') || value.starts_with('C'))
             .unwrap_or(true);
-        Self::open_with(dir, gpu, tf32, columns)
+        Self::open_with(dir, gpu, tf32, columns, half)
     }
 
     /// The arm this resizer runs its convolutions on, for a log or a bench.
     pub fn arm(&self) -> &'static str {
+        if self.half {
+            return if self.columns {
+                "fp16 columns"
+            } else {
+                "fp16 rows"
+            };
+        }
         match (self.tf32, self.columns) {
             (false, false) => "fp32 rows",
             (true, false) => "tf32 rows",
@@ -363,16 +394,23 @@ impl Upscaler {
         gpu: Gpu,
         tf32: bool,
         columns: bool,
+        half: bool,
     ) -> Result<Upscaler, UpscaleError> {
         let store = Store::open(dir, "latent upscaler")?;
-        let host = |name: &str, shape: &[u64]| -> Result<Vec<f32>, UpscaleError> {
+        // The checkpoint is F16. `bits` hands back the words untouched, for the
+        // arm that keeps them that way; `host` widens them, which is what the
+        // F32 arms and the reference do.
+        let bits = |name: &str, shape: &[u64]| -> Result<Vec<u16>, UpscaleError> {
             let bytes = store.raw(name, shape)?;
             Ok(bytes
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|word| half_to_f32(u16::from_le_bytes(*word)))
+                .map(|word| u16::from_le_bytes(*word))
                 .collect())
+        };
+        let host = |name: &str, shape: &[u64]| -> Result<Vec<f32>, UpscaleError> {
+            Ok(bits(name, shape)?.into_iter().map(half_to_f32).collect())
         };
         let load = |name: &str, shape: &[u64]| -> Result<Tensor, UpscaleError> {
             let values = host(name, shape)?;
@@ -397,12 +435,26 @@ impl Upscaler {
                     kernel as u64,
                     kernel as u64,
                 ];
-                let mut values = host(&name, &shape)?;
-                if kernel == 3 {
-                    values = permute_kernel(&values, output as usize, input as usize, 3);
-                }
-                let weight = f32_alloc(&gpu, values.len())?;
-                upload_f32(&gpu, &weight, &values)?;
+                // On the F16 arm the weight never leaves the checkpoint's own
+                // representation: the permutation is a gather, so it runs on
+                // the raw half words and the upload needs no rounding at all.
+                let weight = if half {
+                    let mut words = bits(&name, &shape)?;
+                    if kernel == 3 {
+                        words = permute_kernel(&words, output as usize, input as usize, 3);
+                    }
+                    let tensor = f16_alloc(&gpu, words.len())?;
+                    upload_bits(&gpu, &tensor, &words)?;
+                    tensor
+                } else {
+                    let mut values = host(&name, &shape)?;
+                    if kernel == 3 {
+                        values = permute_kernel(&values, output as usize, input as usize, 3);
+                    }
+                    let tensor = f32_alloc(&gpu, values.len())?;
+                    upload_f32(&gpu, &tensor, &values)?;
+                    tensor
+                };
                 Ok(Conv {
                     weight,
                     bias: load(&format!("{prefix}.bias"), &[output as u64])?,
@@ -474,6 +526,7 @@ impl Upscaler {
             gpu,
             tf32,
             columns,
+            half,
             conv_in,
             in_blocks,
             out_blocks,
@@ -536,8 +589,9 @@ impl Upscaler {
         out_width: usize,
     ) -> Result<(Latent, Vec<(&'static str, f64)>), UpscaleError> {
         let mut clock = StageClock::running();
-        let latent =
-            self.upscale_inner(latent, time, height, width, out_height, out_width, &mut clock)?;
+        let latent = self.upscale_inner(
+            latent, time, height, width, out_height, out_width, &mut clock,
+        )?;
         Ok((latent, clock.into_entries()))
     }
 
@@ -601,7 +655,14 @@ impl Upscaler {
         let count = voxels * WIDTH as usize;
         let scale = (out_width as f32 / width as f32 + out_height as f32 / height as f32) / 2.0;
         let embed = self.embed(scale);
-        let scratch = f32_alloc(&self.gpu, SCRATCH_TILE as usize * WIDTH as usize * 27)?;
+        // The expanded matrix is the largest buffer in the stage and the only
+        // one whose dtype the arm changes: half the bytes on the F16 route.
+        let scratch_elements = SCRATCH_TILE as usize * WIDTH as usize * 27;
+        let scratch = if self.half {
+            f16_alloc(&self.gpu, scratch_elements)?
+        } else {
+            f32_alloc(&self.gpu, scratch_elements)?
+        };
 
         let normalized: Vec<f32> = latent
             .iter()
@@ -781,7 +842,14 @@ impl Upscaler {
             * (height + 2 * pad as usize)
             * (width + 2 * pad as usize)
             * conv.input_channels as usize;
-        let padded = f32_alloc(&self.gpu, padded_elements)?;
+        // On the F16 arm the pad kernel is where the activation is rounded:
+        // it reads the F32 volume and writes the padded one in half, so the
+        // 27x-expanded buffer is also the smaller one.
+        let padded = if self.half {
+            f16_alloc(&self.gpu, padded_elements)?
+        } else {
+            f32_alloc(&self.gpu, padded_elements)?
+        };
         device(self.gpu.zero_pad3d(
             &padded,
             input,

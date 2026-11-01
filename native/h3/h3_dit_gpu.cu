@@ -224,6 +224,7 @@ static size_t h3d_dtype_size(int dtype) {
         case H3D_I32: return sizeof(uint32_t);
         case H3D_FP8:
         case H3D_I8: return 1;
+        case H3D_F16: return sizeof(__half);
         default: return sizeof(__nv_bfloat16);
     }
 }
@@ -310,7 +311,8 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
                       char *error, size_t error_size) {
     if (!context || (dtype != H3D_BF16 && dtype != H3D_F32 &&
                      dtype != H3D_U32 && dtype != H3D_FP8 &&
-                     dtype != H3D_I8 && dtype != H3D_I32)) {
+                     dtype != H3D_I8 && dtype != H3D_I32 &&
+                     dtype != H3D_F16)) {
         h3d_set_error(error, error_size, "unknown DiT dtype %d", dtype);
         return NULL;
     }
@@ -547,6 +549,7 @@ struct h3d_lt_choice {
     uint32_t input_dim;
     uint32_t output_dim;
     cudaDataType_t type;
+    cudaDataType_t result;
     cublasComputeType_t compute;
     int columns;
     int candidate;   /* index within the heuristic's list, -1 when none ran */
@@ -602,7 +605,8 @@ static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
                        cublasLtMatrixLayout_t b_layout,
                        cublasLtMatrixLayout_t output_layout, uint32_t rows,
                        uint32_t input_dim, uint32_t output_dim,
-                       cudaDataType_t type, cublasComputeType_t compute,
+                       cudaDataType_t type, cudaDataType_t result,
+                       cublasComputeType_t compute,
                        int columns, cublasLtMatmulAlgo_t *algo,
                        size_t *workspace) {
     *workspace = 0;
@@ -612,7 +616,8 @@ static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
         if (choice->owner == context && choice->rows == rows &&
             choice->input_dim == input_dim &&
             choice->output_dim == output_dim && choice->type == type &&
-            choice->compute == compute && choice->columns == columns) {
+            choice->result == result && choice->compute == compute &&
+            choice->columns == columns) {
             if (choice->candidate < 0) return 0;
             *algo = choice->algo;
             *workspace = choice->workspace;
@@ -682,6 +687,7 @@ static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
     entry.input_dim = input_dim;
     entry.output_dim = output_dim;
     entry.type = type;
+    entry.result = result;
     entry.compute = compute;
     entry.columns = columns;
     entry.candidate = -1;
@@ -776,6 +782,7 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
                                  const void *input, const void *weight,
                                  uint32_t rows, uint32_t input_dim,
                                  uint32_t output_dim, cudaDataType_t type,
+                                 cudaDataType_t result,
                                  cublasComputeType_t compute, char *error,
                                  size_t error_size) {
     cublasLtMatmulDesc_t operation = NULL;
@@ -802,7 +809,7 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
                                             input_dim, input_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&output_layout, type, rows,
+        status = cublasLtMatrixLayoutCreate(&output_layout, result, rows,
                                             output_dim, output_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
@@ -825,7 +832,7 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
         size_t workspace = 0;
         int pinned = h3d_lt_pick(context, operation, input_layout,
                                  weight_layout, output_layout, rows, input_dim,
-                                 output_dim, type, compute, 0, &algo,
+                                 output_dim, type, result, compute, 0, &algo,
                                  &workspace);
         status = cublasLtMatmul(
             context->blas, operation, &alpha, input, input_layout, weight,
@@ -846,8 +853,8 @@ static int h3d_linear_lt(h3d_context *context, void *output, const void *input,
                          uint32_t output_dim, cudaDataType_t type,
                          char *error, size_t error_size) {
     return h3d_linear_lt_compute(context, output, input, weight, rows,
-                                 input_dim, output_dim, type, CUBLAS_COMPUTE_32F,
-                                 error, error_size);
+                                 input_dim, output_dim, type, type,
+                                 CUBLAS_COMPUTE_32F, error, error_size);
 }
 
 /* The same product with the matrix on the other side: `C[rows, dim] =
@@ -863,6 +870,7 @@ static int h3d_linear_lt_columns(h3d_context *context, void *output,
                                  const void *input, const void *weight,
                                  uint32_t rows, uint32_t input_dim,
                                  uint32_t output_dim, cudaDataType_t type,
+                                 cudaDataType_t result,
                                  cublasComputeType_t compute, char *error,
                                  size_t error_size) {
     cublasLtMatmulDesc_t operation = NULL;
@@ -889,7 +897,7 @@ static int h3d_linear_lt_columns(h3d_context *context, void *output,
                                             rows, input_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&output_layout, type, output_dim,
+        status = cublasLtMatrixLayoutCreate(&output_layout, result, output_dim,
                                             rows, output_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
@@ -897,7 +905,7 @@ static int h3d_linear_lt_columns(h3d_context *context, void *output,
         size_t workspace = 0;
         int pinned = h3d_lt_pick(context, operation, weight_layout,
                                  input_layout, output_layout, rows, input_dim,
-                                 output_dim, type, compute, 1, &algo,
+                                 output_dim, type, result, compute, 1, &algo,
                                  &workspace);
         status = cublasLtMatmul(
             context->blas, operation, &alpha, weight, weight_layout, input,
@@ -2605,7 +2613,8 @@ int h3d_vae_linear(h3d_context *context, h3d_tensor *output,
     }
     if (!h3d_linear_lt_compute(context, output->data, input->data,
                                weight->data, rows, input_dim, output_dim,
-                               CUDA_R_32F, compute, error, error_size)) {
+                               CUDA_R_32F, CUDA_R_32F, compute, error,
+                               error_size)) {
         return 0;
     }
     if (!bias) return 1;
@@ -2644,8 +2653,8 @@ int h3d_vae_linear_bf16(h3d_context *context, h3d_tensor *output,
     }
     return h3d_linear_lt_compute(context, output->data, input->data,
                                  weight->data, rows, input_dim, output_dim,
-                                 CUDA_R_16BF, CUBLAS_COMPUTE_32F, error,
-                                 error_size);
+                                 CUDA_R_16BF, CUDA_R_16BF, CUBLAS_COMPUTE_32F,
+                                 error, error_size);
 }
 
 int h3d_patch_linear(h3d_context *context, h3d_tensor *output,
@@ -7172,8 +7181,12 @@ __device__ static float h3d_block_sum(float value) {
     return shared[0];
 }
 
+/* Templated on the destination so the F16 route can pad and round in one pass
+ * instead of padding a bigger F32 volume and converting it afterwards: the
+ * padding of the largest volume here is 27x the latent in every direction. */
+template <typename T>
 __global__ static void h3d_zero_pad3d_kernel(
-    float *output, const float *input, uint32_t depth, uint32_t height,
+    T *output, const float *input, uint32_t depth, uint32_t height,
     uint32_t width, uint32_t channels, uint32_t pad_depth, uint32_t pad_height,
     uint32_t pad_width, uint32_t out_depth, uint32_t out_height,
     uint32_t out_width, size_t elements) {
@@ -7197,7 +7210,7 @@ __global__ static void h3d_zero_pad3d_kernel(
                         (uint32_t)iy) * width + (uint32_t)ix) * channels +
                       channel];
     }
-    output[index] = value;
+    output[index] = (T)value;
 }
 
 int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
@@ -7216,15 +7229,23 @@ int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
                       &input_elements) ||
         !h3d_mul_size((size_t)batch * out_depth * out_height * out_width,
                       channels, &output_elements) ||
-        !h3d_is(input, H3D_F32, input_elements) ||
-        !h3d_is(output, H3D_F32, output_elements)) {
+        !h3d_is(input, H3D_F32, input_elements) || !output ||
+        (output->dtype != H3D_F32 && output->dtype != H3D_F16) ||
+        output->elements < output_elements) {
         return h3d_set_error(error, error_size, "invalid zero pad tensors");
     }
-    h3d_zero_pad3d_kernel<<<(unsigned)((output_elements + 255) / 256), 256, 0,
-                            context->stream>>>(
-        (float *)output->data, (const float *)input->data, depth, height, width,
-        channels, pad_depth, pad_height, pad_width, out_depth, out_height,
-        out_width, output_elements);
+    unsigned blocks = (unsigned)((output_elements + 255) / 256);
+    if (output->dtype == H3D_F16) {
+        h3d_zero_pad3d_kernel<__half><<<blocks, 256, 0, context->stream>>>(
+            (__half *)output->data, (const float *)input->data, depth, height,
+            width, channels, pad_depth, pad_height, pad_width, out_depth,
+            out_height, out_width, output_elements);
+    } else {
+        h3d_zero_pad3d_kernel<float><<<blocks, 256, 0, context->stream>>>(
+            (float *)output->data, (const float *)input->data, depth, height,
+            width, channels, pad_depth, pad_height, pad_width, out_depth,
+            out_height, out_width, output_elements);
+    }
     return h3d_launch_ok("zero pad", error, error_size);
 }
 
@@ -7525,6 +7546,34 @@ __global__ static void h3d_im2col3d_kernel(
     }
 }
 
+/* The same im2col for the F16 operand route: half the bytes written and half
+ * read, so the phase that was already at the memory floor gets its floor cut
+ * in two. The copy is still one coalesced run of `channels` values per tap. */
+__global__ static void h3d_im2col3d_half_kernel(
+    __half *columns, const __half *input, uint32_t height, uint32_t width,
+    uint32_t out_height, uint32_t out_width, uint32_t channels,
+    uint32_t row_begin, uint32_t rows) {
+    if (blockIdx.x >= rows) return;
+    uint32_t row = row_begin + blockIdx.x;
+    uint32_t x = row % out_width;
+    uint32_t rest = row / out_width;
+    uint32_t y = rest % out_height;
+    uint32_t t = rest / out_height;
+    __half *destination = columns + (size_t)blockIdx.x * channels * 27;
+    for (uint32_t tap = 0; tap < 27; tap++) {
+        uint32_t kt = tap / 9, ky = (tap / 3) % 3, kx = tap % 3;
+        const __half *source =
+            input + ((((size_t)(t + kt) * height + (y + ky)) * width +
+                      (x + kx)) *
+                     channels);
+        __half *out = destination + (size_t)tap * channels;
+        for (uint32_t channel = threadIdx.x; channel < channels;
+             channel += blockDim.x) {
+            out[channel] = source[channel];
+        }
+    }
+}
+
 /* `out[channel] += bias[channel]`, the epilogue the conv's GEMM leaves open. */
 __global__ static void h3d_add_bias_kernel(float *output, const float *bias,
                                            uint32_t channels, size_t elements) {
@@ -7555,6 +7604,12 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
     uint32_t out_height = height - kernel + 1;
     uint32_t out_width = width - kernel + 1;
     size_t input_elements, weight_elements, output_elements, column_elements;
+    /* The operand class comes from the tensors themselves: F16 input, weight
+     * and scratch run the half-precision im2col and a mixed-precision GEMM
+     * whose accumulator is still F32. `bias` and `output` stay F32 either way,
+     * so nothing downstream of the convolution changes. */
+    int half = input && input->dtype == H3D_F16;
+    int operand = half ? H3D_F16 : H3D_F32;
     if (!h3d_mul_size((size_t)depth * height * width, input_channels,
                       &input_elements) ||
         !h3d_mul_size((size_t)output_channels * input_channels * kernel * kernel,
@@ -7563,11 +7618,11 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                       output_channels, &output_elements) ||
         !h3d_mul_size((size_t)tile, input_channels * kernel * kernel * kernel,
                       &column_elements) ||
-        !h3d_is(input, H3D_F32, input_elements) ||
-        !h3d_is(weight, H3D_F32, weight_elements) ||
+        !h3d_is(input, operand, input_elements) ||
+        !h3d_is(weight, operand, weight_elements) ||
         !h3d_is(output, H3D_F32, output_elements) ||
         !h3d_is(bias, H3D_F32, output_channels) ||
-        !h3d_is(scratch, H3D_F32, column_elements)) {
+        !h3d_is(scratch, operand, column_elements)) {
         return h3d_set_error(error, error_size,
                              "invalid Conv3d tensors or scratch");
     }
@@ -7592,10 +7647,18 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
     for (uint32_t step = 0; step < tiles; step++) {
         size_t begin = (size_t)step * tile;
         size_t count = rows - begin < tile ? rows - begin : tile;
-        h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
-            (float *)scratch->data, (const float *)input->data, height, width,
-            out_height, out_width, input_channels, (uint32_t)begin,
-            (uint32_t)count);
+        if (half) {
+            h3d_im2col3d_half_kernel<<<(unsigned)count, 256, 0,
+                                       context->stream>>>(
+                (__half *)scratch->data, (const __half *)input->data, height,
+                width, out_height, out_width, input_channels, (uint32_t)begin,
+                (uint32_t)count);
+        } else {
+            h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
+                (float *)scratch->data, (const float *)input->data, height,
+                width, out_height, out_width, input_channels, (uint32_t)begin,
+                (uint32_t)count);
+        }
         if (!h3d_launch_ok("Conv3d im2col", error, error_size)) {
             failed = 1;
             break;
@@ -7603,19 +7666,20 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
         if (timed) cudaEventRecord(marks[1 + 2 * (size_t)step], context->stream);
         cublasComputeType_t compute =
             tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+        cudaDataType_t type = half ? CUDA_R_16F : CUDA_R_32F;
         int gemm = orientation
             ? h3d_linear_lt_columns(context,
                                     (char *)output->data +
                                         begin * output_channels * 4,
                                     scratch->data, weight->data, (uint32_t)count,
-                                    columns_per_row, output_channels, CUDA_R_32F,
-                                    compute, error, error_size)
+                                    columns_per_row, output_channels, type,
+                                    CUDA_R_32F, compute, error, error_size)
             : h3d_linear_lt_compute(
                   context,
                   (char *)output->data + begin * output_channels * 4,
                   scratch->data, weight->data, (uint32_t)count,
-                  columns_per_row, output_channels, CUDA_R_32F, compute, error,
-                  error_size);
+                  columns_per_row, output_channels, type, CUDA_R_32F, compute,
+                  error, error_size);
         if (!gemm) {
             failed = 1;
             break;
