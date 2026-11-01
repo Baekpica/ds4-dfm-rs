@@ -598,8 +598,8 @@ static int h3d_lt_attr(const cublasLtMatmulAlgo_t *algo,
  * context). Returns 0 when no candidate could be used, in which case the
  * caller passes NULL as it did before. */
 static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
-                       cublasLtMatrixLayout_t weight_layout,
-                       cublasLtMatrixLayout_t input_layout,
+                       cublasLtMatrixLayout_t a_layout,
+                       cublasLtMatrixLayout_t b_layout,
                        cublasLtMatrixLayout_t output_layout, uint32_t rows,
                        uint32_t input_dim, uint32_t output_dim,
                        cudaDataType_t type, cublasComputeType_t compute,
@@ -635,10 +635,21 @@ static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
     cublasLtMatmulPreferenceSetAttribute(
         preference, CUBLASLT_MATMUL_PREF_SEARCH_MODE, &search, sizeof(search));
     cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(
-        context->blas, operation, weight_layout, input_layout, output_layout,
+        context->blas, operation, a_layout, b_layout, output_layout,
         output_layout, preference, H3D_LT_CANDIDATES, results, &found);
     cublasLtMatmulPreferenceDestroy(preference);
     if (status != CUBLAS_STATUS_SUCCESS) found = 0;
+    if (getenv("H3D_LT_ALGO_TRACE")) {
+        fprintf(stderr, "lt-heuristic %ux%ux%u %s %s %s status=%d found=%d",
+                rows, input_dim, output_dim, h3d_lt_type_name(type),
+                h3d_lt_compute_name(compute), columns ? "columns" : "rows",
+                (int)status, found);
+        for (int index = 0; index < found; index++) {
+            fprintf(stderr, " [%d state=%d wk=%zu]", index,
+                    (int)results[index].state, results[index].workspaceSize);
+        }
+        fprintf(stderr, "\n");
+    }
 
     int want = 0;
     const char *requested = getenv("H3D_LT_ALGO");
@@ -812,8 +823,8 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
     if (status == CUBLAS_STATUS_SUCCESS) {
         cublasLtMatmulAlgo_t algo;
         size_t workspace = 0;
-        int pinned = h3d_lt_pick(context, operation, weight_layout,
-                                 input_layout, output_layout, rows, input_dim,
+        int pinned = h3d_lt_pick(context, operation, input_layout,
+                                 weight_layout, output_layout, rows, input_dim,
                                  output_dim, type, compute, 0, &algo,
                                  &workspace);
         status = cublasLtMatmul(
