@@ -443,9 +443,9 @@ pub fn mux_args(
         "-c:v".to_string(),
         "libx264".to_string(),
         "-preset".to_string(),
-        "fast".to_string(),
+        "veryfast".to_string(),
         "-crf".to_string(),
-        "18".to_string(),
+        "19".to_string(),
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
         "-af".to_string(),
@@ -804,7 +804,8 @@ mod tests {
     fn mux_args_match_the_reference_spelling() {
         let args = mux_args(Path::new("out.mp4"), 512, 288, 32000, 2, 3);
         assert_eq!(args[0], "-y");
-        assert!(args.windows(2).any(|pair| pair == ["-crf", "18"]));
+        assert!(args.windows(2).any(|pair| pair == ["-crf", "19"]));
+        assert!(args.windows(2).any(|pair| pair == ["-preset", "veryfast"]));
         assert!(args.windows(2).any(|pair| pair == ["-i", "pipe:3"]));
         assert!(args
             .windows(2)
