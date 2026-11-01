@@ -996,13 +996,13 @@ int h3d_sdpa_causal_f32(h3d_context *context, h3d_tensor *output,
  * trees are not reproducible here, and `tests/h3/sol_route_bm` measures what
  * the choice costs.
  *
- * `h3d_tok_search` routes from the query block's centroid, which is the
+ * `h3d_sol_search` routes from the query block's centroid, which is the
  * reference's column mean: sum_q (q.kc) / len = (sum_q q / len).kc, the same
  * number with 64x fewer multiplies, and both sides of its comparison then
  * come from one F32 centroid. The reference's own raw-row order is the oracle
  * `tests/h3/test_native.cu` checks this against, and `tests/h3/sol_route_bm`
  * reports what the substitution moves on the job's shape. */
-int h3d_tok_search(h3d_context *context, const struct h3d_sol_plan *plan,
+int h3d_sol_search(h3d_context *context, const struct h3d_sol_plan *plan,
                    const h3d_tensor *query, const h3d_tensor *key,
                    const h3d_tensor *value, uint32_t sequence, uint32_t heads,
                    float scale, float tau, uint32_t sink_start,
@@ -1033,7 +1033,7 @@ uint32_t h3d_sol_words(uint32_t sequence);
  * It reuses the tau path's kernels - the block pooling, the kc statistics and
  * the threshold kernel that produces `query_bar` - so the plan must carry the
  * same buffers, and the `threshold` it fills is not read by this policy. Only
- * the selection kernel is new. `h3d_tok_search`'s doc comment applies to every
+ * the selection kernel is new. `h3d_sol_search`'s doc comment applies to every
  * other deviation this shares with it. */
 int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
                 const h3d_tensor *query, const h3d_tensor *key,
@@ -1042,7 +1042,7 @@ int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
                 char *error, size_t error_size);
 
 /* The sparse forward the mask was built for: Sol-Attn's attention with the
- * exact/approximated split `h3d_tok_search` routed. One CTA per (query block,
+ * exact/approximated split `h3d_sol_search` routed. One CTA per (query block,
  * head), four warps of 16 query rows each. Per group of 32 KV blocks the
  * group's approximated blocks are folded into the running softmax from the
  * pooled summaries in one pass, then its exact blocks are walked in increasing
@@ -1060,13 +1060,13 @@ int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
  * approximated block leaves the running maximum untouched (`fwd.py:256-262`).
  * The mask is the plan's, so the sink range and the diagonal band arrive
  * already set and this function adds no policy of its own: it reads `kc`, `vc`
- * and `mask` and nothing else. Call `h3d_tok_search` for the same plan first.
+ * and `mask` and nothing else. Call `h3d_sol_search` for the same plan first.
  *
  * Deviations, named: BF16 `P` for both products, as the reference casts too
  * (`fwd.py:122,166`); one maximum per 64-key exact block; the port's `exp2`,
  * F32 accumulators and reduction trees against Triton's. `tests/h3/test_native.cu`
  * gates the walk against the reference's own rule. */
-int h3d_tok_forward(h3d_context *context, h3d_tensor *output,
+int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
                     const struct h3d_sol_plan *plan, const h3d_tensor *query,
                     const h3d_tensor *key, const h3d_tensor *value,
                     uint32_t sequence, uint32_t heads, float scale, char *error,
