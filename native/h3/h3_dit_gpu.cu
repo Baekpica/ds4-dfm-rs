@@ -7664,8 +7664,12 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
             break;
         }
         if (timed) cudaEventRecord(marks[1 + 2 * (size_t)step], context->stream);
+        /* TF32 is a rounding of F32 operands and means nothing beside F16 ones:
+         * there the class asked for is plain F32 accumulation over the half
+         * tensor cores, and the report says so. */
         cublasComputeType_t compute =
-            tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
+            half ? CUBLAS_COMPUTE_32F
+                 : (tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F);
         cudaDataType_t type = half ? CUDA_R_16F : CUDA_R_32F;
         int gemm = orientation
             ? h3d_linear_lt_columns(context,
