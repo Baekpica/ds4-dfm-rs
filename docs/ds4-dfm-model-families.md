@@ -117,10 +117,10 @@ For the optional FP8 PLE sidecar with the existing base and
 main GGUFs, see [selection, validation and paired 64K sweeps](qwen38-ple-fp8.md).
 
 Rust normalizes ordered image parts, bounds and owns payload bytes, places
-image tokens, and owns decoded-pixel cache identity. Decoding reuses the pinned
-[`vendor/stb_image.h`](../vendor/stb_image.h) through a narrow native image ABI;
-vision and CUDA execution stay native. No general multimedia layer or Rust
-image dependency was added.
+image tokens, owns decoded-pixel cache identity, and decodes, resizes and
+packs the patch rows (`ds4-core::vit_image`: PNG through the `image` crate,
+JPEG through libjpeg-turbo as PIL decodes it); vision and CUDA execution stay
+native. C hosts keep the pinned [`vendor/stb_image.h`](../vendor/stb_image.h).
 
 Image limits match the frozen C behavior:
 

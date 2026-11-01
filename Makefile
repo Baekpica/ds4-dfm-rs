@@ -1670,7 +1670,7 @@ tests/vit_image_ref: tests/vit_image_ref.c ds4.c ds4.h ds4_gpu.h ds4_glm53_image
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
 
 test-vit-image: tests/vit_image_ref
-	cargo test -p ds4-core --release --lib vit_image -- --ignored --nocapture --test-threads=1
+	cargo test -p ds4-core --release --lib vit_image::tests::matches_c_reference -- --ignored --exact --nocapture
 
 test-eos-sampling: tests/test_eos_sampling
 	./tests/test_eos_sampling

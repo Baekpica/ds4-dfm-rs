@@ -4,8 +4,10 @@
 //! inputs. The arithmetic is the C it replaces (ds4.c image probes,
 //! `qwen4exp_resize_rgb_pillow` and the three packers), including C's
 //! resize-weight rounding, `round(q ± 0.5)`, where Pillow truncates q + 0.5.
-//! PNG decodes to stb_image's bytes; JPEG goes through zune-jpeg (the image
-//! crate), whose IDCT and upsampling can differ from stb_image's by a level.
+//! PNG decodes to stb_image's bytes. JPEG goes through libjpeg-turbo with
+//! libjpeg's defaults (ISLOW IDCT, fancy upsampling): PIL's decoder and
+//! settings, so pixels match the HF processors where stb_image's differ by
+//! a level or more.
 //!
 //! ```text
 //! bytes -> RGB8 (+ GLM EXIF orientation) -> resize -> patches [rows, dim]
@@ -35,6 +37,8 @@ const CLIP_MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
 const CLIP_STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_11];
 
 const RESIZE_PRECISION: u32 = 22;
+/// SOI followed by a marker.
+const JPEG_MAGIC: [u8; 3] = [0xFF, 0xD8, 0xFF];
 /// The C hash's basis, one digit short of FNV-64's 14695981039346656037;
 /// kept because the hash keys persisted disk KV.
 const FNV_OFFSET: u64 = 1_469_598_103_934_665_603;
@@ -210,9 +214,13 @@ fn glm_smart_resize(height: u32, width: u32) -> (u32, u32) {
     (h, w)
 }
 
-/// PNG/JPEG to RGB8 as stb_image's 3-channel load: alpha dropped, gray
-/// replicated, 16-bit samples truncated to their high byte.
+/// PNG/JPEG to RGB8. JPEG as PIL decodes it; PNG as stb_image's 3-channel
+/// load: alpha dropped, gray replicated, 16-bit samples truncated to their
+/// high byte.
 pub fn decode(data: &[u8]) -> Result<Rgb, String> {
+    if let Some(rgb) = decode_jpeg(data)? {
+        return Ok(rgb);
+    }
     let image = ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
@@ -236,6 +244,29 @@ pub fn decode(data: &[u8]) -> Result<Rgb, String> {
         height,
         data,
     })
+}
+
+/// A JPEG's RGB through libjpeg-turbo; None for other formats.
+fn decode_jpeg(data: &[u8]) -> Result<Option<Rgb>, String> {
+    if !data.starts_with(&JPEG_MAGIC) {
+        return Ok(None);
+    }
+    let fail = |e: turbojpeg::Error| format!("PNG/JPEG pixel decode failed: {e}");
+    let header = turbojpeg::read_header(data).map_err(fail)?;
+    // ponytail: libjpeg-turbo cannot turn CMYK/YCCK into RGB and PIL's own
+    // CMYK conversion is not ported; the image crate decodes those.
+    if matches!(
+        header.colorspace,
+        turbojpeg::Colorspace::CMYK | turbojpeg::Colorspace::YCCK
+    ) {
+        return Ok(None);
+    }
+    let image = turbojpeg::decompress(data, turbojpeg::PixelFormat::RGB).map_err(fail)?;
+    Ok(Some(Rgb {
+        width: image.width as u32,
+        height: image.height as u32,
+        data: image.pixels,
+    }))
 }
 
 /// Qwen's KV-cache identity of an image: FNV-1a over the little-endian
@@ -606,6 +637,7 @@ fn orient(rgb: Rgb, orientation: Orientation) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::process::Command;
     use std::time::Instant;
@@ -658,10 +690,12 @@ mod tests {
     }
 
     fn floats(path: &std::path::Path) -> Vec<f32> {
-        std::fs::read(path)
-            .unwrap()
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        let bytes = std::fs::read(path).unwrap();
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect()
     }
 
@@ -770,6 +804,61 @@ mod tests {
             ms[0],
             usage.ru_maxrss
         );
+    }
+
+    /// `DS4_VIT_DECODE=IN:OUT` writes the decoded RGB bytes, to compare
+    /// decoders (stb_image via vit_image_ref decode, PIL).
+    #[test]
+    #[ignore]
+    fn decode_dump() {
+        let spec = std::env::var("DS4_VIT_DECODE").expect("DS4_VIT_DECODE=in:out");
+        let (input, output) = spec.split_once(':').unwrap();
+        let rgb = decode(&std::fs::read(repo().join(input)).unwrap()).unwrap();
+        std::fs::write(output, &rgb.data).unwrap();
+    }
+
+    /// JPEG pixels are PIL's: SHA-256 of `Image.open(f).convert("RGB")
+    /// .tobytes()` under Pillow 12.1.1 (libjpeg-turbo 3.1.3).
+    #[test]
+    fn jpeg_matches_pil() {
+        const PIL: [(&str, &str); 7] = [
+            (
+                "tests/fixtures/vit-jpeg/odd420.jpg",
+                "b74cc002df970c12b4eaae511f16ee339d92e195b96e10795cc6e0a01922ec45",
+            ),
+            (
+                "tests/fixtures/vit-jpeg/h2v1.jpg",
+                "8994ed239fd357c157d8a58bca97bf06fdceda6de114d695471415cdd2bbe216",
+            ),
+            (
+                "tests/fixtures/vit-jpeg/progressive.jpg",
+                "5477708636ca9de50bed74be2e35729e38ef83a9654976d9f1c69ff6626976e6",
+            ),
+            (
+                "tests/fixtures/vit-jpeg/gray.jpg",
+                "9702bbe2bf1ebf7c9980af79694563ea36710e3ad3025f81505ea2701773495d",
+            ),
+            (
+                "tests/fixtures/vision/bug.jpeg",
+                "85ac4b5c098b679307161969c7edef78c798ce3cea1b28b4c51dff05a1b5af67",
+            ),
+            (
+                "tests/fixtures/qwen-images/photo.jpg",
+                "192061df33aa0101975c6a4000b321f6f2a2bba10aacd3a7601a652248d51ff0",
+            ),
+            (
+                "tests/fixtures/glm53/exif6.jpg",
+                "1d53f3b5ff8d24a16fc7c260e9cde92089b3b941ac743f5f5e0d1a755c7e3d55",
+            ),
+        ];
+        for (file, want) in PIL {
+            let rgb = decode(&std::fs::read(repo().join(file)).unwrap()).unwrap();
+            let got: String = Sha256::digest(&rgb.data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(got, want, "{file}");
+        }
     }
 
     #[test]
