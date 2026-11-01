@@ -1053,6 +1053,16 @@ int h3d_conv3d_timing(int enable);
 void h3d_conv3d_timing_read(double seconds[3]);
 void h3d_conv3d_timing_reset(void);
 
+/* The cuBLASLt algorithm each distinct GEMM shape dispatched, one entry per
+ * shape in first-seen order, separated by "; ":
+ * `rows x k x n <type> <compute> <layout> cand=.. id=.. tile=.. stages=..
+ * splitk=.. wk=..`. The algorithm is chosen once per shape (from
+ * `cublasLtMatmulAlgoGetHeuristic`) and passed explicitly, so a timing can be
+ * read beside the kernel that produced it. `H3D_LT_ALGO=<i>` selects the i-th
+ * candidate and `H3D_LT_ALGO_TRACE=1` prints choices to stderr. Returns the
+ * length written. */
+int h3d_lt_algo_report(char *text, size_t size);
+
 /* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
  * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
 int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,

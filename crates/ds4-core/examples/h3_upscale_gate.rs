@@ -140,12 +140,20 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
         for (name, seconds) in &stages {
             line.push_str(&format!("{name} {seconds:.3}s, "));
         }
-        println!("stages {lapped:.3}s of the timed run: {}", line.trim_end_matches(", "));
+        println!(
+            "stages {lapped:.3}s of the timed run: {}",
+            line.trim_end_matches(", ")
+        );
     }
     println!(
         "load {load:.2}s, best {best:.3}s for {voxels} latent voxels, arm {}",
         upscaler.arm()
     );
+    // The kernel each shape actually ran on. Without this a GEMM number cannot
+    // be read: the same source dispatched a SIMT kernel in one build and a
+    // tensor-core one in the next while the algorithm was left to the
+    // heuristic.
+    println!("algo {}", Gpu::lt_algo_report());
     Ok(())
 }
 
@@ -171,7 +179,9 @@ fn run(dir: &Path) -> Result<(), String> {
     if reference.len() != LATENT_CHANNELS * TIME * HEIGHT_OUT * WIDTH_OUT {
         return fail("reference length differs");
     }
-    let scale = reference.iter().fold(0.0f64, |worst, value| worst.max(value.abs()));
+    let scale = reference
+        .iter()
+        .fold(0.0f64, |worst, value| worst.max(value.abs()));
 
     // Every arm the resizer can run, each against the same reference. The two
     // F32 arms are the arithmetic the port was verified on; the TF32 arms are
@@ -190,8 +200,8 @@ fn run(dir: &Path) -> Result<(), String> {
         // One context per arm: `Gpu` owns its stream and the resizer owns the
         // context, so an arm that shares one cannot hold it across the loop.
         let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
-        let upscaler = Upscaler::open_with(dir, gpu, tf32, columns)
-            .map_err(|detail| detail.to_string())?;
+        let upscaler =
+            Upscaler::open_with(dir, gpu, tf32, columns).map_err(|detail| detail.to_string())?;
         let started = std::time::Instant::now();
         let output = upscaler
             .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)
@@ -220,6 +230,9 @@ fn run(dir: &Path) -> Result<(), String> {
             elapsed,
             worst_at / (TIME * HEIGHT_OUT * WIDTH_OUT)
         );
+        // Each arm names the algorithm it ran on, so a difference between two
+        // arms is a difference in arithmetic or in kernel, never in doubt.
+        println!("  algo {}", Gpu::lt_algo_report());
         if relative > bound {
             failed = true;
         }

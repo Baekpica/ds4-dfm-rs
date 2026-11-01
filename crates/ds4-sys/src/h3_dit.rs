@@ -16,6 +16,10 @@ use std::ptr::NonNull;
 /// `error[1024]` in the probe; the native side writes at most this much.
 const ERROR_SIZE: usize = 1024;
 
+/// Room for the algorithm report: the resizer's stage dispatches under a dozen
+/// distinct shapes, at about a hundred characters each.
+const LT_ALGO_REPORT_SIZE: usize = 4096;
+
 #[repr(C)]
 struct Context {
     _private: [u8; 0],
@@ -529,6 +533,7 @@ unsafe extern "C" {
     fn h3d_conv3d_timing(enable: c_int) -> c_int;
     fn h3d_conv3d_timing_read(seconds: *mut f64);
     fn h3d_conv3d_timing_reset();
+    fn h3d_lt_algo_report(text: *mut c_char, size: usize) -> c_int;
 
     #[allow(clippy::too_many_arguments)]
     fn h3d_zero_pad3d(
@@ -4060,6 +4065,25 @@ impl Gpu {
     /// `h3d_conv3d_timing_reset`: clear the accumulators.
     pub fn conv3d_timing_reset() {
         unsafe { h3d_conv3d_timing_reset() };
+    }
+
+    /// `h3d_lt_algo_report`: the cuBLASLt algorithm each distinct GEMM shape
+    /// dispatched this run, `rows x k x n <type> <compute> <layout> cand=..
+    /// id=.. tile=.. stages=.. splitk=.. wk=..`, one entry per shape
+    /// separated by `; `. The algorithm is chosen once per shape through
+    /// `cublasLtMatmulAlgoGetHeuristic` and passed explicitly instead of
+    /// NULL, so a timing can be read beside the kernel that produced it.
+    /// `H3D_LT_ALGO=<i>` selects the i-th candidate, `H3D_LT_ALGO_TRACE=1`
+    /// prints each choice to stderr.
+    pub fn lt_algo_report() -> String {
+        let mut text = [0 as c_char; LT_ALGO_REPORT_SIZE];
+        unsafe { h3d_lt_algo_report(text.as_mut_ptr(), LT_ALGO_REPORT_SIZE) };
+        let end = text
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(LT_ALGO_REPORT_SIZE);
+        let bytes: Vec<u8> = text[..end].iter().map(|byte| *byte as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     /// `h3d_zero_pad3d`: zero padding for the resizer's 3x3x3 convolutions,

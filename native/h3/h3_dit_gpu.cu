@@ -84,6 +84,8 @@ struct h3d_vae_options {
 struct h3d_context {
     cudaStream_t stream;
     cublasLtHandle_t blas;
+    void *lt_workspace;   /* cuBLASLt split-K scratch, grown to fit a choice */
+    size_t lt_workspace_bytes;
     void *stage;          /* pinned upload staging, allocated on first use */
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
@@ -247,6 +249,11 @@ __device__ static __nv_bfloat16 h3d_store(float value) {
     return __float2bfloat16(value);
 }
 
+/* The cuBLASLt algorithm table, defined beside the GEMM it serves; a newly
+ * created context starts from an empty table so a reused address can never
+ * inherit another context's choice. */
+static void h3d_lt_forget(void);
+
 h3d_context *h3d_create(char *error, size_t error_size) {
     h3d_context *context = (h3d_context *)calloc(1, sizeof(*context));
     if (!context) {
@@ -282,11 +289,13 @@ h3d_context *h3d_create(char *error, size_t error_size) {
      * default for callers that never call it, such as the reproducer. */
     context->attention_mma = !h3d_attention_scalar_from_env();
     context->vae = h3d_vae_options_from_env();
+    h3d_lt_forget();
     return context;
 }
 
 void h3d_destroy(h3d_context *context) {
     if (!context) return;
+    if (context->lt_workspace) cudaFree(context->lt_workspace);
     if (context->stage_done) cudaEventDestroy(context->stage_done);
     if (context->stage) cudaFreeHost(context->stage);
     if (context->stream) {
@@ -509,6 +518,241 @@ int h3d_read(h3d_context *context, void *host, const h3d_tensor *tensor,
                        "read tensor sync", error, error_size);
 }
 
+/* ---- the cuBLASLt algorithm: chosen once per shape, then named ----
+ *
+ * A NULL algorithm asks cuBLASLt to run its heuristic on every call and to
+ * take whatever comes back, and that answer is not stable: this stage answered
+ * the row-major problem with `magma_sgemmEx_kernel`, a SIMT SGEMM, in one build
+ * and with `cutlass_80_tensorop_*` in the next, from byte-identical source. So
+ * the algorithm is asked for once per shape and arm, kept, and passed
+ * explicitly. Three things follow: a recorded timing stops depending on which
+ * kernel a future build happens to pick, the heuristic stops running once per
+ * tile, and the chose algorithm can be named beside the timing.
+ *
+ * One preference departs from cuBLASLt's default in a way that matters: the
+ * default workspace ceiling is zero bytes, which excludes every split-K and
+ * stream-K variant before the search starts. 64 MiB is offered instead, and
+ * the buffer itself is allocated only when a chosen algorithm asks for it.
+ *
+ * `H3D_LT_ALGO=<i>` selects the i-th heuristic candidate (0, the default, is
+ * the heuristic's own first choice) so candidates can be compared without a
+ * rebuild; `H3D_LT_ALGO_TRACE=1` prints each choice to stderr as it is made. */
+#define H3D_LT_SLOTS 64
+#define H3D_LT_CANDIDATES 8
+#define H3D_LT_WORKSPACE_BYTES ((uint64_t)64 << 20)
+
+struct h3d_lt_choice {
+    h3d_context *owner;
+    uint32_t rows;
+    uint32_t input_dim;
+    uint32_t output_dim;
+    cudaDataType_t type;
+    cublasComputeType_t compute;
+    int columns;
+    int candidate;   /* index within the heuristic's list, -1 when none ran */
+    int id;
+    int tile;
+    int stages;
+    int splitk;
+    size_t workspace;
+    cublasLtMatmulAlgo_t algo;
+};
+
+static struct h3d_lt_choice h3d_lt_choices[H3D_LT_SLOTS];
+static int h3d_lt_count = 0;
+static int h3d_lt_next = 0;
+
+static void h3d_lt_forget(void) {
+    memset(h3d_lt_choices, 0, sizeof(h3d_lt_choices));
+    h3d_lt_count = 0;
+    h3d_lt_next = 0;
+}
+
+static const char *h3d_lt_type_name(cudaDataType_t type) {
+    switch (type) {
+        case CUDA_R_16F: return "f16";
+        case CUDA_R_16BF: return "bf16";
+        case CUDA_R_32F: return "f32";
+        default: return "other";
+    }
+}
+
+static const char *h3d_lt_compute_name(cublasComputeType_t compute) {
+    return compute == CUBLAS_COMPUTE_32F_FAST_TF32 ? "tf32" : "fp32";
+}
+
+static int h3d_lt_attr(const cublasLtMatmulAlgo_t *algo,
+                       cublasLtMatmulAlgoConfigAttributes_t attribute) {
+    int value = -1;
+    size_t written = 0;
+    if (cublasLtMatmulAlgoConfigGetAttribute(algo, attribute, &value,
+                                             sizeof(value),
+                                             &written) != CUBLAS_STATUS_SUCCESS) {
+        return -1;
+    }
+    return value;
+}
+
+/* Ask for the algorithm for this shape, or answer from the table. Fills `algo`
+ * and `workspace` (bytes the algorithm needs; the buffer itself lives on the
+ * context). Returns 0 when no candidate could be used, in which case the
+ * caller passes NULL as it did before. */
+static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
+                       cublasLtMatrixLayout_t weight_layout,
+                       cublasLtMatrixLayout_t input_layout,
+                       cublasLtMatrixLayout_t output_layout, uint32_t rows,
+                       uint32_t input_dim, uint32_t output_dim,
+                       cudaDataType_t type, cublasComputeType_t compute,
+                       int columns, cublasLtMatmulAlgo_t *algo,
+                       size_t *workspace) {
+    *workspace = 0;
+    memset(algo, 0, sizeof(*algo));
+    for (int slot = 0; slot < h3d_lt_count; slot++) {
+        const struct h3d_lt_choice *choice = &h3d_lt_choices[slot];
+        if (choice->owner == context && choice->rows == rows &&
+            choice->input_dim == input_dim &&
+            choice->output_dim == output_dim && choice->type == type &&
+            choice->compute == compute && choice->columns == columns) {
+            if (choice->candidate < 0) return 0;
+            *algo = choice->algo;
+            *workspace = choice->workspace;
+            return 1;
+        }
+    }
+
+    cublasLtMatmulPreference_t preference = NULL;
+    cublasLtMatmulHeuristicResult_t results[H3D_LT_CANDIDATES];
+    memset(results, 0, sizeof(results));
+    uint64_t ceiling = H3D_LT_WORKSPACE_BYTES;
+    uint32_t search = CUBLASLT_SEARCH_BEST_FIT;
+    int found = 0;
+    if (cublasLtMatmulPreferenceCreate(&preference) != CUBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    cublasLtMatmulPreferenceSetAttribute(
+        preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ceiling,
+        sizeof(ceiling));
+    cublasLtMatmulPreferenceSetAttribute(
+        preference, CUBLASLT_MATMUL_PREF_SEARCH_MODE, &search, sizeof(search));
+    cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(
+        context->blas, operation, weight_layout, input_layout, output_layout,
+        output_layout, preference, H3D_LT_CANDIDATES, results, &found);
+    cublasLtMatmulPreferenceDestroy(preference);
+    if (status != CUBLAS_STATUS_SUCCESS) found = 0;
+
+    int want = 0;
+    const char *requested = getenv("H3D_LT_ALGO");
+    if (requested && requested[0]) {
+        want = atoi(requested);
+        if (want < 0 || want >= found) want = 0;
+    }
+    int chosen = -1;
+    /* The requested candidate first, then any earlier one, so a candidate that
+     * a build no longer offers still leaves a working algorithm. */
+    for (int pass = 0; pass < 2 && chosen < 0; pass++) {
+        int first = pass ? 0 : want;
+        int last = pass ? want : found;
+        for (int index = first; index < last; index++) {
+            if (results[index].state == CUBLAS_STATUS_SUCCESS) {
+                chosen = index;
+                break;
+            }
+        }
+    }
+
+    struct h3d_lt_choice entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.owner = context;
+    entry.rows = rows;
+    entry.input_dim = input_dim;
+    entry.output_dim = output_dim;
+    entry.type = type;
+    entry.compute = compute;
+    entry.columns = columns;
+    entry.candidate = -1;
+    entry.id = -1;
+    entry.tile = -1;
+    entry.stages = -1;
+    entry.splitk = -1;
+    int usable = 0;
+    if (chosen >= 0) {
+        size_t needed = results[chosen].workspaceSize;
+        /* Grow the buffer to fit; a cudaFree here is safe because the buffer
+         * was last written by work on this same stream and the free orders
+         * after it. Nothing above 64 MiB is ever granted. */
+        if (needed <= H3D_LT_WORKSPACE_BYTES && needed > context->lt_workspace_bytes) {
+            if (context->lt_workspace) cudaFree(context->lt_workspace);
+            context->lt_workspace = NULL;
+            context->lt_workspace_bytes = 0;
+            if (cudaMalloc(&context->lt_workspace, needed) == cudaSuccess) {
+                context->lt_workspace_bytes = needed;
+            }
+        }
+        if (needed <= context->lt_workspace_bytes) {
+            entry.candidate = chosen;
+            entry.algo = results[chosen].algo;
+            entry.workspace = needed;
+            entry.id = h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_ID);
+            entry.tile = h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_TILE_ID);
+            entry.stages =
+                h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_STAGES_ID);
+            entry.splitk =
+                h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM);
+            usable = 1;
+        }
+    }
+    if (h3d_lt_count < H3D_LT_SLOTS) {
+        h3d_lt_choices[h3d_lt_count++] = entry;
+    } else {
+        /* The DiT alone presents more shapes than the table holds, so a full
+         * table takes the next slot round-robin: a repeated question costs one
+         * more heuristic call and answers the same algorithm, since the
+         * heuristic is a function of the shapes it is given. */
+        h3d_lt_choices[h3d_lt_next++ % H3D_LT_SLOTS] = entry;
+    }
+    if (getenv("H3D_LT_ALGO_TRACE")) {
+        fprintf(stderr,
+                "lt %ux%ux%u %s %s %s cand=%d id=%d tile=%d stages=%d "
+                "splitk=%d wk=%zu\n",
+                rows, input_dim, output_dim, h3d_lt_type_name(type),
+                h3d_lt_compute_name(compute), columns ? "columns" : "rows",
+                entry.candidate, entry.id, entry.tile, entry.stages,
+                entry.splitk, entry.workspace);
+    }
+    if (!usable) return 0;
+    *algo = entry.algo;
+    *workspace = entry.workspace;
+    return 1;
+}
+
+/* The algorithms this run dispatched, one entry per shape in first-seen order,
+ * `rows x k x n type compute layout cand=.. id=.. tile=.. stages=.. splitk=..
+ * wk=..` separated by "; ". Returns the length written. */
+int h3d_lt_algo_report(char *text, size_t size) {
+    if (!text || size < 2) return 0;
+    text[0] = '\0';
+    size_t used = 0;
+    for (int slot = 0; slot < h3d_lt_count; slot++) {
+        const struct h3d_lt_choice *choice = &h3d_lt_choices[slot];
+        int written = snprintf(
+            text + used, size - used,
+            "%s%ux%ux%u %s %s %s cand=%d id=%d tile=%d stages=%d splitk=%d "
+            "wk=%zu",
+            slot ? "; " : "", choice->rows, choice->input_dim,
+            choice->output_dim, h3d_lt_type_name(choice->type),
+            h3d_lt_compute_name(choice->compute),
+            choice->columns ? "columns" : "rows", choice->candidate,
+            choice->id, choice->tile, choice->stages, choice->splitk,
+            choice->workspace);
+        if (written < 0 || (size_t)written >= size - used) {
+            text[used] = '\0';
+            break;
+        }
+        used += (size_t)written;
+    }
+    return (int)used;
+}
+
 /* `h3_linear_lt` (`h3_gpu_cuda.cu:733-779`), byte for byte: row-major
  * layouts, TRANSB, F32 compute, alpha 1 and beta 0. `compute` carries this
  * port's video VAE decoder compute-mode option; the plain `h3d_linear_lt`
@@ -562,10 +806,17 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
             sizeof(row_major));
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatmul(context->blas, operation, &alpha, input,
-                                input_layout, weight, weight_layout, &beta,
-                                output, output_layout, output, output_layout,
-                                NULL, NULL, 0, context->stream);
+        cublasLtMatmulAlgo_t algo;
+        size_t workspace = 0;
+        int pinned = h3d_lt_pick(context, operation, weight_layout,
+                                 input_layout, output_layout, rows, input_dim,
+                                 output_dim, type, compute, 0, &algo,
+                                 &workspace);
+        status = cublasLtMatmul(
+            context->blas, operation, &alpha, input, input_layout, weight,
+            weight_layout, &beta, output, output_layout, output, output_layout,
+            pinned ? &algo : NULL, workspace ? context->lt_workspace : NULL,
+            workspace, context->stream);
     }
     if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
     if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
@@ -627,10 +878,17 @@ static int h3d_linear_lt_columns(h3d_context *context, void *output,
                                             rows, output_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatmul(context->blas, operation, &alpha, weight,
-                                weight_layout, input, input_layout, &beta,
-                                output, output_layout, output, output_layout,
-                                NULL, NULL, 0, context->stream);
+        cublasLtMatmulAlgo_t algo;
+        size_t workspace = 0;
+        int pinned = h3d_lt_pick(context, operation, weight_layout,
+                                 input_layout, output_layout, rows, input_dim,
+                                 output_dim, type, compute, 1, &algo,
+                                 &workspace);
+        status = cublasLtMatmul(
+            context->blas, operation, &alpha, weight, weight_layout, input,
+            input_layout, &beta, output, output_layout, output, output_layout,
+            pinned ? &algo : NULL, workspace ? context->lt_workspace : NULL,
+            workspace, context->stream);
     }
     if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
     if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
