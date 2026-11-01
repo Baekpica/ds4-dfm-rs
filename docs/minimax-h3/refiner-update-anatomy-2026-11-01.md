@@ -83,6 +83,15 @@ transposes, the elementwise stream between them). That is the next measurement:
 the exact block shapes at 16,128 rows through the same call, to say whether the
 GEMM alone reaches the 65-90 band.
 
+> **Withdrawn 2026-11-01 by `stage2-attention-cost-2026-11-01.md`.** Measured:
+> the thirty-four projections run at 92.51 TFLOPS and take 94.9 ms of a block,
+> so neither the shape nor the calls around the GEMM are the gap. The 5x is
+> owed by four hand-written attention kernels at 0.8-4.4 TFLOPS, 78.4 % of the
+> block; the tower's own kernels do the same work at 61.5 TFLOPS. The
+> 414-600 TFLOP per update above counts GEMM FLOPs only while the time it
+> divides is the whole block, so the TFLOPS column in section 4 is not a GEMM
+> rate and the sentence above it does not follow from the numbers.
+
 ## 5. Where this leaves the phase
 
 - Nothing to win in prepare / head / sample.
@@ -91,6 +100,9 @@ GEMM alone reaches the 65-90 band.
 - The published bar is achievable in principle: it needs the GEMMs at 5x the
   rate the blocks currently achieve, i.e. cuBLAS's own envelope, not a smaller
   model and not a different part.
+
+> **Withdrawn 2026-11-01.** Same receipt as the section above: the GEMMs are
+> already at cuBLAS's envelope (92.51 TFLOPS). The 5x sits in the attention.
 - Dense attention is 1.9 s per layer at 16,128 tokens, about 4 % of peak on that
   term; it is off the deliverable route but it is where a further 3x of the
   *dense* arm would come from.

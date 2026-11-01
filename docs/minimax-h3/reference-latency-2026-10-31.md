@@ -119,6 +119,16 @@ TFLOPS, which is inside the 65-90 TFLOPS cuBLAS reaches on this part
 (`refiner-update-anatomy-2026-11-01.md` §4). The bar stands; our achieved rate
 is 5x off it. The paragraph below is kept as written, dated.
 
+> **Updated 2026-11-01, same day, by `stage2-attention-cost-2026-11-01.md`.**
+> The 5x is located: not the projections, which measure 92.51 TFLOPS and 94.9
+> ms of an 830.6 ms block, but the four hand-written attention kernels around
+> them, which are 651.7 ms of that block at 0.8-4.4 TFLOPS while the tower's
+> own kernels do the same shapes at 61.5 TFLOPS
+> (`tests/h3/sol_forward_bm 16128 32 3 1.0`). The 50-73 TFLOPS the published
+> bar asks for is therefore an achievable *attention* rate on this part, which
+> is a stronger statement than the one above: the bar does not need anything
+> the hardware has not already shown here.
+
 The old text: three passes of the
 22B BF16 transformer is 3 x 34.6 GiB = 104 GiB, and 24.71 s for that is
 4.5 TB/s against this host's measured 241-246 GB/s (`docs/gb10-hardware.md`).
