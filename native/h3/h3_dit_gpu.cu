@@ -6977,7 +6977,7 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *bias, uint32_t depth, uint32_t height,
                     uint32_t width, uint32_t input_channels,
                     uint32_t output_channels, uint32_t kernel, uint32_t tile,
-                    float *scratch, size_t scratch_bytes, char *error,
+                    const h3d_tensor *scratch, char *error,
                     size_t error_size) {
     if (!context || !depth || !height || !width || !input_channels ||
         !output_channels || !kernel || !tile) {
@@ -7001,27 +7001,25 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
         !h3d_is(input, H3D_F32, input_elements) ||
         !h3d_is(weight, H3D_F32, weight_elements) ||
         !h3d_is(output, H3D_F32, output_elements) ||
-        !h3d_is(bias, H3D_F32, output_channels)) {
-        return h3d_set_error(error, error_size, "invalid Conv3d tensors");
+        !h3d_is(bias, H3D_F32, output_channels) ||
+        !h3d_is(scratch, H3D_F32, column_elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid Conv3d tensors or scratch");
     }
     uint32_t columns_per_row = input_channels * kernel * kernel * kernel;
     size_t rows = (size_t)out_depth * out_height * out_width;
-    if (column_elements * sizeof(float) > scratch_bytes || !scratch) {
-        return h3d_set_error(error, error_size,
-                             "Conv3d scratch is smaller than one tile");
-    }
     for (size_t begin = 0; begin < rows; begin += tile) {
         size_t count = rows - begin < tile ? rows - begin : tile;
         size_t elements = count * columns_per_row;
         h3d_im2col3d_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
                               context->stream>>>(
-            scratch, (const float *)input->data, depth, height, width,
+            (float *)scratch->data, (const float *)input->data, depth, height, width,
             input_channels, kernel, (uint32_t)begin, (uint32_t)count,
             columns_per_row, elements);
         if (!h3d_launch_ok("Conv3d im2col", error, error_size)) return 0;
         if (!h3d_linear_lt_compute(
                 context, (char *)output->data + begin * output_channels * 4,
-                scratch, weight->data, (uint32_t)count, columns_per_row,
+                scratch->data, weight->data, (uint32_t)count, columns_per_row,
                 output_channels, CUDA_R_32F, CUBLAS_COMPUTE_32F, error,
                 error_size)) {
             return 0;

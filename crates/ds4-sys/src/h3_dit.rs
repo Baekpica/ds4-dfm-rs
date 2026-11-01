@@ -519,8 +519,7 @@ unsafe extern "C" {
         output_channels: u32,
         kernel: u32,
         tile: u32,
-        scratch: *mut CTensor,
-        scratch_bytes: usize,
+        scratch: *const CTensor,
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
@@ -4007,7 +4006,6 @@ impl Gpu {
                     kernel,
                     tile,
                     scratch.raw(),
-                    scratch.bytes(),
                     error,
                     size,
                 )
