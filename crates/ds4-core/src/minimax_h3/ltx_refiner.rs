@@ -684,6 +684,14 @@ impl Block {
         diagnostic: Diagnostic,
     ) -> Result<(), RefinerError> {
         let trace = BlockTrace::new(self.layer);
+        // `H3_BLOCK_STAGES=1` splits this block into the five groups the
+        // forward has, so a block's total can be attributed before anything is
+        // changed: the projections alone are priced by
+        // `tests/h3/refiner_gemm_bm`, and what is left over is these.
+        let mut stages = Stages::new(
+            std::env::var_os("H3_BLOCK_STAGES").is_some(),
+            format!("layer={}", self.layer),
+        );
 
         // 1-2. Video self-attention, then the text cross-attention
         // (`transformer.py:270-298`). Only the self-attention's video rows
@@ -704,6 +712,7 @@ impl Block {
             "video",
         )?;
         trace.state(gpu, "video-after-sa-text", video)?;
+        stages.lap(gpu, "video-sa-text")?;
 
         // 3. Audio self-attention and text cross-attention (`:300-326`).
         if let Some((state, a)) = audio {
@@ -723,6 +732,7 @@ impl Block {
             )?;
             trace.state(gpu, "audio-after-sa-text", state)?;
         }
+        stages.lap(gpu, "audio-sa-text")?;
 
         // 4. A2V then V2A (`:328-397`): all four modulated operands are formed
         // from the pre-A2V state, before either attention runs.
@@ -805,14 +815,55 @@ impl Block {
             trace.state(gpu, "video-after-av", video)?;
             trace.state(gpu, "audio-after-av", state)?;
         }
+        stages.lap(gpu, "av")?;
 
         // 5. The two feed-forwards (`:399-414`), rows 3..5, re-formed here
         // because the AV gate borrowed the same buffers.
         feed_forward(gpu, video, &self.video_ff, &self.video_table, v, &s.video)?;
+        stages.lap(gpu, "video-ff")?;
         if let Some((state, a)) = audio {
             feed_forward(gpu, state, &self.audio_ff, &self.audio_table, a, &s.audio)?;
         }
+        stages.lap(gpu, "audio-ff")?;
 
+        Ok(())
+    }
+}
+
+/// A named-boundary timer for the two profile switches inside the block:
+/// `H3_BLOCK_STAGES` splits a block into the five groups `forward` actually
+/// has, `H3_ATTN_PROFILE` splits one attention into projections, norms, rotary
+/// and the attention core. Each lap syncs, so a group's figure is its own
+/// rather than the queue's; a sync is tenths of a millisecond against the
+/// hundreds these groups spend.
+///
+/// Unset, one environment lookup per block and one per attention call.
+struct Stages {
+    on: bool,
+    at: std::time::Instant,
+    tag: String,
+}
+
+impl Stages {
+    fn new(on: bool, tag: String) -> Stages {
+        Stages {
+            on,
+            at: std::time::Instant::now(),
+            tag,
+        }
+    }
+
+    fn lap(&mut self, gpu: &Gpu, group: &str) -> Result<(), RefinerError> {
+        if !self.on {
+            return Ok(());
+        }
+        gpu.sync().map_err(RefinerError::Run)?;
+        println!(
+            "STAGES {} group={group} ms={:.2}",
+            self.tag,
+            self.at.elapsed().as_secs_f64() * 1e3
+        );
+        self.at = std::time::Instant::now();
         Ok(())
     }
 }
@@ -1266,6 +1317,13 @@ impl Attention {
         sol: Option<&Sol<'_>>,
     ) -> Result<(), RefinerError> {
         let named = |detail: String| RefinerError::Run(format!("{}: {detail}", self.name));
+        // `H3_ATTN_PROFILE=1`: the projections, the norms, the rotary and the
+        // attention core are different kernels and different owners, and the
+        // block-level split cannot tell them apart.
+        let mut stages = Stages::new(
+            std::env::var_os("H3_ATTN_PROFILE").is_some(),
+            format!("attn={}", self.name),
+        );
 
         self.query
             .apply(gpu, &scratch.query, input, q_rows)
@@ -1276,6 +1334,7 @@ impl Attention {
         self.value
             .apply(gpu, &scratch.value, context, kv_rows)
             .map_err(|error| named(error.token()))?;
+        stages.lap(gpu, "proj")?;
 
         // `q_norm`/`k_norm` are `RMSNorm(inner_dim)` over the whole inner
         // dimension and *before* the head split (`attention.py:505-506`).
@@ -1297,6 +1356,7 @@ impl Attention {
             RMS_EPSILON,
         )
         .map_err(named)?;
+        stages.lap(gpu, "norm")?;
 
         if let Some((q_cos, q_sin, k_cos, k_sin)) = rope {
             gpu.ltx_rope_pair(
@@ -1313,6 +1373,7 @@ impl Attention {
             )
             .map_err(named)?;
         }
+        stages.lap(gpu, "rope")?;
 
         // `scaled_dot_product_attention` at its default scale with no mask
         // (`attention.py:99-100`), the operands token-major, which is what the
@@ -1351,6 +1412,9 @@ impl Attention {
                     policy.tau,
                 )
                 .map_err(named)?;
+                // The search and the sparse forward are separate kernels with
+                // separate costs, and only the search repeats per tau.
+                stages.lap(gpu, "sol-search")?;
                 gpu.sol_ltx_forward(
                     &scratch.attention,
                     policy.plan,
@@ -1378,6 +1442,7 @@ impl Attention {
                 .map_err(named)?;
             }
         }
+        stages.lap(gpu, "core")?;
 
         // `PytorchGatedAttention` (`ops.py:94-106`): the logits come from the
         // module's input, not the context, and the gate is applied before
