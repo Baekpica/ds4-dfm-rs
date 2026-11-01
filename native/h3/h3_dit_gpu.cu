@@ -35,6 +35,32 @@ struct h3d_tensor {
     cudaStream_t stream;
 };
 
+/* The streams of the live contexts, so a free can tell whether the stream a
+ * tensor was allocated on still exists. One entry per context and one context
+ * per process in every host this port has; a context that finds no slot simply
+ * allocates from the pool and frees with the plain call. */
+#define H3D_LIVE_STREAMS 16
+static cudaStream_t h3d_live_streams[H3D_LIVE_STREAMS];
+
+static int h3d_stream_live(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (h3d_live_streams[slot] == stream) return 1;
+    return 0;
+}
+
+static void h3d_stream_register(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (!h3d_live_streams[slot]) {
+            h3d_live_streams[slot] = stream;
+            return;
+        }
+}
+
+static void h3d_stream_unregister(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (h3d_live_streams[slot] == stream) h3d_live_streams[slot] = NULL;
+}
+
 /* The video VAE decoder's bench options. Every field defaults to the path the
  * H3 campaign measured before, so a job that sets nothing is unchanged, and
  * each option exists so the arms can be timed on one binary. The decoder's
@@ -242,6 +268,7 @@ h3d_context *h3d_create(char *error, size_t error_size) {
         cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold,
                                 &threshold);
     }
+    h3d_stream_register(context->stream);
     cublasStatus_t blas = cublasLtCreate(&context->blas);
     if (blas != CUBLAS_STATUS_SUCCESS) {
         h3d_set_error(error, error_size, "create cuBLASLt handle: status %d",
@@ -262,7 +289,10 @@ void h3d_destroy(h3d_context *context) {
     if (!context) return;
     if (context->stage_done) cudaEventDestroy(context->stage_done);
     if (context->stage) cudaFreeHost(context->stage);
-    if (context->stream) cudaStreamDestroy(context->stream);
+    if (context->stream) {
+        h3d_stream_unregister(context->stream);
+        cudaStreamDestroy(context->stream);
+    }
     if (context->blas) cublasLtDestroy(context->blas);
     free(context);
 }
@@ -308,10 +338,13 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
 void h3d_free(h3d_tensor *tensor) {
     if (!tensor) return;
     if (tensor->data) {
-        /* A context destroyed before its tensors leaves no stream to order the
-         * free on; the plain free is the fallback, and it is what a caller that
-         * never had a stream gets too. */
-        if (!tensor->stream ||
+        /* An ordered free is only valid while the stream it was made on is
+         * alive, and a caller may drop the context first: a Rust struct frees
+         * its fields in declaration order, and every holder of a context keeps
+         * it above the tensors it was used to make. So the free asks the live
+         * table, and a tensor whose stream is gone takes the plain free, which
+         * is what the driver needs to reclaim a pool block anyway. */
+        if (!tensor->stream || !h3d_stream_live(tensor->stream) ||
             cudaFreeAsync(tensor->data, tensor->stream) != cudaSuccess) {
             cudaFree(tensor->data);
         }
