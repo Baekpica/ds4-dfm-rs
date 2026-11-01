@@ -122,7 +122,6 @@ static int map_distributed_options(
     dst->prefill_chunk = src->prefill_chunk;
     dst->prefill_window = src->prefill_window;
     dst->activation_bits = src->activation_bits;
-    dst->replay_check = src->replay_check != 0;
     dst->debug = src->debug != 0;
     return 0;
 }

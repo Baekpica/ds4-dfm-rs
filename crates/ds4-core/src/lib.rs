@@ -594,7 +594,6 @@ pub struct DistributedConfig {
     pub prefill_chunk: u32,
     pub prefill_window: u32,
     pub activation_bits: u32,
-    pub replay_check: bool,
     pub debug: bool,
 }
 
@@ -774,7 +773,6 @@ fn pack_distributed(config: &DistributedConfig) -> Result<FfiDistributed> {
         prefill_chunk: config.prefill_chunk,
         prefill_window: config.prefill_window,
         activation_bits: config.activation_bits,
-        replay_check: i32::from(config.replay_check),
         debug: i32::from(config.debug),
     };
     Ok(FfiDistributed {

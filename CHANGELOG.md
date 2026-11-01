@@ -45,6 +45,11 @@ for exact provenance. Historical entries retain their original scope.
   pixel hash keeps its C definition. Preprocessing is faster than C on 14 of
   15 fixture/tower pairs (bug.jpeg Qwen 73.7 -> 48.6 ms) and 0.02 ms slower
   on the last; Qwen request times and VmHWM are unchanged.
+- `--dist-replay-check` is deprecated: Rust hosts reject it. It only ran in
+  the C CLI's one-shot coordinator, where it compared two fresh prefills;
+  Rust hosts accepted it and did nothing. The property it guarded, reused or
+  restored state matching a fresh run, is recorded as a common host check to
+  build (`docs/rust-migration/C_CONTINUATION.md`).
 
 ## v0.1.5 — 2026-11-01
 

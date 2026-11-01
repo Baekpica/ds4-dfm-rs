@@ -31,7 +31,6 @@ pub(crate) fn distributed_config(opt: &ds4_dist::Options) -> Option<ds4_core::Di
         prefill_chunk: opt.prefill_chunk,
         prefill_window: opt.prefill_window,
         activation_bits: opt.activation_bits,
-        replay_check: opt.replay_check,
         debug: opt.debug,
     })
 }
@@ -2765,7 +2764,6 @@ mod tests {
         "--dist-prefill-chunk",
         "--dist-prefill-window",
         "--dist-activation-bits",
-        "--dist-replay-check",
         "--debug",
         "-h, --help",
     ];

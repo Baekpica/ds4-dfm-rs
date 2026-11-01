@@ -52,7 +52,6 @@ typedef struct {
     uint32_t prefill_chunk;
     uint32_t prefill_window;
     uint32_t activation_bits;
-    int32_t replay_check;
     int32_t debug;
 } ds4_bridge_distributed_options;
 

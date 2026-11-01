@@ -240,7 +240,6 @@ pub struct ds4_bridge_distributed_options {
     pub prefill_chunk: u32,
     pub prefill_window: u32,
     pub activation_bits: u32,
-    pub replay_check: i32,
     pub debug: i32,
 }
 
