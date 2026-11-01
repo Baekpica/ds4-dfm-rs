@@ -120,8 +120,9 @@ different accumulation order in a three-step refinement looks like. 43 dB is not
 blocks x 3 steps of a diffusion, and the acceptance question is whether the
 subject and the motion survive, not whether the pixels do.
 
-Clips: `outputs/prof-mma.mp4` (arm) and `outputs/prof-stages.mp4` (control),
-same binary, same draft, one switch apart.
+Frame pair: `docs/minimax-h3/frames/attn-mma-2026-11-01.png` (control left, arm
+right, 2.5 s). Clips: `outputs/prof-mma.mp4` (arm) and `outputs/prof-stages.mp4`
+(control), same binary, same draft, one switch apart.
 
 ## 6. What is left in the block
 
