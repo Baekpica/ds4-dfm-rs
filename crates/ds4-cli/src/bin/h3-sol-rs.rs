@@ -704,9 +704,9 @@ Usage: h3-sol-rs --latent DRAFT --audio PCM --upscaler FILE --adapter DIR \
   --latent PATH             stage-1 latent: raw BF16 [channel][time][height][width]
   --audio PATH              soundtrack: raw little-endian F32, interleaved
   --audio-vae PATH          LTX audio VAE for the clean frozen audio state.
-                            Unfinished: the 2026-11-01 A/B collapses the
-                            picture, so this flag is for that diagnosis only
-                            (docs/minimax-h3/audio-state-ab-2026-11-01.md)
+                            Opt-in: it costs about 11 s of denoise over the
+                            video-only route
+                            (docs/minimax-h3/av-cross-modulation-pair-2026-11-01.md)
   --no-audio-state          video-only ablation; omit the audio state and context
   --rate N                  soundtrack sample rate (default 32000)
   --channels N              soundtrack channels (default 2)
