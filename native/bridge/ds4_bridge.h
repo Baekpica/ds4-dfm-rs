@@ -123,6 +123,13 @@ typedef struct {
     float directional_steering_ffn;
     const ds4_host_ple *ple;   /* optional Qwen SSD-PLE sidecar; borrowed */
     const ds4_host_mem_policy *mem; /* optional memory policy; copied */
+    /* Sidecar paths and tensor directories, borrowed: native maps each
+     * sidecar from the host's inventory instead of parsing it again. */
+    const char *audio_path;                  /* MiMo VQ audio part */
+    const ds4_host_tensor_dir *vision_tensors;
+    const ds4_host_tensor_dir *audio_tensors;
+    const ds4_host_tensor_dir *mtp_tensors;
+    const ds4_host_tensor_dir *dspark_tensors;
 } ds4_bridge_model_open_options;
 
 typedef struct {

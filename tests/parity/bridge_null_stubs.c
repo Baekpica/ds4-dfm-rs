@@ -64,6 +64,13 @@ void ds4_host_vocab_clear(void) {}
 void ds4_host_bind_map_install(const ds4_host_bind_map *m) { (void)m; }
 void ds4_host_ple_install(const ds4_host_ple *p) { (void)p; }
 void ds4_host_ple_clear(void) {}
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark) {
+    (void)vision; (void)audio; (void)mtp; (void)dspark;
+}
+void ds4_host_sidecar_dirs_clear(void) {}
 void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) { (void)p; }
 void ds4_host_bind_map_clear(void) {}
 void ds4_host_mtp_bind_map_install(const ds4_host_bind_map *m) { (void)m; }

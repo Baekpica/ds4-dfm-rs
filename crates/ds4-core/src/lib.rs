@@ -918,6 +918,18 @@ enum ShardMapping {
     Named,
 }
 
+/// A single-file sidecar's tensor directory, for native to map it from.
+fn sidecar_dir(path: Option<&str>) -> Result<Option<FfiTensorDir>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let inventory = TensorInventory::open(Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("sidecar {path}: {}", e.token()),
+    })?;
+    pack_tensor_dir(&inventory, ShardMapping::Legacy).map(Some)
+}
+
 fn pack_tensor_dir(inventory: &TensorInventory, mapping: ShardMapping) -> Result<FfiTensorDir> {
     let mut names = Vec::with_capacity(inventory.tensors.len());
     for t in &inventory.tensors {
@@ -1733,9 +1745,11 @@ impl Model {
                 message: "GLM-5.3 requires one full CUDA model with embedded MTP".into(),
             });
         }
-        // Resolve Naive's common sidecar environment here as well as native:
-        // the Rust catalog must validate and retain the actual loaded file.
-        let env_dspark = (identified.shape.family == ModelFamily::NaiveN05)
+        // DS4_DSPARK_MODEL names the drafter for every host. Native no longer
+        // reads it for a Rust host, so the file it opens is the one validated
+        // and bound here; distributed launches ignore it, as native did.
+        let env_dspark = distributed
+            .is_none()
             .then(|| {
                 std::env::var("DS4_DSPARK_MODEL")
                     .ok()
@@ -2055,19 +2069,35 @@ impl Model {
             return Err(fail(check, &err));
         }
         let c_path = cstring_path(path)?;
+        // A host-named vision sidecar gets the open's own checks first; a bad
+        // file used to end the process inside the native binder.
+        if let Some(vision) = tuning.vision_path.as_deref() {
+            sibling::probe_vision_sidecar(identified.shape, backend, distributed, vision)?;
+        }
         // MiniMax maps its release's vision part (read only for media).
         if identified.shape.family == ModelFamily::MinimaxVq {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
         }
-        // MiMo VQ maps its release's vision part; native opens the audio part
-        // beside it. Both are hashed here first.
+        // MiMo VQ maps its release's vision and audio parts, both hashed here
+        // first.
+        let mut audio_path = None;
         if identified.shape.variant == Variant::Mimo26FlashVq {
             let (vision, audio) = mimo2_vq::media_paths(Path::new(path));
             tuning.vision_path = vision
                 .filter(|_| audio.is_some())
                 .map(|p| p.to_string_lossy().into_owned());
+            audio_path = audio
+                .filter(|_| tuning.vision_path.is_some())
+                .map(|p| p.to_string_lossy().into_owned());
         }
+        let audio_c = audio_path.as_deref().map(cstring_path).transpose()?;
+        // Native maps each sidecar from these directories instead of parsing
+        // the GGUF again (tests/tensors.rs sidecar_parse_matches_c).
+        let mut vision_dir = sidecar_dir(tuning.vision_path.as_deref())?;
+        let mut audio_dir = sidecar_dir(audio_path.as_deref())?;
+        let mut mtp_dir = sidecar_dir(mtp_path)?;
+        let mut dspark_dir = sidecar_dir(dspark_path)?;
         let vision_path = tuning
             .vision_path
             .as_deref()
@@ -2134,6 +2164,11 @@ impl Model {
             directional_steering_ffn: tuning.steering_ffn,
             ple: ple.as_mut().map_or(ptr::null(), |sidecar| sidecar.ffi()),
             mem: &mem_policy,
+            audio_path: audio_c.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+            vision_tensors: vision_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            audio_tensors: audio_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            mtp_tensors: mtp_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            dspark_tensors: dspark_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
         // Every native draw (serial, banks, verify rows) is the Rust sampler.
@@ -2168,6 +2203,12 @@ impl Model {
             code: 1,
             message: "ds4_bridge_model_open returned NULL".into(),
         })?;
+        // Return the freed load buffers before the host fits banks from free
+        // memory (0.75 GiB of a Ling-3.1 server's RSS stayed in glibc arenas).
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
+        }
         Ok(Self {
             raw,
             family: identified.shape.family,

@@ -397,6 +397,15 @@ void ds4_host_bind_map_clear(void);
  * active map only around its own sibling open+bind window and skips that
  * sibling's C layout check, mirroring the base skip.  The C CLI/server
  * leave these NULL. */
+/* Sidecar tensor directories (vision, MiMo VQ audio, MTP/DFlash, DSpark),
+ * each built by the host from that sidecar's own GGUF.  NULL keeps the C
+ * parse for that sidecar. */
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark);
+void ds4_host_sidecar_dirs_clear(void);
+
 void ds4_host_mtp_bind_map_install(const ds4_host_bind_map *m);
 void ds4_host_mtp_bind_map_clear(void);
 void ds4_host_dspark_bind_map_install(const ds4_host_bind_map *m);

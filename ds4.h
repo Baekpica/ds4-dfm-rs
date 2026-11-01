@@ -254,9 +254,11 @@ typedef struct {
        fit's headroom (the prewarm's footprint is post-placement growth by
        design, exactly like the lazy first-forward costs it replaces). */
     bool defer_boot_prewarm;
-    /* The caller holds the instance lock: Rust hosts take it before open and
-       report a held lock as an error instead of exiting here. */
-    bool host_instance_lock;
+    /* A Rust host owns process policy: it holds the instance lock (a held
+       lock is its error, not an exit here), resolves DS4_DSPARK_MODEL
+       itself and trims its own heap after open. */
+    bool host_policy;
+    const char *audio_path;    /* MiMo VQ audio part; NULL derives it */
     ds4_distributed_options distributed;
 } ds4_engine_options;
 

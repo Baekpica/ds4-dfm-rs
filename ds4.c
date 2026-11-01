@@ -2750,6 +2750,25 @@ void ds4_host_bind_map_clear(void) {
     g_host_bind_map = NULL;
 }
 
+static const ds4_host_tensor_dir *g_host_vision_dir;
+static const ds4_host_tensor_dir *g_host_audio_dir;
+static const ds4_host_tensor_dir *g_host_mtp_dir;
+static const ds4_host_tensor_dir *g_host_dspark_dir;
+
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark) {
+    g_host_vision_dir = vision;
+    g_host_audio_dir = audio;
+    g_host_mtp_dir = mtp;
+    g_host_dspark_dir = dspark;
+}
+
+void ds4_host_sidecar_dirs_clear(void) {
+    ds4_host_sidecar_dirs_install(NULL, NULL, NULL, NULL);
+}
+
 /* MTP/DSpark sibling bind maps live in their own slots: the base map is
  * cleared after base weights_bind, and ds4_engine_open swaps each sibling
  * map into the active slot only around that sibling's own open+bind
@@ -3766,6 +3785,16 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
     model_build_catalog(m);
 
     if (!metal_mapping && prefetch_cpu) model_prefetch_cpu_mapping(m);
+}
+
+/* A sidecar mapped from the host's tensor directory for it (Rust hosts);
+ * NULL keeps the C parse (C hosts). */
+static void sidecar_model_open(ds4_model *m, const ds4_host_tensor_dir *dir,
+                               const char *path, bool metal_mapping,
+                               bool prefetch_cpu) {
+    g_host_tensor_dir = dir;
+    model_open(m, path, metal_mapping, prefetch_cpu);
+    g_host_tensor_dir = NULL;
 }
 
 /* Map all files in a split GGUF into one reserved virtual range.  Each
@@ -73212,7 +73241,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
-    if (!opt->host_instance_lock) ds4_acquire_instance_lock();
+    if (!opt->host_policy) ds4_acquire_instance_lock();
 
     bool load_slice = opt->load_slice;
     uint32_t load_layer_start = opt->load_layer_start;
@@ -73493,7 +73522,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
-        model_open(&e->vision_model, opt->vision_path, true, false);
+        sidecar_model_open(&e->vision_model, g_host_vision_dir,
+                           opt->vision_path, true, false);
         if (v41_sidecar) {
             /* The sidecar carries the DeepSeek-ViT + aligner and the per-layer
              * image-row router bias (blk.N.exp_probs_b_vl).  Its own metadata
@@ -73518,7 +73548,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (snprintf(audio, sizeof(audio), "%.*saudio-q8_0.gguf", dir, opt->vision_path) >= (int)sizeof(audio)) {
                 ds4_die("MiMo VQ audio part path too long");
             }
-            model_open(&e->audio_model, audio, true, false);
+            sidecar_model_open(&e->audio_model, g_host_audio_dir,
+                               opt->audio_path ? opt->audio_path : audio, true, false);
             mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
@@ -73593,7 +73624,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4 &&
         opt->distributed.role == DS4_DISTRIBUTED_NONE) {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0])
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
             dspark_path = getenv("DS4_DSPARK_MODEL");
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
@@ -73614,7 +73645,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * this window so mtp names resolve by index and the layout check
          * above skips (the host already ran the expected-layout table). */
         if (g_host_mtp_bind_map) ds4_host_bind_map_install(g_host_mtp_bind_map);
-        model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
+        sidecar_model_open(&e->mtp_model, g_host_mtp_dir, opt->mtp_path,
+                           graph_backend, true);
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
             inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
             if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
@@ -73677,7 +73709,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
      * runs attach it without threading a flag through every tool yet. */
     {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0]) dspark_path = getenv("DS4_DSPARK_MODEL");
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
+            dspark_path = getenv("DS4_DSPARK_MODEL");
         if (dspark_path && dspark_path[0] &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE) {
             /* The host dspark map indexes the flag path's tensor dir; an
@@ -73685,7 +73718,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              * explicit-path case installs it (the bridge sets both). */
             if (g_host_dspark_bind_map && opt->dspark_path && opt->dspark_path[0])
                 ds4_host_bind_map_install(g_host_dspark_bind_map);
-            model_open(&e->dspark_model, dspark_path, graph_backend, true);
+            sidecar_model_open(&e->dspark_model, g_host_dspark_dir, dspark_path,
+                               graph_backend, true);
             if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
                 ds4_str arch = {0};
                 if (e->mtp_draft_tokens > N05_DF_BLOCK - 1 ||
@@ -73821,7 +73855,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if (e->dspark_ready) {
             const char *dspark_prov = opt->dspark_path && opt->dspark_path[0]
-                ? opt->dspark_path : getenv("DS4_DSPARK_MODEL");
+                ? opt->dspark_path : opt->host_policy ? NULL : getenv("DS4_DSPARK_MODEL");
             (void)ds4_gpu_model_source_bind(e->dspark_model.map,
                                             e->dspark_model.size,
                                             DS4_MSRC_ROLE_DRAFTER,
@@ -74386,8 +74420,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #ifdef __GLIBC__
     /* Freed load buffers (16 MiB O_DIRECT reads per part) stay in glibc's
      * arenas once its mmap threshold rises: 0.75 GiB of a Ling-3.1 server's
-     * RSS. Return them before callers fit banks from free memory. */
-    malloc_trim(0);
+     * RSS. Return them before callers fit banks from free memory; a Rust
+     * host trims after open returns. */
+    if (!opt->host_policy) malloc_trim(0);
 #endif
 
     *out = e;

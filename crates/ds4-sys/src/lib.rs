@@ -433,6 +433,11 @@ pub struct ds4_bridge_model_open_options {
     pub directional_steering_ffn: c_float,
     pub ple: *const ds4_host_ple,
     pub mem: *const ds4_host_mem_policy,
+    pub audio_path: *const c_char,
+    pub vision_tensors: *const ds4_host_tensor_dir,
+    pub audio_tensors: *const ds4_host_tensor_dir,
+    pub mtp_tensors: *const ds4_host_tensor_dir,
+    pub dspark_tensors: *const ds4_host_tensor_dir,
 }
 
 #[repr(C)]

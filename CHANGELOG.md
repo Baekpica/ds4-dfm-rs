@@ -29,6 +29,11 @@ for exact provenance. Historical entries retain their original scope.
   `stop` (they decoded to the token budget and reported `length`); GLM VQ
   user/observation and K2 `im_end` stop natively; an EOS policy also
   excludes Naive's EOT.
+- Native maps each sidecar (vision, MiMo VQ audio, MTP/DFlash, DSpark) from
+  the tensor directory Rust built instead of parsing the GGUF again. Rust
+  resolves `DS4_DSPARK_MODEL` for every family, so native no longer opens a
+  drafter Rust never validated, and checks a named vision sidecar before
+  open; a bad file used to end the process inside the native binder.
 
 ## v0.1.5 — 2026-11-01
 

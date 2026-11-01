@@ -156,7 +156,8 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.vision_path = opt->vision_path;
     eopt.n_threads = opt->n_threads;
     eopt.defer_boot_prewarm = opt->defer_boot_prewarm != 0;
-    eopt.host_instance_lock = true; /* ds4-core Model::open holds it */
+    eopt.host_policy = true; /* ds4-core Model::open owns process policy */
+    eopt.audio_path = opt->audio_path;
     eopt.power_percent = opt->power_percent;
     eopt.warm_weights = opt->warm_weights != 0;
     eopt.quality = opt->quality != 0;
@@ -185,6 +186,8 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->bind) ds4_host_bind_map_install(opt->bind);
     if (opt->ple) ds4_host_ple_install(opt->ple);
     if (opt->mem) ds4_host_mem_policy_install(opt->mem);
+    ds4_host_sidecar_dirs_install(opt->vision_tensors, opt->audio_tensors,
+                                  opt->mtp_tensors, opt->dspark_tensors);
     /* Sibling maps index the sibling's own tensor dir; only meaningful
      * when the matching path rides the same open. */
     if (opt->mtp_bind && opt->mtp_path && opt->mtp_path[0])
@@ -192,6 +195,7 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->dspark_bind && opt->dspark_path && opt->dspark_path[0])
         ds4_host_dspark_bind_map_install(opt->dspark_bind);
     rc = ds4_engine_open(&engine, &eopt);
+    ds4_host_sidecar_dirs_clear();
     ds4_host_ple_clear();
     ds4_host_dspark_bind_map_clear();
     ds4_host_mtp_bind_map_clear();
