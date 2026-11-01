@@ -648,15 +648,19 @@ static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
     }
     int chosen = -1;
     /* The requested candidate first, then any earlier one, so a candidate that
-     * a build no longer offers still leaves a working algorithm. */
+     * a build no longer offers still leaves a working algorithm. A candidate
+     * that cannot fit the workspace ceiling is skipped rather than ending the
+     * search: the heuristic's first choice for a tall 512x512 product was a
+     * split-K needing 129 MB, and the honest answer is the next candidate, not
+     * the NULL default. */
     for (int pass = 0; pass < 2 && chosen < 0; pass++) {
         int first = pass ? 0 : want;
         int last = pass ? want : found;
         for (int index = first; index < last; index++) {
-            if (results[index].state == CUBLAS_STATUS_SUCCESS) {
-                chosen = index;
-                break;
-            }
+            if (results[index].state != CUBLAS_STATUS_SUCCESS) continue;
+            if (results[index].workspaceSize > H3D_LT_WORKSPACE_BYTES) continue;
+            chosen = index;
+            break;
         }
     }
 
