@@ -6929,6 +6929,32 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("channel affine", error, error_size);
 }
 
+/* Phase timing for the resizer's convolution, in seconds of device time.
+ * `h3d_conv3d_timing(1)` makes `h3d_conv3d_gemm` record cudaEvents between its
+ * phases and accumulate the intervals; `read` reports them and `reset` clears
+ * them. The marks are recorded in the work's own stream, so the intervals
+ * partition the timeline exactly and nothing is inserted between phases; one
+ * stream synchronize at the end of a timed call is what makes them readable.
+ * Phase order is im2col, GEMM, bias. */
+static int h3d_conv_timing_on = 0;
+static double h3d_conv_timing_seconds[3];
+
+int h3d_conv3d_timing(int enable) {
+    int previous = h3d_conv_timing_on;
+    h3d_conv_timing_on = enable ? 1 : 0;
+    return previous;
+}
+
+void h3d_conv3d_timing_read(double seconds[3]) {
+    if (!seconds) return;
+    for (int phase = 0; phase < 3; phase++)
+        seconds[phase] = h3d_conv_timing_seconds[phase];
+}
+
+void h3d_conv3d_timing_reset(void) {
+    for (int phase = 0; phase < 3; phase++) h3d_conv_timing_seconds[phase] = 0.0;
+}
+
 /* im2col for the resizer's 3x3x3 convolutions, one block per output row and
  * one coalesced copy of `channels` floats per tap. The columns come out
  * tap-major, `tap * channels + ic`, which is why the weights are permuted to
@@ -7011,29 +7037,81 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
     }
     uint32_t columns_per_row = input_channels * kernel * kernel * kernel;
     size_t rows = (size_t)out_depth * out_height * out_width;
-    for (size_t begin = 0; begin < rows; begin += tile) {
+    uint32_t tiles = (uint32_t)((rows + tile - 1) / tile);
+    int timed = h3d_conv_timing_on;
+    cudaEvent_t *marks = NULL;
+    size_t marks_count = (size_t)tiles * 2 + 2;
+    if (timed) {
+        marks = (cudaEvent_t *)calloc(marks_count, sizeof(cudaEvent_t));
+        if (!marks) return h3d_set_error(error, error_size, "Conv3d timing");
+        for (size_t mark = 0; mark < marks_count; mark++)
+            cudaEventCreate(&marks[mark]);
+        // marks[0] is the start; after tile i, marks[1 + 2i] follows the
+        // im2col and marks[2 + 2i] the GEMM, and marks[2 * tiles + 1] follows
+        // the bias, so [marks[2 * tiles], marks[2 * tiles + 1]] is the bias.
+        cudaEventRecord(marks[0], context->stream);
+    }
+    uint32_t ran = 0;
+    int failed = 0;
+    for (uint32_t step = 0; step < tiles; step++) {
+        size_t begin = (size_t)step * tile;
         size_t count = rows - begin < tile ? rows - begin : tile;
-        size_t elements = count * columns_per_row;
         h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
             (float *)scratch->data, (const float *)input->data, height, width,
             out_height, out_width, input_channels, (uint32_t)begin,
             (uint32_t)count);
-        if (!h3d_launch_ok("Conv3d im2col", error, error_size)) return 0;
+        if (!h3d_launch_ok("Conv3d im2col", error, error_size)) {
+            failed = 1;
+            break;
+        }
+        if (timed) cudaEventRecord(marks[1 + 2 * (size_t)step], context->stream);
         if (!h3d_linear_lt_compute(
                 context, (char *)output->data + begin * output_channels * 4,
                 scratch->data, weight->data, (uint32_t)count, columns_per_row,
                 output_channels, CUDA_R_32F,
                 tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F, error,
                 error_size)) {
-            return 0;
+            failed = 1;
+            break;
         }
+        if (timed) cudaEventRecord(marks[2 + 2 * (size_t)step], context->stream);
+        ran++;
     }
-    size_t output_count = rows * output_channels;
-    h3d_add_bias_kernel<<<(unsigned)((output_count + 255) / 256), 256, 0,
-                          context->stream>>>((float *)output->data,
-                                             (const float *)bias->data,
-                                             output_channels, output_count);
-    return h3d_launch_ok("Conv3d bias", error, error_size);
+    int status = 1;
+    if (!failed) {
+        size_t output_count = rows * output_channels;
+        h3d_add_bias_kernel<<<(unsigned)((output_count + 255) / 256), 256, 0,
+                              context->stream>>>(
+            (float *)output->data, (const float *)bias->data, output_channels,
+            output_count);
+        if (!h3d_launch_ok("Conv3d bias", error, error_size)) status = 0;
+        if (timed) cudaEventRecord(marks[2 * (size_t)tiles + 1], context->stream);
+    } else {
+        status = 0;
+    }
+    if (timed) {
+        cudaStreamSynchronize(context->stream);
+        for (uint32_t step = 0; step < ran; step++) {
+            size_t start = step ? 2 * (size_t)step : 0;
+            float milliseconds = 0.0f;
+            cudaEventElapsedTime(&milliseconds, marks[start],
+                                 marks[1 + 2 * (size_t)step]);
+            h3d_conv_timing_seconds[0] += (double)milliseconds * 1e-3;
+            cudaEventElapsedTime(&milliseconds, marks[1 + 2 * (size_t)step],
+                                 marks[2 + 2 * (size_t)step]);
+            h3d_conv_timing_seconds[1] += (double)milliseconds * 1e-3;
+        }
+        if (ran == tiles && !failed && status) {
+            float milliseconds = 0.0f;
+            cudaEventElapsedTime(&milliseconds, marks[2 * (size_t)tiles],
+                                 marks[2 * (size_t)tiles + 1]);
+            h3d_conv_timing_seconds[2] += (double)milliseconds * 1e-3;
+        }
+        for (size_t mark = 0; mark < marks_count; mark++)
+            cudaEventDestroy(marks[mark]);
+        free(marks);
+    }
+    return status;
 }
 
 /* `out = left + right`, the resizer's identity skips. `h3d_add` is BF16 only

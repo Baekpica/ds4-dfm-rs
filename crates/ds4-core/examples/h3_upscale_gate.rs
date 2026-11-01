@@ -88,11 +88,21 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
 
     let mut best = f64::MAX;
     for attempt in 0..2 {
+        // The last attempt is the one whose phase split gets reported: it runs
+        // on a warm device, which is the product's case.
+        let last = attempt == 1;
+        if last {
+            upscaler.timing(true);
+            upscaler.timing_reset();
+        }
         let started = std::time::Instant::now();
         let output = upscaler
             .upscale(&latent, time, height, width, height * 2, width * 2)
             .map_err(|detail| detail.to_string())?;
         let elapsed = started.elapsed().as_secs_f64();
+        if last {
+            upscaler.timing(false);
+        }
         best = best.min(elapsed);
         let mean = output.values.iter().sum::<f32>() / output.values.len() as f32;
         println!(
@@ -104,6 +114,17 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
             elapsed
         );
     }
+    let [columns, gemm, bias] = upscaler.timing_read();
+    let parts = columns + gemm + bias;
+    println!(
+        "phases {parts:.3}s of the timed run: im2col {columns:.3}s, gemm {gemm:.3}s, \
+         bias {bias:.3}s ({:.0}% im2col)",
+        if parts > 0.0 {
+            100.0 * columns / parts
+        } else {
+            0.0
+        }
+    );
     println!("load {load:.2}s, best {best:.3}s for {voxels} latent voxels");
     Ok(())
 }

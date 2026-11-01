@@ -525,6 +525,10 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    fn h3d_conv3d_timing(enable: c_int) -> c_int;
+    fn h3d_conv3d_timing_read(seconds: *mut f64);
+    fn h3d_conv3d_timing_reset();
+
     #[allow(clippy::too_many_arguments)]
     fn h3d_zero_pad3d(
         context: *mut Context,
@@ -4015,6 +4019,27 @@ impl Gpu {
             },
             "conv3d gemm",
         )
+    }
+
+    /// `h3d_conv3d_timing`: make `conv3d_gemm` sample its phases with device
+    /// events. Returns the previous state. `conv3d_timing_read` reports the
+    /// accumulated seconds as `[im2col, gemm, bias]`; the accumulation is per
+    /// context and survives calls, so `conv3d_timing_reset` precedes a run.
+    pub fn conv3d_timing(&self, enable: bool) -> bool {
+        unsafe { h3d_conv3d_timing(enable as c_int) != 0 }
+    }
+
+    /// `h3d_conv3d_timing_read`: `[im2col, gemm, bias]` seconds since the last
+    /// reset, over every `conv3d_gemm` call on any context.
+    pub fn conv3d_timing_read() -> [f64; 3] {
+        let mut seconds = [0.0f64; 3];
+        unsafe { h3d_conv3d_timing_read(seconds.as_mut_ptr()) };
+        seconds
+    }
+
+    /// `h3d_conv3d_timing_reset`: clear the accumulators.
+    pub fn conv3d_timing_reset() {
+        unsafe { h3d_conv3d_timing_reset() };
     }
 
     /// `h3d_zero_pad3d`: zero padding for the resizer's 3x3x3 convolutions,

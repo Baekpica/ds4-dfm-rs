@@ -433,6 +433,24 @@ impl Upscaler {
         out
     }
 
+    /// Sample the convolution's phases with device events. `timing_read`
+    /// returns the accumulated device seconds as `[im2col, gemm, bias]`, and
+    /// `timing_reset` clears them: a host timer around `upscale` cannot see
+    /// this split, because the native entries only report launch errors.
+    pub fn timing(&self, enable: bool) -> bool {
+        self.gpu.conv3d_timing(enable)
+    }
+
+    /// The accumulated phase seconds, over every `conv3d_gemm` call.
+    pub fn timing_read(&self) -> [f64; 3] {
+        Gpu::conv3d_timing_read()
+    }
+
+    /// Clear the phase accumulators.
+    pub fn timing_reset(&self) {
+        Gpu::conv3d_timing_reset()
+    }
+
     /// Resize a channel-major, normalized latent `[24, time, height, width]` to
     /// `out_height` by `out_width`, keeping the temporal extent.
     pub fn upscale(

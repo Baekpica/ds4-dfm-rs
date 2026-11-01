@@ -1036,6 +1036,13 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *scratch, uint32_t tf32, char *error,
                     size_t error_size);
 
+/* Phase timing for `h3d_conv3d_gemm`, in seconds of device time: [im2col,
+ * GEMM, bias]. `timing` turns the sampling on (and returns the previous
+ * state); `read` copies the accumulators into `seconds`, `reset` clears them. */
+int h3d_conv3d_timing(int enable);
+void h3d_conv3d_timing_read(double seconds[3]);
+void h3d_conv3d_timing_reset(void);
+
 /* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
  * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
 int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
