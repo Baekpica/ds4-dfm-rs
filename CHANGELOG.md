@@ -34,6 +34,12 @@ for exact provenance. Historical entries retain their original scope.
   resolves `DS4_DSPARK_MODEL` for every family, so native no longer opens a
   drafter Rust never validated, and checks a named vision sidecar before
   open; a bad file used to end the process inside the native binder.
+- Qwen4Exp, Ling-3.0-VL and GLM-5.3 images are decoded, resized and packed
+  in Rust (`image` crate); native adds only the vision tower's positions.
+  PNG rows match the C path bit for bit (GLM within an ulp), JPEG decodes
+  differ from stb_image by a few levels on 1-2% of pixels, and the Qwen
+  pixel hash, a disk-KV identity, keeps its C definition. Preprocessing is
+  faster on large images (bug.jpeg Qwen 70.8 -> 56.8 ms).
 
 ## v0.1.5 — 2026-11-01
 

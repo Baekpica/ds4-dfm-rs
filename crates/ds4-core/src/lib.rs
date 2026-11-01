@@ -66,6 +66,7 @@ pub mod v41_golden;
 pub mod v41_media;
 mod v41_run;
 mod validate;
+mod vit_image;
 mod vq;
 mod zchain;
 
@@ -193,10 +194,9 @@ use ds4_sys::{
     ds4_bridge_distributed_options, ds4_bridge_eval, ds4_bridge_eval_speculative_argmax,
     ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio, ds4_bridge_inkling_pixels,
     ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
-    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
-    ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
-    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
-    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options, ds4_bridge_session,
+    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
+    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -210,12 +210,11 @@ use ds4_sys::{
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
     ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
-    ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_info,
-    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
-    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
-    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
-    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
-    DS4_HOST_MAX_STOPS,
+    ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_input, ds4_host_bind_look,
+    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
+    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
+    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
+    DS4_BRIDGE_MAX_DIMS, DS4_HOST_MAX_STOPS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -916,6 +915,16 @@ struct FfiTensorDir {
 enum ShardMapping {
     Legacy,
     Named,
+}
+
+/// The vision tower whose input `vit_image` packs for this family.
+fn vit_tower(family: ModelFamily) -> Option<vit_image::Tower> {
+    match family {
+        ModelFamily::Qwen4Exp => Some(vit_image::Tower::Qwen),
+        ModelFamily::Ling3Vl => Some(vit_image::Tower::Ling),
+        ModelFamily::Glm53 => Some(vit_image::Tower::Glm),
+        _ => None,
+    }
 }
 
 /// A single-file sidecar's tensor directory, for native to map it from.
@@ -2292,31 +2301,21 @@ impl Model {
         if self.family == ModelFamily::Inkling {
             return inkling_media::probe_image(data);
         }
-        let mut info = ds4_bridge_vision_info::default();
-        let mut err = [0u8; 512];
-        let rc = unsafe {
-            ds4_bridge_model_vision_probe(
-                self.raw.as_ptr(),
-                data.as_ptr(),
-                data.len(),
-                &mut info,
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
-        };
-        if rc != 0 {
-            return Err(fail(rc, &err));
-        }
+        let tower = vit_tower(self.family).ok_or_else(|| Error {
+            code: 1,
+            message: "this model family has no image probe".into(),
+        })?;
+        let plan = vit_image::probe(tower, data).map_err(|message| Error { code: 1, message })?;
         Ok(VisionImageInfo {
-            source_width: info.source_width,
-            source_height: info.source_height,
-            content_width: info.content_width,
-            content_height: info.content_height,
-            padded_width: info.padded_width,
-            padded_height: info.padded_height,
-            grid_height: info.grid_height,
-            grid_width: info.grid_width,
-            token_count: info.token_count,
+            source_width: plan.source_width,
+            source_height: plan.source_height,
+            content_width: plan.content_width,
+            content_height: plan.content_height,
+            padded_width: plan.padded_width,
+            padded_height: plan.padded_height,
+            grid_height: plan.grid_h,
+            grid_width: plan.grid_w,
+            token_count: plan.token_count,
         })
     }
 
@@ -3144,12 +3143,29 @@ impl Session<'_> {
                 message: "vision sync requires 1 to 4 images".into(),
             });
         }
+        // Decode, resize and pack here; native adds the tower's positions.
+        let tower = vit_tower(self.host.family).ok_or_else(|| Error {
+            code: 1,
+            message: "this model family has no vision tower input".into(),
+        })?;
+        let packed = images
+            .iter()
+            .map(|image| {
+                let plan = vit_image::probe(tower, image.data)?;
+                Ok((plan, vit_image::pack(tower, image.data, &plan)?))
+            })
+            .collect::<std::result::Result<Vec<_>, String>>()
+            .map_err(|message| Error { code: 1, message })?;
         let images = images
             .iter()
-            .map(|image| ds4_bridge_vision_input {
+            .zip(&packed)
+            .map(|(image, (plan, rows))| ds4_bridge_vision_input {
                 data: image.data.as_ptr(),
                 data_len: image.data.len(),
                 token_offset: image.token_offset,
+                patches: rows.as_ptr(),
+                grid_h: plan.grid_h,
+                grid_w: plan.grid_w,
             })
             .collect::<Vec<_>>();
         let mut err = [0u8; 512];

@@ -997,8 +997,8 @@ gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
 	test-ds41-gr-forward test-ds41-boundary test-ds41-history test-ds41-trace \
 	test-ds41-kv-rows test-ds41-rollback test-ds41-vision-gate
 gate-iquest: test-iquest-model-free
-gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref
-gate-glm53: test-glm53-fit
+gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
+gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
 
 ci-lint:
@@ -1663,6 +1663,14 @@ tests/test_dots3_mtp_guards: tests/test_dots3_mtp_guards.c ds4.c ds4_dots3_mtp.i
 
 tests/test_eos_sampling: tests/test_eos_sampling.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
+
+# The C image path C hosts still run, compiled like ds4.o so the Rust
+# port's floats can be compared exactly (Qwen, Ling-3.0-VL, GLM-5.3).
+tests/vit_image_ref: tests/vit_image_ref.c ds4.c ds4.h ds4_gpu.h ds4_glm53_image.inc ds4_ling3vl_vision.inc vendor/stb_image.h
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
+
+test-vit-image: tests/vit_image_ref
+	cargo test -p ds4-core --release --lib vit_image -- --ignored --nocapture --test-threads=1
 
 test-eos-sampling: tests/test_eos_sampling
 	./tests/test_eos_sampling

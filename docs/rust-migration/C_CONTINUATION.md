@@ -42,6 +42,7 @@ No features or fixes; frozen until removed. Rust hosts do not reach them.
 | `ds4.c` C sampler body | `ds4-core::sample` | C hosts, `ds4-eval`; Rust registers the host sampler at open |
 | `ds4.c` family stop table (`vocab_token_is_generation_stop`) | `Vocab::is_stop`, passed at open | C hosts |
 | `ds4.c` sidecar `parse_tensors`, the `DS4_DSPARK_MODEL` fallback, the MiMo VQ audio-path rule | `ds4-core` sidecar inventories, passed at open | C hosts |
+| `ds4.c` Qwen/Ling/GLM image probes, stb_image decode, resize and patch packing, the Qwen pixel hash | `ds4-core::vit_image` (packed rows reach native; it adds the tower's positions) | C hosts, `tests/vit_image_ref` |
 | `ds4_distributed.c` worker runtime, one-shot coordinator, CLI parsing (3.1K lines) | `ds4-dist` | C hosts, `ds4-eval` |
 | `tests/parity/*_c_oracle.c` | — | frozen copies for `make ci-parity` |
 
@@ -53,7 +54,6 @@ then tools with no Rust host.
 | Gap | Today | Next step |
 |---|---|---|
 | Distributed coordinator | `ds4`, `ds4-bench` and `ds4-server` coordinators run `ds4_dist_session_*` inside the native session: 4.1K of 8.2K lines of `ds4_distributed.c` (listener, routing, work frames, payload save/load). `ds4-dist::Coordinator`, the route planner and snapshot transport run only in tests. `--dist-replay-check` is inert. | Host coordinator session over `ds4-dist`; bridge the output head from hidden state and session logits; live coordinator/worker gates. About 1.3-2.1K Rust lines. |
-| Image preprocessing | Qwen4Exp (probe, pixel hash, bicubic resize, patches), GLM-5.3 (EXIF, smart resize, CLIP normalization) and Ling-3.0-VL (probe, decode, resize) decode with stb_image in `ds4.c`. Step, Inkling, MiMo, MiniMax and V4.1 already preprocess in Rust. | Port with pixel parity. C rounds resize weights with `round(q±0.5)` where Pillow truncates, the `image` crate's JPEG decoder may differ from stb_image, and the Qwen pixel hash is a KV-cache identity. |
 | Bank speculation match | `cont_spec_verify` is a C copy of `sample::match_rows`; its draws are already Rust. | Register the match next to the host sampler. |
 | Process policy at open | `ds4_engine_open` reads MTP-disable, residency and weight-IPC settings from the environment; Rust publishes some of them with `set_var` before open. The instance lock, `DS4_DSPARK_MODEL` and `malloc_trim` are the host's (`host_policy`). | Typed open options for the rest; hash the effective plan into the disk-KV identity. |
 | Payload header | Native writes the DSV4 header and token ids before the GPU tail; `ds4-core::payload` has the encoder, used only by tests. | Host writes the prefix, native appends the tail. |

@@ -21,10 +21,10 @@ use ds4_sys::{
     ds4_bridge_batch_ctx_raw_cap, ds4_bridge_batch_ctx_seq_cap,
     ds4_bridge_batch_ctx_supports_partial_reuse, ds4_bridge_batch_ctx_trim_free,
     ds4_bridge_cont_request, ds4_bridge_cont_stats, ds4_bridge_continuous_generate,
-    ds4_bridge_qwen_image_info, ds4_bridge_qwen_image_input, ds4_bridge_qwen_image_pixel_hash,
-    ds4_bridge_qwen_image_probe,
+    ds4_bridge_qwen_image_input,
 };
 
+use crate::vit_image::{self, Tower};
 use crate::{cstring_payload_path, fail, Error, Model, Result};
 
 /// `ds4_cont_request.sample_override` result encoding (`DS4_SAMPLE_OVERRIDE_*`).
@@ -55,47 +55,34 @@ pub struct QwenImageInput {
 }
 
 pub fn qwen_image_probe(data: &[u8]) -> Result<QwenImageInfo> {
-    let mut info = ds4_bridge_qwen_image_info::default();
-    let mut err = [0u8; 512];
-    let rc = unsafe {
-        ds4_bridge_qwen_image_probe(
-            data.as_ptr(),
-            data.len(),
-            &mut info,
-            err.as_mut_ptr() as *mut c_char,
-            err.len(),
-        )
-    };
-    if rc != 0 {
-        return Err(fail(rc, &err));
-    }
+    let plan = vit_image::probe(Tower::Qwen, data).map_err(|message| Error { code: 1, message })?;
     Ok(QwenImageInfo {
-        source_width: info.source_width,
-        source_height: info.source_height,
-        resized_width: info.resized_width,
-        resized_height: info.resized_height,
-        grid_h: info.grid_h,
-        grid_w: info.grid_w,
-        token_count: info.token_count,
+        source_width: plan.source_width,
+        source_height: plan.source_height,
+        resized_width: plan.content_width,
+        resized_height: plan.content_height,
+        grid_h: plan.grid_h,
+        grid_w: plan.grid_w,
+        token_count: plan.token_count,
     })
 }
 
+/// The image's KV-cache identity: its size and decoded RGB.
 pub fn qwen_image_pixel_hash(data: &[u8]) -> Result<u64> {
-    let mut hash = 0;
-    let mut err = [0u8; 512];
-    let rc = unsafe {
-        ds4_bridge_qwen_image_pixel_hash(
-            data.as_ptr(),
-            data.len(),
-            &mut hash,
-            err.as_mut_ptr() as *mut c_char,
-            err.len(),
-        )
-    };
-    if rc != 0 {
-        return Err(fail(rc, &err));
+    qwen_image_probe(data)?;
+    let rgb = vit_image::decode(data).map_err(|message| Error { code: 1, message })?;
+    Ok(vit_image::pixel_hash(&rgb))
+}
+
+/// Rows for native, packed at admission so a queued request holds only its
+/// bytes. None hands the bytes to native, whose decode then reports the
+/// failure or the geometry change on the request.
+fn pack_qwen(image: &QwenImageInput) -> Option<Vec<f32>> {
+    let plan = vit_image::probe(Tower::Qwen, &image.data).ok()?;
+    if (plan.grid_h, plan.grid_w) != (image.grid_h, image.grid_w) {
+        return None;
     }
-    Ok(hash)
+    vit_image::pack(Tower::Qwen, &image.data, &plan).ok()
 }
 
 /// One admission. `tokens` moves into the batch context and stays alive
@@ -186,6 +173,7 @@ pub trait ContDriver {
 struct LiveAdmit {
     tokens: Vec<i32>,
     images: Vec<QwenImageInput>,
+    patches: Vec<Option<Vec<f32>>>,
 }
 
 struct TrampCtx<'a> {
@@ -206,19 +194,22 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     let entry = t.live.entry(user).or_insert_with(|| LiveAdmit {
         tokens: Vec::new(),
         images: Vec::new(),
+        patches: Vec::new(),
     });
     entry.tokens = a.tokens;
     entry.images = a.images;
+    entry.patches = entry.images.iter().map(pack_qwen).collect();
     let r = &mut *req;
     r.tokens = entry.tokens.as_ptr();
     r.n = entry.tokens.len() as i32;
-    for (dst, image) in r.images.iter_mut().zip(&entry.images) {
+    for ((dst, image), rows) in r.images.iter_mut().zip(&entry.images).zip(&entry.patches) {
         *dst = ds4_bridge_qwen_image_input {
             data: image.data.as_ptr(),
             data_len: image.data.len(),
             token_offset: image.token_offset,
             grid_h: image.grid_h,
             grid_w: image.grid_w,
+            patches: rows.as_ref().map_or(std::ptr::null(), |rows| rows.as_ptr()),
         };
     }
     r.image_count = entry.images.len() as u32;
@@ -747,44 +738,6 @@ mod tests {
     }
 
     #[no_mangle]
-    unsafe extern "C" fn ds4_bridge_qwen_image_probe(
-        _data: *const u8,
-        data_len: usize,
-        info: *mut ds4_bridge_qwen_image_info,
-        _err: *mut c_char,
-        _errlen: usize,
-    ) -> c_int {
-        if data_len != 3 || info.is_null() {
-            return 1;
-        }
-        *info = ds4_bridge_qwen_image_info {
-            source_width: 1,
-            source_height: 2,
-            resized_width: 256,
-            resized_height: 512,
-            grid_h: 32,
-            grid_w: 16,
-            token_count: 128,
-        };
-        0
-    }
-
-    #[no_mangle]
-    unsafe extern "C" fn ds4_bridge_qwen_image_pixel_hash(
-        _data: *const u8,
-        data_len: usize,
-        hash: *mut u64,
-        _err: *mut c_char,
-        _errlen: usize,
-    ) -> c_int {
-        if data_len != 3 || hash.is_null() {
-            return 1;
-        }
-        *hash = 0x0123_4567_89ab_cdef;
-        0
-    }
-
-    #[no_mangle]
     unsafe extern "C" fn ds4_bridge_continuous_generate(
         _c: *mut ds4_bridge_batch_ctx,
         admit: Option<unsafe extern "C" fn(*mut c_void, *mut ds4_bridge_cont_request) -> c_int>,
@@ -942,24 +895,6 @@ mod tests {
 
         assert_eq!(snapshot.tokens, [10, 20, 30]);
         assert_eq!(snapshot.generation, 43);
-    }
-
-    #[test]
-    fn qwen_image_probe_and_hash_hide_the_native_layout() {
-        let data = [1, 2, 3];
-        assert_eq!(
-            qwen_image_probe(&data).unwrap(),
-            QwenImageInfo {
-                source_width: 1,
-                source_height: 2,
-                resized_width: 256,
-                resized_height: 512,
-                grid_h: 32,
-                grid_w: 16,
-                token_count: 128,
-            }
-        );
-        assert_eq!(qwen_image_pixel_hash(&data).unwrap(), 0x0123_4567_89ab_cdef);
     }
 
     #[test]

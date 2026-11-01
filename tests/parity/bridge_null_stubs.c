@@ -140,6 +140,13 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     (void)e; (void)encoded; (void)encoded_len; (void)out; (void)err; (void)errlen;
     STUB("ds4_engine_vision_encode_memory");
 }
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *err, size_t errlen) {
+    (void)e; (void)patches; (void)grid_h; (void)grid_w; (void)out; (void)err; (void)errlen;
+    STUB("ds4_engine_vision_encode_patches");
+}
 void ds4_vision_embedding_free(ds4_vision_embedding *embedding) {
     (void)embedding;
     STUB("ds4_vision_embedding_free");

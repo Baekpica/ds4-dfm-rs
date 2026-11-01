@@ -292,18 +292,7 @@ pub struct ds4_bridge_qwen_image_input {
     pub token_offset: u32,
     pub grid_h: u32,
     pub grid_w: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ds4_bridge_qwen_image_info {
-    pub source_width: u32,
-    pub source_height: u32,
-    pub resized_width: u32,
-    pub resized_height: u32,
-    pub grid_h: u32,
-    pub grid_w: u32,
-    pub token_count: u32,
+    pub patches: *const f32,
 }
 
 #[repr(C)]
@@ -312,6 +301,9 @@ pub struct ds4_bridge_vision_input {
     pub data: *const u8,
     pub data_len: usize,
     pub token_offset: u32,
+    pub patches: *const f32,
+    pub grid_h: u32,
+    pub grid_w: u32,
 }
 
 #[repr(C)]
@@ -339,20 +331,6 @@ pub struct ds4_bridge_inkling_audio {
     pub codes: *const i32,
     pub code_count: u64,
     pub token_offset: u32,
-    pub token_count: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ds4_bridge_vision_info {
-    pub source_width: u32,
-    pub source_height: u32,
-    pub content_width: u32,
-    pub content_height: u32,
-    pub padded_width: u32,
-    pub padded_height: u32,
-    pub grid_height: u32,
-    pub grid_width: u32,
     pub token_count: u32,
 }
 
@@ -695,15 +673,6 @@ extern "C" {
         s: *mut ds4_bridge_session,
         tokens: *const i32,
         n_tokens: c_int,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_model_vision_probe(
-        m: *mut ds4_bridge_model,
-        data: *const u8,
-        data_len: usize,
-        info: *mut ds4_bridge_vision_info,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;
@@ -1306,22 +1275,6 @@ extern "C" {
     pub fn ds4_bridge_mem_observe_snap(out: *mut ds4_bridge_mem_observe) -> c_int;
 
     pub fn ds4_bridge_mem_substrate_outstanding() -> u64;
-
-    pub fn ds4_bridge_qwen_image_probe(
-        data: *const u8,
-        data_len: usize,
-        info: *mut ds4_bridge_qwen_image_info,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_qwen_image_pixel_hash(
-        data: *const u8,
-        data_len: usize,
-        hash: *mut u64,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
 
     pub fn ds4_bridge_batch_ctx_create_fit(
         m: *mut ds4_bridge_model,

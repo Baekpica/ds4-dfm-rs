@@ -78,6 +78,8 @@ typedef struct {
     uint32_t token_offset;
     uint32_t grid_h;
     uint32_t grid_w;
+    /* Rust hosts: rows packed for the tower (vit_image.rs); data unused. */
+    const float *patches;
 } ds4_qwen_image_input;
 
 /* Ling-3.0-flash-VL shares Qwen3-VL's preprocessing shape but not its pixel
@@ -98,6 +100,10 @@ typedef struct {
     const uint8_t *data;
     size_t data_len;
     uint32_t token_offset;
+    /* Rust hosts: rows packed for the tower and their grid; data unused. */
+    const float *patches;
+    uint32_t grid_h;
+    uint32_t grid_w;
 } ds4_ling3vl_image_input;
 
 /* Official Ling-3.0-flash-VL multimodal special-token ids. */
@@ -310,6 +316,11 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
                                     const uint8_t *encoded, size_t encoded_len,
                                     ds4_vision_embedding *out,
                                     char *error, size_t error_cap);
+/* GLM-5.3: rows a Rust host packed (vit_image.rs) for a grid_h x grid_w image. */
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *error, size_t error_cap);
 void ds4_vision_embedding_free(ds4_vision_embedding *embedding);
 const char *ds4_engine_model_name(ds4_engine *e);
 ds4_chat_format ds4_engine_chat_format(ds4_engine *e);

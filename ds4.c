@@ -27177,9 +27177,16 @@ static bool qwen4exp_vision_host_prepare(
     ds4_qwen_image_info info[4];
     uint64_t patch_rows = 0u, feature_rows = 0u;
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
-                                 &info[i], error, error_size) != 0)
+        if (images[i].patches) {
+            /* A Rust host probed and packed it at admission. */
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) return false;
+            info[i] = (ds4_qwen_image_info){.grid_h = gh, .grid_w = gw,
+                                            .token_count = gh * gw / 4u};
+        } else if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
+                                        &info[i], error, error_size) != 0) {
             return false;
+        }
         if (info[i].grid_h != images[i].grid_h ||
             info[i].grid_w != images[i].grid_w) {
             if (error && error_size)
@@ -27208,24 +27215,28 @@ static bool qwen4exp_vision_host_prepare(
 
     uint32_t patch_base = 0u;
     for (uint32_t image_i = 0; image_i < image_count; image_i++) {
-        int width = 0, height = 0, channels = 0;
-        uint8_t *decoded = stbi_load_from_memory(
-            images[image_i].data, (int)images[image_i].data_len,
-            &width, &height, &channels, 3);
-        if (!decoded || width != (int)info[image_i].source_width ||
-            height != (int)info[image_i].source_height) {
+        const float *packed = images[image_i].patches;
+        uint8_t *resized = NULL;
+        if (!packed) {
+            int width = 0, height = 0, channels = 0;
+            uint8_t *decoded = stbi_load_from_memory(
+                images[image_i].data, (int)images[image_i].data_len,
+                &width, &height, &channels, 3);
+            if (!decoded || width != (int)info[image_i].source_width ||
+                height != (int)info[image_i].source_height) {
+                stbi_image_free(decoded);
+                if (error && error_size)
+                    snprintf(error, error_size, "PNG/JPEG decode failed: %s",
+                             stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
+                qwen4exp_vision_host_free(host);
+                return false;
+            }
+            resized = qwen4exp_resize_rgb_pillow(
+                decoded, info[image_i].source_width, info[image_i].source_height,
+                info[image_i].resized_width, info[image_i].resized_height);
             stbi_image_free(decoded);
-            if (error && error_size)
-                snprintf(error, error_size, "PNG/JPEG decode failed: %s",
-                         stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
-            qwen4exp_vision_host_free(host);
-            return false;
         }
-        uint8_t *resized = qwen4exp_resize_rgb_pillow(
-            decoded, info[image_i].source_width, info[image_i].source_height,
-            info[image_i].resized_width, info[image_i].resized_height);
-        stbi_image_free(decoded);
-        if (!resized) {
+        if (!packed && !resized) {
             if (error && error_size) snprintf(error, error_size, "image resize failed");
             qwen4exp_vision_host_free(host);
             return false;
@@ -27243,7 +27254,10 @@ static bool qwen4exp_vision_host_prepare(
                         const uint32_t row = patch_base + local++;
                         float *dst = host->patches +
                             (size_t)row * DS4_QWEN_VISION_PATCH_DIM;
-                        for (uint32_t c = 0; c < 3u; c++) {
+                        if (packed) {
+                            memcpy(dst, packed + (size_t)(local - 1u) * DS4_QWEN_VISION_PATCH_DIM,
+                                   DS4_QWEN_VISION_PATCH_DIM * sizeof(float));
+                        } else for (uint32_t c = 0; c < 3u; c++) {
                             for (uint32_t temporal = 0; temporal < 2u; temporal++) {
                                 (void)temporal;
                                 for (uint32_t py = 0; py < 16u; py++) {
@@ -74518,22 +74532,43 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     ds4_glm53_vision_host host = {0};
     if (!glm53_vision_host_prepare(
             encoded, encoded_len, &host, error, error_cap)) return 0;
-    float *embedding = xmalloc((size_t)host.info.token_count * 4096u * sizeof(float));
-    const ds4_vision_image_info info = host.info;
-    const int ok = ds4_gpu_glm53_vision_encode(
-            embedding, host.patches, host.info.grid_height,
-            host.info.grid_width, e->vision_model.map, e->vision_model.size,
-            &e->vision_weights);
+    const int ok = ds4_engine_vision_encode_patches(
+            e, host.patches, host.info.grid_height, host.info.grid_width,
+            out, error, error_cap);
     glm53_vision_host_free(&host);
-    if (!ok) {
+    return ok;
+#endif
+}
+
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *error, size_t error_cap) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+#ifdef DS4_NO_GPU
+    (void)e; (void)patches; (void)grid_h; (void)grid_w;
+    if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
+    return 0;
+#else
+    const uint64_t token_count = (uint64_t)grid_h * grid_w / 4u;
+    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        !patches || (grid_h & 1u) || (grid_w & 1u) || token_count == 0u || token_count > 8000u) {
+        if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready or the grid is invalid");
+        return 0;
+    }
+    float *embedding = xmalloc((size_t)token_count * 4096u * sizeof(float));
+    if (!ds4_gpu_glm53_vision_encode(
+            embedding, patches, grid_h, grid_w, e->vision_model.map,
+            e->vision_model.size, &e->vision_weights)) {
         free(embedding);
         if (error && error_cap) snprintf(error, error_cap, "GLM-5.3 vision encoding failed");
         return 0;
     }
     out->data = embedding;
-    out->token_count = info.token_count;
-    out->grid_width = info.grid_width;
-    out->grid_height = info.grid_height;
+    out->token_count = (uint32_t)token_count;
+    out->grid_width = grid_w;
+    out->grid_height = grid_h;
     return 1;
 #endif
 }
@@ -78264,8 +78299,17 @@ int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len, &info[i],
-                                    err, errlen) != 0) {
+        if (images[i].patches) {
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) {
+                payload_set_err(err, errlen, "invalid Ling image grid");
+                return 1;
+            }
+            info[i] = (ds4_ling3vl_image_info){
+                .resized_width = gw * 16u, .resized_height = gh * 16u,
+                .grid_h = gh, .grid_w = gw, .token_count = gh * gw / 4u};
+        } else if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len,
+                                           &info[i], err, errlen) != 0) {
             return 1;
         }
     }
