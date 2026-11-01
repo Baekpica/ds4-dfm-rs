@@ -8,27 +8,38 @@ release bar; a version bump or host-only CI pass does not close live GPU gates.
 Backend changes require correctness and speed evidence. Accept a speed
 regression only when a necessary correctness repair justifies it explicitly.
 
+## One implementation
+
+Host behavior (HTTP, parsing, templates, sampling, scheduling, KV policy,
+tools, CLI) is written once, in Rust. Native C/CUDA keeps only work that
+computes on tensors or devices. The C host executables (`ds4-c`,
+`ds4-server-c`, `ds4-bench-c`, `ds4-agent-c`) and C host logic in `ds4.c`
+that Rust now owns, such as the C sampler, are deprecated: do not add
+features or fixes to them. Move remaining host logic from C to Rust when a
+change touches it.
+
+The `tests/parity` oracles are frozen copies of the old C behavior. When
+Rust changes a behavior on purpose, delete or narrow the parity case in the
+same change; never mirror the change into C.
+
 ## Rust host checks
 
-Use the pinned `rust-toolchain.toml`. Build the C parity oracles before running
-all workspace tests; otherwise some oracle-dependent tests can skip work.
-The [Host parity workflow](.github/workflows/host-parity.yml) runs this sequence
-on a hosted CPU runner:
+Use the pinned `rust-toolchain.toml`.
+The [Host parity workflow](.github/workflows/host-parity.yml) runs four
+Makefile groups as parallel jobs on a hosted CPU runner; `make ci` runs all
+four locally:
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked
-make -j1 test-kv-parity
-make -j1 test-web-parity
-make -j1 test-dist-parity
-make -j1 test-server-parity
-make -j1 test-catalog-parity
-make -j1 test-tokenizer-parity
-make -j1 test-session-parity
-make -j1 test-agent-parity
-cargo test --workspace --locked -- --test-threads=1
-cargo check --workspace --all-targets --locked
-```
+| Target | Runs |
+|---|---|
+| `ci-lint` | rustfmt, Clippy, all-target and native-host type checks |
+| `ci-rust` | serialized workspace tests (after building the parity oracles) |
+| `ci-parity` | every C oracle / Rust host parity suite, once |
+| `ci-model-free` | shared native gates that need no model |
+
+CI holds only checks that cover every family. Add a check to a group in the
+Makefile, never as a workflow step. A check of one family's own code joins
+that family's `gate-<family>` target (`gate-ds41`, `gate-iquest`,
+`gate-qwen`, `gate-glm53`, `gate-mimo2`); run it when the family changes.
 
 Use a narrower affected-crate test during development. `cargo test -p ds4-perf`
 is model-free and tests CSV parsing, diagnosis, capability detection and process
@@ -45,12 +56,14 @@ make cuda-spark                     # DGX Spark / GB10
 # or: make cuda CUDA_ARCH=sm_N
 ```
 
-CUDA builds produce the Rust hosts, `ds4-eval` and the weight server. Build
-C host oracles explicitly with `make ds4-c ds4-server-c ds4-bench-c ds4-agent-c`;
-proof and diagnostic targets that use them declare their own dependencies.
+CUDA builds produce the Rust hosts, `ds4-eval` and the weight server. The
+deprecated C host oracles build only on request
+(`make ds4-c ds4-server-c ds4-bench-c ds4-agent-c`); proof and diagnostic
+targets that use them declare their own dependencies.
 
-On macOS, `make` selects the inherited Metal build. `make cpu` builds the C
-reference executables; it is not a production CPU performance target. Avoid
+On macOS, `make` selects the inherited Metal build. `make cpu` builds the
+deprecated C reference executables; it is not a production CPU performance
+target. Avoid
 large CPU inference on macOS because of the documented VM failures.
 
 `./ds4-server --version` reports the Rust package version;
@@ -59,8 +72,8 @@ objects must come from the same commit.
 
 Native checks include `make cuda-regression`, `make test-model-family-kernels`
 and `make test-mmq-parity`, according to the affected path. `make test` and
-`ds4_test` retain C/native regression coverage; `ds4_test --server` does not
-replace the Rust server parity and live API gates. DeepSeek-specific tests
+`ds4_test` retain native regression coverage; `ds4_test --server` exercises
+the deprecated C server and is no gate for the Rust server. DeepSeek-specific tests
 require their documented DeepSeek fixtures, not an arbitrary supported GGUF.
 See the [baseline/proof protocols](docs/rust-migration/BASELINE.md),
 [parity matrix](docs/rust-migration/PARITY_MATRIX.md), and

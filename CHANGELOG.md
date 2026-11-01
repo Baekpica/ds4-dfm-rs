@@ -19,6 +19,11 @@ for exact provenance. Historical entries retain their original scope.
   serving, plus Ling-3.1 prefill and MTP decode work.
 - MiniMax-M3.1 VQ prefill and decode work; tool arguments stream and tool
   projections are validated (issues #116/#117).
+- CI runs four Makefile groups (`ci-lint`, `ci-rust`, `ci-parity`,
+  `ci-model-free`) as parallel jobs and holds only checks that cover every
+  family; one family's model-free checks are its `gate-<family>` target.
+  Fixes the agent shell-job test that read a job's exit before its watcher
+  reported it. CONTRIBUTING states one Rust implementation of host behavior.
 
 - Sampling follows vLLM/SGLang. Values a request omits come from new
   `--temp`/`--top-p`/`--top-k`/`--min-p` flags, then the model's

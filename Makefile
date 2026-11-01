@@ -1009,6 +1009,67 @@ test-family-cont-spec-finish:
 test-mimo2-sync-keep:
 	python3 tests/test_mimo2_sync_keep.py
 
+# CI. The workflow runs exactly the four ci-* targets, one parallel job each.
+# CI holds only checks that cover every family; a new check joins a group
+# here, never a workflow step:
+#   ci-lint        formatting, Clippy and type checks (native host included)
+#   ci-rust        serialized Rust workspace tests
+#   ci-parity      C oracle <-> Rust host parity, one make run (no repeats)
+#   ci-model-free  shared native gates that need no model
+# A check of one family's own code is that family's gate-<family> target,
+# run when the family changes; no family has a CI job of its own.
+CI_PARITY := test-kv-parity test-web-parity test-dist-parity test-server-parity \
+	test-catalog-parity test-tokenizer-parity test-session-parity test-agent-parity
+CI_MODEL_FREE := test-model-registration test-vq-source-release \
+	test-family-cont-spec-finish
+
+.PHONY: ci ci-lint ci-rust ci-parity ci-model-free test-iquest-model-free \
+	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2
+ci: ci-lint ci-rust ci-parity ci-model-free
+
+gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
+	test-ds41-gr-forward test-ds41-boundary test-ds41-history test-ds41-trace \
+	test-ds41-kv-rows test-ds41-rollback test-ds41-vision-gate
+gate-iquest: test-iquest-model-free
+gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref
+gate-glm53: test-glm53-fit
+gate-mimo2: test-mimo2-sync-keep
+
+ci-lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --locked
+	cargo check --workspace --all-targets --locked
+	cargo check -p ds4-server --lib --bin ds4-server-rs --features native --locked
+
+# Workspace tests compare against the oracles; built ones only, no parity run.
+CI_ORACLES := tests/parity/admit_c_oracle tests/parity/agent_c_oracle \
+	tests/parity/bind_c_oracle tests/parity/bind_lookup_c_oracle \
+	tests/parity/bridge_null_oracle tests/parity/catalog_c_oracle \
+	tests/parity/cont_c_oracle tests/parity/dist_c_oracle \
+	tests/parity/dsml_c_oracle tests/parity/kv_c_oracle \
+	tests/parity/layout_c_oracle tests/parity/load_c_oracle \
+	tests/parity/memgov_c_oracle tests/parity/parse_c_oracle \
+	tests/parity/payload_c_oracle tests/parity/render_c_oracle \
+	tests/parity/retry_c_oracle tests/parity/route_c_oracle \
+	tests/parity/server_c_oracle tests/parity/session_c_oracle \
+	tests/parity/shape_c_oracle tests/parity/stream_c_oracle \
+	tests/parity/tensor_c_oracle tests/parity/tokenizer_c_oracle \
+	tests/parity/tool_stream_c_oracle tests/parity/validate_c_oracle \
+	tests/parity/vocab_c_oracle tests/parity/web_c_oracle
+
+ci-rust: $(CI_ORACLES)
+	cargo test --workspace --locked -- --test-threads=1
+
+ci-parity: $(CI_PARITY)
+
+ci-model-free: $(CI_MODEL_FREE)
+
+test-iquest-model-free:
+	cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
+	python3 tests/test_iquest_weight_policy.py
+	python3 tests/test_iquest_prefix_compare.py
+	python3 tests/test_iquest_http_live.py
+
 # Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
 # own reference code, reached through the DS4_TEST_HOOKS entry points, so the
 # test links ds4.c built with that switch instead of the normal object.
