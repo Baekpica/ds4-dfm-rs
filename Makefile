@@ -450,6 +450,14 @@ tests/h3/attn_f32_bm: tests/h3/attn_f32_bm.cu native/h3/h3_dit_gpu.cu native/h3/
 tests/h3/vae_gemm_bm: tests/h3/vae_gemm_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
 
+# The LTX refiner block's thirty-four projections at the release's stage-2
+# shape (16,128 video rows, 126 audio, 1,024 prompt), in forward order, so a
+# per-block profile splits into what cuBLASLt owns and what the port's own
+# kernels own. Also prices `CUBLAS_COMPUTE_32F_FAST_16BF` against the class the
+# refiner asks for.
+tests/h3/refiner_gemm_bm: tests/h3/refiner_gemm_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
+
 # Sol-Attn's search step at a denoise shape: the four routing kernels timed
 # separately, then priced against the dense attention at the same shape.
 tests/h3/sol_route_bm: tests/h3/sol_route_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
@@ -2768,6 +2776,7 @@ BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
     tests/h3/native_test tests/h3/attn_bm tests/h3/attn_f32_bm \
     tests/h3/vae_gemm_bm tests/h3/sol_route_bm tests/h3/sol_forward_bm \
     tests/h3/elementwise_bm tests/h3/linear_fp8_bm \
+    tests/h3/refiner_gemm_bm \
     tools/minimax_h3/ppm_diff
 DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
 -include $(wildcard $(DEPFILES))
