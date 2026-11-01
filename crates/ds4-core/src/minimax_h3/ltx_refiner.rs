@@ -1223,6 +1223,13 @@ fn av_direction(
         .map_err(RefinerError::Run)
 }
 
+/// `H3_LTX_ATTN_MMA=1`: the dense attention's tensor-core arm. Read once per
+/// call for the same reason the profile switches are - it is an experiment arm,
+/// not a route the pipeline sets, and a missing variable costs one lookup.
+fn env_mma() -> bool {
+    std::env::var_os("H3_LTX_ATTN_MMA").is_some_and(|value| value != "0")
+}
+
 /// `transformer.py:399-414`: `x = x + ff(rms_norm(x) * (1 + scale) + shift) *
 /// gate`, the FF a `Linear -> GELU(tanh) -> Linear` at `mult` 4
 /// (`feed_forward.py:4-15`, `gelu_approx.py:10-11`).
@@ -1428,18 +1435,41 @@ impl Attention {
                 .map_err(named)?;
             }
             None => {
-                gpu.ltx_attention(
-                    &scratch.attention,
-                    &scratch.query,
-                    &scratch.key,
-                    &scratch.value,
-                    q_rows,
-                    kv_rows,
-                    self.heads,
-                    self.head_dim,
-                    scale,
-                )
-                .map_err(named)?;
+                // `H3_LTX_ATTN_MMA=1` swaps the dense core for the token-major
+                // tensor-core kernel where it serves (head dimension 128:
+                // the video self- and text cross-attention, not A2V/V2A).
+                // Measured at 1.83 TFLOPS for the scalar walk against 61.5 for
+                // the tower's MMA arm on the same shape
+                // (`docs/minimax-h3/stage2-attention-cost-2026-11-01.md`), so
+                // the arm exists; it is off by default because the scalar
+                // kernel is what the one-block golden pinned bit for bit.
+                let mma = self.head_dim == SOL_HEAD_DIM && env_mma();
+                let dense = if mma {
+                    gpu.ltx_attention_mma(
+                        &scratch.attention,
+                        &scratch.query,
+                        &scratch.key,
+                        &scratch.value,
+                        q_rows,
+                        kv_rows,
+                        self.heads,
+                        self.head_dim,
+                        scale,
+                    )
+                } else {
+                    gpu.ltx_attention(
+                        &scratch.attention,
+                        &scratch.query,
+                        &scratch.key,
+                        &scratch.value,
+                        q_rows,
+                        kv_rows,
+                        self.heads,
+                        self.head_dim,
+                        scale,
+                    )
+                };
+                dense.map_err(named)?;
             }
         }
         stages.lap(gpu, "core")?;

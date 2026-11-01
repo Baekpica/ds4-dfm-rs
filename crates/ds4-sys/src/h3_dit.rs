@@ -364,6 +364,23 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    /// `h3d_ltx_attention_mma`: the same attention with tensor-core
+    /// arithmetic, head dimension 128 only.
+    fn h3d_ltx_attention_mma(
+        context: *mut Context,
+        output: *mut CTensor,
+        query: *const CTensor,
+        key: *const CTensor,
+        value: *const CTensor,
+        q_rows: u32,
+        kv_rows: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     /// `h3d_ltx_rope_pair`: the LTX refiner's A2V/V2A rotary pair, query and
     /// key rotated by their own tables and row counts.
     fn h3d_ltx_rope_pair(
@@ -3417,6 +3434,43 @@ impl Gpu {
                 )
             },
             "LTX attention",
+        )
+    }
+
+    /// `h3d_ltx_attention_mma`: the same attention, tensor-core arithmetic.
+    /// Refused for head dimension 64, which A2V/V2A use and the kernel does not
+    /// serve; the caller keeps those on `ltx_attention`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ltx_attention_mma(
+        &self,
+        output: &Tensor,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        q_rows: u32,
+        kv_rows: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_ltx_attention_mma(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    q_rows,
+                    kv_rows,
+                    heads,
+                    head_dim,
+                    scale,
+                    error,
+                    size,
+                )
+            },
+            "LTX attention (mma)",
         )
     }
 

@@ -4347,6 +4347,255 @@ __global__ static void h3d_attention_mma_kernel(
     }
 }
 
+/* `h3d_attention_mma_kernel` in the refiner's token-major layout
+ * (`[tokens, heads, dim]`), and it is the same kernel otherwise: the same
+ * 16-row query tile per warp, the same 64-key staging, the same online softmax
+ * and the same `mma` fragments. Only the three input indices and the two
+ * extents change, because the LTX refiner's operands are strided by
+ * `heads * H3D_MMA_HD` between rows while the H3 tower's are contiguous within
+ * a head. The **output was already token-major** in the head-major kernel
+ * (`output[((row * heads) + head) * dim]`), which is why this is a port of the
+ * reads and not of the whole walk.
+ *
+ * Separate `q_rows` and `kv_rows` because two of the refiner's three dense
+ * attentions are not square: the text cross-attention is 16,128 queries against
+ * 1,024 keys, and A2V/V2A are 16,128 by 126 - though head dimension 64 keeps
+ * those two on the scalar kernel, which this one does not serve.
+ *
+ * Arithmetic: BF16 tensor-core products with F32 accumulation and a natural-log
+ * online softmax, so it is **not** bit-identical to `h3d_ltx_attention_kernel`'s
+ * row-wise FMA walk. It is a separate arm for that reason (`H3_LTX_ATTN_MMA`),
+ * and the numbers it moves are the ones `h3_ltx_refiner_gate --compare` reports
+ * as `rel_rms`, not the bit gate. */
+__global__ static void h3d_ltx_attention_mma_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *query,
+        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        uint32_t q_rows, uint32_t kv_rows, uint32_t heads, float scale) {
+    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_LD];
+    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_LD];
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
+    const uint32_t column = (lane & 3u) * 2u;     /* first of its two columns */
+    const uint32_t matrix = lane >> 3u;           /* ldmatrix: which 8x8 quadrant */
+    const uint32_t head = blockIdx.y;
+    const uint32_t first_row = blockIdx.x * H3D_MMA_ROWS + warp * H3D_MMA_M;
+    const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
+    const int live0 = row0 < q_rows, live1 = row1 < q_rows;
+    /* A row past the end is read from the last real row and never written; that
+     * keeps the CTA's reads in bounds without branching the MMAs. */
+    const uint32_t read0 = live0 ? row0 : q_rows - 1u;
+    const uint32_t read1 = live1 ? row1 : q_rows - 1u;
+    const __nv_bfloat16 *query0 =
+            query + ((size_t)read0 * heads + head) * H3D_MMA_HD;
+    const __nv_bfloat16 *query1 =
+            query + ((size_t)read1 * heads + head) * H3D_MMA_HD;
+
+    /* Q lives in registers as the eight k16 A fragments, built once per CTA. */
+    uint32_t a[H3D_MMA_KS][4];
+#pragma unroll
+    for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+        const uint32_t dim = step * 16u + column;
+        a[step][0] = h3d_mma_pair(__bfloat162float(query0[dim]),
+                                  __bfloat162float(query0[dim + 1u]));
+        a[step][1] = h3d_mma_pair(__bfloat162float(query1[dim]),
+                                  __bfloat162float(query1[dim + 1u]));
+        a[step][2] = h3d_mma_pair(__bfloat162float(query0[dim + 8u]),
+                                  __bfloat162float(query0[dim + 9u]));
+        a[step][3] = h3d_mma_pair(__bfloat162float(query1[dim + 8u]),
+                                  __bfloat162float(query1[dim + 9u]));
+    }
+
+    float maximum0 = -INFINITY, maximum1 = -INFINITY;
+    float denominator0 = 0.0f, denominator1 = 0.0f;
+    float result[H3D_MMA_DIMS][4];
+#pragma unroll
+    for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+        result[dim][0] = result[dim][1] = result[dim][2] = result[dim][3] = 0.0f;
+    }
+
+    for (uint32_t base = 0; base < kv_rows; base += H3D_MMA_KEYS) {
+        __syncthreads();   /* the previous tile's staged rows are fully consumed */
+        /* Stage K and V: 16-byte copies, one row per sixteen lanes. A row past
+         * the end is zeroed; its scores are masked below, so it contributes
+         * nothing and the staging stays branch-free. */
+        for (uint32_t index = threadIdx.x;
+             index < H3D_MMA_KEYS * H3D_MMA_CHUNKS;
+             index += H3D_MMA_WARPS * 32u) {
+            const uint32_t row = index / H3D_MMA_CHUNKS;
+            const uint32_t chunk = index % H3D_MMA_CHUNKS;
+            const uint32_t source = base + row;
+            if (source < kv_rows) {
+                const size_t at =
+                        ((size_t)source * heads + head) * H3D_MMA_HD +
+                        chunk * 8u;
+                *(uint4 *)&shared_key[row][chunk * 8u] =
+                        *(const uint4 *)(key + at);
+                *(uint4 *)&shared_value[row][chunk * 8u] =
+                        *(const uint4 *)(value + at);
+            } else {
+                const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
+                *(uint4 *)&shared_key[row][chunk * 8u] = zero;
+                *(uint4 *)&shared_value[row][chunk * 8u] = zero;
+            }
+        }
+        __syncthreads();
+
+        /* Scores: S = Q * K^T over all H3D_MMA_KEYS staged keys. */
+        float score[H3D_MMA_NS][4];
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            score[slice][0] = score[slice][1] = 0.0f;
+            score[slice][2] = score[slice][3] = 0.0f;
+        }
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_KEYS / 16; part++) {
+                const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load(b, &shared_key[row][col]);
+                h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+            }
+        }
+
+        /* Scale, then mask the tail keys out of the softmax. */
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            const uint32_t first = slice * 8u + column;
+            score[slice][0] *= scale;
+            score[slice][1] *= scale;
+            score[slice][2] *= scale;
+            score[slice][3] *= scale;
+            if (base + first >= kv_rows) {
+                score[slice][0] = -INFINITY;
+                score[slice][2] = -INFINITY;
+            }
+            if (base + first + 1u >= kv_rows) {
+                score[slice][1] = -INFINITY;
+                score[slice][3] = -INFINITY;
+            }
+        }
+
+        /* One maximum per tile, reduced across the four lanes of a row. */
+        float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+            tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+        }
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+        const float next0 = fmaxf(maximum0, tile0);
+        const float next1 = fmaxf(maximum1, tile1);
+        const float rescale0 = expf(maximum0 - next0);
+        const float rescale1 = expf(maximum1 - next1);
+
+        float weight[H3D_MMA_NS][4];
+        float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            weight[slice][0] = expf(score[slice][0] - next0);
+            weight[slice][1] = expf(score[slice][1] - next0);
+            weight[slice][2] = expf(score[slice][2] - next1);
+            weight[slice][3] = expf(score[slice][3] - next1);
+            part0 += weight[slice][0] + weight[slice][1];
+            part1 += weight[slice][2] + weight[slice][3];
+        }
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+        denominator0 = denominator0 * rescale0 + part0;
+        denominator1 = denominator1 * rescale1 + part1;
+        maximum0 = next0;
+        maximum1 = next1;
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            result[dim][0] *= rescale0;
+            result[dim][1] *= rescale0;
+            result[dim][2] *= rescale1;
+            result[dim][3] *= rescale1;
+        }
+
+        /* O += P * V, P packed from the weights as the A fragments. */
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KEYS / 16; step++) {
+            uint32_t p[4];
+            p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+            p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+            p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                weight[2u * step + 1u][1]);
+            p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                weight[2u * step + 1u][3]);
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                const uint32_t row =
+                        step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load_trans(b, &shared_value[row][col]);
+                h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+            }
+        }
+    }
+
+    __syncthreads();
+    if (live0) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row0 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][0] / denominator0);
+            output[at + 1u] = __float2bfloat16(result[dim][1] / denominator0);
+        }
+    }
+    if (live1) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row1 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][2] / denominator1);
+            output[at + 1u] = __float2bfloat16(result[dim][3] / denominator1);
+        }
+    }
+}
+
+/* The refiner's dense attention, tensor-core arm. Same validation as
+ * `h3d_ltx_attention` (`:3338`) so an arm only ever changes the arithmetic, plus
+ * the one restriction the kernel carries: head dimension 128, because the
+ * fragments are built for `H3D_MMA_HD` and A2V/V2A are 64. Those two stay on
+ * the scalar kernel, which is 4.1 % of a block. */
+int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
+                          const h3d_tensor *query, const h3d_tensor *key,
+                          const h3d_tensor *value, uint32_t q_rows,
+                          uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
+                          float scale, char *error, size_t error_size) {
+    size_t query_elements = 0, key_elements = 0;
+    if (!context || !q_rows || !kv_rows || !heads || head_dim != H3D_MMA_HD ||
+        !h3d_mul_size((size_t)q_rows * heads, head_dim, &query_elements) ||
+        !h3d_mul_size((size_t)kv_rows * heads, head_dim, &key_elements) ||
+        !h3d_is(output, H3D_BF16, query_elements) ||
+        !h3d_is(query, H3D_BF16, query_elements) ||
+        !h3d_is(key, H3D_BF16, key_elements) ||
+        !h3d_is(value, H3D_BF16, key_elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid LTX attention (mma) tensors or shape");
+    }
+    dim3 grid((q_rows + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
+    h3d_ltx_attention_mma_kernel<<<grid, H3D_MMA_WARPS * 32u, 0,
+                                   context->stream>>>(
+        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
+        (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
+        q_rows, kv_rows, heads, scale);
+    return h3d_launch_ok("LTX attention (mma)", error, error_size);
+}
+
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
              const h3d_tensor *query, const h3d_tensor *key,
              const h3d_tensor *value, uint32_t sequence, uint32_t heads,

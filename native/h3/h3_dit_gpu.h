@@ -595,6 +595,18 @@ int h3d_ltx_attention(h3d_context *context, h3d_tensor *output,
                       uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
                       float scale, char *error, size_t error_size);
 
+/* The same attention with tensor-core arithmetic (`h3d_ltx_attention_mma_kernel`,
+ * a token-major port of the tower's MMA kernel). Head dimension 128 only, so
+ * the video self- and text cross-attention can take it and A2V/V2A (64) cannot.
+ * It is a different arithmetic class from `h3d_ltx_attention`, which the
+ * one-block golden pinned bit for bit - hence two entry points and a switch
+ * above them rather than a replacement. */
+int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
+                          const h3d_tensor *query, const h3d_tensor *key,
+                          const h3d_tensor *value, uint32_t q_rows,
+                          uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
+                          float scale, char *error, size_t error_size);
+
 /* The LTX-2.5 refiner block's elementwise set. Torch rounds BF16 elementwise
  * ops once each (`opmath_type<BFloat16>` is `float`) and every expression
  * below is a chain of separate ops, so these kernels round where the
