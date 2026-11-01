@@ -254,6 +254,28 @@ pub fn temporal_at(index: usize) -> bool {
     (index * 2) % 3 == 2
 }
 
+/// `[out, in, kt, ky, kx]` to `[out, kt, ky, kx, in]`: the column order the
+/// im2col emits, so the copy out of the padded volume is coalesced and the
+/// GEMM reads the weight without a transpose. Done once, at load.
+fn permute_kernel(
+    weight: &[f32],
+    output_channels: usize,
+    input_channels: usize,
+    kernel: usize,
+) -> Vec<f32> {
+    let taps = kernel * kernel * kernel;
+    let mut permuted = vec![0.0f32; weight.len()];
+    for out in 0..output_channels {
+        for inside in 0..input_channels {
+            for tap in 0..taps {
+                permuted[out * taps * input_channels + tap * input_channels + inside] =
+                    weight[(out * input_channels + inside) * taps + tap];
+            }
+        }
+    }
+    permuted
+}
+
 impl Upscaler {
     /// Open the released checkpoint in `dir`. The store is the video VAE's: a
     /// directory of shards with exact shape checks per tensor.
@@ -281,18 +303,22 @@ impl Upscaler {
                 bias: load(&format!("{prefix}.bias"), &[WIDTH as u64])?,
             })
         };
-        let conv = |prefix: &str, input: u32, output: u32, kernel: u32| {
-            load(
-                &format!("{prefix}.weight"),
-                &[
+        let conv =
+            |prefix: &str, input: u32, output: u32, kernel: u32| -> Result<Conv, UpscaleError> {
+                let name = format!("{prefix}.weight");
+                let shape = [
                     output as u64,
                     input as u64,
                     kernel as u64,
                     kernel as u64,
                     kernel as u64,
-                ],
-            )
-            .and_then(|weight| {
+                ];
+                let mut values = host(&name, &shape)?;
+                if kernel == 3 {
+                    values = permute_kernel(&values, output as usize, input as usize, 3);
+                }
+                let weight = f32_alloc(&gpu, values.len())?;
+                upload_f32(&gpu, &weight, &values)?;
                 Ok(Conv {
                     weight,
                     bias: load(&format!("{prefix}.bias"), &[output as u64])?,
@@ -300,8 +326,7 @@ impl Upscaler {
                     output_channels: output,
                     kernel,
                 })
-            })
-        };
+            };
 
         let conv_in = conv("conv_in", LATENT_CHANNELS as u32, WIDTH, 3)?;
         let conv_out = conv("conv_out", WIDTH, LATENT_CHANNELS as u32, 3)?;

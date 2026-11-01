@@ -6929,35 +6929,35 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("channel affine", error, error_size);
 }
 
-/* im2col for the resizer's 3x3x3 convolutions: one thread per (row, column),
- * rows emitted a tile at a time so the expanded matrix never has to exist for a
- * whole volume. The column order is the weight's own, `ic * k^3 + kt * k^2 +
- * ky * k + kx`, so the GEMM reads the checkpoint's `[out, in, kt, ky, kx]`
- * tensor without a transpose. */
+/* im2col for the resizer's 3x3x3 convolutions, one block per output row and
+ * one coalesced copy of `channels` floats per tap. The columns come out
+ * tap-major, `tap * channels + ic`, which is why the weights are permuted to
+ * `[out, kt, ky, kx, in]` when they are loaded: the alternative is an
+ * uncoalesced write or a division per element, and at these sizes both cost
+ * far more than the copy. */
 __global__ static void h3d_im2col3d_kernel(
     float *columns, const float *input, uint32_t depth, uint32_t height,
-    uint32_t width, uint32_t channels, uint32_t kernel, uint32_t row_begin,
-    uint32_t rows, uint32_t columns_per_row, size_t elements) {
-    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= elements) return;
-    uint32_t column = (uint32_t)(index % columns_per_row);
-    uint32_t local_row = (uint32_t)(index / columns_per_row);
-    uint32_t row = row_begin + local_row;
+    uint32_t width, uint32_t channels, uint32_t row_begin, uint32_t rows) {
+    if (blockIdx.x >= rows) return;
+    uint32_t row = row_begin + blockIdx.x;
     uint32_t x = row % width;
     uint32_t rest = row / width;
     uint32_t y = rest % height;
     uint32_t t = rest / height;
-    uint32_t square = kernel * kernel;
-    uint32_t input_channel = column / (square * kernel);
-    uint32_t inside = column % (square * kernel);
-    uint32_t kt = inside / square;
-    uint32_t ky = (inside / kernel) % kernel;
-    uint32_t kx = inside % kernel;
-    size_t source =
-        (((((size_t)(t + kt) * height + (y + ky)) * width + (x + kx)) *
-              channels) +
-         input_channel);
-    columns[index] = input[source];
+    float *destination = columns + (size_t)blockIdx.x * channels * 27;
+    for (uint32_t tap = 0; tap < 27; tap++) {
+        uint32_t kt = tap / 9, ky = (tap / 3) % 3, kx = tap % 3;
+        const float *source =
+            input + ((((size_t)(t + kt) * height + (y + ky)) * width +
+                      (x + kx)) *
+                     channels);
+        float *out = destination + (size_t)tap * channels;
+        for (uint32_t channel = threadIdx.x; channel < channels;
+             channel += blockDim.x) {
+            out[channel] = source[channel];
+        }
+    }
+    (void)depth;
 }
 
 /* `out[channel] += bias[channel]`, the epilogue the conv's GEMM leaves open. */
@@ -7011,11 +7011,9 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
     for (size_t begin = 0; begin < rows; begin += tile) {
         size_t count = rows - begin < tile ? rows - begin : tile;
         size_t elements = count * columns_per_row;
-        h3d_im2col3d_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
-                              context->stream>>>(
-            (float *)scratch->data, (const float *)input->data, depth, height, width,
-            input_channels, kernel, (uint32_t)begin, (uint32_t)count,
-            columns_per_row, elements);
+        h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
+            (float *)scratch->data, (const float *)input->data, depth, height,
+            width, input_channels, (uint32_t)begin, (uint32_t)count);
         if (!h3d_launch_ok("Conv3d im2col", error, error_size)) return 0;
         if (!h3d_linear_lt_compute(
                 context, (char *)output->data + begin * output_channels * 4,
