@@ -6929,6 +6929,30 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("channel affine", error, error_size);
 }
 
+/* `out = left + right`, the resizer's identity skips. `h3d_add` is BF16 only
+ * and `h3d_scale_add_f32` carries a residual scale the skips do not have. */
+__global__ static void h3d_add_f32_kernel(float *output, const float *left,
+                                          const float *right, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    output[index] = left[index] + right[index];
+}
+
+int h3d_add_f32(h3d_context *context, h3d_tensor *output,
+                const h3d_tensor *left, const h3d_tensor *right,
+                size_t elements, char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(left, H3D_F32, elements) || !h3d_is(right, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size, "invalid F32 add tensors");
+    }
+    if (!elements) return 1;
+    h3d_add_f32_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                         context->stream>>>((float *)output->data,
+                                            (const float *)left->data,
+                                            (const float *)right->data, elements);
+    return h3d_launch_ok("F32 add", error, error_size);
+}
+
 /* `Conv3d(C, C, (k, 1, 1), pad=(k / 2, 0, 0), groups=C)`: depthwise over time,
  * weights `[channels, 1, k, 1, 1]`. */
 __global__ static void h3d_temporal_dwconv_kernel(

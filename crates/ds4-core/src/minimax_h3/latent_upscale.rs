@@ -684,7 +684,7 @@ impl Upscaler {
         drop(modulated);
         let residual = self.conv(&block.conv_out, &activated, time, height, width)?;
         let output = f32_alloc(&self.gpu, count)?;
-        device(self.gpu.add(&output, input, &residual))?;
+        device(self.gpu.add_f32(&output, input, &residual))?;
         Ok(output)
     }
 
@@ -737,7 +737,7 @@ impl Upscaler {
             WIDTH,
         ))?;
         let output = f32_alloc(&self.gpu, count)?;
-        device(self.gpu.add(&output, input, &pointwise))?;
+        device(self.gpu.add_f32(&output, input, &pointwise))?;
         Ok(output)
     }
 }

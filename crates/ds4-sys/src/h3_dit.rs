@@ -495,6 +495,16 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    fn h3d_add_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        left: *const CTensor,
+        right: *const CTensor,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     #[allow(clippy::too_many_arguments)]
     fn h3d_zero_pad3d(
         context: *mut Context,
@@ -3921,6 +3931,24 @@ impl Gpu {
                 )
             },
             "conv3d",
+        )
+    }
+
+    /// `h3d_add_f32`: elementwise F32 add, the resizer's identity skips.
+    pub fn add_f32(&self, output: &Tensor, left: &Tensor, right: &Tensor) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_add_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    left.raw(),
+                    right.raw(),
+                    output.elements(),
+                    error,
+                    size,
+                )
+            },
+            "F32 add",
         )
     }
 

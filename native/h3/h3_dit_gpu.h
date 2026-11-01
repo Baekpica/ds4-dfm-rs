@@ -1018,6 +1018,11 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
                        const h3d_tensor *shift, uint32_t channels,
                        size_t elements, char *error, size_t error_size);
 
+/* `out = left + right` over F32 elements, the resizer's identity skips. */
+int h3d_add_f32(h3d_context *context, h3d_tensor *output,
+                const h3d_tensor *left, const h3d_tensor *right,
+                size_t elements, char *error, size_t error_size);
+
 /* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
  * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
 int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
