@@ -334,9 +334,15 @@ impl Upscaler {
         let tf32 = std::env::var("H3_UPSCALER_GEMM")
             .map(|value| value.starts_with('t') || value.starts_with('T'))
             .unwrap_or(true);
+        // The measured arms: fp32 rows 12.36 s, fp32 columns 12.36 s, tf32 rows
+        // 12.31 s, tf32 columns 7.51 s, at 2.2e-6, 2.2e-6, 6.1e-5 and 6.1e-5
+        // relative error against the f64 reference. The column-major request is
+        // the one cuBLASLt answers with a TF32 tensor-core kernel, and it is
+        // the reference implementation's own precision class, so it is the
+        // default; `rows` is the arm that shows what the orientation costs.
         let columns = std::env::var("H3_UPSCALER_ORIENT")
             .map(|value| value.starts_with('c') || value.starts_with('C'))
-            .unwrap_or(false);
+            .unwrap_or(true);
         Self::open_with(dir, gpu, tf32, columns)
     }
 
