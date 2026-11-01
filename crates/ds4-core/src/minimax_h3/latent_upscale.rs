@@ -281,6 +281,47 @@ fn permute_kernel(
     permuted
 }
 
+/// Lap timer for `upscale_timed`. `idle` charges nothing and never touches the
+/// device, so the product path pays for the structure and not for a sync per
+/// stage. A lap is attributed to the stage that just finished.
+pub struct StageClock {
+    running: bool,
+    mark: std::time::Instant,
+    entries: Vec<(&'static str, f64)>,
+}
+
+impl StageClock {
+    fn idle() -> Self {
+        StageClock {
+            running: false,
+            mark: std::time::Instant::now(),
+            entries: Vec::new(),
+        }
+    }
+
+    fn running() -> Self {
+        StageClock {
+            running: true,
+            ..Self::idle()
+        }
+    }
+
+    fn lap(&mut self, gpu: &Gpu, name: &'static str) {
+        if !self.running {
+            return;
+        }
+        let _ = gpu.sync();
+        let now = std::time::Instant::now();
+        self.entries
+            .push((name, now.duration_since(self.mark).as_secs_f64()));
+        self.mark = now;
+    }
+
+    fn into_entries(self) -> Vec<(&'static str, f64)> {
+        self.entries
+    }
+}
+
 impl Upscaler {
     /// Open the released checkpoint in `dir`. The store is the video VAE's: a
     /// directory of shards with exact shape checks per tensor.
@@ -451,6 +492,25 @@ impl Upscaler {
         Gpu::conv3d_timing_reset()
     }
 
+    /// The same resize with a lap timer over its stages. Each lap synchronizes
+    /// the device, so the numbers are device wall time per stage rather than a
+    /// submission schedule; the convolution's own phases come from
+    /// `timing_read` and cover only the time inside `conv3d_gemm`.
+    pub fn upscale_timed(
+        &self,
+        latent: &[f32],
+        time: usize,
+        height: usize,
+        width: usize,
+        out_height: usize,
+        out_width: usize,
+    ) -> Result<(Latent, Vec<(&'static str, f64)>), UpscaleError> {
+        let mut clock = StageClock::running();
+        let latent =
+            self.upscale_inner(latent, time, height, width, out_height, out_width, &mut clock)?;
+        Ok((latent, clock.into_entries()))
+    }
+
     /// Resize a channel-major, normalized latent `[24, time, height, width]` to
     /// `out_height` by `out_width`, keeping the temporal extent.
     pub fn upscale(
@@ -461,6 +521,27 @@ impl Upscaler {
         width: usize,
         out_height: usize,
         out_width: usize,
+    ) -> Result<Latent, UpscaleError> {
+        self.upscale_inner(
+            latent,
+            time,
+            height,
+            width,
+            out_height,
+            out_width,
+            &mut StageClock::idle(),
+        )
+    }
+
+    fn upscale_inner(
+        &self,
+        latent: &[f32],
+        time: usize,
+        height: usize,
+        width: usize,
+        out_height: usize,
+        out_width: usize,
+        clock: &mut StageClock,
     ) -> Result<Latent, UpscaleError> {
         if time == 0 || height == 0 || width == 0 || out_height == 0 || out_width == 0 {
             return fail("upscale needs a non-empty latent");
@@ -510,8 +591,10 @@ impl Upscaler {
 
         let input = f32_alloc(&self.gpu, normalized.len())?;
         upload_f32(&self.gpu, &input, &time_major)?;
+        clock.lap(&self.gpu, "prep");
 
         let mut current = self.conv(&self.conv_in, &input, time, height, width, &scratch)?;
+        clock.lap(&self.gpu, "conv_in");
 
         for block in &self.in_blocks {
             current = match block {
@@ -523,6 +606,7 @@ impl Upscaler {
                 }
             };
         }
+        clock.lap(&self.gpu, "blocks_in");
 
         let resized_elements = time * out_height * out_width * WIDTH as usize;
         let resized = f32_alloc(&self.gpu, resized_elements)?;
@@ -539,6 +623,7 @@ impl Upscaler {
         ))?;
         drop(input);
         drop(current);
+        clock.lap(&self.gpu, "resize");
 
         let mut current = resized;
         let resized_count = time * out_height * out_width * WIDTH as usize;
@@ -565,6 +650,8 @@ impl Upscaler {
             };
         }
 
+        clock.lap(&self.gpu, "blocks_out");
+
         let normed = f32_alloc(&self.gpu, resized_count)?;
         device(self.gpu.group_norm(
             &normed,
@@ -581,6 +668,7 @@ impl Upscaler {
         ))?;
         let activated = f32_alloc(&self.gpu, resized_count)?;
         device(self.gpu.silu_f32(&activated, &normed))?;
+        clock.lap(&self.gpu, "norm_out");
         let output = self.conv(
             &self.conv_out,
             &activated,
@@ -589,6 +677,7 @@ impl Upscaler {
             out_width,
             &scratch,
         )?;
+        clock.lap(&self.gpu, "conv_out");
 
         let out_voxels = time * out_height * out_width;
         let time_major_out = read_f32(&self.gpu, &output, out_voxels * LATENT_CHANNELS)?;
@@ -603,6 +692,7 @@ impl Upscaler {
             let channel = index / out_voxels;
             *value = *value * LATENTS_STD[channel] + LATENTS_MEAN[channel];
         }
+        clock.lap(&self.gpu, "download");
 
         Ok(Latent {
             time,

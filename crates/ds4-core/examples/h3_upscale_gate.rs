@@ -87,21 +87,28 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
     let load = started.elapsed().as_secs_f64();
 
     let mut best = f64::MAX;
+    let mut stages: Vec<(&'static str, f64)> = Vec::new();
     for attempt in 0..2 {
-        // The last attempt is the one whose phase split gets reported: it runs
-        // on a warm device, which is the product's case.
+        // The last attempt is the one whose phases are reported: it runs on a
+        // warm device, which is the product's case.
         let last = attempt == 1;
         if last {
             upscaler.timing(true);
             upscaler.timing_reset();
         }
         let started = std::time::Instant::now();
-        let output = upscaler
-            .upscale(&latent, time, height, width, height * 2, width * 2)
-            .map_err(|detail| detail.to_string())?;
+        let (output, laps) = if last {
+            upscaler.upscale_timed(&latent, time, height, width, height * 2, width * 2)
+        } else {
+            upscaler
+                .upscale(&latent, time, height, width, height * 2, width * 2)
+                .map(|output| (output, Vec::new()))
+        }
+        .map_err(|detail| detail.to_string())?;
         let elapsed = started.elapsed().as_secs_f64();
         if last {
             upscaler.timing(false);
+            stages = laps;
         }
         best = best.min(elapsed);
         let mean = output.values.iter().sum::<f32>() / output.values.len() as f32;
@@ -125,6 +132,14 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
             0.0
         }
     );
+    if !stages.is_empty() {
+        let lapped: f64 = stages.iter().map(|(_, seconds)| seconds).sum();
+        let mut line = String::new();
+        for (name, seconds) in &stages {
+            line.push_str(&format!("{name} {seconds:.3}s, "));
+        }
+        println!("stages {lapped:.3}s of the timed run: {}", line.trim_end_matches(", "));
+    }
     println!("load {load:.2}s, best {best:.3}s for {voxels} latent voxels");
     Ok(())
 }
