@@ -104,7 +104,7 @@ done
 [ -f "$NVFP4" ] || die "no NVFP4 prompt encoder: $NVFP4"
 
 if [ "$FORCE" -eq 0 ]; then
-  busy=$(pgrep -a -f 'h3-rs|h3-sol-rs' | grep -v "h3-prompt" || true)
+  busy=$(pgrep -a -f 'h3-rs' | grep -v "h3-prompt" || true)
   if [ -n "$busy" ]; then
     printf '%s\n' "$busy" >&2
     die "a render is already on the GPU; wait for it, or pass --force"

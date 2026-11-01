@@ -546,9 +546,7 @@ h3-rs: $(H3_OBJS)
 h3-rs: H3_PACKAGE = ds4-cli
 h3-server-rs: $(filter-out native/h3/h3_device_gpu.o,$(H3_OBJS))
 h3-server-rs: H3_PACKAGE = ds4-server
-h3-sol-rs: $(H3_OBJS)
-h3-sol-rs: H3_PACKAGE = ds4-cli
-h3-rs h3-server-rs h3-sol-rs: $(DS4_RS_SOURCES)
+h3-rs h3-server-rs: $(DS4_RS_SOURCES)
 	cargo rustc -p $(H3_PACKAGE) --bin $@ --release --features native -- \
 		$(H3_LINK_ARGS) $(H3_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/$@" $@
