@@ -1023,6 +1023,19 @@ int h3d_add_f32(h3d_context *context, h3d_tensor *output,
                 const h3d_tensor *left, const h3d_tensor *right,
                 size_t elements, char *error, size_t error_size);
 
+/* The resizer's 3x3x3 convolutions: `h3d_conv3d`'s arithmetic through im2col
+ * and the F32 GEMM, which is what makes 512 channels usable. `input` is the
+ * padded volume (`h3d_zero_pad3d`'s output) and `tile` bounds the expanded
+ * matrix the caller lends as `scratch` (`tile * in * k^3` floats). One thread
+ * per output element costs 70x this at 512 channels. */
+int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *weight,
+                    const h3d_tensor *bias, uint32_t depth, uint32_t height,
+                    uint32_t width, uint32_t input_channels,
+                    uint32_t output_channels, uint32_t kernel, uint32_t tile,
+                    float *scratch, size_t scratch_bytes, char *error,
+                    size_t error_size);
+
 /* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
  * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
 int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,

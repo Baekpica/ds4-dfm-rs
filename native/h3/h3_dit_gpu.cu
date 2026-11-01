@@ -6929,6 +6929,112 @@ int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("channel affine", error, error_size);
 }
 
+/* im2col for the resizer's 3x3x3 convolutions: one thread per (row, column),
+ * rows emitted a tile at a time so the expanded matrix never has to exist for a
+ * whole volume. The column order is the weight's own, `ic * k^3 + kt * k^2 +
+ * ky * k + kx`, so the GEMM reads the checkpoint's `[out, in, kt, ky, kx]`
+ * tensor without a transpose. */
+__global__ static void h3d_im2col3d_kernel(
+    float *columns, const float *input, uint32_t depth, uint32_t height,
+    uint32_t width, uint32_t channels, uint32_t kernel, uint32_t row_begin,
+    uint32_t rows, uint32_t columns_per_row, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t column = (uint32_t)(index % columns_per_row);
+    uint32_t local_row = (uint32_t)(index / columns_per_row);
+    uint32_t row = row_begin + local_row;
+    uint32_t x = row % width;
+    uint32_t rest = row / width;
+    uint32_t y = rest % height;
+    uint32_t t = rest / height;
+    uint32_t square = kernel * kernel;
+    uint32_t input_channel = column / (square * kernel);
+    uint32_t inside = column % (square * kernel);
+    uint32_t kt = inside / square;
+    uint32_t ky = (inside / kernel) % kernel;
+    uint32_t kx = inside % kernel;
+    size_t source =
+        (((((size_t)(t + kt) * height + (y + ky)) * width + (x + kx)) *
+              channels) +
+         input_channel);
+    columns[index] = input[source];
+}
+
+/* `out[channel] += bias[channel]`, the epilogue the conv's GEMM leaves open. */
+__global__ static void h3d_add_bias_kernel(float *output, const float *bias,
+                                           uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    output[index] += bias[index % channels];
+}
+
+/* The same convolution `h3d_conv3d` computes, through im2col and the F32 GEMM:
+ * one thread per output element is fine for the decoder's small channel counts
+ * and 70x too slow at 512. `input` is the padded volume, as `h3d_conv3d` wants;
+ * `tile` bounds the expanded matrix, which is `tile * in * k^3` floats. */
+int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *weight,
+                    const h3d_tensor *bias, uint32_t depth, uint32_t height,
+                    uint32_t width, uint32_t input_channels,
+                    uint32_t output_channels, uint32_t kernel, uint32_t tile,
+                    float *scratch, size_t scratch_bytes, char *error,
+                    size_t error_size) {
+    if (!context || !depth || !height || !width || !input_channels ||
+        !output_channels || !kernel || !tile) {
+        return h3d_set_error(error, error_size, "invalid Conv3d shape");
+    }
+    if (kernel > depth || kernel > height || kernel > width) {
+        return h3d_set_error(error, error_size, "Conv3d kernel exceeds input");
+    }
+    uint32_t out_depth = depth - kernel + 1;
+    uint32_t out_height = height - kernel + 1;
+    uint32_t out_width = width - kernel + 1;
+    size_t input_elements, weight_elements, output_elements, column_elements;
+    if (!h3d_mul_size((size_t)depth * height * width, input_channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)output_channels * input_channels * kernel * kernel,
+                      kernel, &weight_elements) ||
+        !h3d_mul_size((size_t)out_depth * out_height * out_width,
+                      output_channels, &output_elements) ||
+        !h3d_mul_size((size_t)tile, input_channels * kernel * kernel * kernel,
+                      &column_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(weight, H3D_F32, weight_elements) ||
+        !h3d_is(output, H3D_F32, output_elements) ||
+        !h3d_is(bias, H3D_F32, output_channels)) {
+        return h3d_set_error(error, error_size, "invalid Conv3d tensors");
+    }
+    uint32_t columns_per_row = input_channels * kernel * kernel * kernel;
+    size_t rows = (size_t)out_depth * out_height * out_width;
+    if (column_elements * sizeof(float) > scratch_bytes || !scratch) {
+        return h3d_set_error(error, error_size,
+                             "Conv3d scratch is smaller than one tile");
+    }
+    for (size_t begin = 0; begin < rows; begin += tile) {
+        size_t count = rows - begin < tile ? rows - begin : tile;
+        size_t elements = count * columns_per_row;
+        h3d_im2col3d_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                              context->stream>>>(
+            scratch, (const float *)input->data, depth, height, width,
+            input_channels, kernel, (uint32_t)begin, (uint32_t)count,
+            columns_per_row, elements);
+        if (!h3d_launch_ok("Conv3d im2col", error, error_size)) return 0;
+        if (!h3d_linear_lt_compute(
+                context, (char *)output->data + begin * output_channels * 4,
+                scratch, weight->data, (uint32_t)count, columns_per_row,
+                output_channels, CUDA_R_32F, CUBLAS_COMPUTE_32F, error,
+                error_size)) {
+            return 0;
+        }
+    }
+    size_t output_count = rows * output_channels;
+    h3d_add_bias_kernel<<<(unsigned)((output_count + 255) / 256), 256, 0,
+                          context->stream>>>((float *)output->data,
+                                             (const float *)bias->data,
+                                             output_channels, output_count);
+    return h3d_launch_ok("Conv3d bias", error, error_size);
+}
+
 /* `out = left + right`, the resizer's identity skips. `h3d_add` is BF16 only
  * and `h3d_scale_add_f32` carries a residual scale the skips do not have. */
 __global__ static void h3d_add_f32_kernel(float *output, const float *left,

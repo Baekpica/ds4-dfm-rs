@@ -506,6 +506,26 @@ unsafe extern "C" {
     ) -> c_int;
 
     #[allow(clippy::too_many_arguments)]
+    fn h3d_conv3d_gemm(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        tile: u32,
+        scratch: *mut CTensor,
+        scratch_bytes: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
     fn h3d_zero_pad3d(
         context: *mut Context,
         output: *mut CTensor,
@@ -3949,6 +3969,50 @@ impl Gpu {
                 )
             },
             "F32 add",
+        )
+    }
+
+    /// `h3d_conv3d_gemm`: the resizer's 3x3x3 convolution through im2col and
+    /// the F32 GEMM. `input` is the padded volume, `scratch` the expanded
+    /// matrix's home (`tile * in * k^3` floats).
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv3d_gemm(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        tile: u32,
+        scratch: &Tensor,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_conv3d_gemm(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    depth,
+                    height,
+                    width,
+                    input_channels,
+                    output_channels,
+                    kernel,
+                    tile,
+                    scratch.raw(),
+                    scratch.bytes(),
+                    error,
+                    size,
+                )
+            },
+            "conv3d gemm",
         )
     }
 

@@ -39,6 +39,9 @@ pub const GROUPS: u32 = 32;
 /// `nn.GroupNorm`'s default epsilon, which the node leaves alone.
 pub const EPSILON: f32 = 1e-5;
 pub const TEMPORAL_KERNEL: u32 = 5;
+/// Output rows per im2col tile: `3072 * 512 * 27 * 4` bytes of scratch, which
+/// is the largest tile this resizer asks for.
+pub const SCRATCH_TILE: u32 = 3072;
 const RES_BLOCKS: usize = 12;
 /// Why this pairing: every block list in the checkpoint is `ResBlockEmb3D`
 /// followed by `TemporalConv` when its index is `0 mod 3` and the next is not,
@@ -429,6 +432,7 @@ impl Upscaler {
         let count = voxels * WIDTH as usize;
         let scale = (out_width as f32 / width as f32 + out_height as f32 / height as f32) / 2.0;
         let embed = self.embed(scale);
+        let scratch = f32_alloc(&self.gpu, SCRATCH_TILE as usize * WIDTH as usize * 27)?;
 
         let normalized: Vec<f32> = latent
             .iter()
@@ -449,12 +453,12 @@ impl Upscaler {
         let input = f32_alloc(&self.gpu, normalized.len())?;
         upload_f32(&self.gpu, &input, &time_major)?;
 
-        let mut current = self.conv(&self.conv_in, &input, time, height, width)?;
+        let mut current = self.conv(&self.conv_in, &input, time, height, width, &scratch)?;
 
         for block in &self.in_blocks {
             current = match block {
                 Block::Res(res) => {
-                    self.res_block(res, &current, &embed, time, height, width, count)?
+                    self.res_block(res, &current, &embed, time, height, width, count, &scratch)?
                 }
                 Block::Temporal(temporal) => {
                     self.temporal_block(temporal, &current, time, height, width, voxels)?
@@ -490,6 +494,7 @@ impl Upscaler {
                     out_height,
                     out_width,
                     resized_count,
+                    &scratch,
                 )?,
                 Block::Temporal(temporal) => self.temporal_block(
                     temporal,
@@ -518,7 +523,14 @@ impl Upscaler {
         ))?;
         let activated = f32_alloc(&self.gpu, resized_count)?;
         device(self.gpu.silu_f32(&activated, &normed))?;
-        let output = self.conv(&self.conv_out, &activated, time, out_height, out_width)?;
+        let output = self.conv(
+            &self.conv_out,
+            &activated,
+            time,
+            out_height,
+            out_width,
+            &scratch,
+        )?;
 
         let out_voxels = time * out_height * out_width;
         let time_major_out = read_f32(&self.gpu, &output, out_voxels * LATENT_CHANNELS)?;
@@ -572,6 +584,7 @@ impl Upscaler {
         time: usize,
         height: usize,
         width: usize,
+        scratch: &Tensor,
     ) -> Result<Tensor, UpscaleError> {
         let pad = conv.kernel / 2;
         if pad == 0 {
@@ -605,19 +618,19 @@ impl Upscaler {
         ))?;
         let output_elements = time * height * width * conv.output_channels as usize;
         let output = f32_alloc(&self.gpu, output_elements)?;
-        device(self.gpu.conv3d(
+        device(self.gpu.conv3d_gemm(
             &output,
             &padded,
             &conv.weight,
-            Some(&conv.bias),
-            1,
+            &conv.bias,
             (time + 2 * pad as usize) as u32,
             (height + 2 * pad as usize) as u32,
             (width + 2 * pad as usize) as u32,
             conv.input_channels,
             conv.output_channels,
-            [conv.kernel; 3],
-            [1, 1, 1],
+            conv.kernel,
+            SCRATCH_TILE,
+            scratch,
         ))?;
         Ok(output)
     }
@@ -632,6 +645,7 @@ impl Upscaler {
         height: usize,
         width: usize,
         count: usize,
+        scratch: &Tensor,
     ) -> Result<Tensor, UpscaleError> {
         let (scale_values, shift_values) = self.modulation(block, embed);
         let mod_scale = f32_alloc(&self.gpu, scale_values.len())?;
@@ -656,7 +670,7 @@ impl Upscaler {
             EPSILON,
         ))?;
         device(self.gpu.silu_f32(&hidden, &hidden))?;
-        let convolved = self.conv(&block.conv_in, &hidden, time, height, width)?;
+        let convolved = self.conv(&block.conv_in, &hidden, time, height, width, scratch)?;
         drop(hidden);
         let normalized = f32_alloc(&self.gpu, count)?;
         device(self.gpu.group_norm(
@@ -686,7 +700,7 @@ impl Upscaler {
         let activated = f32_alloc(&self.gpu, count)?;
         device(self.gpu.silu_f32(&activated, &modulated))?;
         drop(modulated);
-        let residual = self.conv(&block.conv_out, &activated, time, height, width)?;
+        let residual = self.conv(&block.conv_out, &activated, time, height, width, scratch)?;
         let output = f32_alloc(&self.gpu, count)?;
         device(self.gpu.add_f32(&output, input, &residual))?;
         Ok(output)
