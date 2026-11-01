@@ -1384,6 +1384,9 @@ typedef enum {
  * checkpoint is a prefix, only the suffix is evaluated; otherwise the backend
  * state is refilled from scratch. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
+/* Rows a sync of `tokens` keeps when they do not extend the live state; 0
+ * rebuilds, -1 when the family resumes only on extension. */
+int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens);
 /* Encodes each image inside the session, so the projected rows never leave
  * the device. Always refills. */
 int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
@@ -1408,9 +1411,6 @@ ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,
         char *err, size_t errlen);
 int ds4_session_common_prefix(ds4_session *s, const ds4_tokens *prompt);
-/* Largest permitted live_pos-resume_pos span with resident sliding-window KV.
- * K2's exact-only contract, non-EXAONE and unavailable graphs return 0. */
-int ds4_session_exaone_rewind_span(ds4_session *s);
 int ds4_session_argmax(ds4_session *s);
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
@@ -1497,8 +1497,6 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
                             int *tokens, int *target, int cap,
                             char *err, size_t errlen);
 int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen);
-/* Rows of the live state a text sync of `tokens` keeps; 0 rebuilds. */
-int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens);
 int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
                                  const unsigned *starts, const unsigned *counts,
                                  const float *const *rows, unsigned nspans,

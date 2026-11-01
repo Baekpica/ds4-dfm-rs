@@ -5909,7 +5909,10 @@ exit 1
         let graph = crate::mimo2::context_bytes(req.ctx as u32, cap).unwrap();
         assert_eq!(facts.per_bank_bytes, Some(kv));
         assert!(facts.scratch_bytes.unwrap() > graph - kv);
-        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        assert_eq!(
+            facts.checkpoint_pool_bytes,
+            Some(mimo_checkpoint_pool_bytes())
+        );
     }
 
     #[test]
@@ -6806,7 +6809,7 @@ exit 1
         let _chunk = EnvGuard::set(DOTS3_PREFILL_CHUNK_ENV, "64");
         for (reuse, expected) in [
             (PrefixReuse::Partial, 1_178_800_128),
-            (PrefixReuse::Auto, 0),
+            (PrefixReuse::Auto, 1_178_800_128),
             (PrefixReuse::Exact, 0),
         ] {
             let req = ServingRequest {
@@ -7048,7 +7051,7 @@ exit 1
         for (reuse, ctx, expected) in [
             (PrefixReuse::Partial, 512, 603_979_776),
             (PrefixReuse::Partial, 64, 301_989_888),
-            (PrefixReuse::Auto, 512, 0),
+            (PrefixReuse::Auto, 512, 603_979_776),
             (PrefixReuse::Exact, 512, 0),
             (PrefixReuse::Off, 512, 0),
         ] {

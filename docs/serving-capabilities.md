@@ -7,6 +7,9 @@ plan's `controls`, which also supply `ds4-perf serving-controls`.
 `qualified` describes the recorded artifact and workload scope, not every
 quantization, context, concurrency, media input or feature combination.
 `unverified` means implemented (`Support::Present`); `none` means unsupported.
+`ds4 --serving-check` runs every bank, reuse, disk and snapshot item and
+prints declared beside measured; the [2026-11-02 record](benchmarks/serving-checklist-2026-11-02/README.md)
+lists the artifacts it covers.
 Consult the [release ledger](releases/v0.1.3.md) and
 [family contracts](ds4-dfm-model-families.md) for evidence and limits.
 
@@ -20,25 +23,26 @@ The request's effective and qualified plan remains authoritative.
 |---|---|---|---|---|---|
 | DeepSeek V4 Flash | persistent / qualified | exact / qualified | qualified | qualified | DeepSeek / bank / qualified |
 | DeepSeek V4 Pro | persistent / qualified | exact / qualified | qualified | qualified | DeepSeek / bank / qualified |
-| DeepSeek V4.1 Flash | serial / none | exact / unverified | unverified | none | Embedded / serial / qualified |
+| DeepSeek V4.1 Flash | serial / none | exact / qualified | qualified | none | Embedded / serial / qualified |
 | Solar Open2 250B | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | Motif-3 | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
-| K-EXAONE 236B A23B | persistent / qualified | partial / unverified | qualified | qualified | None / none / none |
-| dots3-note-prev | opt_in / unverified | partial / unverified | unverified | qualified | Embedded / serial / unverified |
+| K-EXAONE 236B A23B | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
+| dots3-note-prev | opt_in / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
 | Qwen3.8-Flash-Next | persistent / qualified | partial / qualified | qualified | qualified | Embedded / bank / qualified |
 | GLM 5.3 Flash | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
-| K2-Horizon 375B A23B | persistent / qualified | exact / qualified | unverified | unverified | None / none / none |
-| Inkling Small | serial / none | exact / qualified | unverified | unverified | Sidecar / serial / qualified |
+| GLM-5.3-Flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial + bank / unverified |
+| K2-Horizon 375B A23B | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
+| Inkling Small | serial / none | exact / qualified | qualified | qualified | Sidecar / serial / qualified |
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
-| MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
-| MiMo-V2.6-Flash-VQ | opt_in / unverified | partial / qualified | qualified | unverified | Embedded / serial / qualified |
+| MiMo-V2.6-Flash-RL | opt_in / qualified | partial / qualified | qualified | qualified | Embedded / serial / qualified |
+| MiMo-V2.6-Flash-VQ | opt_in / qualified | partial / qualified | qualified | qualified | Embedded / serial / qualified |
 | Naive-N0.5-Flash | opt_in / qualified | partial / qualified | qualified | qualified | External / serial + bank / unverified |
-| IQuest-Q1 | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
-| Ling-3.1-flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
-| Beam-1.0-501B-A23B-VQ | persistent / unverified | partial / unverified | unverified | unverified | Sidecar / serial / unverified |
-| MiniMax-M3.1-Flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial / unverified |
-| A.X-K2-VQ | persistent / unverified | partial / unverified | unverified | unverified | None / none / none |
+| IQuest-Q1 | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial + bank / unverified |
+| Ling-3.1-flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial + bank / unverified |
+| Beam-1.0-501B-A23B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
+| MiniMax-M3.1-Flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
+| A.X-K2-VQ | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 
 ## Bounds and allocator controls
 
@@ -57,6 +61,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | dots3-note-prev | 524288 | — | 1 | — | `DS4_DOTS3_PREFILL_CHUNK` |
 | Qwen3.8-Flash-Next | 1048576 | 262144 | 2 | — | `DS4_QWEN_PREFILL_CHUNK` |
 | GLM 5.3 Flash | 1048576 | 2048 | 1 | — | `DS4_GLM53_PREFILL_ROWS` |
+| GLM-5.3-Flash-VQ | 1048576 | — | — | — | `DS4_GLMVQ_PREFILL_ROWS` |
 | K2-Horizon 375B A23B | — | 32768 | 1 | — | `DS4_EXAONE_PREFILL_CHUNK` |
 | Inkling Small | 1048576 | 1024 | 1 | — | `DS4_INKLING_PREFILL_CHUNK` |
 | Step-3.7-Flash | 262144 | 65536 | 2 | 6300 | `DS4_STEP37_PREFILL_CHUNK` |
@@ -76,13 +81,14 @@ candidate. These are scheduler controls, not measurements or speed claims.
 
 ## Qualification notes
 
-- **DeepSeek V4.1 Flash:** recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are present, unqualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected.
-- **K-EXAONE 236B A23B:** exact reuse qualified; LLLG partial checkpoints await live qualification.
-- **dots3-note-prev:** text banks, local-window partial reuse and serial MTP are present but unqualified.
+- **DeepSeek V4.1 Flash:** recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are qualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected.
+- **K-EXAONE 236B A23B:** LLLG ring rewind and partial checkpoints qualified.
+- **dots3-note-prev:** serial MTP is present but unqualified.
 - **Qwen3.8-Flash-Next:** common UX baseline; configured values and verified combinations differ.
 - **GLM 5.3 Flash:** compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate.
-- **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
-- **Inkling Small:** serial text snapshots present; media snapshots unsupported.
+- **GLM-5.3-Flash-VQ:** Eager CUDA sparse graph follows the native 1,048,576 context; short two-bank gates qualify partial reuse and disk KV; MTP and serving workload limits remain unqualified.
+- **K2-Horizon 375B A23B:** 32K one-bank serving and disk KV are qualified; external owner import is not.
+- **Inkling Small:** serial text snapshots qualified; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
 - **MiMo-V2.6-Flash-RL:** 512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory.
 - **Naive-N0.5-Flash:** main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified.

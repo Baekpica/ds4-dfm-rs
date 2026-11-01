@@ -38,7 +38,6 @@ pub struct Options {
     pub prefill_chunk: u32,
     pub prefill_window: u32,
     pub activation_bits: u32,
-    pub replay_check: bool,
     pub debug: bool,
 }
 
@@ -214,10 +213,7 @@ pub fn parse_cli_arg(
             opt.activation_bits = bits;
             Ok(CliResult::Matched)
         }
-        "--dist-replay-check" => {
-            opt.replay_check = true;
-            Ok(CliResult::Matched)
-        }
+        "--dist-replay-check" => Err(ERR_REPLAY_CHECK_DEPRECATED.into()),
         "--debug" => {
             opt.debug = true;
             Ok(CliResult::Matched)
@@ -322,12 +318,13 @@ pub fn resolved_layer_end(layers: &Layers, n_layers: u32) -> u32 {
 }
 
 pub fn prepare_engine_options(opt: &Options) -> Result<(), String> {
-    validate_options(opt)?;
-    if opt.replay_check && opt.role != Role::Coordinator {
-        return Err("--dist-replay-check requires --role coordinator".into());
-    }
-    Ok(())
+    validate_options(opt)
 }
+
+/// `--dist-replay-check` only ever ran in the C CLI's one-shot coordinator;
+/// Rust hosts took it and did nothing, so they reject it now.
+const ERR_REPLAY_CHECK_DEPRECATED: &str = "--dist-replay-check is deprecated: Rust hosts never \
+     ran it (see docs/rust-migration/C_CONTINUATION.md)";
 
 pub const USAGE: &str = "\
   --role ROLE\n\
@@ -345,7 +342,5 @@ pub const USAGE: &str = "\
       Coordinator max end-to-end prefill chunks in flight. Default: workers+2, capped at 8.\n\
   --dist-activation-bits N\n\
       Coordinator hidden-state transport width: 32, 16, or 8. Default: 32.\n\
-  --dist-replay-check\n\
-      Coordinator diagnostic: reset and replay the prompt, then compare logits.\n\
   --debug\n\
       Print coordinator route/debug logs. Workers keep their normal logs without this.\n";

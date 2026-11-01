@@ -72,63 +72,30 @@ fn common_prefix_and_rewrite_from_match_c() {
 fn sync_plans_match_c() {
     assert_cmd(
         "plan",
-        &[
-            "deepseek4",
-            "cuda",
-            "32",
-            "8",
-            "1",
-            "1",
-            "0",
-            "1,2,3;1,2,3,4",
-        ],
+        &["deepseek4", "cuda", "32", "8", "1", "1", "1,2,3;1,2,3,4"],
     );
     assert_cmd(
         "plan",
-        &["deepseek4", "cuda", "32", "8", "1", "1", "0", "1,2,3;9,8,7"],
+        &["deepseek4", "cuda", "32", "8", "1", "1", "1,2,3;9,8,7"],
     );
     assert_cmd(
         "plan",
-        &["deepseek4", "cuda", "32", "8", "1", "1", "0", "1,2,3;1,2,3"],
+        &["deepseek4", "cuda", "32", "8", "1", "1", "1,2,3;1,2,3"],
     );
     assert_cmd(
         "plan",
-        &[
-            "deepseek4",
-            "cuda",
-            "8",
-            "8",
-            "0",
-            "1",
-            "0",
-            "-;1,2,3,4,5,6,7",
-        ],
+        &["deepseek4", "cuda", "8", "8", "0", "1", "-;1,2,3,4,5,6,7"],
+    );
+    assert_cmd("plan", &["qwen4exp", "cuda", "8", "8", "0", "1", "-;n:8"]);
+    assert_cmd(
+        "plan",
+        &["deepseek4", "cuda", "16384", "9000", "0", "1", "-;1"],
     );
     assert_cmd(
         "plan",
-        &["qwen4exp", "cuda", "8", "8", "0", "1", "0", "-;n:8"],
+        &["deepseek4", "cuda", "16384", "9000", "0", "1", "-;n:9000"],
     );
-    assert_cmd(
-        "plan",
-        &["deepseek4", "cuda", "16384", "9000", "0", "1", "0", "-;1"],
-    );
-    assert_cmd(
-        "plan",
-        &[
-            "deepseek4",
-            "cuda",
-            "16384",
-            "9000",
-            "0",
-            "1",
-            "0",
-            "-;n:9000",
-        ],
-    );
-    assert_cmd(
-        "plan",
-        &["motif3", "cuda", "32", "8", "1", "1", "0", "1,2;9,8"],
-    );
+    assert_cmd("plan", &["motif3", "cuda", "32", "8", "1", "1", "1,2;9,8"]);
     assert_cmd(
         "plan",
         &[
@@ -138,17 +105,16 @@ fn sync_plans_match_c() {
             "4",
             "1",
             "1",
-            "0",
             "1,2,3,4,5;1,2,3,4,5,6",
         ],
     );
     assert_cmd(
         "plan",
-        &["solar-open2", "cuda", "32", "8", "1", "0", "0", "1,2;1,2,3"],
+        &["solar-open2", "cuda", "32", "8", "1", "0", "1,2;1,2,3"],
     );
     assert_cmd(
         "plan",
-        &["solar-open2", "cuda", "32", "8", "1", "1", "0", "1,2;1,2,3"],
+        &["solar-open2", "cuda", "32", "8", "1", "1", "1,2;1,2,3"],
     );
     assert_cmd(
         "plan",
@@ -159,40 +125,18 @@ fn sync_plans_match_c() {
             "8",
             "1",
             "1",
-            "8",
             "1,2,3,4,5;1,2,3,4,5",
         ],
     );
     assert_cmd(
         "plan",
-        &[
-            "exaone-moe",
-            "cuda",
-            "32",
-            "8",
-            "1",
-            "1",
-            "0",
-            "1,2,3,4,5;1,2,9",
-        ],
+        &["exaone-moe", "cuda", "32", "8", "1", "1", "1,2,3,4,5;1,2,9"],
     );
     assert_cmd(
         "plan",
-        &[
-            "exaone-moe",
-            "cuda",
-            "32",
-            "8",
-            "1",
-            "1",
-            "8",
-            "1,2,3,4,5;1,2,9",
-        ],
+        &["exaone-moe", "cuda", "32", "8", "1", "1", "1,2,3,4,5;1,2,9"],
     );
-    assert_cmd(
-        "plan",
-        &["deepseek4", "cpu", "8", "8", "0", "1", "0", "-;-"],
-    );
+    assert_cmd("plan", &["deepseek4", "cpu", "8", "8", "0", "1", "-;-"]);
 }
 
 #[test]

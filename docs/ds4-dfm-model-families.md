@@ -380,17 +380,17 @@ passed at context 1,024. A separate 32K explicit-serial raw disk gate passed
 with three fresh processes: append and sibling requests restored 547 tokens,
 and all four results matched fresh cold controls. The 4 GiB / PSI30 guard
 remained active after startup pressure settled; minimum sampled availability
-was 4.83 GiB. Identical whole prompts and early edits still replay cold under
-K2's zero-rewind policy. This short gate does not qualify filled-32K prompts
+was 4.83 GiB. Identical whole prompts and early edits replayed cold under
+that build's zero-rewind policy. This short gate does not qualify filled-32K prompts
 or disk reuse through Chat or the continuous lane. See the
 [commands and limits](releases/v0.1.3-k2-glm-gates.md) and
 [evidence, including earlier failures](benchmarks/serving-v013-2026-09-17/k2.json).
 
 The following command reproduces the historical continuous serving shape with
-in-process VMM. External weight-owner import remains unqualified. The capability
-marker for snapshots/disk KV remains conservatively `present`; the narrower
-serial raw disk gate above has its own qualification. Context and concurrency
-remain 32K and one bank; K2 has no MTP contract.
+in-process VMM. External weight-owner import remains unqualified.
+`ds4 --serving-check` qualifies snapshots and disk KV
+([record](benchmarks/serving-checklist-2026-11-02/README.md)). Context and
+concurrency remain 32K and one bank; K2 has no MTP contract.
 
 ```sh
 MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf
@@ -467,8 +467,8 @@ The family is served on the serial lane; there is no `ds4_session`:
 - the native run reuses the previous prompt's prefix through one prompt-end
   checkpoint (`--no-kv-reuse` disables it) and reports it as usage cached
   tokens; the same checkpoint crosses processes through the KVC disk store when
-  `--kv-disk-dir` is set (`present`, not qualified). Common prefix modes auto
-  and exact use this checkpoint; off disables live and disk reuse;
+  `--kv-disk-dir` is set (qualified by `ds4 --serving-check`). Common prefix
+  modes auto and exact use this checkpoint; off disables live and disk reuse;
 - device sampling prefills identical prompts again because the checkpoint
   lacks sampler position state; suffix reuse and greedy full hits remain;
 - sampling is request-driven; a per-family sampling profile is not adopted, and
@@ -533,9 +533,8 @@ also restored all frontier logits exactly through both load paths. A fresh
 
 GLM 5.3 rejects snapshots and disk KV; its serial context cap is 2,048,
 including lazy graph creation. K2's qualified scope remains one bank at 32K
-with in-process VMM and no MTP. K2 snapshots and disk KV are implemented but
-marked `present`; their lifecycle and external weight-owner import are not
-qualified. The [K2/GLM gates](releases/v0.1.3-k2-glm-gates.md) distinguish
+with in-process VMM and no MTP. `ds4 --serving-check` qualifies K2 snapshots
+and disk KV; external weight-owner import is not qualified. The [K2/GLM gates](releases/v0.1.3-k2-glm-gates.md) distinguish
 short native checks, restart reuse and context-boundary checks.
 
 Example for a validated payload family, within its measured context limit:
@@ -566,8 +565,8 @@ gap. `DS4_SERVER_FORK_PARTIAL=0` disables capture and even the VA
 reservation.
 
 K-EXAONE captures its 36 local LLLG windows and copies the full-attention
-prefix. Enable this `present` capability with `--prefix-reuse partial` on
-the bank lane; `auto` still selects qualified exact reuse. Wrapped native
+prefix. `ds4 --serving-check` qualifies it, and `auto` selects it on the
+bank lane. Wrapped native
 fork/truncate checks matched full-vocabulary logits and 16 greedy tokens.
 A two-bank, 1,024-context HTTP check matched cold output after append and
 edit; restart restored 304 of 327 prompt tokens. These are functional checks,
@@ -575,9 +574,9 @@ not speed measurements. The [scoped evidence](benchmarks/serving-v013-2026-09-17
 predates the required disk identity footer; the integrated restart gate
 remains separate.
 
-dots3-note partial reuse is also opt-in and marked `present`. It captures
-33 local MLA windows and copies full MLA and DSA prefix rows. K2's
-full-attention contract remains exact-only.
+dots3-note partial reuse is qualified on its opt-in bank lane. It captures
+33 local MLA windows and copies full MLA and DSA prefix rows. K2 has no
+sliding layer: a bank forks at any common prefix.
 
 Verified on this host: Solar 6K/10K branches of a 12K source 2.85x/4.62x
 TTFT (`docs/solar-partial-reuse-2026-08-21.md`); Motif-3 7.1K/14.1K
@@ -586,10 +585,10 @@ capture cost (`docs/motif3-partial-reuse-2026-08-22.md`).
 
 ## dots3 serving
 
-dots3-note MQ87 is text-only CUDA. Banks, partial reuse and MTP are separate
-`present` capabilities. `--max-seqs auto` keeps the serial default, and
-`--mtp-mode auto` leaves MTP off. Explicit selections report their unqualified
-status in the serving plan.
+dots3-note MQ87 is text-only CUDA. Banks and partial reuse are qualified; MTP
+is `present`. `--max-seqs auto` keeps the serial default, and
+`--mtp-mode auto` leaves MTP off. An explicit MTP selection reports its
+unqualified status in the serving plan.
 
 Choose text banks with ordinary decoding:
 

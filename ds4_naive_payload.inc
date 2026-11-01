@@ -160,6 +160,7 @@ static int naive_payload_restore(ds4_naive_graph *g, FILE *fp, uint64_t *left,
     free(buf);
     if (rc) { free(tokens); return 1; }
     g->position = n; g->failed = false; *tokens_out = tokens;
+    g->high = g->restored = n;  // the rings get back only the window under n
     if (g->draft.ws) { g->draft.position = n; g->draft.first = n - df_rows; }
     return 0;
 }

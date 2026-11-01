@@ -124,6 +124,8 @@ static int beam_payload_restore(ds4_beam_graph *g, FILE *fp, uint64_t *left,
     free(buf);
     if (rc) { free(tokens); return 1; }
     g->position = n;
+    // The rings get back only the window under n.
+    g->high = g->restored = n;
     // The payload carries no DFlash2 context rows (nor a pending trial).
     g->draft_first = n;
     if (g->draft) { g->draft->trial_n = 0u; }
