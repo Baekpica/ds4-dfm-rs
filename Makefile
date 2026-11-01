@@ -421,8 +421,11 @@ tests/h3_device_gate: H3_LIBS = $(DS4_RS_LIBS)
 tests/h3_partition_gate tests/h3_canvas_gate: H3_LIBS =
 # The cache gate is host-only: the container, the pickle and the payload rules.
 tests/h3_prompt_cache_gate: H3_LIBS =
+# The resizer on a real latent: not a gate (no reference, no bound), the step
+# between `h3-rs --save-latent` and `h3_vae_gate --latent-file`.
+tests/h3_upscale_probe: native/h3/h3_dit_gpu.o
 
-$(H3_GATES): tests/%: $(DS4_RS_SOURCES)
+$(H3_GATES) tests/h3_upscale_probe: tests/%: $(DS4_RS_SOURCES)
 	cargo rustc -p ds4-core --example $* --release --features h3-gates -- \
 		$(H3_LINK_ARGS) $(H3_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
@@ -2774,7 +2777,7 @@ BUILD_PROGRAMS := \
     tests/weight_mapping_policy tests/weight_mapping_probe tools/gb10_peaks
 
 BUILD_OBJECTS += tests/test_iquest_prefix.o $(H3_OBJS)
-BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
+BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) tests/h3_upscale_probe $(H3_REFERENCE_SUITE) \
     tests/h3/native_test tests/h3/attn_bm tests/h3/attn_f32_bm \
     tests/h3/vae_gemm_bm tests/h3/sol_route_bm tests/h3/sol_forward_bm \
     tests/h3/elementwise_bm tests/h3/linear_fp8_bm \
