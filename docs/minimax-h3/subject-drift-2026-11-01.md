@@ -15,6 +15,10 @@ broad muzzle, short rounded ears, no white chin, a tail with no brush.
 anatomically sound; the same refiner kept it too (`outputs/id-sol.mp4`, a fresh
 draft from the same short prompt and seed 42, is a fox at 2.5 s).
 
+`docs/minimax-h3/frames/subject-drift-2.5s-2026-11-01.png` is the same frame
+three ways: the draft's transfer decode, the release's route, and the anchored
+route.
+
 So the subject survives when the draft is unambiguous and is redrawn when it is
 not, under the same code, schedule, LoRA and prompt. That is a property of the
 route, not of one clip.
