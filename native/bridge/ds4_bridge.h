@@ -466,6 +466,13 @@ int ds4_bridge_session_sample(ds4_bridge_session *s,
 typedef void (*ds4_bridge_spec_verify_fn)(void *ud, const float *rows, size_t stride,
                                           uint32_t vocab, const int32_t *tokens, uint32_t n,
                                           int32_t *target);
+/* Every native draw goes through `fn` (process-wide; NULL restores the
+ * deprecated C sampler). */
+typedef int (*ds4_bridge_host_sample_fn)(const float *logits, uint32_t n_vocab,
+                                         float temperature, int top_k, float top_p,
+                                         float min_p, uint64_t *rng,
+                                         int32_t excluded0, int32_t excluded1);
+void ds4_bridge_set_host_sampler(ds4_bridge_host_sample_fn fn);
 /* Speculative trials verify with `verify` until cleared (NULL). */
 int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s,
                                         ds4_bridge_spec_verify_fn verify, void *ud);

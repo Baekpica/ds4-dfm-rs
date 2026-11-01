@@ -2090,6 +2090,11 @@ impl Model {
             directional_steering_ffn: tuning.steering_ffn,
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
+        // Every native draw (serial, banks, verify rows) is the Rust sampler.
+        static HOST_SAMPLER: std::sync::Once = std::sync::Once::new();
+        HOST_SAMPLER.call_once(|| unsafe {
+            ds4_sys::ds4_bridge_set_host_sampler(Some(sample::host_draw));
+        });
         let mut raw = ptr::null_mut();
         let rc = unsafe {
             match ffi_distributed.as_mut() {

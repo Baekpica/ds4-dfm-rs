@@ -135,7 +135,7 @@ help:
 	@echo "  make test-tokenizer-parity C↔Rust tokenizer encode/decode/stop (Phase 8)"
 	@echo "  make test-agent-parity C↔Rust one-turn agent prompt/projector (agent shadow)"
 	@echo "  make test-session-parity C↔Rust session ledger / DSV4 prefix (Phase 8)"
-	@echo "  make ds4-c        Build C oracle ./ds4-c"
+	@echo "  make ds4-c        Build the deprecated C oracle ./ds4-c"
 	@echo "  make ds4-rs       Deprecated alias for ./ds4 (Rust default)"
 	@echo "  make clean        Remove build outputs"
 
@@ -181,7 +181,7 @@ help:
 	@echo "  make test                Build and run tests (reuses the last cuda-* configuration)"
 	@echo "  make rust-bridge         Compile native/bridge/ds4_bridge.o (Rust FFI skeleton)"
 	@echo "  make ds4 / ds4-server    Build Rust defaults (Cargo bin names stay *-rs)"
-	@echo "  make ds4-c / ds4-server-c Build C oracles"
+	@echo "  make ds4-c / ds4-server-c Build the deprecated C oracles"
 	@echo "  make ds4-rs              Deprecated alias that copies ./ds4"
 	@echo "  make test-kv-parity      C↔Rust KVC 4-way matrix (Phase 4)"
 	@echo "  make test-web-parity     C↔Rust web encode/wire + mock CDP (Phase 5)"

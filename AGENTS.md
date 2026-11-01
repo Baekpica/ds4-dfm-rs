@@ -3,7 +3,8 @@
 `ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM.
 The default `ds4`, `ds4-server`, `ds4-bench`, and `ds4-agent` are Rust hosts.
 CUDA/MMQ/VMM and hardware-specific kernels remain native. C executables
-with `-c` suffixes are retained behavior oracles, not the production hosts.
+with `-c` suffixes are deprecated: they keep the C sampler and the old
+sampling policy and no longer track the Rust hosts.
 
 Start with [README.md](README.md), the [documentation index](docs/README.md),
 and the [architecture](docs/rust-migration/ARCHITECTURE.md).

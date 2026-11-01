@@ -2471,7 +2471,6 @@ pub struct SemAccum {
     pub reasoning_tokens: i32,
     pub dsml: DsmlDecodeTracker,
     required_tool_prefix_pos: i32,
-    required_think_end_prefix_pos: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2511,7 +2510,6 @@ impl SemAccum {
             reasoning_tokens: 0,
             dsml: DsmlDecodeTracker::default(),
             required_tool_prefix_pos: 0,
-            required_think_end_prefix_pos: 0,
         };
         if !prompt.is_empty() {
             a.feed_thinking(prompt);
@@ -2783,11 +2781,7 @@ impl SemAccum {
             self.track_tools,
             self.saw_tool_start,
             self.thinking_inside,
-            self.completion,
-            self.chat_format,
-            self.dsml.decode,
             &mut self.required_tool_prefix_pos,
-            &mut self.required_think_end_prefix_pos,
             p,
         );
         // Beam's Harmony headers follow its grammar, not the drifted weights.

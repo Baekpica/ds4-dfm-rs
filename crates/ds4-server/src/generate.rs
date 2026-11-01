@@ -27,7 +27,6 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
-use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
@@ -1547,18 +1546,8 @@ pub(crate) fn prepare_required_prefixes(
         && parsed.has_tools
         && parsed.tool_choice == ToolChoice::Auto
         && !think_mode_enabled(parsed.think_mode);
-    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto {
+    if parsed.tool_choice != ToolChoice::Required && !mimo_auto {
         return Ok(());
-    }
-    let format = chat_format_for_syntax(syntax);
-    if !mimo_auto && parsed.required_think_end_prefix.is_empty() {
-        let toks = tokenize(think_end(format).as_bytes())?;
-        if toks.is_empty() {
-            return Err(GenerateError::Engine(
-                "failed to tokenize thinking control prefix".into(),
-            ));
-        }
-        parsed.required_think_end_prefix = toks;
     }
     if (parsed.tool_choice == ToolChoice::Required || mimo_auto)
         && parsed.required_tool_prefix.is_empty()
@@ -1826,32 +1815,14 @@ fn decode_pass(
         if continued_decode_allowed(acc) {
             store_continued_best_effort(engine);
         }
-        let mut temperature = parsed.temperature;
-        let mut top_k = parsed.top_k;
-        let mut top_p = parsed.top_p;
-        let mut min_p = parsed.min_p;
-        // IQuest and GLM-5.3 use the requested sampler in both channels.
-        // Greedy thinking must remain eligible for their embedded MTP paths.
-        if think_mode_enabled(parsed.think_mode)
-            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
-        {
-            temperature = DEFAULT_TEMPERATURE;
-            top_k = 0;
-            top_p = DEFAULT_TOP_P;
-            min_p = DEFAULT_MIN_P;
-        }
+        // The request's sampler in every channel (vLLM, SGLang).
+        let (temperature, top_k, top_p, min_p) =
+            (parsed.temperature, parsed.top_k, parsed.top_p, parsed.min_p);
         let policy = SamplePolicy {
             tool_choice: parsed.tool_choice,
-            has_tool_results: parsed.has_tool_results,
-            think_mode: parsed.think_mode,
-            max_tokens: parsed.max_tokens,
             required_tool_prefix: &parsed.required_tool_prefix,
-            required_think_end_prefix: &parsed.required_think_end_prefix,
         };
         let ov = acc.sampling_override(&policy);
-        if matches!(ov, SampleOverride::Greedy) {
-            temperature = 0.0;
-        }
         let eos = engine.eos_id();
         if parsed.eos_policy != EosPolicy::Default && eos < 0 {
             return Err(GenerateError::Engine(
@@ -1910,11 +1881,7 @@ fn decode_pass(
                     if dsml && probe.track_tools && probe.saw_tool_end {
                         return false;
                     }
-                    match probe.sampling_override(&policy) {
-                        SampleOverride::None => true,
-                        SampleOverride::Greedy => temperature <= 0.0,
-                        SampleOverride::Token(_) => false,
-                    }
+                    probe.sampling_override(&policy) == SampleOverride::None
                 };
                 let accepted = engine.eval_spec(token, budget, sampler, rng, &mut allow)?;
                 if engine.last_eval_speculated() {
@@ -7216,7 +7183,10 @@ mod disk_sync_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };

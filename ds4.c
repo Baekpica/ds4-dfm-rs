@@ -40899,6 +40899,13 @@ static int sample_full_vocab(
     return id;
 }
 
+static ds4_host_sample_fn g_host_sample;
+
+void ds4_set_host_sampler(ds4_host_sample_fn fn) { g_host_sample = fn; }
+
+/* Every native draw. A Rust host registers its sampler and draws here;
+ * the C body below is DEPRECATED: only the C oracle executables, which
+ * register none, still reach it. */
 static int sample_top_p_min_p_excluding(
         const float *logits,
         uint32_t     n_vocab,
@@ -40909,6 +40916,10 @@ static int sample_top_p_min_p_excluding(
         uint64_t    *rng,
         int          excluded_id,
         int          excluded_eot) {
+    if (g_host_sample) {
+        return g_host_sample(logits, n_vocab, temperature, top_k, top_p, min_p, rng,
+                             excluded_id, excluded_eot);
+    }
     if (temperature <= 0.0f) {
         return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
     }

@@ -1,4 +1,4 @@
-/* DSML decode-state + sampling-override oracle from ds4_server.c at v0.6.3-dfm. */
+/* DSML decode-state oracle from ds4_server.c at v0.6.3-dfm. */
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -424,38 +424,6 @@ static void dump_glm_control_text(void) {
     printf("tracker=%s start=%d end=%d\n", state_name(tr.decode), start ? 1 : 0, end ? 1 : 0);
 }
 
-static int agent_turn_reasoning_cap(int think_mode, int max_tokens) {
-    const int reserve = 64;
-    int budget_cap = max_tokens > reserve ? max_tokens - reserve : 0;
-    int effort_cap = 64;
-    if (think_mode == DS4_THINK_HIGH) effort_cap = 256;
-    else if (think_mode == DS4_THINK_MAX) effort_cap = 512;
-    return budget_cap < effort_cap ? budget_cap : effort_cap;
-}
-
-static int sampling_override(bool track_tools, bool saw_tool_start, bool thinking_inside,
-                             int completion, int chat_dsml, dsml_decode_state dsml,
-                             int *tool_pos, int *think_pos,
-                             int tool_choice, bool has_tool_results, int think_mode, int max_tokens,
-                             const int *tool_pref, int tool_len, const int *think_pref, int think_len) {
-    bool required_pending = tool_choice == TOOL_CHOICE_REQUIRED && track_tools && !saw_tool_start;
-    bool reserve_post_thinking = required_pending || has_tool_results;
-    if (reserve_post_thinking && thinking_inside) {
-        if (completion >= agent_turn_reasoning_cap(think_mode, max_tokens) &&
-            *think_pos < think_len) {
-            return DS4_SAMPLE_OVERRIDE_TOKEN(think_pref[(*think_pos)++]);
-        }
-        return DS4_SAMPLE_OVERRIDE_NONE;
-    }
-    if (required_pending && *tool_pos < tool_len)
-        return DS4_SAMPLE_OVERRIDE_TOKEN(tool_pref[(*tool_pos)++]);
-    dsml_decode_state state = (track_tools && chat_dsml) ? dsml : DSML_DECODE_OUTSIDE;
-    if (state != DSML_DECODE_OUTSIDE &&
-        state != DSML_DECODE_STRING_BODY && state != DSML_DECODE_JSON_STRING)
-        return DS4_SAMPLE_OVERRIDE_GREEDY;
-    return DS4_SAMPLE_OVERRIDE_NONE;
-}
-
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: dsml_c_oracle SCRIPT\n"); return 2; }
     const char *name = argv[1];
@@ -490,33 +458,6 @@ int main(int argc, char **argv) {
         dump_glm_boundaries(true);
     } else if (!strcmp(name, "glm-control-text")) {
         dump_glm_control_text();
-    } else if (!strcmp(name, "override-required")) {
-        int tool[] = {101, 202}; int tp = 0, hp = 0;
-        int a = sampling_override(true, false, false, 0, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_REQUIRED, false, DS4_THINK_NONE, 128, tool, 2, NULL, 0);
-        int b = sampling_override(true, false, false, 0, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_REQUIRED, false, DS4_THINK_NONE, 128, tool, 2, NULL, 0);
-        printf("%d %d\n", a, b);
-    } else if (!strcmp(name, "override-think-cap")) {
-        int think[] = {303}; int tp = 0, hp = 0;
-        int a = sampling_override(true, false, true, 0, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_REQUIRED, false, DS4_THINK_LOW, 128, NULL, 0, think, 1);
-        int b = sampling_override(true, false, true, 64, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_REQUIRED, false, DS4_THINK_LOW, 128, NULL, 0, think, 1);
-        printf("%d %d\n", a, b);
-    } else if (!strcmp(name, "override-tool-result")) {
-        int think[] = {303}; int tp = 0, hp = 0;
-        int a = sampling_override(false, false, true, 63, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_AUTO, true, DS4_THINK_LOW, 128, NULL, 0, think, 1);
-        int b = sampling_override(false, false, true, 64, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
-            TOOL_CHOICE_AUTO, true, DS4_THINK_LOW, 128, NULL, 0, think, 1);
-        printf("%d %d\n", a, b);
-    } else if (!strcmp(name, "cap-low-128")) {
-        printf("%d\n", agent_turn_reasoning_cap(DS4_THINK_LOW, 128));
-    } else if (!strcmp(name, "cap-high-128")) {
-        printf("%d\n", agent_turn_reasoning_cap(DS4_THINK_HIGH, 128));
-    } else if (!strcmp(name, "cap-max-600")) {
-        printf("%d\n", agent_turn_reasoning_cap(DS4_THINK_MAX, 600));
     } else { fprintf(stderr, "unknown script\n"); return 2; }
     return 0;
 }

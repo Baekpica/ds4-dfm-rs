@@ -92,6 +92,36 @@ fn rng_f32(state: &mut u64) -> f32 {
     ((rng_next(state) >> 40) & 0xff_ffff) as f32 / 16_777_216.0
 }
 
+/// The native engine's sampler (`ds4_set_host_sampler`): every native
+/// draw, bank lanes and verify rows included, runs [`draw`].
+///
+/// # Safety
+/// `logits` holds `n` floats and `rng` is a live stream, as native passes.
+pub(crate) unsafe extern "C" fn host_draw(
+    logits: *const f32,
+    n: u32,
+    temperature: f32,
+    top_k: i32,
+    top_p: f32,
+    min_p: f32,
+    rng: *mut u64,
+    excluded0: i32,
+    excluded1: i32,
+) -> i32 {
+    if logits.is_null() || rng.is_null() || n == 0 {
+        return -1;
+    }
+    let s = Sampler {
+        temperature,
+        top_k,
+        top_p,
+        min_p,
+    };
+    // SAFETY: the caller's contract above.
+    let (row, rng) = unsafe { (std::slice::from_raw_parts(logits, n as usize), &mut *rng) };
+    draw(row, &s, rng, [excluded0, excluded1])
+}
+
 /// One draw from `logits` with `s` and the stream `rng`, never returning an
 /// `excluded` id (-1: none). Returns -1 when every token is excluded.
 pub fn draw(logits: &[f32], s: &Sampler, rng: &mut u64, excluded: [i32; 2]) -> i32 {

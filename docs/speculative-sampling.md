@@ -47,15 +47,16 @@ draft 0 over two uniform rows then came out 25% instead of 50%).
    a device tensor read with `spec_host_rows`) and fills its targets with
    `spec_sample_rows` when `spec_sampling(&s->spec)`, argmax otherwise. That
    helper hands the rows to the host's sample-and-match (Rust's
-   `sample::match_rows`; a bank's own sampler on the native bank lane),
+   `sample::match_rows`; on the native bank lane, the bank's sampler,
+   whose every draw calls back into the same Rust `sample::draw`),
    which spends every draw. Rows after the first mismatch repeat its draw;
    acceptance never reads them.
 2. Rust keeps the prefix whose drafts match their targets, ending after EOS,
    and cuts it with the host's `limit` before commit. Every serial family,
    Ling-3.1 included, goes through this path.
 3. The host's `limit` ends the prefix after a stop token and before a position
-   its own loop would decide: a forced token, structural tool syntax for a
-   sampled request (its argmax position), or anything past a closed DSML call.
+   its own loop would decide: a forced token or anything past a closed DSML
+   call. Tool syntax samples like any other position.
    The server replays the committed text on a copy of its accumulator to find
    that position. Banks apply the same rule natively (`cont_spec_forced`).
 
@@ -148,8 +149,8 @@ Gates follow the change, not one number:
 | Beam VQ, serial, DFlash2 7 | 1.59 | 2.25 | 3.17 | 2.22 | 2.21 | 2.32 |
 | MiniMax VQ, serial, DSpark 3 | 1.15 | 2.63 | 3.22 | 3.03 | 3.93 | 2.44 |
 
-  GLM's tool calls end their prefixes at structural tool syntax under
-  sampling. Naive's DSpark drafter accepts little at any temperature (greedy
+  Measured while tool syntax still decoded by argmax (it ended GLM's tool
+  call prefixes under sampling). Naive's DSpark drafter accepts little at any temperature (greedy
   1.53). IQuest ran in its documented weight-server shape, and Step-3.7's
   banks need `--max-seqs 2`.
 

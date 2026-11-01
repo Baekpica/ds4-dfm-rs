@@ -386,7 +386,7 @@ fn parse_chat_request_keeps_a_type_list_head() {
         default_model: "glm-5.3-flash".into(),
         default_tokens: 2048,
         default_effort: ThinkMode::None,
-        default_temp: ds4_server::default_temperature(),
+        sampling: Default::default(),
         live_ids: Vec::new(),
         engine_defaults: false,
     };
