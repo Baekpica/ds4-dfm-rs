@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use ds4_core::minimax_h3::h3_dit::{Dtype, Gpu, Tensor};
 use ds4_core::minimax_h3::ltx_adapter::{self, Adapter, Arm, Upscaler};
 use ds4_core::minimax_h3::ltx_audio_vae::{self, Encoder as AudioEncoder};
 use ds4_core::minimax_h3::ltx_refiner::{
@@ -36,10 +37,9 @@ use ds4_core::minimax_h3::ltx_stage2::Stage2;
 use ds4_core::minimax_h3::ltx_vae::{pixel_shape, release_latent, LtxVae, RELEASE_LATENT};
 use ds4_core::minimax_h3::prompt_cache::{self, FIXED_PROMPT};
 use ds4_core::minimax_h3::render::{mux_mp4, RgbFrames};
-use ds4_core::minimax_h3::vae_video;
 use ds4_core::minimax_h3::torch_file::TorchDtype;
+use ds4_core::minimax_h3::vae_video;
 use ds4_core::minimax_h3::vision::bf16_to_f32;
-use ds4_core::minimax_h3::h3_dit::{Dtype, Gpu, Tensor};
 
 /// The release's stage-1 draft: 672x384 at 124 frames (`stage2.py`'s input).
 const DEFAULT_FRAMES: usize = 124;
@@ -144,14 +144,20 @@ fn run() -> Result<ExitCode, String> {
 
     let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
     let draft = upload_bf16(&gpu, &latent)?;
-    println!("LOAD draft_bytes={} seconds={:.3}", latent.len(), started.elapsed().as_secs_f64());
+    println!(
+        "LOAD draft_bytes={} seconds={:.3}",
+        latent.len(),
+        started.elapsed().as_secs_f64()
+    );
 
     // The latent path's two models, in the reference's order. Both are freed
     // before the refiner allocates: this host shares one memory pool.
     let started = Instant::now();
     let upscaler = Upscaler::load(&options.upscaler, Arm::Bf16, &geometry)
         .map_err(|error| error.to_string())?;
-    let upscaled = upscaler.forward(&draft).map_err(|error| error.to_string())?;
+    let upscaled = upscaler
+        .forward(&draft)
+        .map_err(|error| error.to_string())?;
 
     // The upscaler's own latent, before the adapter or any refiner touches it.
     if let Some(path) = &options.upscaled_out {
@@ -162,9 +168,11 @@ fn run() -> Result<ExitCode, String> {
     if let Some(which) = options.h3_video.clone() {
         return decode_h3(&gpu, &options, &which, &draft, &upscaled, &geometry);
     }
-    let adapter = Adapter::load(&options.adapter, Arm::Bf16, &geometry)
+    let adapter =
+        Adapter::load(&options.adapter, Arm::Bf16, &geometry).map_err(|error| error.to_string())?;
+    let converted = adapter
+        .convert(&upscaled)
         .map_err(|error| error.to_string())?;
-    let converted = adapter.convert(&upscaled).map_err(|error| error.to_string())?;
     gpu.sync().map_err(|detail| format!("sync: {detail}"))?;
 
     let mut bytes = vec![0u8; converted.bytes()];
@@ -230,9 +238,10 @@ fn run() -> Result<ExitCode, String> {
         let mel = ltx_audio_vae::log_mel(&pcm, options.channels as usize, options.rate as u32)
             .map_err(|error| error.to_string())?;
         let path = options.audio_vae.as_deref().ok_or("missing --audio-vae")?;
-        let encoder = AudioEncoder::open(&gpu, path)
+        let encoder = AudioEncoder::open(&gpu, path).map_err(|error| error.to_string())?;
+        let encoded = encoder
+            .encode(&gpu, &mel)
             .map_err(|error| error.to_string())?;
-        let encoded = encoder.encode(&gpu, &mel).map_err(|error| error.to_string())?;
         let conformed = encoded.conformed(RefinerGeometry::release().audio_frames);
         let bytes = conformed.bf16_bytes();
         let samples: Vec<f32> = bytes
@@ -240,7 +249,10 @@ fn run() -> Result<ExitCode, String> {
             .map(|pair| bf16_to_f32(u16::from_le_bytes([pair[0], pair[1]])))
             .collect();
         let mean = samples.iter().copied().sum::<f32>() / samples.len() as f32;
-        let std = (samples.iter().map(|value| (value - mean).powi(2)).sum::<f32>()
+        let std = (samples
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f32>()
             / samples.len() as f32)
             .sqrt();
         println!(
@@ -250,7 +262,10 @@ fn run() -> Result<ExitCode, String> {
             conformed.bins,
             started.elapsed().as_secs_f64()
         );
-        Some((upload_bf16(&gpu, &bytes)?, upload_bf16(&gpu, &cache.audio.bytes)?))
+        Some((
+            upload_bf16(&gpu, &bytes)?,
+            upload_bf16(&gpu, &cache.audio.bytes)?,
+        ))
     };
     let lora = match &options.lora {
         Some(path) => {
@@ -308,7 +323,12 @@ fn run() -> Result<ExitCode, String> {
     for index in 0..stage.steps() {
         let step_started = Instant::now();
         stage
-            .step(&gpu, index, &context, audio.as_ref().map(|(state, prompt)| (state, prompt)))
+            .step(
+                &gpu,
+                index,
+                &context,
+                audio.as_ref().map(|(state, prompt)| (state, prompt)),
+            )
             .map_err(|error| error.token())?;
         println!(
             "STAGE2 step={index} seconds={:.3}",
@@ -317,7 +337,10 @@ fn run() -> Result<ExitCode, String> {
     }
 
     let grid = stage.latent_grid(&gpu).map_err(|error| error.token())?;
-    println!("STAGE2 denoise_seconds={:.3}", started.elapsed().as_secs_f64());
+    println!(
+        "STAGE2 denoise_seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
 
     decode_and_mux(&gpu, &options, grid)?;
 
@@ -358,14 +381,14 @@ fn decode_h3(
     upscaled: &Tensor,
     geometry: &ltx_adapter::Geometry,
 ) -> Result<ExitCode, String> {
-    let directory = options
-        .h3_vae
-        .as_ref()
-        .ok_or("--h3-video needs --h3-vae")?;
+    let directory = options.h3_vae.as_ref().ok_or("--h3-video needs --h3-vae")?;
     let [channels, time, up_height, up_width] = geometry.h3;
 
     let (dims, values) = match which {
-        "upscaled" => ([channels, time, up_height, up_width], read_bf16(gpu, upscaled)?),
+        "upscaled" => (
+            [channels, time, up_height, up_width],
+            read_bf16(gpu, upscaled)?,
+        ),
         "draft" => (
             [channels, time, up_height / 2, up_width / 2],
             read_bf16(gpu, draft)?,
@@ -431,16 +454,14 @@ fn decode_and_mux(gpu: &Gpu, options: &Options, latent: &Tensor) -> Result<(), S
         .decode(gpu, latent, shape)
         .map_err(|error| error.to_string())?;
     gpu.sync().map_err(|detail| format!("sync: {detail}"))?;
-    println!("LTX-VAE decode_seconds={:.3}", started.elapsed().as_secs_f64());
+    println!(
+        "LTX-VAE decode_seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
 
     let pixel = pixel_shape(RELEASE_LATENT);
     let values = read_bf16(gpu, rgb)?;
-    let frames = RgbFrames::from_f32(
-        &values,
-        pixel[0] as i32,
-        pixel[2] as i32,
-        pixel[1] as i32,
-    )?;
+    let frames = RgbFrames::from_f32(&values, pixel[0] as i32, pixel[2] as i32, pixel[1] as i32)?;
     println!(
         "FRAMES frames={} height={} width={}",
         frames.frames(),
@@ -737,5 +758,5 @@ The draft is the file h3-rs --save-latent writes, at the canvas h3-rs
 --width 672 --height 384 --frames 124 rendered. The audio is h3-rs
 --save-audio. FFmpeg is taken from H3_FFMPEG when set, else from PATH.
 "
-        .to_string()
+    .to_string()
 }

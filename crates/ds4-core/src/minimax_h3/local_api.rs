@@ -1332,7 +1332,9 @@ mod tests {
         let mut wrong_type = body("t2va", json!([]), "16:9", 8);
         wrong_type["vae_gemm"] = json!(1);
         assert_eq!(
-            parse_create(wrong_type.to_string().as_bytes()).unwrap_err().code,
+            parse_create(wrong_type.to_string().as_bytes())
+                .unwrap_err()
+                .code,
             "invalid_vae_gemm"
         );
     }

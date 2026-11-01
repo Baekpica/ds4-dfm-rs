@@ -539,12 +539,13 @@ impl ShardWriter {
         let mut cursor = 0u64;
         for (index, entry) in entries.iter().enumerate() {
             let elements: u64 = entry.shape.iter().product();
-            let bytes = elements.checked_mul(entry.dtype.size()).ok_or_else(|| {
-                StError::Header {
-                    path: path.to_path_buf(),
-                    detail: format!("{}: byte count overflows", entry.name),
-                }
-            })?;
+            let bytes =
+                elements
+                    .checked_mul(entry.dtype.size())
+                    .ok_or_else(|| StError::Header {
+                        path: path.to_path_buf(),
+                        detail: format!("{}: byte count overflows", entry.name),
+                    })?;
             let end = cursor.checked_add(bytes).ok_or_else(|| StError::Header {
                 path: path.to_path_buf(),
                 detail: format!("{}: data area overflows", entry.name),
@@ -621,7 +622,11 @@ impl ShardWriter {
     pub fn write_at(&self, index: usize, offset: u64, data: &[u8]) -> Result<(), StError> {
         let (begin, end) = self.spans[index];
 
-        if offset.checked_add(data.len() as u64).map(|last| last > end - begin) != Some(false) {
+        if offset
+            .checked_add(data.len() as u64)
+            .map(|last| last > end - begin)
+            != Some(false)
+        {
             return Err(StError::SizeMismatch {
                 name: format!("entry {index} at {offset}"),
                 expected: end - begin,

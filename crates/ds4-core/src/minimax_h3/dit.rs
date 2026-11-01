@@ -1503,8 +1503,7 @@ struct SolAttention {
 /// One line per process with the first sparse call's realized share: the
 /// number no fixture can supply, and the one that decides whether the mask
 /// leaves anything for the fold to carry.
-static SOL_REPORTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static SOL_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `H3_DIT_SOL` names the VSA sparsity the DiT's own attention should run at,
 /// or is unset for the dense path. Read once per load, like the native side's
@@ -1693,12 +1692,10 @@ impl Dit {
         match weight_scale {
             MatrixScale::Tensorwise(weight_scale) => {
                 device(self.gpu.fp8_scale(activation_scale, input))?;
-                device(self.gpu.fp8_quantize(
-                    activation,
-                    activation_scale,
-                    input,
-                    elements,
-                ))?;
+                device(
+                    self.gpu
+                        .fp8_quantize(activation, activation_scale, input, elements),
+                )?;
                 device(self.gpu.linear_e4m3(
                     output,
                     activation,
@@ -1719,7 +1716,10 @@ impl Dit {
                         "FP8 row projection without its accumulator".into(),
                     ));
                 };
-                device(self.gpu.fp8_scale_rows(activation_scale, input, rows, input_dim))?;
+                device(
+                    self.gpu
+                        .fp8_scale_rows(activation_scale, input, rows, input_dim),
+                )?;
                 device(self.gpu.fp8_quantize_rows(
                     activation,
                     activation_scale,

@@ -163,8 +163,7 @@ fn main() -> ExitCode {
     let mut reports = Vec::new();
     for turn in 1..=2 {
         let request = RenderRequest {
-            prompt: "A red fox trots through fresh snow at dawn, crunching footsteps."
-                .to_string(),
+            prompt: "A red fox trots through fresh snow at dawn, crunching footsteps.".to_string(),
             width,
             height,
             frames,
@@ -186,7 +185,11 @@ fn main() -> ExitCode {
         let started = std::time::Instant::now();
         match engine.render(request) {
             Ok(report) => {
-                println!("REQ {turn} wall={:.3}s {}", started.elapsed().as_secs_f64(), report.summary());
+                println!(
+                    "REQ {turn} wall={:.3}s {}",
+                    started.elapsed().as_secs_f64(),
+                    report.summary()
+                );
                 reports.push(report);
             }
             Err(error) => {
@@ -232,7 +235,11 @@ fn main() -> ExitCode {
 /// directory itself; otherwise `H3_ARTIFACTS` joined with `H3_MODEL_NAME`.
 /// The gate assumes nothing about a host's layout.
 fn model_dir() -> Option<PathBuf> {
-    let set = |name: &str| std::env::var(name).ok().filter(|value| !value.trim().is_empty());
+    let set = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
     if let Some(model) = set("H3_MODEL") {
         return Some(PathBuf::from(model.trim()));
     }
@@ -241,7 +248,8 @@ fn model_dir() -> Option<PathBuf> {
     Some(PathBuf::from(artifacts.trim()).join(name.trim()))
 }
 
-fn same_media(first: &RenderReport, second: &RenderReport) -> bool {    first.frames == second.frames
+fn same_media(first: &RenderReport, second: &RenderReport) -> bool {
+    first.frames == second.frames
         && first.video_hash == second.video_hash
         && first.audio_hash == second.audio_hash
         && first.frames_hash == second.frames_hash

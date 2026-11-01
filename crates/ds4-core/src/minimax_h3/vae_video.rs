@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 use ds4_sys::h3_dit::{Dtype, Gpu, Tensor};
 
 use super::dit::{VaeAttention, VaeGemm};
-use super::vae_store::{Store, f1, f2, f2_bf16};
+use super::vae_store::{f1, f2, f2_bf16, Store};
 
 pub const LATENT_CHANNELS: usize = 24;
 /// One trained chunk: seven latents in, twenty-two frames out.

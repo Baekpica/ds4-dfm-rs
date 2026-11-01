@@ -195,8 +195,8 @@ pub fn h3_temporal_positions(pixel_frames: usize) -> Vec<f32> {
     let mut positions: Vec<f32> = (0..chunks)
         .flat_map(|chunk| {
             (0..tokens_per_chunk).map(move |token| {
-                (chunk * H3_CLIP_LENGTH + token * H3_TEMPORAL_COMPRESSION)
-                    .min(pixel_frames - 1) as f32
+                (chunk * H3_CLIP_LENGTH + token * H3_TEMPORAL_COMPRESSION).min(pixel_frames - 1)
+                    as f32
             })
         })
         .collect();
@@ -517,10 +517,7 @@ mod tests {
         // The last clip clamps every token past frame 123 onto it — 119, 123,
         // 123, 123, 123 — and the three-frame drop then removes exactly those
         // three clamped repeats, so the tail is 118, 119, 123.
-        assert_eq!(
-            &positions[32..],
-            &[110.0, 114.0, 118.0, 119.0, 123.0]
-        );
+        assert_eq!(&positions[32..], &[110.0, 114.0, 118.0, 119.0, 123.0]);
     }
 
     #[test]
@@ -528,7 +525,9 @@ mod tests {
         assert_eq!(padded_ltx_pixel_frames(124), 129);
         assert_eq!(
             ltx_temporal_positions(129),
-            (0..17).map(|index| (index * 8) as f32).collect::<Vec<f32>>()
+            (0..17)
+                .map(|index| (index * 8) as f32)
+                .collect::<Vec<f32>>()
         );
     }
 
@@ -595,14 +594,20 @@ mod tests {
         assert_eq!(plan.segments[0].input, (0, 42));
         assert_eq!(plan.segments[0].output, (0, 37));
         assert_eq!(plan.segments[0].weights[0], 1.0);
-        assert_eq!(&plan.segments[0].weights[32..], &[5.0, 4.0, 3.0, 2.0, 1.0].map(|w| w / 6.0));
+        assert_eq!(
+            &plan.segments[0].weights[32..],
+            &[5.0, 4.0, 3.0, 2.0, 1.0].map(|w| w / 6.0)
+        );
         assert_eq!(plan.segments[1].input, (22, 42));
         assert_eq!(plan.segments[1].output, (27, 37));
         // s0 = (27 + 5) - 22: the frames it contributes sit ten frames into its
         // own output, which is why the accumulator needs the offset.
         assert_eq!(plan.segments[1].source_begin, 10);
         assert_eq!(plan.segments[0].source_begin, 5);
-        assert_eq!(&plan.segments[1].weights[..5], &[1.0, 2.0, 3.0, 4.0, 5.0].map(|w| w / 6.0));
+        assert_eq!(
+            &plan.segments[1].weights[..5],
+            &[1.0, 2.0, 3.0, 4.0, 5.0].map(|w| w / 6.0)
+        );
         assert_eq!(plan.segments[1].weights[5], 1.0);
     }
 
@@ -692,7 +697,11 @@ impl Store {
         let shards: Vec<PathBuf> = if path.is_dir() {
             let store = safetensors::open_dir(path)
                 .map_err(|error| LatentError::Io(format!("{label} reader: {error:?}")))?;
-            store.shards().iter().map(|shard| shard.path.clone()).collect()
+            store
+                .shards()
+                .iter()
+                .map(|shard| shard.path.clone())
+                .collect()
         } else {
             vec![path.to_path_buf()]
         };
@@ -747,9 +756,7 @@ impl Store {
         Ok(&self
             .sites
             .get(name)
-            .ok_or_else(|| {
-                LatentError::Shape(format!("{} is missing {name}", self.label))
-            })?
+            .ok_or_else(|| LatentError::Shape(format!("{} is missing {name}", self.label)))?
             .shape)
     }
 
@@ -776,13 +783,7 @@ impl Store {
         Ok((slice, site.dtype))
     }
 
-    fn load(
-        &self,
-        gpu: &Gpu,
-        arm: Arm,
-        name: &str,
-        shape: &[u64],
-    ) -> Result<Tensor, LatentError> {
+    fn load(&self, gpu: &Gpu, arm: Arm, name: &str, shape: &[u64]) -> Result<Tensor, LatentError> {
         let (bytes, stored) = self.bytes(name, shape)?;
         let elements: usize = shape.iter().product::<u64>() as usize;
         let tensor = device(gpu.alloc(arm.dtype(), elements))?;
@@ -934,10 +935,9 @@ fn convolve_planar(
                 // planar buffer, which is `m*columns` from the window's start
                 // for the output row `m` — the planar layout puts consecutive
                 // image positions exactly one matrix row apart.
-                let offset =
-                    ((frame + tap_t) as usize * padded_height + tap_h as usize)
-                        * out_width as usize
-                        * columns;
+                let offset = ((frame + tap_t) as usize * padded_height + tap_h as usize)
+                    * out_width as usize
+                    * columns;
                 device(gpu.latent_matmul_planar(
                     temp,
                     planar,
@@ -1089,7 +1089,12 @@ fn load_conv(
     Ok(Conv {
         weight,
         packed,
-        bias: store.load(gpu, arm, &format!("{name}.bias"), store.shape(&format!("{name}.bias"))?)?,
+        bias: store.load(
+            gpu,
+            arm,
+            &format!("{name}.bias"),
+            store.shape(&format!("{name}.bias"))?,
+        )?,
         input_channels,
         output_channels,
         kernel,
@@ -1146,14 +1151,20 @@ fn load_norm(
 }
 
 fn upload_u32(gpu: &Gpu, values: &[u32]) -> Result<Tensor, LatentError> {
-    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
     let tensor = device(gpu.alloc(Dtype::U32, values.len()))?;
     device(gpu.upload(&tensor, &bytes))?;
     Ok(tensor)
 }
 
 fn upload_f32(gpu: &Gpu, values: &[f32]) -> Result<Tensor, LatentError> {
-    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
     let tensor = device(gpu.alloc(Dtype::F32, values.len()))?;
     device(gpu.upload(&tensor, &bytes))?;
     Ok(tensor)
@@ -1303,7 +1314,14 @@ impl UpModel {
                         UPSCALER_GROUPS as u32,
                         UPSCALER_EPSILON,
                     )?,
-                    in_conv: load_conv(store, gpu, arm, &format!("{prefix}.in_layers.2"), kernel, pad)?,
+                    in_conv: load_conv(
+                        store,
+                        gpu,
+                        arm,
+                        &format!("{prefix}.in_layers.2"),
+                        kernel,
+                        pad,
+                    )?,
                     embedding_weight: store.load(
                         gpu,
                         arm,
@@ -1325,7 +1343,14 @@ impl UpModel {
                         UPSCALER_GROUPS as u32,
                         UPSCALER_EPSILON,
                     )?,
-                    out_conv: load_conv(store, gpu, arm, &format!("{prefix}.out_layers.2"), kernel, pad)?,
+                    out_conv: load_conv(
+                        store,
+                        gpu,
+                        arm,
+                        &format!("{prefix}.out_layers.2"),
+                        kernel,
+                        pad,
+                    )?,
                 }));
             }
             Ok(blocks)
@@ -1349,7 +1374,10 @@ impl UpModel {
             conv_out: load_conv(store, gpu, arm, "conv_out", [3, 3, 3], [1, 1, 1])?,
         };
 
-        for (side, blocks) in [("in_blocks", &model.in_blocks), ("out_blocks", &model.out_blocks)] {
+        for (side, blocks) in [
+            ("in_blocks", &model.in_blocks),
+            ("out_blocks", &model.out_blocks),
+        ] {
             let res = blocks
                 .iter()
                 .filter(|block| matches!(block, UpBlock::Res(_)))
@@ -1450,9 +1478,8 @@ impl UpScratch {
         let out_plane = out_height as usize * out_width as usize;
         let small_plane = height as usize * width as usize;
 
-        let alloc = |elements: usize| -> Result<Tensor, LatentError> {
-            device(gpu.alloc(dtype, elements))
-        };
+        let alloc =
+            |elements: usize| -> Result<Tensor, LatentError> { device(gpu.alloc(dtype, elements)) };
         let alloc_f32 = |elements: usize| -> Result<Tensor, LatentError> {
             device(gpu.alloc(Dtype::F32, elements))
         };
@@ -1520,9 +1547,7 @@ impl UpScratch {
         // gibibyte nothing reads.
         let matrix = match conv_path() {
             ConvPath::Planar => 1,
-            ConvPath::Classic => {
-                SLAB_FRAMES * out_plane * UPSCALER_CHANNELS * 3 * 3 * 3
-            }
+            ConvPath::Classic => SLAB_FRAMES * out_plane * UPSCALER_CHANNELS * 3 * 3 * 3,
         };
         // The slabs differ per convolution: one that runs at the narrow
         // resolution fits the whole segment in the matrix, so its row count is
@@ -1537,10 +1562,7 @@ impl UpScratch {
         // block of each group's channel plane.
         let max_plane = (largest as usize * out_plane).max(frames as usize * small_plane);
         let chunks = max_plane.div_ceil(8192);
-        let partial = UPSCALER_GROUPS
-            * (UPSCALER_CHANNELS / UPSCALER_GROUPS)
-            * chunks
-            * 2;
+        let partial = UPSCALER_GROUPS * (UPSCALER_CHANNELS / UPSCALER_GROUPS) * chunks * 2;
 
         let mut weights = Vec::new();
         let mut slices = Vec::new();
@@ -1607,7 +1629,6 @@ fn upload_scalar(gpu: &Gpu, arm: Arm, value: f32) -> Result<Tensor, LatentError>
     device(gpu.upload(&tensor, &payload))?;
     Ok(tensor)
 }
-
 
 /// The node's `scale` argument (`h3_upscale.py:122`), so the scalar the
 /// embedding is built from is `scale - 1` = 1.
@@ -1745,8 +1766,7 @@ impl Upscaler {
         );
         let scratch = UpScratch::new(&gpu, arm, geometry, &plan)?;
         let (center, scale) = statistics(&gpu, arm)?;
-        let (in_embeddings, out_embeddings) =
-            compute_embeddings(&gpu, arm, &model, &scratch.temp)?;
+        let (in_embeddings, out_embeddings) = compute_embeddings(&gpu, arm, &model, &scratch.temp)?;
         device(gpu.sync())?;
 
         Ok(Upscaler {
@@ -1844,18 +1864,19 @@ impl Upscaler {
                 height,
                 width,
             };
-            self.conv3d(&self.scratch.acts[0], &self.scratch.segment, &self.model.conv_in, input)?;
+            self.conv3d(
+                &self.scratch.acts[0],
+                &self.scratch.segment,
+                &self.model.conv_in,
+                input,
+            )?;
 
             let mut shape = Shape {
                 channels: UPSCALER_CHANNELS as u32,
                 ..input
             };
-            let mut current = self.run_blocks(
-                &self.model.in_blocks,
-                &self.in_embeddings,
-                0,
-                &mut shape,
-            )?;
+            let mut current =
+                self.run_blocks(&self.model.in_blocks, &self.in_embeddings, 0, &mut shape)?;
 
             // `F.interpolate(x, size=(t, h_out, w_out), mode="trilinear")`.
             let next = (current + 1) % 4;
@@ -2050,13 +2071,7 @@ impl Upscaler {
         )?;
         device(gpu.latent_silu(&acts[a], &acts[a], dtype, shape.elements()))?;
         self.conv3d(&acts[b], &acts[a], &block.out_conv, shape)?;
-        device(gpu.latent_add(
-            &acts[out],
-            &acts[input],
-            &acts[b],
-            dtype,
-            shape.elements(),
-        ))?;
+        device(gpu.latent_add(&acts[out], &acts[input], &acts[b], dtype, shape.elements()))?;
         Ok(())
     }
 
@@ -2117,13 +2132,7 @@ impl Upscaler {
             plane,
             0,
         ))?;
-        device(gpu.latent_add(
-            &acts[out],
-            &acts[input],
-            &acts[a],
-            dtype,
-            shape.elements(),
-        ))?;
+        device(gpu.latent_add(&acts[out], &acts[input], &acts[a], dtype, shape.elements()))?;
         Ok(())
     }
 
@@ -2271,7 +2280,9 @@ fn read_config(directory: &Path) -> Result<AdapterConfig, LatentError> {
             )));
         }
     }
-    if geometry.get("temporal_pack_slots").and_then(|field| field.as_u64())
+    if geometry
+        .get("temporal_pack_slots")
+        .and_then(|field| field.as_u64())
         != Some(TEMPORAL_PACK_SLOTS as u64)
     {
         return Err(LatentError::Shape(format!(
@@ -2289,7 +2300,9 @@ fn read_config(directory: &Path) -> Result<AdapterConfig, LatentError> {
             .ok_or_else(|| LatentError::Shape(format!("model_config has no {name}")))
     };
     if model.get("model_type").and_then(|field| field.as_str()) != Some("tiny") {
-        return Err(LatentError::Shape("adapter is not the promoted model".into()));
+        return Err(LatentError::Shape(
+            "adapter is not the promoted model".into(),
+        ));
     }
     // `model.py:47-53` refuses a checkpoint that enables any training variant.
     for variant in [
@@ -2466,7 +2479,12 @@ struct AdScratch {
 }
 
 impl AdScratch {
-    fn new(gpu: &Gpu, arm: Arm, geometry: &Geometry, plan: &TemporalPlan) -> Result<AdScratch, LatentError> {
+    fn new(
+        gpu: &Gpu,
+        arm: Arm,
+        geometry: &Geometry,
+        plan: &TemporalPlan,
+    ) -> Result<AdScratch, LatentError> {
         let dtype = arm.dtype();
         let [_, _frames, height, width] = geometry.h3;
         let (height, width) = (height as u32, width as u32);
@@ -2506,24 +2524,16 @@ impl AdScratch {
         let matrix = match conv_path() {
             ConvPath::Planar => 1,
             ConvPath::Classic => {
-                SLAB_FRAMES
-                    * plane
-                    * (ADAPTER_WIDTH * 3 * 3)
-                        .max(ADAPTER_IN_CHANNELS * 3 * 3 * 3)
+                SLAB_FRAMES * plane * (ADAPTER_WIDTH * 3 * 3).max(ADAPTER_IN_CHANNELS * 3 * 3 * 3)
             }
         };
         let max_plane = ltx_frames as usize * plane;
         let chunks = max_plane.div_ceil(8192);
-        let partial = ADAPTER_GROUPS
-            * (ADAPTER_WIDTH / ADAPTER_GROUPS)
-            * chunks
-            * 2;
+        let partial = ADAPTER_GROUPS * (ADAPTER_WIDTH / ADAPTER_GROUPS) * chunks * 2;
 
         Ok(AdScratch {
             aligned: alloc(ADAPTER_IN_CHANNELS * ltx_frames as usize * aligned_plane)?,
-            packed: alloc(
-                3 * H3_LATENT_CHANNELS * ltx_frames as usize * aligned_plane,
-            )?,
+            packed: alloc(3 * H3_LATENT_CHANNELS * ltx_frames as usize * aligned_plane)?,
             stem_input: alloc(ADAPTER_IN_CHANNELS * ltx_frames as usize * plane)?,
             pd: alloc(
                 [
@@ -2692,12 +2702,17 @@ impl Adapter {
             height: ltx_height as u32,
             width: ltx_width as u32,
         };
-        self.conv3d(&self.scratch.acts[0], aligned, &self.model.stem, Shape {
-            channels: ADAPTER_IN_CHANNELS as u32,
-            frames: ltx_frames as u32,
-            height: ltx_height as u32,
-            width: ltx_width as u32,
-        })?;
+        self.conv3d(
+            &self.scratch.acts[0],
+            aligned,
+            &self.model.stem,
+            Shape {
+                channels: ADAPTER_IN_CHANNELS as u32,
+                frames: ltx_frames as u32,
+                height: ltx_height as u32,
+                width: ltx_width as u32,
+            },
+        )?;
 
         let mut current = 0usize;
         for block in &self.model.blocks {
@@ -2729,10 +2744,7 @@ impl Adapter {
         )?;
         self.pointwise(&self.scratch.skipped, aligned, &self.model.skip, grid)?;
 
-        let result = device(gpu.alloc(
-            dtype,
-            ADAPTER_OUT_CHANNELS * grid,
-        ))?;
+        let result = device(gpu.alloc(dtype, ADAPTER_OUT_CHANNELS * grid))?;
         device(gpu.latent_add(
             &result,
             &self.scratch.skipped,
@@ -2801,13 +2813,7 @@ impl Adapter {
             plane,
         ))?;
         self.pointwise(&acts[a], &self.scratch.projected, &block.out_proj, plane)?;
-        device(gpu.latent_add(
-            &acts[out],
-            &acts[input],
-            &acts[a],
-            dtype,
-            shape.elements(),
-        ))?;
+        device(gpu.latent_add(&acts[out], &acts[input], &acts[a], dtype, shape.elements()))?;
         Ok(())
     }
 

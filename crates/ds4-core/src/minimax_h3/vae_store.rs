@@ -323,7 +323,11 @@ mod tests {
         assert_eq!(serial.len(), bytes.len() / 2);
 
         for workers in [2, 3, 8, 64, 1 << 16] {
-            assert_eq!(narrow_bytes_with(&bytes, workers), serial, "{workers} ranges");
+            assert_eq!(
+                narrow_bytes_with(&bytes, workers),
+                serial,
+                "{workers} ranges"
+            );
         }
         assert!(narrow_bytes_with(&[], 8).is_empty());
     }

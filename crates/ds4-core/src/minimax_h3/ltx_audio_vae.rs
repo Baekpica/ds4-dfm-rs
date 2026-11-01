@@ -428,7 +428,8 @@ impl Encoder {
 
         // `conv_in`'s own pad scratch: two channels, which no level needs.
         let padded = pad_buffer(gpu, input.channels, input)?;
-        let (mut state, mut shape) = self.conv(gpu, Some(&padded), &source, &self.conv_in, input)?;
+        let (mut state, mut shape) =
+            self.conv(gpu, Some(&padded), &source, &self.conv_in, input)?;
 
         for level in &self.levels {
             let widest = level
@@ -567,7 +568,8 @@ impl Encoder {
         )
         .map_err(run("norm2"))?;
         gpu.silu_f32(&normed, &normed).map_err(run("silu2"))?;
-        let (second, out_shape) = self.conv(gpu, Some(padded), &normed, &block.conv2, first_shape)?;
+        let (second, out_shape) =
+            self.conv(gpu, Some(padded), &normed, &block.conv2, first_shape)?;
 
         // The shortcut (`resnet.py:158-170`): `x` itself, or its 1x1.
         let output = gpu
@@ -892,7 +894,10 @@ pub fn log_mel(pcm: &[f32], channels: usize, rate: u32) -> Result<Mel, AudioErro
     }
 
     let mel_frames = planes[0].len() / MEL_BINS;
-    if planes.iter().any(|plane| plane.len() / MEL_BINS != mel_frames) {
+    if planes
+        .iter()
+        .any(|plane| plane.len() / MEL_BINS != mel_frames)
+    {
         return Err(AudioError::Shape("the channels disagree on frames".into()));
     }
 
@@ -1163,13 +1168,13 @@ mod tests {
 
         assert_eq!(conformed.frames, 3);
         assert_eq!(&conformed.values[..6], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-        assert_eq!(
-            &conformed.values[6..],
-            &[8.0, 9.0, 10.0, 11.0, 12.0, 13.0]
-        );
+        assert_eq!(&conformed.values[6..], &[8.0, 9.0, 10.0, 11.0, 12.0, 13.0]);
 
         let longer = latent.conformed(6);
-        assert_eq!(&longer.values[..8], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(
+            &longer.values[..8],
+            &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        );
         assert_eq!(&longer.values[8..12], &[0.0; 4]);
         assert_eq!(
             &longer.values[12..20],

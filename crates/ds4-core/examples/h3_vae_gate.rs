@@ -103,8 +103,8 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::from(3));
     }
 
-    let (pixels, tiles_y, tiles_x) = vae_video::tile_plan(pixel[0], pixel[1])
-        .map_err(|error| format!("tile plan: {error}"))?;
+    let (pixels, tiles_y, tiles_x) =
+        vae_video::tile_plan(pixel[0], pixel[1]).map_err(|error| format!("tile plan: {error}"))?;
     let (chunks, frames) = vae_video::frame_plan(time).map_err(|error| error.to_string())?;
     println!(
         "PLAN canvas={}x{} latent={}x{}x{} tile={} tiles={}x{} chunks={} frames={}",
@@ -180,9 +180,7 @@ fn draw(seed: u64, elements: usize) -> Vec<f32> {
         (z ^ (z >> 31)) as f64 / u64::MAX as f64
     };
 
-    (0..elements)
-        .map(|_| (2.0 * next() - 1.0) as f32)
-        .collect()
+    (0..elements).map(|_| (2.0 * next() - 1.0) as f32).collect()
 }
 
 /// A BF16 dump in `[channel][time][height][width]`, as `write_latent` writes.

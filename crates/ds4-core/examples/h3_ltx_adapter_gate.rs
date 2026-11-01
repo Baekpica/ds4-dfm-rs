@@ -36,7 +36,6 @@ use ds4_core::minimax_h3::ltx_adapter::{
 use ds4_core::minimax_h3::safetensors;
 use ds4_sys::h3_dit::{Dtype, Gpu};
 
-
 /// The relative-RMS the f32 arm must stay inside: it is the same arithmetic as
 /// the reference's own float32 run, so only the summation order differs.
 const F32_RELATIVE: f64 = 1e-4;
@@ -113,15 +112,15 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
         .map_err(|error| error.to_string())?;
     let load_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    let upscaled = upscaler.forward(&input).map_err(|error| error.to_string())?;
+    let upscaled = upscaler
+        .forward(&input)
+        .map_err(|error| error.to_string())?;
     let forward_seconds = started.elapsed().as_secs_f64();
     let produced = download(&gpu, &upscaled)?;
     if !compare("h3_upscaled", &produced, expected_upscaled, relative)? {
         failures += 1;
     }
-    println!(
-        "SECONDS upscaler_load={load_seconds:.3} upscaler_forward={forward_seconds:.3}"
-    );
+    println!("SECONDS upscaler_load={load_seconds:.3} upscaler_forward={forward_seconds:.3}");
 
     println!("=== adapter: alignment, 22 blocks, the 2x shuffle ===");
     let started = Instant::now();
@@ -134,7 +133,9 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
     // the way of the answer.
     let plan = temporal_plan(geometry.pixel_frames).map_err(|error| error.to_string())?;
     let reference_input = upload(&gpu, options.arm, expected_upscaled)?;
-    let aligned = adapter.align(&reference_input).map_err(|error| error.to_string())?;
+    let aligned = adapter
+        .align(&reference_input)
+        .map_err(|error| error.to_string())?;
     let host_aligned = host_align(expected_upscaled, &geometry, &plan);
     if !compare(
         "aligned_h3",
@@ -152,7 +153,9 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
     // different bf16 input — so there it is reported as the model's input
     // sensitivity, not judged.
     let aligned_input = upload(&gpu, options.arm, &host_aligned)?;
-    let from_host = adapter.model(&aligned_input).map_err(|error| error.to_string())?;
+    let from_host = adapter
+        .model(&aligned_input)
+        .map_err(|error| error.to_string())?;
     let produced = download(&gpu, &from_host)?;
     let judged = options.arm == Arm::F32;
     if !judged {
@@ -163,7 +166,9 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
     }
 
     let started = Instant::now();
-    let latent = adapter.convert(&upscaled).map_err(|error| error.to_string())?;
+    let latent = adapter
+        .convert(&upscaled)
+        .map_err(|error| error.to_string())?;
     let convert_seconds = started.elapsed().as_secs_f64();
     let produced = download(&gpu, &latent)?;
     if !compare("adapter_output", &produced, expected_adapter, relative)? {
@@ -256,7 +261,9 @@ fn usage() -> String {
 }
 
 /// The golden's tensors and the geometry its manifest pins.
-fn read_golden(directory: &Path) -> Result<(std::collections::HashMap<String, Vec<f32>>, Geometry), String> {
+fn read_golden(
+    directory: &Path,
+) -> Result<(std::collections::HashMap<String, Vec<f32>>, Geometry), String> {
     let manifest = directory.join("manifest.json");
     let text = std::fs::read_to_string(&manifest)
         .map_err(|error| format!("{}: {error}", manifest.display()))?;
@@ -279,7 +286,8 @@ fn read_golden(directory: &Path) -> Result<(std::collections::HashMap<String, Ve
     let height = geometry_value
         .first()
         .and_then(|entry| entry.as_u64())
-        .ok_or_else(|| "manifest draft_canvas has no height".to_string())? as usize;
+        .ok_or_else(|| "manifest draft_canvas has no height".to_string())?
+        as usize;
     let width = geometry_value
         .get(1)
         .and_then(|entry| entry.as_u64())
@@ -401,7 +409,12 @@ fn host_align(h3: &[f32], geometry: &Geometry, plan: &TemporalPlan) -> Vec<f32> 
     let [_, frames, height, width] = geometry.h3;
     let [_, ltx_frames, ltx_height, ltx_width] = geometry.ltx;
     let plane = height * width;
-    let aligned = [H3_LATENT_CHANNELS * (1 + TEMPORAL_PACK_SLOTS), ltx_frames, height, width];
+    let aligned = [
+        H3_LATENT_CHANNELS * (1 + TEMPORAL_PACK_SLOTS),
+        ltx_frames,
+        height,
+        width,
+    ];
 
     // The linear half.
     let mut buffer = vec![0.0f32; aligned.iter().product::<usize>()];
@@ -449,10 +462,8 @@ fn host_align(h3: &[f32], geometry: &Geometry, plan: &TemporalPlan) -> Vec<f32> 
                         let x_source = 2 * x + sub % 2;
                         out[(((channel * 4 + sub) * ltx_frames + frame) * ltx_height + y)
                             * ltx_width
-                            + x] =
-                            buffer[(channel * ltx_frames + frame) * plane
-                                + y_source * width
-                                + x_source];
+                            + x] = buffer
+                            [(channel * ltx_frames + frame) * plane + y_source * width + x_source];
                     }
                 }
             }
@@ -463,7 +474,14 @@ fn host_align(h3: &[f32], geometry: &Geometry, plan: &TemporalPlan) -> Vec<f32> 
 
 /// Where a failing tensor is wrong: the relative RMS of each frame and of each
 /// channel, worst first. A localized failure names the op that produced it.
-fn profile(name: &str, produced: &[f32], expected: &[f32], channels: usize, frames: usize, plane: usize) {
+fn profile(
+    name: &str,
+    produced: &[f32],
+    expected: &[f32],
+    channels: usize,
+    frames: usize,
+    plane: usize,
+) {
     let mut worst_frame = (0usize, 0.0f64);
     for frame in 0..frames {
         let mut error = 0.0f64;
@@ -509,12 +527,7 @@ fn profile(name: &str, produced: &[f32], expected: &[f32], channels: usize, fram
 
 /// Max absolute error, the RMS of the error against the reference's own RMS,
 /// and how many elements sit beyond ten times the reported scale.
-fn compare(
-    stage: &str,
-    produced: &[f32],
-    expected: &[f32],
-    relative: f64,
-) -> Result<bool, String> {
+fn compare(stage: &str, produced: &[f32], expected: &[f32], relative: f64) -> Result<bool, String> {
     if produced.len() != expected.len() {
         return Err(format!(
             "{stage}: produced {} values, the reference has {}",

@@ -372,7 +372,12 @@ impl Stage2 {
 
         if traced() {
             trace_state(gpu, "in-video", &prepared.video, rows, CHANNELS as u32)?;
-            trace_rows(gpu, "video-self-cos", &prepared.video_signals.self_cos, rows)?;
+            trace_rows(
+                gpu,
+                "video-self-cos",
+                &prepared.video_signals.self_cos,
+                rows,
+            )?;
             if let Some(state) = prepared.audio.as_ref() {
                 trace_state(gpu, "in-audio", state, self.geometry.audio_frames, 128)?;
                 trace_rows(gpu, "in-audio-rows", state, self.geometry.audio_frames)?;
@@ -401,9 +406,11 @@ impl Stage2 {
             gpu,
             &prepared.video,
             &prepared.video_signals,
-            prepared.audio.as_ref().zip(prepared.audio_signals.as_ref()).map(
-                |(state, signals)| (state, signals),
-            ),
+            prepared
+                .audio
+                .as_ref()
+                .zip(prepared.audio_signals.as_ref())
+                .map(|(state, signals)| (state, signals)),
             &self.blocks,
             sol.as_ref(),
         )?;
@@ -705,12 +712,27 @@ mod tests {
         assert!(validate_schedule(&[0.909375, 0.725, 0.421875, 0.0]).is_ok());
         assert!(validate_schedule(&[0.3, 0.0]).is_ok());
 
-        assert!(validate_schedule(&[0.3]).is_err(), "a lone value is no interval");
-        assert!(validate_schedule(&[0.3, 0.1]).is_err(), "the walk must end at zero");
-        assert!(validate_schedule(&[0.3, 0.4, 0.0]).is_err(), "the walk must descend");
-        assert!(validate_schedule(&[0.0, 0.0]).is_err(), "a zero start keeps all of it");
+        assert!(
+            validate_schedule(&[0.3]).is_err(),
+            "a lone value is no interval"
+        );
+        assert!(
+            validate_schedule(&[0.3, 0.1]).is_err(),
+            "the walk must end at zero"
+        );
+        assert!(
+            validate_schedule(&[0.3, 0.4, 0.0]).is_err(),
+            "the walk must descend"
+        );
+        assert!(
+            validate_schedule(&[0.0, 0.0]).is_err(),
+            "a zero start keeps all of it"
+        );
         assert!(validate_schedule(&[1.5, 0.0]).is_err(), "past full noise");
-        assert!(validate_schedule(&[0.3, -0.1, 0.0]).is_err(), "negative noise");
+        assert!(
+            validate_schedule(&[0.3, -0.1, 0.0]).is_err(),
+            "negative noise"
+        );
     }
 
     /// Round to BF16 the way the device's `__float2bfloat16` does: nearest

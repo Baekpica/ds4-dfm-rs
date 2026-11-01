@@ -138,7 +138,13 @@ fn check(args: &Args) -> Result<(), String> {
     let plan = Plan::build(&adapter, &store, &config).map_err(|error| error.to_string())?;
 
     println!("adapter {}", args.adapter.display());
-    for key in ["format", "rank", "base_revision", "base_model", "application"] {
+    for key in [
+        "format",
+        "rank",
+        "base_revision",
+        "base_model",
+        "application",
+    ] {
         if let Some(value) = adapter.shard().metadata.get(key) {
             println!("  {key}: {value}");
         }

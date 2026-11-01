@@ -46,7 +46,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 
-use ds4_core::minimax_h3::safetensors::{Dtype, Shard, read_shard};
+use ds4_core::minimax_h3::safetensors::{read_shard, Dtype, Shard};
 
 /// The ConvRot group size every `*.comfy_quant` blob in the checkpoint states
 /// (`{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}`).

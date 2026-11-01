@@ -126,10 +126,7 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
         println!("front end: no golden mel named, the chain check below still covers it");
     }
 
-    let golden = read_f32(
-        &options.golden_latent,
-        latent.values.len(),
-    )?;
+    let golden = read_f32(&options.golden_latent, latent.values.len())?;
     let (relative, worst) = latent_error(&latent, &golden);
     println!(
         "chain: latent rel_rms {relative:.3e} max_abs {worst:.3e} against {}",
@@ -142,7 +139,10 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
     let conformed = latent.conformed(options.frames);
     let values = &conformed.values;
     let mean = values.iter().sum::<f32>() / values.len() as f32;
-    let spread = (values.iter().map(|value| (value - mean).powi(2)).sum::<f32>()
+    let spread = (values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f32>()
         / values.len() as f32)
         .sqrt();
     println!(

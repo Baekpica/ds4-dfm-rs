@@ -186,11 +186,7 @@ fn pad3d(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
     let pad = (1usize, 2usize, 1usize);
     let input = rng.values(channels * depth * height * width);
     let tensor = upload(gpu, Dtype::F32, &input)?;
-    let (out_t, out_h, out_w) = (
-        depth + 2 * pad.0,
-        height + 2 * pad.1,
-        width + 2 * pad.2,
-    );
+    let (out_t, out_h, out_w) = (depth + 2 * pad.0, height + 2 * pad.1, width + 2 * pad.2);
     let out = gpu.alloc(Dtype::F32, channels * out_t * out_h * out_w)?;
     gpu.latent_pad3d(
         &out,
@@ -228,11 +224,7 @@ fn im2col(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
     let padded = rng.values(channels * depth * height * width);
     let tensor = upload(gpu, Dtype::F32, &padded)?;
 
-    let (out_t, out_h, out_w) = (
-        depth - 2 * pad[0],
-        height - 2 * pad[1],
-        width - 2 * pad[2],
-    );
+    let (out_t, out_h, out_w) = (depth - 2 * pad[0], height - 2 * pad[1], width - 2 * pad[2]);
     let columns = channels * kernel[0] * kernel[1] * kernel[2];
     let out = gpu.alloc(Dtype::F32, out_t * out_h * out_w * columns)?;
     gpu.latent_im2col(
@@ -255,12 +247,10 @@ fn im2col(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
                     for kt in 0..kernel[0] {
                         for ky in 0..kernel[1] {
                             for kx in 0..kernel[2] {
-                                let column = ((c * kernel[0] + kt) * kernel[1] + ky)
-                                    * kernel[2]
-                                    + kx;
-                                let source = ((c * depth + t + kt) * height + y + ky) * width
-                                    + x
-                                    + kx;
+                                let column =
+                                    ((c * kernel[0] + kt) * kernel[1] + ky) * kernel[2] + kx;
+                                let source =
+                                    ((c * depth + t + kt) * height + y + ky) * width + x + kx;
                                 expected[row * columns + column] = padded[source];
                             }
                         }
@@ -316,15 +306,13 @@ fn planar(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
                             && sx >= 0
                             && (sx as usize) < width;
                         let value = if inside {
-                            input[((c * depth + st as usize) * height + sy as usize)
-                                * width
+                            input[((c * depth + st as usize) * height + sy as usize) * width
                                 + sx as usize]
                         } else {
                             0.0
                         };
-                        let index = ((t * pad_height + y) * width + x) * kw * channels
-                            + s * channels
-                            + c;
+                        let index =
+                            ((t * pad_height + y) * width + x) * kw * channels + s * channels + c;
                         expected[index] = value;
                     }
                 }
@@ -379,10 +367,7 @@ fn matmul_planar(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
     let tensor = upload(gpu, Dtype::F32, &input)?;
 
     let (pad_depth, pad_height) = (depth + 2 * pad[0], height + 2 * pad[1]);
-    let planar = gpu.alloc(
-        Dtype::F32,
-        channels * pad_depth * pad_height * width * kw,
-    )?;
+    let planar = gpu.alloc(Dtype::F32, channels * pad_depth * pad_height * width * kw)?;
     gpu.latent_planar(
         &planar,
         &tensor,
@@ -459,11 +444,17 @@ fn matmul_planar(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
         .zip(sum(&second))
         .map(|(left, right)| left + right)
         .collect();
-    pass &= check("matmul_planar_accumulate", &download(gpu, &out)?, &both, 1e-5);
+    pass &= check(
+        "matmul_planar_accumulate",
+        &download(gpu, &out)?,
+        &both,
+        1e-5,
+    );
     Ok(pass)
 }
 
-fn matmul(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {    let (rows, input_dim, output_dim) = (5usize, 3usize, 7usize);
+fn matmul(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
+    let (rows, input_dim, output_dim) = (5usize, 3usize, 7usize);
     let left = rng.values(rows * input_dim);
     let right = rng.values(output_dim * input_dim);
     let left_tensor = upload(gpu, Dtype::F32, &left)?;
@@ -519,7 +510,12 @@ fn matmul_channels(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
             expected[point * output_dim + column] = sum;
         }
     }
-    Ok(check("matmul_channels", &download(gpu, &out)?, &expected, 1e-5))
+    Ok(check(
+        "matmul_channels",
+        &download(gpu, &out)?,
+        &expected,
+        1e-5,
+    ))
 }
 
 fn epilogue(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
@@ -551,9 +547,7 @@ fn epilogue(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
             let expected = matrix[point * channels + channel] + bias[channel];
             let got = produced[channel * plane + area + point];
             if (got - expected).abs() > 0.0 {
-                println!(
-                    "epilogue FAIL at channel {channel} point {point}: {got} vs {expected}"
-                );
+                println!("epilogue FAIL at channel {channel} point {point}: {got} vs {expected}");
                 return Ok(false);
             }
             // Everything outside the written frame must be untouched.
@@ -629,7 +623,8 @@ fn norm(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
         for local in 0..per_group {
             let channel = group * per_group + local;
             for index in 0..plane {
-                let mut value = ((input[channel * plane + index] as f64 - average) * inverse
+                let mut value = ((input[channel * plane + index] as f64 - average)
+                    * inverse
                     * weight[channel] as f64)
                     + bias[channel] as f64;
                 value = value * (1.0 + embedding[channel] as f64)
@@ -699,7 +694,8 @@ fn depthwise(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
                     if source < 0 || source >= frames as isize {
                         continue;
                     }
-                    sum += input[(c * frames + source as usize) * area + point] * weight[c * kernel + tap];
+                    sum += input[(c * frames + source as usize) * area + point]
+                        * weight[c * kernel + tap];
                 }
                 expected[(c * frames + t) * area + point] = sum;
             }
@@ -747,7 +743,9 @@ fn resize(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
                     for (ts, wt) in [(t0, 1.0 - ft), (t1, ft)] {
                         for (ys, wy) in [(y0, 1.0 - fy), (y1, fy)] {
                             for (xs, wx) in [(x0, 1.0 - fx), (x1, fx)] {
-                                sum += wt * wy * wx
+                                sum += wt
+                                    * wy
+                                    * wx
                                     * input[((c * frames + ts) * height + ys) * width + xs];
                             }
                         }
@@ -831,7 +829,8 @@ fn time_ops(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
             for point in 0..area {
                 let near = input[(c * sources + left[target] as usize) * area + point];
                 let far = input[(c * sources + right[target] as usize) * area + point];
-                expected[(c * targets + target) * area + point] = near + weight[target] * (far - near);
+                expected[(c * targets + target) * area + point] =
+                    near + weight[target] * (far - near);
             }
         }
     }
@@ -843,7 +842,10 @@ fn unshuffle(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
     let (channels, frames, height, width) = (3usize, 2usize, 4usize, 6usize);
     let input = rng.values(channels * frames * height * width);
     let input_tensor = upload(gpu, Dtype::F32, &input)?;
-    let out = gpu.alloc(Dtype::F32, channels * 4 * frames * (height / 2) * (width / 2))?;
+    let out = gpu.alloc(
+        Dtype::F32,
+        channels * 4 * frames * (height / 2) * (width / 2),
+    )?;
     gpu.latent_unshuffle2(
         &out,
         &input_tensor,
@@ -1001,8 +1003,7 @@ fn scale(gpu: &Gpu, rng: &mut Rng) -> Result<bool, String> {
     let mut expected = vec![0.0f32; channels * plane];
     for c in 0..channels {
         for index in 0..plane {
-            expected[c * plane + index] =
-                (input[c * plane + index] - center[c]) / factor[c];
+            expected[c * plane + index] = (input[c * plane + index] - center[c]) / factor[c];
         }
     }
     let mut pass = check("scale_N", &download(gpu, &normalized)?, &expected, 1e-6);

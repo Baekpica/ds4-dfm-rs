@@ -419,49 +419,49 @@ impl Engine {
             attention: request.vae_attention,
             gemm: request.vae_gemm,
         };
-        let (decoded, upscale_seconds, upscaler_load_seconds, upscaler_hit) =
-            match &request.upscale {
-                None => (
+        let (decoded, upscale_seconds, upscaler_load_seconds, upscaler_hit) = match &request.upscale
+        {
+            None => (
+                vae_video::decode(
+                    &self.component("video_vae/source"),
+                    &video,
+                    shape.video_t as usize,
+                    latent_h as usize,
+                    latent_w as usize,
+                    arms,
+                )
+                .map_err(|error| EngineError::new(format!("video VAE: {error}")))?,
+                0.0,
+                0.0,
+                false,
+            ),
+            Some(upscale) => {
+                let geometry = ltx_adapter::geometry(
+                    shape.frame_count as usize,
+                    request.height as usize,
+                    request.width as usize,
+                )
+                .map_err(|error| EngineError::new(format!("upscale geometry: {error}")))?;
+                let (doubled, seconds, load_seconds, hit) =
+                    self.upscale(upscale, &geometry, &video)?;
+                (
+                    // `stage2.py:58-76`: the doubled canvas is what the
+                    // video VAE decodes, and the geometry carries it.
                     vae_video::decode(
                         &self.component("video_vae/source"),
-                        &video,
-                        shape.video_t as usize,
-                        latent_h as usize,
-                        latent_w as usize,
+                        &doubled,
+                        geometry.h3[1],
+                        geometry.h3[2],
+                        geometry.h3[3],
                         arms,
                     )
                     .map_err(|error| EngineError::new(format!("video VAE: {error}")))?,
-                    0.0,
-                    0.0,
-                    false,
-                ),
-                Some(upscale) => {
-                    let geometry = ltx_adapter::geometry(
-                        shape.frame_count as usize,
-                        request.height as usize,
-                        request.width as usize,
-                    )
-                    .map_err(|error| EngineError::new(format!("upscale geometry: {error}")))?;
-                    let (doubled, seconds, load_seconds, hit) =
-                        self.upscale(upscale, &geometry, &video)?;
-                    (
-                        // `stage2.py:58-76`: the doubled canvas is what the
-                        // video VAE decodes, and the geometry carries it.
-                        vae_video::decode(
-                            &self.component("video_vae/source"),
-                            &doubled,
-                            geometry.h3[1],
-                            geometry.h3[2],
-                            geometry.h3[3],
-                            arms,
-                        )
-                        .map_err(|error| EngineError::new(format!("video VAE: {error}")))?,
-                        seconds,
-                        load_seconds,
-                        hit,
-                    )
-                }
-            };
+                    seconds,
+                    load_seconds,
+                    hit,
+                )
+            }
+        };
         let video_seconds = video_started.elapsed().as_secs_f64();
 
         let decoded_frames = small(decoded.frames)?;
@@ -545,7 +545,10 @@ impl Engine {
             let upscaler = Upscaler::load(&request.checkpoint, UpscalerArm::Bf16, geometry)
                 .map_err(|error| EngineError::new(format!("upscaler: {error}")))?;
             load_seconds = started.elapsed().as_secs_f64();
-            eprintln!("UPSCALER load={load_seconds:.3}s canvas={}x{}", geometry.canvas_width, geometry.canvas_height);
+            eprintln!(
+                "UPSCALER load={load_seconds:.3}s canvas={}x{}",
+                geometry.canvas_width, geometry.canvas_height
+            );
             self.upscaler = Some((key, upscaler));
         }
 

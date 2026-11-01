@@ -33,7 +33,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::gemma::{self, GROUP, HIDDEN, INTERMEDIATE, STATES, Tower};
+use ds4_core::minimax_h3::gemma::{self, Tower, GROUP, HIDDEN, INTERMEDIATE, STATES};
 use ds4_core::minimax_h3::gemma_token::Tokenizer as GemmaTokenizer;
 use ds4_core::minimax_h3::safetensors::{self, Dtype, Shard};
 use ds4_core::minimax_h3::text_forward::fnv1a;

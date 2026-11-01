@@ -85,7 +85,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::minimax_h3::layout::{Config, LayoutError};
-use crate::minimax_h3::safetensors::{self, Dtype, Entry, Shard, ShardWriter, StError, Store, Tensor};
+use crate::minimax_h3::safetensors::{
+    self, Dtype, Entry, Shard, ShardWriter, StError, Store, Tensor,
+};
 use crate::minimax_h3::vision::{bf16_to_f32, f32_to_bf16};
 
 /// `__metadata__.format` of the adapter this module merges.
@@ -372,8 +374,18 @@ impl Plan {
                                 });
                             }
                             let half = rows / 2;
-                            segments.push(Segment { delta: index, dest: 0, src: half, rows: half });
-                            segments.push(Segment { delta: index, dest: half, src: 0, rows: half });
+                            segments.push(Segment {
+                                delta: index,
+                                dest: 0,
+                                src: half,
+                                rows: half,
+                            });
+                            segments.push(Segment {
+                                delta: index,
+                                dest: half,
+                                src: 0,
+                                rows: half,
+                            });
                         }
                         Rows::Qkv { part } => {
                             let head = config.head_dim;
@@ -498,7 +510,9 @@ impl Adapter {
 
             if counted != declared {
                 return Err(MergeError::Adapter {
-                    detail: format!("{payload:?} tensors: header holds {counted}, metadata says {declared}"),
+                    detail: format!(
+                        "{payload:?} tensors: header holds {counted}, metadata says {declared}"
+                    ),
                 });
             }
         }
@@ -767,12 +781,14 @@ fn rewrite_shard(
         })
         .collect();
 
-    let name = shard.path.file_name().map(PathBuf::from).ok_or_else(|| {
-        MergeError::Io {
+    let name = shard
+        .path
+        .file_name()
+        .map(PathBuf::from)
+        .ok_or_else(|| MergeError::Io {
             path: shard.path.clone(),
             detail: "no file name".into(),
-        }
-    })?;
+        })?;
 
     let writer = ShardWriter::create(&target.join(name), &entries, &shard.metadata)?;
 
@@ -784,7 +800,9 @@ fn rewrite_shard(
                     .segments
                     .get(&tensor.name)
                     .expect("a touched tensor branches like a segmented one");
-                apply(shard, tensor, deltas, segments, adapter, &writer, index, threads)?;
+                apply(
+                    shard, tensor, deltas, segments, adapter, &writer, index, threads,
+                )?;
             }
             None => copy_tensor(shard, tensor, &writer, index)?,
         }
@@ -971,8 +989,14 @@ fn apply(
 /// A delta's payload, read once per tensor.
 enum Prepared {
     /// The rank-64 factor A in F32, and how many rows B states.
-    LowRank { a: Vec<f32>, b_rows: u64 },
-    Add { diff: Vec<u8>, dtype: Dtype },
+    LowRank {
+        a: Vec<f32>,
+        b_rows: u64,
+    },
+    Add {
+        diff: Vec<u8>,
+        dtype: Dtype,
+    },
 }
 
 /// One tile: read the destination rows, add the delta, write them back.
@@ -1226,7 +1250,10 @@ fn link_dir(root: &Path, dir: &Path, out: &Path, skip: &Path) -> Result<(), Merg
             continue;
         }
 
-        if fs::canonicalize(&path).map(|here| here == out).unwrap_or(false) {
+        if fs::canonicalize(&path)
+            .map(|here| here == out)
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -1311,25 +1338,115 @@ mod tests {
     #[test]
     fn a_module_resolves_to_its_served_tensor() {
         let cases = [
-            ("transformer_blocks.7.attn.to_q", false, "blocks.7.attn.qkv_proj.weight", Rows::Qkv { part: 0 }),
-            ("transformer_blocks.7.attn.to_k", false, "blocks.7.attn.qkv_proj.weight", Rows::Qkv { part: 1 }),
-            ("transformer_blocks.7.attn.to_v", false, "blocks.7.attn.qkv_proj.weight", Rows::Qkv { part: 2 }),
-            ("transformer_blocks.7.attn.to_out.0", false, "blocks.7.attn.out_proj.weight", Rows::Identity),
-            ("transformer_blocks.7.ff.net.0.proj", false, "blocks.7.mlp.fc1.weight", Rows::Swap),
-            ("transformer_blocks.7.ff.net.2", false, "blocks.7.mlp.fc2.weight", Rows::Identity),
-            ("transformer_blocks.7.adaln_proj.linear", false, "blocks.7.adaln_proj.linear.weight", Rows::Identity),
-            ("transformer_blocks.7.adaln_proj.linear", true, "blocks.7.adaln_proj.linear.bias", Rows::Identity),
-            ("transformer_blocks.7.norm2", false, "blocks.7.norm2.weight", Rows::Identity),
-            ("token_refiner.refiner_blocks.1.attn.to_q", false, "token_refiner.blocks.1.attn.qkv_proj.weight", Rows::Qkv { part: 0 }),
+            (
+                "transformer_blocks.7.attn.to_q",
+                false,
+                "blocks.7.attn.qkv_proj.weight",
+                Rows::Qkv { part: 0 },
+            ),
+            (
+                "transformer_blocks.7.attn.to_k",
+                false,
+                "blocks.7.attn.qkv_proj.weight",
+                Rows::Qkv { part: 1 },
+            ),
+            (
+                "transformer_blocks.7.attn.to_v",
+                false,
+                "blocks.7.attn.qkv_proj.weight",
+                Rows::Qkv { part: 2 },
+            ),
+            (
+                "transformer_blocks.7.attn.to_out.0",
+                false,
+                "blocks.7.attn.out_proj.weight",
+                Rows::Identity,
+            ),
+            (
+                "transformer_blocks.7.ff.net.0.proj",
+                false,
+                "blocks.7.mlp.fc1.weight",
+                Rows::Swap,
+            ),
+            (
+                "transformer_blocks.7.ff.net.2",
+                false,
+                "blocks.7.mlp.fc2.weight",
+                Rows::Identity,
+            ),
+            (
+                "transformer_blocks.7.adaln_proj.linear",
+                false,
+                "blocks.7.adaln_proj.linear.weight",
+                Rows::Identity,
+            ),
+            (
+                "transformer_blocks.7.adaln_proj.linear",
+                true,
+                "blocks.7.adaln_proj.linear.bias",
+                Rows::Identity,
+            ),
+            (
+                "transformer_blocks.7.norm2",
+                false,
+                "blocks.7.norm2.weight",
+                Rows::Identity,
+            ),
+            (
+                "token_refiner.refiner_blocks.1.attn.to_q",
+                false,
+                "token_refiner.blocks.1.attn.qkv_proj.weight",
+                Rows::Qkv { part: 0 },
+            ),
             ("proj_in", false, "video_patch_proj.weight", Rows::Identity),
-            ("time_embedder.linear_2", false, "time_embedder.proj_out.weight", Rows::Identity),
-            ("norm_out.norm", false, "final_layer.norm.weight", Rows::Identity),
-            ("audio_proj_in", true, "audio_patch_proj.bias", Rows::Identity),
-            ("audio_proj_out", true, "final_layer.audio_out.bias", Rows::Identity),
-            ("proj_out", true, "final_layer.video_out.bias", Rows::Identity),
-            ("norm_out.linear", true, "final_layer.adaln_proj.linear.bias", Rows::Identity),
-            ("context_embedder", true, "condition_proj.bias", Rows::Identity),
-            ("time_embedder.linear_1", true, "time_embedder.proj_in.bias", Rows::Identity),
+            (
+                "time_embedder.linear_2",
+                false,
+                "time_embedder.proj_out.weight",
+                Rows::Identity,
+            ),
+            (
+                "norm_out.norm",
+                false,
+                "final_layer.norm.weight",
+                Rows::Identity,
+            ),
+            (
+                "audio_proj_in",
+                true,
+                "audio_patch_proj.bias",
+                Rows::Identity,
+            ),
+            (
+                "audio_proj_out",
+                true,
+                "final_layer.audio_out.bias",
+                Rows::Identity,
+            ),
+            (
+                "proj_out",
+                true,
+                "final_layer.video_out.bias",
+                Rows::Identity,
+            ),
+            (
+                "norm_out.linear",
+                true,
+                "final_layer.adaln_proj.linear.bias",
+                Rows::Identity,
+            ),
+            (
+                "context_embedder",
+                true,
+                "condition_proj.bias",
+                Rows::Identity,
+            ),
+            (
+                "time_embedder.linear_1",
+                true,
+                "time_embedder.proj_in.bias",
+                Rows::Identity,
+            ),
             ("proj_in", true, "video_patch_proj.bias", Rows::Identity),
         ];
 
@@ -1425,13 +1542,33 @@ mod tests {
             out.push((name.to_string(), dtype, shape, values));
         };
 
-        push("blocks.0.attn.qkv_proj.weight", Dtype::Bf16, vec![24, 8], 0.0);
-        push("blocks.0.attn.out_proj.weight", Dtype::Bf16, vec![8, 8], 1.0);
+        push(
+            "blocks.0.attn.qkv_proj.weight",
+            Dtype::Bf16,
+            vec![24, 8],
+            0.0,
+        );
+        push(
+            "blocks.0.attn.out_proj.weight",
+            Dtype::Bf16,
+            vec![8, 8],
+            1.0,
+        );
         push("blocks.0.mlp.fc1.weight", Dtype::Bf16, vec![8, 8], 2.0);
         push("blocks.0.mlp.fc2.weight", Dtype::Bf16, vec![8, 4], 3.0);
         push("blocks.0.norm1.weight", Dtype::Bf16, vec![8], 4.0);
-        push("blocks.0.adaln_proj.linear.weight", Dtype::Bf16, vec![12, 4], 5.0);
-        push("blocks.0.adaln_proj.linear.bias", Dtype::Bf16, vec![12], 6.0);
+        push(
+            "blocks.0.adaln_proj.linear.weight",
+            Dtype::Bf16,
+            vec![12, 4],
+            5.0,
+        );
+        push(
+            "blocks.0.adaln_proj.linear.bias",
+            Dtype::Bf16,
+            vec![12],
+            6.0,
+        );
         push("condition_proj.weight", Dtype::Bf16, vec![8, 4], 7.0);
         push("video_patch_proj.weight", Dtype::F32, vec![8, 4], 8.0);
         push("video_patch_proj.bias", Dtype::F32, vec![8], 0.0);
@@ -1501,20 +1638,24 @@ mod tests {
         // whole parameter the checkpoint does not carry.
         let mut adapter: Vec<(String, Dtype, Vec<u64>, Vec<f32>)> = Vec::new();
         let pair = |adapter: &mut Vec<(String, Dtype, Vec<u64>, Vec<f32>)>,
-                        module: &str,
-                        rows: u64,
-                        seed: f32| {
+                    module: &str,
+                    rows: u64,
+                    seed: f32| {
             adapter.push((
                 format!("{module}.lora_A.weight"),
                 Dtype::Bf16,
                 vec![ADAPTER_RANK, 8],
-                (0..ADAPTER_RANK * 8).map(|i| seed + i as f32 * 0.01).collect(),
+                (0..ADAPTER_RANK * 8)
+                    .map(|i| seed + i as f32 * 0.01)
+                    .collect(),
             ));
             adapter.push((
                 format!("{module}.lora_B.weight"),
                 Dtype::Bf16,
                 vec![rows, ADAPTER_RANK],
-                (0..rows * ADAPTER_RANK).map(|i| seed + i as f32 * 0.02).collect(),
+                (0..rows * ADAPTER_RANK)
+                    .map(|i| seed + i as f32 * 0.02)
+                    .collect(),
             ));
         };
         pair(&mut adapter, "transformer_blocks.0.attn.to_q", 8, 1.0);
@@ -1535,12 +1676,7 @@ mod tests {
             vec![8, 4],
             vec![0.125; 32],
         ));
-        adapter.push((
-            "proj_in.diff_b".into(),
-            Dtype::Bf16,
-            vec![8],
-            vec![0.75; 8],
-        ));
+        adapter.push(("proj_in.diff_b".into(), Dtype::Bf16, vec![8], vec![0.75; 8]));
         adapter.push((
             "transformer_blocks.0.adaln_proj.linear.diff_b".into(),
             Dtype::Bf16,
@@ -1595,10 +1731,8 @@ mod tests {
             shard.read_data(tensor, &mut bytes).expect("read");
             decode(&bytes, tensor.dtype).expect("decode")
         };
-        let released: std::collections::HashMap<&str, &(String, Dtype, Vec<u64>, Vec<f32>)> = base
-            .iter()
-            .map(|entry| (entry.0.as_str(), entry))
-            .collect();
+        let released: std::collections::HashMap<&str, &(String, Dtype, Vec<u64>, Vec<f32>)> =
+            base.iter().map(|entry| (entry.0.as_str(), entry)).collect();
 
         // A tensor with no delta is the released tensor, value for value.
         for name in [
@@ -1713,7 +1847,8 @@ mod tests {
 
         // The whole parameter, written beside the checkpoint.
         let set = safetensors::read_shard(
-            &out.join(SET_WEIGHT_DIR).join("attn_gate_compress.safetensors"),
+            &out.join(SET_WEIGHT_DIR)
+                .join("attn_gate_compress.safetensors"),
         )
         .expect("set_weight");
         assert_eq!(
@@ -1763,10 +1898,7 @@ mod tests {
             .expect("bytes");
 
         let error = derive(&dir, &path, &dir.join("derived"), 1, false).expect_err("refused");
-        assert!(
-            matches!(error, MergeError::Unresolved { .. }),
-            "{error}"
-        );
+        assert!(matches!(error, MergeError::Unresolved { .. }), "{error}");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1794,7 +1926,9 @@ mod tests {
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect();
         let writer = ShardWriter::create(&path, &entries, &metadata).expect("adapter");
-        writer.write(0, &encode(&[0.0; 8], Dtype::Bf16)).expect("bytes");
+        writer
+            .write(0, &encode(&[0.0; 8], Dtype::Bf16))
+            .expect("bytes");
 
         let error = Adapter::open(&path).expect_err("refused");
         assert!(matches!(error, MergeError::Adapter { .. }), "{error}");
