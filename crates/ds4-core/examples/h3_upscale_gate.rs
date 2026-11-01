@@ -167,50 +167,67 @@ fn run(dir: &Path) -> Result<(), String> {
         }
     }
 
-    let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
-    let upscaler =
-        Upscaler::open_with(dir, gpu, false, false).map_err(|detail| detail.to_string())?;
-    let started = std::time::Instant::now();
-    let output = upscaler
-        .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)
-        .map_err(|detail| detail.to_string())?;
-    let elapsed = started.elapsed();
-    if output.time != TIME || output.height != HEIGHT_OUT || output.width != WIDTH_OUT {
-        return fail(format!(
-            "geometry {}x{}x{}, expected {}x{}x{}",
-            output.time, output.height, output.width, TIME, HEIGHT_OUT, WIDTH_OUT
-        ));
-    }
-
     let reference = reference(&store, &latent)?;
-    if reference.len() != output.values.len() {
+    if reference.len() != LATENT_CHANNELS * TIME * HEIGHT_OUT * WIDTH_OUT {
         return fail("reference length differs");
     }
-    let mut worst = 0.0f64;
-    let mut worst_at = 0usize;
-    let mut scale = 0.0f64;
-    for (index, (candidate, target)) in output.values.iter().zip(reference.iter()).enumerate() {
-        scale = scale.max(target.abs());
-        let error = (*candidate as f64 - target).abs();
-        if error > worst {
-            worst = error;
-            worst_at = index;
+    let scale = reference.iter().fold(0.0f64, |worst, value| worst.max(value.abs()));
+
+    // Every arm the resizer can run, each against the same reference. The two
+    // F32 arms are the arithmetic the port was verified on; the TF32 arms are
+    // the reference implementation's own class (it computes in F16, ten
+    // mantissa bits) and only reach a tensor-core kernel on the column-major
+    // orientation, where the GEMM is 2.2x faster. A bound per arm, so a faster
+    // arm has to say what it costs.
+    let arms: [(&str, bool, bool, f64); 4] = [
+        ("fp32 rows", false, false, 5e-4),
+        ("fp32 columns", false, true, 5e-4),
+        ("tf32 rows", true, false, 5e-4),
+        ("tf32 columns", true, true, 5e-4),
+    ];
+    let mut failed = false;
+    for (name, tf32, columns, bound) in arms {
+        // One context per arm: `Gpu` owns its stream and the resizer owns the
+        // context, so an arm that shares one cannot hold it across the loop.
+        let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
+        let upscaler = Upscaler::open_with(dir, gpu, tf32, columns)
+            .map_err(|detail| detail.to_string())?;
+        let started = std::time::Instant::now();
+        let output = upscaler
+            .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)
+            .map_err(|detail| detail.to_string())?;
+        let elapsed = started.elapsed();
+        if output.time != TIME || output.height != HEIGHT_OUT || output.width != WIDTH_OUT {
+            return fail(format!(
+                "geometry {}x{}x{}, expected {}x{}x{}",
+                output.time, output.height, output.width, TIME, HEIGHT_OUT, WIDTH_OUT
+            ));
+        }
+        let mut worst = 0.0f64;
+        let mut worst_at = 0usize;
+        for (index, (candidate, target)) in output.values.iter().zip(reference.iter()).enumerate() {
+            let error = (*candidate as f64 - target).abs();
+            if error > worst {
+                worst = error;
+                worst_at = index;
+            }
+        }
+        let relative = if scale > 0.0 { worst / scale } else { worst };
+        let verdict = if relative > bound { "FAIL" } else { "ok" };
+        println!(
+            "{name:<13} {:>8?}  max |device - reference| {worst:.3e}, relative {relative:.3e} \
+             (worst channel {})  {verdict}",
+            elapsed,
+            worst_at / (TIME * HEIGHT_OUT * WIDTH_OUT)
+        );
+        if relative > bound {
+            failed = true;
         }
     }
-    let relative = if scale > 0.0 { worst / scale } else { worst };
-    println!(
-        "upscale {:?} for {voxels} voxels: max |device - reference| {worst:.3e}, \
-         relative {relative:.3e} (scale {scale:.3e}, worst channel {})",
-        elapsed,
-        worst_at / (TIME * HEIGHT_OUT * WIDTH_OUT)
-    );
-    // f32 device arithmetic against an f64 reference over twenty-four
-    // convolutions: a correct port lands far inside this, and any indexing or
-    // normalization mistake lands orders of magnitude outside it.
-    if relative > 5e-4 {
-        return fail(format!("relative error {relative:.3e} above 5e-4"));
+    if failed {
+        return fail("an arm is outside its bound");
     }
-    println!("PASS");
+    println!("PASS {voxels} voxels, {} arms", 4);
     Ok(())
 }
 
