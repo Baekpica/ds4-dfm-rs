@@ -1,16 +1,15 @@
 #!/bin/bash
-# Does the resident product route render the same clip as the two-process one?
+# Does the resident route render the same clip as the one-shot route?
 #
 # One request, three renders at one seed:
 #
 #   1. the same request twice in one process (`h3-rs --jobs`): the second must
-#      hit the prompt encoder, the DiT and the upscaler, and must print the
-#      first one's frames hash;
-#   2. the two-process route this unit replaces: `h3-rs --latent-only`, then
-#      `h3-sol-rs --h3-video upscaled --hash`.
+#      hit the prompt encoder and the prepared DiT, and must print the first
+#      one's frames hash;
+#   2. the one-shot route, `h3-rs --hash`, which loads the weights per clip.
 #
-# PASS needs all of it: job 2's text, DiT and upscaler loads reported as hits,
-# job 2's frames hash equal to job 1's, and both equal to the two-process run's.
+# PASS needs all of it: job 2's text and DiT loads reported as hits, job 2's
+# frames hash equal to job 1's, and both equal to the one-shot run's.
 #
 # Artifacts come from the environment, never from a path here:
 #   H3_ARTIFACTS    the directory holding the checkpoints (required)
@@ -27,8 +26,6 @@ ROOT=${H3_ROOT:-$PWD}
 A=${H3_ARTIFACTS:?H3_ARTIFACTS must name the checkpoint directory}
 MODEL=$A/MiniMax-H3-FastH3-4step
 NVFP4=$A/Comfy-MiniMax-H3/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
-UPSCALER=$A/H3-upscaler/minimax_h3_latent_upscaler_3d_bf16.safetensors
-VAE=$MODEL/FL2VA/video_vae/source
 
 PROMPT="A red fox trots through fresh snow at dawn, side profile, one tail, eye level."
 SEED=42
@@ -45,19 +42,19 @@ while [ $# -gt 0 ]; do
     --width) WIDTH=$2; shift 2 ;;
     --height) HEIGHT=$2; shift 2 ;;
     --frames) FRAMES=$2; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-for artifact in "$MODEL" "$NVFP4" "$UPSCALER" "$VAE"; do
+for artifact in "$MODEL" "$NVFP4"; do
   [ -e "$artifact" ] || { echo "missing artifact: $artifact" >&2; exit 3; }
 done
 
 cd "$ROOT" || exit 1
 mkdir -p outputs scratch
 
-# The release's Sol draft, as the clip tool sets it.
+# The release's draft, as the clip tool sets it.
 export H3_DIT_SOL=0.9
 
 # One request per line: prompt, seed, steps, width, height, frames, output.
@@ -82,32 +79,21 @@ since() {
 echo "== resident: two requests, one process"
 started=$(date +%s.%N)
 guard resident "$ROOT/h3-rs" -d "$MODEL" --text-nvfp4 "$NVFP4" \
-  --jobs scratch/jobs.txt --upscaler "$UPSCALER" 2>&1 | tee scratch/resident.out
+  --jobs scratch/jobs.txt 2>&1 | tee scratch/resident.out
 [ "${PIPESTATUS[0]}" = "0" ] || exit 1
 resident_seconds=$(since "$started")
 echo "WALL stage=resident seconds=$resident_seconds"
 
-echo "== two-process: stage 1, latent only"
+echo "== one-shot: the weights loaded per clip"
 started=$(date +%s.%N)
-guard accept-stage1 "$ROOT/h3-rs" -d "$MODEL" --text-nvfp4 "$NVFP4" \
+guard accept-oneshot "$ROOT/h3-rs" -d "$MODEL" --text-nvfp4 "$NVFP4" \
   -p "$PROMPT" --width "$WIDTH" --height "$HEIGHT" --frames "$FRAMES" \
-  --steps "$STEPS" --seed "$SEED" --save-latent scratch/accept.bin \
-  --save-audio scratch/accept.pcm --latent-only 2>&1 | tee scratch/accept-stage1.out
+  --steps "$STEPS" --seed "$SEED" --hash -o outputs/accept-oneshot.mp4 \
+  2>&1 | tee scratch/accept-oneshot.out
 [ "${PIPESTATUS[0]}" = "0" ] || exit 1
-stage1_seconds=$(since "$started")
-echo "WALL stage=two-process-stage1 seconds=$stage1_seconds"
-
-echo "== two-process: stage 2, upscale and H3 decode"
-started=$(date +%s.%N)
-guard accept-stage2 "$ROOT/h3-sol-rs" --latent scratch/accept.bin \
-  --audio scratch/accept.pcm --upscaler "$UPSCALER" --h3-vae "$VAE" \
-  --h3-video upscaled --hash -o outputs/accept-legacy.mp4 \
-  2>&1 | tee scratch/accept-stage2.out
-[ "${PIPESTATUS[0]}" = "0" ] || exit 1
-stage2_seconds=$(since "$started")
-echo "WALL stage=two-process-stage2 seconds=$stage2_seconds"
-echo "WALL two-process total=$(awk -v a="$stage1_seconds" -v b="$stage2_seconds" \
-  'BEGIN {printf "%.3f", a+b}') resident-two-clips=$resident_seconds"
+oneshot_seconds=$(since "$started")
+echo "WALL stage=one-shot seconds=$oneshot_seconds"
+echo "WALL resident-two-clips=$resident_seconds one-shot=$oneshot_seconds"
 
 field() {
   # field <line> <name>: the `name=value` word's value.
@@ -116,18 +102,16 @@ field() {
 
 line1=$(grep '^JOB n=1 ' scratch/resident.out)
 line2=$(grep '^JOB n=2 ' scratch/resident.out)
-legacy=$(grep -o 'H3-VAE frames_fnv=[0-9a-f]*' scratch/accept-stage2.out | cut -d= -f2)
+oneshot=$(grep -o 'HASH [^ ]* audio=[0-9a-f]* frames=[0-9a-f]*' scratch/accept-oneshot.out |
+  grep -o 'frames=[0-9a-f]*' | cut -d= -f2)
 
 first=$(field "$line1" frames_fnv)
 second=$(field "$line2" frames_fnv)
 status=0
 
-echo "frames job1=$first job2=$second two-process=$legacy"
+echo "frames job1=$first job2=$second one-shot=$oneshot"
 
-# Each marker is anchored to a word start: `load=` also appears inside
-# `upscaler_load=`, and a hit on one must not stand in for the other.
-for marker in ' text=[0-9.]*s \(hit\)' ' load=[0-9.]*s \(hit\)' \
-  ' upscaler_load=[0-9.]*s \(hit\)'; do
+for marker in ' text=[0-9.]*s \(hit\)' ' load=[0-9.]*s \(hit\)'; do
   grep -Eq "$marker" <<<"$line2" || {
     echo "FAIL job 2 did not report $marker"
     status=1
@@ -138,8 +122,8 @@ done
   echo "FAIL job 1 and job 2 differ"
   status=1
 }
-[ -n "$first" ] && [ "$first" = "$legacy" ] || {
-  echo "FAIL the resident route and the two-process route differ"
+[ -n "$first" ] && [ "$first" = "$oneshot" ] || {
+  echo "FAIL the resident route and the one-shot route differ"
   status=1
 }
 

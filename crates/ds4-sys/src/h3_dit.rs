@@ -349,7 +349,7 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    fn h3d_ltx_attention(
+    fn h3d_text_attention(
         context: *mut Context,
         output: *mut CTensor,
         query: *const CTensor,
@@ -364,9 +364,9 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    /// `h3d_ltx_attention_mma`: the same attention with tensor-core
+    /// `h3d_text_attention_mma`: the same attention with tensor-core
     /// arithmetic, head dimension 128 only.
-    fn h3d_ltx_attention_mma(
+    fn h3d_text_attention_mma(
         context: *mut Context,
         output: *mut CTensor,
         query: *const CTensor,
@@ -381,9 +381,9 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    /// `h3d_ltx_rope_pair`: the LTX refiner's A2V/V2A rotary pair, query and
+    /// `h3d_text_rope_pair`: the the refiner refiner's A2V/V2A rotary pair, query and
     /// key rotated by their own tables and row counts.
-    fn h3d_ltx_rope_pair(
+    fn h3d_text_rope_pair(
         context: *mut Context,
         query: *mut CTensor,
         key: *mut CTensor,
@@ -627,9 +627,9 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    /// The LTX-2.5 refiner's token-major Sol-Attn search: the released
+    /// The refiner's token-major Sol-Attn search: the released
     /// kernel's `diag` tau policy over `[rows][heads][128]` operands.
-    fn h3d_sol_ltx_search(
+    fn h3d_tok_search(
         context: *mut Context,
         plan: *const SolPlan,
         query: *const CTensor,
@@ -643,8 +643,8 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    /// The token-major sparse forward over the mask `h3d_sol_ltx_search` wrote.
-    fn h3d_sol_ltx_forward(
+    /// The token-major sparse forward over the mask `h3d_tok_search` wrote.
+    fn h3d_tok_forward(
         context: *mut Context,
         output: *mut CTensor,
         plan: *const SolPlan,
@@ -658,9 +658,9 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    /// `h3d_sol_ltx_forward` on the tensor cores: the tower's sparse walk with
+    /// `h3d_tok_forward` on the tensor cores: the tower's sparse walk with
     /// this port's token-major reads. Same plan and mask.
-    fn h3d_sol_ltx_forward_mma(
+    fn h3d_tok_forward_mma(
         context: *mut Context,
         output: *mut CTensor,
         plan: *const SolPlan,
@@ -1046,7 +1046,7 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    // The H3-to-LTX latent path (`native/h3/h3_dit_gpu.h`, the `h3b_*`
+    // The H3 latent resizer path (`native/h3/h3_dit_gpu.h`, the `h3b_*`
     // section). Same context and tensor type as the rest of the family: the
     // ops are additive, not a second device.
     fn h3b_pad3d(
@@ -1435,7 +1435,7 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    // The LTX-2.5 audio VAE encoder (`minimax_h3::ltx_audio_vae`): its
+    // The audio VAE encoder (`the audio VAE module`): its
     // channels-last F32 pads and its per-location RMS norm.
     fn h3a_pad_zero(
         context: *mut Context,
@@ -1714,7 +1714,7 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    fn h3d_ltx_rope(
+    fn h3d_text_rope(
         context: *mut Context,
         query: *mut CTensor,
         key: *mut CTensor,
@@ -2854,7 +2854,7 @@ impl Gpu {
 
     /// `apply_split_rotary_emb` (`rope.py:42-85`) in place, `cos`/`sin` the
     /// BF16 `[rows, heads, head_dim / 2]` tables.
-    pub fn ltx_rope(
+    pub fn text_rope(
         &self,
         query: &Tensor,
         key: &Tensor,
@@ -2866,7 +2866,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_ltx_rope(
+                h3d_text_rope(
                     self.raw.as_ptr(),
                     query.raw(),
                     key.raw(),
@@ -2879,7 +2879,7 @@ impl Gpu {
                     size,
                 )
             },
-            "LTX RoPE",
+            "RoPE",
         )
     }
 
@@ -3415,12 +3415,12 @@ impl Gpu {
         )
     }
 
-    /// `h3d_ltx_attention`: the token-major dense attention
+    /// `h3d_text_attention`: the token-major dense attention
     /// `PytorchAttention.__call__` runs (`attention.py:82-102`), with the query
     /// and key row counts independent - the AV cross-attention reads 16,128
     /// video queries against 126 audio keys.
     #[allow(clippy::too_many_arguments)]
-    pub fn ltx_attention(
+    pub fn text_attention(
         &self,
         output: &Tensor,
         query: &Tensor,
@@ -3434,7 +3434,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_ltx_attention(
+                h3d_text_attention(
                     self.raw.as_ptr(),
                     output.raw(),
                     query.raw(),
@@ -3449,15 +3449,15 @@ impl Gpu {
                     size,
                 )
             },
-            "LTX attention",
+            "attention",
         )
     }
 
-    /// `h3d_ltx_attention_mma`: the same attention, tensor-core arithmetic.
+    /// `h3d_text_attention_mma`: the same attention, tensor-core arithmetic.
     /// Refused for head dimension 64, which A2V/V2A use and the kernel does not
-    /// serve; the caller keeps those on `ltx_attention`.
+    /// serve; the caller keeps those on `text_attention`.
     #[allow(clippy::too_many_arguments)]
-    pub fn ltx_attention_mma(
+    pub fn text_attention_mma(
         &self,
         output: &Tensor,
         query: &Tensor,
@@ -3471,7 +3471,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_ltx_attention_mma(
+                h3d_text_attention_mma(
                     self.raw.as_ptr(),
                     output.raw(),
                     query.raw(),
@@ -3486,15 +3486,15 @@ impl Gpu {
                     size,
                 )
             },
-            "LTX attention (mma)",
+            "attention (mma)",
         )
     }
 
-    /// The LTX refiner's A2V/V2A rotary: `q_cos`/`q_sin` rotate `query` over
+    /// The the refiner refiner's A2V/V2A rotary: `q_cos`/`q_sin` rotate `query` over
     /// `q_rows`, `k_cos`/`k_sin` rotate `key` over `k_rows`, each table
     /// `[rows, heads, head_dim / 2]`.
     #[allow(clippy::too_many_arguments)]
-    pub fn ltx_rope_pair(
+    pub fn text_rope_pair(
         &self,
         query: &Tensor,
         key: &Tensor,
@@ -3509,7 +3509,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_ltx_rope_pair(
+                h3d_text_rope_pair(
                     self.raw.as_ptr(),
                     query.raw(),
                     key.raw(),
@@ -3525,7 +3525,7 @@ impl Gpu {
                     size,
                 )
             },
-            "LTX RoPE pair",
+            "RoPE pair",
         )
     }
 
@@ -3765,7 +3765,7 @@ impl Gpu {
         )
     }
 
-    // ---- the stage-2 sampler (`minimax_h3::ltx_stage2`). One wrapper per
+    // ---- the stage-2 sampler (`the stage-2 sampler module`). One wrapper per
     // reference expression; the Rust side keeps the schedule and the
     // generator's offset, the device keeps every float32 rounding.
 
@@ -4135,12 +4135,12 @@ impl Gpu {
         )
     }
 
-    /// The LTX-2.5 refiner's token-major Sol-Attn search: it pools the block
+    /// The refiner's token-major Sol-Attn search: it pools the block
     /// summaries, the per-head statistics and the query centroid, writes the
     /// routing mask and threshold into `plan`. The caller supplies `tau` -
     /// `STAGE2_TAUS` (1.0, 1.25, 1.5), one per denoise step
     /// (`sol_attention.py:18`) - so a step's routing is a caller decision.
-    pub fn sol_ltx_search(
+    pub fn tok_search(
         &self,
         plan: &SolPlanBuffers,
         query: &Tensor,
@@ -4153,7 +4153,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_sol_ltx_search(
+                h3d_tok_search(
                     self.raw.as_ptr(),
                     &plan.plan,
                     query.raw(),
@@ -4167,13 +4167,13 @@ impl Gpu {
                     size,
                 )
             },
-            "Sol-Attn LTX search",
+            "Sol-Attn the refiner search",
         )
     }
 
     /// The token-major sparse forward over the mask the last
-    /// `sol_ltx_search` wrote for the same plan and operands.
-    pub fn sol_ltx_forward(
+    /// `tok_search` wrote for the same plan and operands.
+    pub fn tok_forward(
         &self,
         output: &Tensor,
         plan: &SolPlanBuffers,
@@ -4186,7 +4186,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_sol_ltx_forward(
+                h3d_tok_forward(
                     self.raw.as_ptr(),
                     output.raw(),
                     &plan.plan,
@@ -4200,12 +4200,12 @@ impl Gpu {
                     size,
                 )
             },
-            "Sol-Attn LTX forward",
+            "Sol-Attn the refiner forward",
         )
     }
 
-    /// `sol_ltx_forward` on the tensor cores, over the same plan and mask.
-    pub fn sol_ltx_forward_mma(
+    /// `tok_forward` on the tensor cores, over the same plan and mask.
+    pub fn tok_forward_mma(
         &self,
         output: &Tensor,
         plan: &SolPlanBuffers,
@@ -4218,7 +4218,7 @@ impl Gpu {
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
-                h3d_sol_ltx_forward_mma(
+                h3d_tok_forward_mma(
                     self.raw.as_ptr(),
                     output.raw(),
                     &plan.plan,
@@ -4232,7 +4232,7 @@ impl Gpu {
                     size,
                 )
             },
-            "Sol-Attn LTX forward (mma)",
+            "Sol-Attn the refiner forward (mma)",
         )
     }
 
@@ -4876,7 +4876,7 @@ impl Gpu {
         )
     }
 
-    /// `h3a_pad_zero`: the LTX audio encoder's zero pad on a channels-last F32
+    /// `h3a_pad_zero`: the audio encoder's zero pad on a channels-last F32
     /// plane, with a per-side extent on each axis
     /// (`causal_conv_2d.py:47-57`, `downsample.py:43-57`).
     #[allow(clippy::too_many_arguments)]
@@ -5177,7 +5177,7 @@ impl Gpu {
         Err(format!("{label}: {}", message(&error)))
     }
 
-    // ---- the H3-to-LTX latent path (`minimax_h3::ltx_adapter`). Every
+    // ---- the H3 latent resizer path (`the latent resizer module`). Every
     // wrapper mirrors the native argument order; `bias` and `embedding` are
     // optional and pass NULL when absent.
 

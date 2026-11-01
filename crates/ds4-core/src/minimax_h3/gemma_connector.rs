@@ -2,7 +2,7 @@
 //! of the offline conditioning that turns the Gemma4 tower's 49 hidden states
 //! into the two contexts the refiner consumes.
 //!
-//! Source of truth: LTX's own `ltx-core/src/ltx_core/text_encoders/gemma/`,
+//! Source of truth: the released reference implementation, `ltx-core/src/ltx_core/text_encoders/gemma/`,
 //! read first-hand at `/data/ltx2-pin/packages` (the pin the release runs,
 //! `d1511477` = v1.2.0). Every step below cites it:
 //!
@@ -532,7 +532,7 @@ impl Block {
         )
         .map_err(ConnectorError::Run)?;
 
-        gpu.ltx_rope(
+        gpu.text_rope(
             &scratch.query,
             &scratch.key,
             cos,
@@ -549,7 +549,7 @@ impl Block {
         // own operand convention: `q.view(b, -1, heads, dim_head)` reads the
         // projections token-major, which is what the linears above produce.
         let scale = 1.0 / (scratch.head_dim as f32).sqrt();
-        gpu.ltx_attention(
+        gpu.text_attention(
             &scratch.attention,
             &scratch.query,
             &scratch.key,

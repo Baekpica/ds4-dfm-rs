@@ -1840,15 +1840,15 @@ int h3d_gemma_attention(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("Gemma attention", error, error_size);
 }
 
-/* ---- the LTX AV connector and its feature extractor ----
+/* ---- the AV connector and its feature extractor ----
  *
  * The conditioning the refiner consumes is Gemma-4-12B hidden states through
- * LTX's own 1D connector (`ltx-core/src/ltx_core/text_encoders/gemma/
+ * the upstream 1D connector (`ltx-core/src/ltx_core/text_encoders/gemma/
  * embeddings_connector.py`, `feature_extractor.py`, `embeddings_processor.py`,
  * read at `/data/ltx2-pin/packages`). Those three files build their blocks
- * from LTX's transformer primitives - `rms_norm`, `Attention`, `FeedForward`,
+ * from the upstream's transformer primitives - `rms_norm`, `Attention`, `FeedForward`,
  * the split RoPE and the per-head gate - which is the same machinery the
- * refiner itself needs, so the kernels below are the LTX side's first entry
+ * refiner itself needs, so the kernels below are the text side's first entry
  * points in this file and the refiner will reuse them.
  *
  * Six kernels. The connector's own norms, linears, SDPA, GELU and residual
@@ -1976,7 +1976,7 @@ __global__ static void h3d_register_fill_kernel(__nv_bfloat16 *output,
  * tensor (`:70`) and then `addcmul_`s in float, so each half rounds twice;
  * this keeps that order and takes the float add as the fused multiply-add it
  * compiles to. */
-__device__ static void h3d_ltx_rotate(__nv_bfloat16 *x, size_t base,
+__device__ static void h3d_text_rotate(__nv_bfloat16 *x, size_t base,
                                       uint32_t half, uint32_t d, float c,
                                       float s) {
     const float first = __bfloat162float(x[base + d]);
@@ -1987,7 +1987,7 @@ __device__ static void h3d_ltx_rotate(__nv_bfloat16 *x, size_t base,
     x[base + half + d] = __float2bfloat16(fmaf(s, first, turned_second));
 }
 
-__global__ static void h3d_ltx_rope_kernel(__nv_bfloat16 *query,
+__global__ static void h3d_text_rope_kernel(__nv_bfloat16 *query,
                                            __nv_bfloat16 *key,
                                            const __nv_bfloat16 *cos,
                                            const __nv_bfloat16 *sin,
@@ -2000,8 +2000,8 @@ __global__ static void h3d_ltx_rope_kernel(__nv_bfloat16 *query,
     for (uint32_t d = threadIdx.x; d < half; d += blockDim.x) {
         const float c = __bfloat162float(cos[table + d]);
         const float s = __bfloat162float(sin[table + d]);
-        h3d_ltx_rotate(query, base, half, d, c, s);
-        h3d_ltx_rotate(key, base, half, d, c, s);
+        h3d_text_rotate(query, base, half, d, c, s);
+        h3d_text_rotate(key, base, half, d, c, s);
     }
 }
 
@@ -2135,7 +2135,7 @@ int h3d_register_fill(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("register fill", error, error_size);
 }
 
-int h3d_ltx_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
+int h3d_text_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
                  const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
                  uint32_t heads, uint32_t head_dim, char *error,
                  size_t error_size) {
@@ -2147,14 +2147,14 @@ int h3d_ltx_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
         !h3d_is(key, H3D_BF16, elements) ||
         !h3d_is(cos, H3D_BF16, table_elements) ||
         !h3d_is(sin, H3D_BF16, table_elements)) {
-        return h3d_set_error(error, error_size, "invalid LTX RoPE tensors");
+        return h3d_set_error(error, error_size, "invalid RoPE tensors");
     }
     dim3 grid(rows, heads);
-    h3d_ltx_rope_kernel<<<grid, 256, 0, context->stream>>>(
+    h3d_text_rope_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)query->data, (__nv_bfloat16 *)key->data,
         (const __nv_bfloat16 *)cos->data, (const __nv_bfloat16 *)sin->data,
         rows, heads, head_dim);
-    return h3d_launch_ok("LTX RoPE", error, error_size);
+    return h3d_launch_ok("RoPE", error, error_size);
 }
 
 int h3d_per_head_gate(h3d_context *context, h3d_tensor *output,
@@ -3207,7 +3207,7 @@ __device__ __forceinline__ static uint32_t h3d_mma_pair(float low, float high) {
  * `q.view(b, -1, heads, dim_head).transpose(1, 2)`, SDPA at
  * `1 / sqrt(dim_head)`, then `.transpose(1, 2).reshape(b, -1, heads * dim_head)`.
  * The operands are therefore token-major `(rows, heads, head_dim)`, which is
- * what every LTX caller hands in (`to_q`/`to_k`/`to_v` are plain
+ * what every caller hands in (`to_q`/`to_k`/`to_v` are plain
  * `torch.nn.Linear`s) and the one thing `h3d_sdpa` does not accept: that
  * kernel is the H3 engine's, whose `h3d_qkv_rope` writes query/key/value
  * head-major `[heads][sequence][head_dim]`. The head count is shared; only the
@@ -3219,7 +3219,7 @@ __device__ __forceinline__ static uint32_t h3d_mma_pair(float low, float high) {
  * `HEAD_DIM` is a template parameter for the same reason it is there: 128 for
  * the video half, 64 for the audio half and their cross-attentions. */
 template <uint32_t HEAD_DIM>
-__global__ static void h3d_ltx_attention_kernel(
+__global__ static void h3d_text_attention_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t q_rows, uint32_t kv_rows, uint32_t heads, float scale) {
@@ -3335,7 +3335,7 @@ __global__ static void h3d_ltx_attention_kernel(
     }
 }
 
-int h3d_ltx_attention(h3d_context *context, h3d_tensor *output,
+int h3d_text_attention(h3d_context *context, h3d_tensor *output,
                       const h3d_tensor *query, const h3d_tensor *key,
                       const h3d_tensor *value, uint32_t q_rows,
                       uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
@@ -3350,27 +3350,27 @@ int h3d_ltx_attention(h3d_context *context, h3d_tensor *output,
         !h3d_is(key, H3D_BF16, key_elements) ||
         !h3d_is(value, H3D_BF16, key_elements)) {
         return h3d_set_error(error, error_size,
-                             "invalid LTX attention tensors or shape");
+                             "invalid attention tensors or shape");
     }
     dim3 grid((q_rows + 8 * H3D_ATTENTION_ROWS - 1) /
                       (8 * H3D_ATTENTION_ROWS),
               heads);
     if (head_dim == 64) {
-        h3d_ltx_attention_kernel<64><<<grid, 256, 0, context->stream>>>(
+        h3d_text_attention_kernel<64><<<grid, 256, 0, context->stream>>>(
             (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
             (const __nv_bfloat16 *)key->data,
             (const __nv_bfloat16 *)value->data, q_rows, kv_rows, heads, scale);
-        return h3d_launch_ok("LTX attention 64", error, error_size);
+        return h3d_launch_ok("attention 64", error, error_size);
     }
-    h3d_ltx_attention_kernel<128><<<grid, 256, 0, context->stream>>>(
+    h3d_text_attention_kernel<128><<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
         q_rows, kv_rows, heads, scale);
-    return h3d_launch_ok("LTX attention", error, error_size);
+    return h3d_launch_ok("attention", error, error_size);
 }
 
 /* ---------------------------------------------------------------------------
- * The LTX-2.5 refiner block's elementwise set (`model/transformer/`, the pin
+ * The refiner block's elementwise set (`model/transformer/`, the pin
  * at `/data/ltx2-pin/packages`).
  *
  * Torch computes every BF16 elementwise op in FP32 and rounds once to BF16
@@ -3384,9 +3384,9 @@ int h3d_ltx_attention(h3d_context *context, h3d_tensor *output,
 /* `PytorchPreAttention.__call__` (`ops.py:22-36`) applies `apply_rotary_emb`
  * to the query and to the key with *different* tables when `k_pe` is given
  * (`transformer.py:359-361`, the A2V and V2A cross-attention). The two sides
- * also have different row counts, so this is `h3d_ltx_rope` with the tables
+ * also have different row counts, so this is `h3d_text_rope` with the tables
  * and the row counts split. */
-__global__ static void h3d_ltx_rope_pair_kernel(
+__global__ static void h3d_text_rope_pair_kernel(
         __nv_bfloat16 *query, __nv_bfloat16 *key, const __nv_bfloat16 *q_cos,
         const __nv_bfloat16 *q_sin, const __nv_bfloat16 *k_cos,
         const __nv_bfloat16 *k_sin, uint32_t q_rows, uint32_t k_rows,
@@ -3398,7 +3398,7 @@ __global__ static void h3d_ltx_rope_pair_kernel(
         const size_t base = ((size_t)row * heads + head) * head_dim;
         const size_t table = ((size_t)row * heads + head) * half;
         for (uint32_t d = threadIdx.x; d < half; d += blockDim.x) {
-            h3d_ltx_rotate(query, base, half, d,
+            h3d_text_rotate(query, base, half, d,
                            __bfloat162float(q_cos[table + d]),
                            __bfloat162float(q_sin[table + d]));
         }
@@ -3408,14 +3408,14 @@ __global__ static void h3d_ltx_rope_pair_kernel(
         const size_t base = ((size_t)row * heads + head) * head_dim;
         const size_t table = ((size_t)row * heads + head) * half;
         for (uint32_t d = threadIdx.x; d < half; d += blockDim.x) {
-            h3d_ltx_rotate(key, base, half, d,
+            h3d_text_rotate(key, base, half, d,
                            __bfloat162float(k_cos[table + d]),
                            __bfloat162float(k_sin[table + d]));
         }
     }
 }
 
-int h3d_ltx_rope_pair(h3d_context *context, h3d_tensor *query,
+int h3d_text_rope_pair(h3d_context *context, h3d_tensor *query,
                       h3d_tensor *key, const h3d_tensor *q_cos,
                       const h3d_tensor *q_sin, const h3d_tensor *k_cos,
                       const h3d_tensor *k_sin, uint32_t q_rows, uint32_t k_rows,
@@ -3432,15 +3432,15 @@ int h3d_ltx_rope_pair(h3d_context *context, h3d_tensor *query,
         !h3d_is(key, H3D_BF16, key_elements) ||
         !h3d_is(q_cos, H3D_BF16, q_table) || !h3d_is(q_sin, H3D_BF16, q_table) ||
         !h3d_is(k_cos, H3D_BF16, k_table) || !h3d_is(k_sin, H3D_BF16, k_table)) {
-        return h3d_set_error(error, error_size, "invalid LTX RoPE pair tensors");
+        return h3d_set_error(error, error_size, "invalid RoPE pair tensors");
     }
     dim3 grid(q_rows > k_rows ? q_rows : k_rows, heads);
-    h3d_ltx_rope_pair_kernel<<<grid, 256, 0, context->stream>>>(
+    h3d_text_rope_pair_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)query->data, (__nv_bfloat16 *)key->data,
         (const __nv_bfloat16 *)q_cos->data, (const __nv_bfloat16 *)q_sin->data,
         (const __nv_bfloat16 *)k_cos->data, (const __nv_bfloat16 *)k_sin->data,
         q_rows, k_rows, heads, head_dim);
-    return h3d_launch_ok("LTX RoPE pair", error, error_size);
+    return h3d_launch_ok("RoPE pair", error, error_size);
 }
 
 /* `BasicAVTransformerBlock.get_ada_values` (`transformer.py:190-200`): the
@@ -3484,7 +3484,7 @@ int h3d_ada_add(h3d_context *context, h3d_tensor *output,
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)table->data,
         (const __nv_bfloat16 *)modulation->data, rows, width, coefficient,
         table_row, value_row);
-    return h3d_launch_ok("LTX AdaLN add", error, error_size);
+    return h3d_launch_ok("AdaLN add", error, error_size);
 }
 
 /* `apply_cross_attention_adaln` (`transformer.py:446`) and
@@ -3630,7 +3630,7 @@ int h3d_ada_zero(h3d_context *context, h3d_tensor *output,
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
         (const __nv_bfloat16 *)scale->data, (const __nv_bfloat16 *)shift->data,
         rows, width, scale_rows, epsilon);
-    return h3d_launch_ok("LTX AdaLN zero", error, error_size);
+    return h3d_launch_ok("AdaLN zero", error, error_size);
 }
 
 /* `torch.nn.LayerNorm(..., elementwise_affine=False, eps=1e-6)`
@@ -4351,7 +4351,7 @@ __global__ static void h3d_attention_mma_kernel(
  * (`[tokens, heads, dim]`), and it is the same kernel otherwise: the same
  * 16-row query tile per warp, the same 64-key staging, the same online softmax
  * and the same `mma` fragments. Only the three input indices and the two
- * extents change, because the LTX refiner's operands are strided by
+ * extents change, because the the refiner refiner's operands are strided by
  * `heads * H3D_MMA_HD` between rows while the H3 tower's are contiguous within
  * a head. The **output was already token-major** in the head-major kernel
  * (`output[((row * heads) + head) * dim]`), which is why this is a port of the
@@ -4363,11 +4363,11 @@ __global__ static void h3d_attention_mma_kernel(
  * those two on the scalar kernel, which this one does not serve.
  *
  * Arithmetic: BF16 tensor-core products with F32 accumulation and a natural-log
- * online softmax, so it is **not** bit-identical to `h3d_ltx_attention_kernel`'s
- * row-wise FMA walk. It is a separate arm for that reason (`H3_LTX_ATTN_MMA`),
- * and the numbers it moves are the ones `h3_ltx_refiner_gate --compare` reports
+ * online softmax, so it is **not** bit-identical to `h3d_text_attention_kernel`'s
+ * row-wise FMA walk. It is a separate arm for that reason (`H3_ATTN_MMA`),
+ * and the numbers it moves are the ones `h3_the refiner module_gate --compare` reports
  * as `rel_rms`, not the bit gate. */
-__global__ static void h3d_ltx_attention_mma_kernel(
+__global__ static void h3d_text_attention_mma_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t q_rows, uint32_t kv_rows, uint32_t heads, float scale) {
@@ -4567,11 +4567,11 @@ __global__ static void h3d_ltx_attention_mma_kernel(
 }
 
 /* The refiner's dense attention, tensor-core arm. Same validation as
- * `h3d_ltx_attention` (`:3338`) so an arm only ever changes the arithmetic, plus
+ * `h3d_text_attention` (`:3338`) so an arm only ever changes the arithmetic, plus
  * the one restriction the kernel carries: head dimension 128, because the
  * fragments are built for `H3D_MMA_HD` and A2V/V2A are 64. Those two stay on
  * the scalar kernel, which is 4.1 % of a block. */
-int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
+int h3d_text_attention_mma(h3d_context *context, h3d_tensor *output,
                           const h3d_tensor *query, const h3d_tensor *key,
                           const h3d_tensor *value, uint32_t q_rows,
                           uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
@@ -4585,15 +4585,15 @@ int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
         !h3d_is(key, H3D_BF16, key_elements) ||
         !h3d_is(value, H3D_BF16, key_elements)) {
         return h3d_set_error(error, error_size,
-                             "invalid LTX attention (mma) tensors or shape");
+                             "invalid attention (mma) tensors or shape");
     }
     dim3 grid((q_rows + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
-    h3d_ltx_attention_mma_kernel<<<grid, H3D_MMA_WARPS * 32u, 0,
+    h3d_text_attention_mma_kernel<<<grid, H3D_MMA_WARPS * 32u, 0,
                                    context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
         q_rows, kv_rows, heads, scale);
-    return h3d_launch_ok("LTX attention (mma)", error, error_size);
+    return h3d_launch_ok("attention (mma)", error, error_size);
 }
 
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
@@ -6802,7 +6802,7 @@ int h3d_sol_search(h3d_context *context, const struct h3d_sol_plan *plan,
 }
 
 /* VSA's selection: the rule the reference's H3 stage runs, against Sol-Attn's
- * tau threshold above, which is its LTX refiner's. Read from the FastVideo
+ * tau threshold above, which is its the refiner refiner's. Read from the FastVideo
  * module the reference hashes and refuses to run without
  * (`fastvideo/attention/backends/video_sparse_attn_h3.py`, sha256
  * `b7c6d4e4...dc0fab9` = the pinned `VSA_SOURCE_SHA`):
@@ -7064,9 +7064,9 @@ __device__ __forceinline__ static void h3d_sol_stage(
 }
 
 /* `h3d_sol_stage` for a token-major `[rows][heads][128]` source, the refiner's
- * layout (`h3d_sol_ltx_pool_kernel`'s read). The only difference is the index:
+ * layout (`h3d_sol_pool_kernel`'s read). The only difference is the index:
  * the head is the stride's inner term here, not its outer one. */
-__device__ __forceinline__ static void h3d_sol_ltx_stage(
+__device__ __forceinline__ static void h3d_sol_stage(
         __nv_bfloat16 (*tile)[H3D_MMA_LD], const __nv_bfloat16 *source,
         uint32_t head, uint32_t heads, uint32_t rows, uint32_t first,
         uint32_t count, uint32_t stride, uint32_t thread) {
@@ -7449,7 +7449,7 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
 }
 
 /* -------------------------------------------------------------------------
- * The LTX-2.5 refiner's Sol-Attn, token-major.
+ * The refiner's Sol-Attn, token-major.
  *
  * The rule is the one above, unchanged: the released kernel's `diag` tau
  * policy (`sol_attn/preprocess.py:280-322`, `sol_attn/triton_ref/fwd.py:40-173`),
@@ -7457,7 +7457,7 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
  * (`Sol-H3-Spark/runtime/stage2_ops/models.py:100-103`,
  * `_actual_sol_backend() != "triton"` raised).
  * What changes is the layout: the refiner's attention is `[rows][heads][128]`
- * (`ltx_refiner.rs`'s `Attention::run`), and a head-major kernel would need a
+ * (`the refiner module.rs`'s `Attention::run`), and a head-major kernel would need a
  * transpose of every operand per layer - 47 layers of 16,128x32x128 BF16, more
  * traffic than the attention it feeds. So the pooling, the query centroid and
  * the forward are re-expressed row-major, and the two layout-agnostic steps
@@ -7465,7 +7465,7 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
  * `query_bar`) are reused verbatim.
  *
  * The forward is the same walk as `h3d_sol_forward_kernel`, in the shape of
- * `h3d_ltx_attention_kernel`: one CTA per (16-row query tile, head), one warp
+ * `h3d_text_attention_kernel`: one CTA per (16-row query tile, head), one warp
  * per H3D_ATTENTION_ROWS rows, each row's 128-wide dot split over the warp's
  * lanes. Per 64-token KV block: an exact block walks its keys, an approximated
  * one is folded from `kc`/`vc` in a single step - `denominator += w * length`
@@ -7474,19 +7474,19 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
  * `output += w @ vc` with `row_sum += w * length`
  * (`sol_attn/triton_ref/fwd.py:121-130`). The block decision
  * is the plan's mask: the diagonal band and the sink were written into it by
- * `h3d_sol_ltx_search`, so this kernel reads `kc`, `vc` and `mask` and adds no
+ * `h3d_sol_search`, so this kernel reads `kc`, `vc` and `mask` and adds no
  * policy of its own.
  *
  * Deviations, named: row-major against the reference's `[B,T,H,D]` (the same
  * numbers, indexed differently); natural-log softmax where `fwd.py` tracks the
  * maximum in log2 units, the port's dense kernel's own units, so a tau that
- * forces every block exact reproduces `h3d_ltx_attention`'s arithmetic; the
+ * forces every block exact reproduces `h3d_text_attention`'s arithmetic; the
  * accumulation orders the port fixes where Triton's are not reproducible here.
  * Sol-Attn requires head dimension 128 (`interface.py:29-30`), which the
  * refiner's video self-attention has (32 heads x 128).
  * ------------------------------------------------------------------------- */
 
-__global__ static void h3d_sol_ltx_pool_kernel(
+__global__ static void h3d_tok_pool_kernel(
         __nv_bfloat16 *kc, __nv_bfloat16 *vc, const __nv_bfloat16 *key,
         const __nv_bfloat16 *value, uint32_t sequence, uint32_t heads,
         uint32_t blocks) {
@@ -7516,8 +7516,8 @@ __global__ static void h3d_sol_ltx_pool_kernel(
 }
 
 /* The query centroid and the routing threshold, token-major. Identical to
- * `h3d_sol_threshold_kernel` but for the read index. */
-__global__ static void h3d_sol_ltx_threshold_kernel(
+ * `h3d_tok_threshold_kernel` but for the read index. */
+__global__ static void h3d_tok_threshold_kernel(
         float *threshold, float *query_bar, const float *kc_mean,
         const float *kc_var, const __nv_bfloat16 *query, uint32_t sequence,
         uint32_t heads, float scale, float tau) {
@@ -7563,7 +7563,7 @@ __global__ static void h3d_sol_ltx_threshold_kernel(
     threshold[(size_t)q_block * heads + head] = mean * log2_scale + tau * std;
 }
 
-__global__ static void h3d_sol_ltx_forward_kernel(
+__global__ static void h3d_tok_forward_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         const __nv_bfloat16 *kc, const __nv_bfloat16 *vc,
@@ -7754,7 +7754,7 @@ __global__ static void h3d_sol_ltx_forward_kernel(
  * (`sol_attention.py:3-4`, `attn1`), so `sink_start`/`sink_tokens` are the
  * empty range `[blocks, blocks)` and no block is forced exact beyond the
  * diagonal band the route kernel adds itself. */
-int h3d_sol_ltx_search(h3d_context *context, const struct h3d_sol_plan *plan,
+int h3d_tok_search(h3d_context *context, const struct h3d_sol_plan *plan,
                        const h3d_tensor *query, const h3d_tensor *key,
                        const h3d_tensor *value, uint32_t sequence,
                        uint32_t heads, float scale, float tau, char *error,
@@ -7775,23 +7775,23 @@ int h3d_sol_ltx_search(h3d_context *context, const struct h3d_sol_plan *plan,
     const uint32_t blocks = (sequence + H3D_SOL_BLOCK - 1) / H3D_SOL_BLOCK;
     const uint32_t words = h3d_sol_words(sequence);
     dim3 pool_grid(blocks, heads);
-    h3d_sol_ltx_pool_kernel<<<pool_grid, H3D_SOL_THREADS, 0, context->stream>>>(
+    h3d_tok_pool_kernel<<<pool_grid, H3D_SOL_THREADS, 0, context->stream>>>(
         (__nv_bfloat16 *)plan->kc->data, (__nv_bfloat16 *)plan->vc->data,
         (const __nv_bfloat16 *)key->data,
         (const __nv_bfloat16 *)value->data, sequence, heads, blocks);
-    if (!h3d_launch_ok("Sol-Attn LTX pool", error, error_size)) return 0;
+    if (!h3d_launch_ok("Sol-Attn the refiner pool", error, error_size)) return 0;
     h3d_sol_stats_kernel<<<heads, H3D_SOL_THREADS, 0, context->stream>>>(
         (float *)plan->kc_mean->data, (float *)plan->kc_var->data,
         (const __nv_bfloat16 *)plan->kc->data, blocks);
-    if (!h3d_launch_ok("Sol-Attn LTX statistics", error, error_size)) return 0;
+    if (!h3d_launch_ok("Sol-Attn the refiner statistics", error, error_size)) return 0;
     dim3 threshold_grid(blocks, heads);
-    h3d_sol_ltx_threshold_kernel<<<threshold_grid, H3D_SOL_WARP, 0,
+    h3d_tok_threshold_kernel<<<threshold_grid, H3D_SOL_WARP, 0,
                                    context->stream>>>(
         (float *)plan->threshold->data, (float *)plan->query_bar->data,
         (const float *)plan->kc_mean->data,
         (const float *)plan->kc_var->data,
         (const __nv_bfloat16 *)query->data, sequence, heads, scale, tau);
-    if (!h3d_launch_ok("Sol-Attn LTX threshold", error, error_size)) return 0;
+    if (!h3d_launch_ok("Sol-Attn the refiner threshold", error, error_size)) return 0;
     dim3 route_grid((blocks + H3D_SOL_QM - 1) / H3D_SOL_QM, heads);
     h3d_sol_route_kernel<<<route_grid, H3D_SOL_WARP, 0, context->stream>>>(
         (uint32_t *)plan->mask->data, (uint32_t *)plan->count->data,
@@ -7799,10 +7799,10 @@ int h3d_sol_ltx_search(h3d_context *context, const struct h3d_sol_plan *plan,
         (const float *)plan->query_bar->data,
         (const float *)plan->threshold->data, heads, blocks, words,
         scale, blocks, blocks);
-    return h3d_launch_ok("Sol-Attn LTX route", error, error_size);
+    return h3d_launch_ok("Sol-Attn the refiner route", error, error_size);
 }
 
-int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
+int h3d_tok_forward(h3d_context *context, h3d_tensor *output,
                         const struct h3d_sol_plan *plan, const h3d_tensor *query,
                         const h3d_tensor *key, const h3d_tensor *value,
                         uint32_t sequence, uint32_t heads, float scale,
@@ -7825,7 +7825,7 @@ int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
     enum { QUERIES = 8 * H3D_ATTENTION_ROWS };
     const uint32_t blocks = (sequence + H3D_SOL_BLOCK - 1) / H3D_SOL_BLOCK;
     dim3 grid((sequence + QUERIES - 1) / QUERIES, heads);
-    h3d_sol_ltx_forward_kernel<<<grid, 256, 0, context->stream>>>(
+    h3d_tok_forward_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data,
         (const __nv_bfloat16 *)value->data,
@@ -7833,20 +7833,20 @@ int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
         (const __nv_bfloat16 *)plan->vc->data,
         (const uint32_t *)plan->mask->data, sequence, sequence, heads, blocks,
         h3d_sol_words(sequence), scale);
-    return h3d_launch_ok("Sol-Attn LTX forward", error, error_size);
+    return h3d_launch_ok("Sol-Attn the refiner forward", error, error_size);
 }
 
 /* -------------------------------------------------------------------------
  * The same sparse forward on the tensor cores, token-major.
  *
- * A port, not a second algorithm. The walk is `h3d_sol_forward_kernel`'s word
+ * A port, not a second algorithm. The walk is `h3d_tok_forward_kernel`'s word
  * for word - one CTA per 64-row query block and head, one warp per 16 of those
  * rows, a mask word's GROUP of 32 KV blocks folded in a single `P @ vc` pass,
  * then that group's exact blocks walked in increasing block order - with the
  * two head-major read indices re-expressed for `[rows][heads][128]`, which is
- * `h3d_ltx_attention_mma_kernel`'s change exactly. Nothing else moves: the
+ * `h3d_text_attention_mma_kernel`'s change exactly. Nothing else moves: the
  * block mean `kc` and block sum `vc` are already `[head][block][128]`
- * (`h3d_sol_ltx_pool_kernel`), the mask is already `[q_block][head][word]`,
+ * (`h3d_tok_pool_kernel`), the mask is already `[q_block][head][word]`,
  * and the output write is already token-major, so the whole plan is read as
  * the scalar port left it.
  *
@@ -7863,7 +7863,7 @@ int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
  * ------------------------------------------------------------------------- */
 
 __global__ static void __launch_bounds__(H3D_SOLF_WARPS * 32u, 3)
-h3d_sol_ltx_forward_mma_kernel(
+h3d_tok_forward_mma_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         const __nv_bfloat16 *kc, const __nv_bfloat16 *vc,
@@ -8058,9 +8058,9 @@ h3d_sol_ltx_forward_mma_kernel(
             }
             const uint32_t kv_first = (group_start + offset) * H3D_SOL_BLOCK;
             __syncthreads();
-            h3d_sol_ltx_stage(shared_left, key, head, heads, sequence, kv_first,
+            h3d_sol_stage(shared_left, key, head, heads, sequence, kv_first,
                               H3D_SOL_BLOCK, H3D_SOLF_WARPS * 32u, threadIdx.x);
-            h3d_sol_ltx_stage(shared_right, value, head, heads, sequence,
+            h3d_sol_stage(shared_right, value, head, heads, sequence,
                               kv_first, H3D_SOL_BLOCK, H3D_SOLF_WARPS * 32u,
                               threadIdx.x);
             __syncthreads();
@@ -8185,7 +8185,7 @@ h3d_sol_ltx_forward_mma_kernel(
     }
 }
 
-int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
+int h3d_tok_forward_mma(h3d_context *context, h3d_tensor *output,
                             const struct h3d_sol_plan *plan,
                             const h3d_tensor *query, const h3d_tensor *key,
                             const h3d_tensor *value, uint32_t sequence,
@@ -8208,7 +8208,7 @@ int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
     }
     const uint32_t blocks = (sequence + H3D_SOL_BLOCK - 1) / H3D_SOL_BLOCK;
     dim3 grid(blocks, heads);
-    h3d_sol_ltx_forward_mma_kernel<<<grid, H3D_SOLF_WARPS * 32u, 0,
+    h3d_tok_forward_mma_kernel<<<grid, H3D_SOLF_WARPS * 32u, 0,
                                      context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data,
@@ -8217,14 +8217,14 @@ int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
         (const __nv_bfloat16 *)plan->vc->data,
         (const uint32_t *)plan->mask->data, sequence, heads, blocks,
         h3d_sol_words(sequence), scale);
-    return h3d_launch_ok("Sol-Attn LTX forward (mma)", error, error_size);
+    return h3d_launch_ok("Sol-Attn the refiner forward (mma)", error, error_size);
 }
 
 /* ==========================================================================
- * h3b_* — the H3-to-LTX latent path's device ops.
+ * h3b_* — the H3 latent resizer path's device ops.
  *
  * Source of truth: `runtime/stage2_ops/h3_upscale.py` (the pinned author node
- * wrapped) and `runtime/stage2_ops/h3_ltx_adapter/{constants,geometry,model}.
+ * wrapped) and `runtime/stage2_ops/h3_the latent resizer/{constants,geometry,model}.
  * py`, against the architecture the node itself declares
  * (`nodes/minimax_h3_latent_upscaler_3d.py` at `d7c01b90`). Both models run
  * here; nothing in this section evaluates Python or calls out of process.
@@ -8906,12 +8906,12 @@ static int h3b_gemm_rows(h3d_context *context, float *out, const void *a,
  * only which of the two answers is used — and stays `NULL` otherwise. */
 /* Whether the planar matmul asks the heuristic for an algorithm. Measured on
  * the released shapes: the heuristic returns the same kernel the library picks
- * by itself (`H3_LTX_GEMM_ALGO=heuristic` reproduces the mix exactly), so the
+ * by itself (`H3_GEMM_ALGO=heuristic` reproduces the mix exactly), so the
  * explicit per-call query is off unless asked for. */
 static int h3b_gemm_query(void) {
     static int enabled = -1;
     if (enabled < 0) {
-        const char *setting = getenv("H3_LTX_GEMM_ALGO");
+        const char *setting = getenv("H3_GEMM_ALGO");
         enabled = setting && strcmp(setting, "heuristic") == 0;
     }
     return enabled;
@@ -9761,9 +9761,9 @@ int h3b_copy_offset(h3d_context *context, h3d_tensor *output,
 }
 
 /* ------------------------------------------------------------------------
- * h3v_* — the LTX-2.5 video VAE decoder (`minimax_h3::ltx_vae`).
+ * h3v_* — the the refiner video VAE decoder (`minimax_h3::the video VAE`).
  *
- * The release decodes the refiner's latent with LTX's own ConvVideoDecoder
+ * The release decodes the refiner's latent with the upstream ConvVideoDecoder
  * (`ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py`, read at
  * `/data/ltx2-pin/packages`, pin d1511477 = tag v1.2.0). Its convolutions are
  * the h3b planar path above with the artifact's own padding: 3x3x3, stride 1,
@@ -10056,7 +10056,7 @@ int h3v_to_rgb(h3d_context *context, h3d_tensor *output, const h3d_tensor *input
 }
 
 /* ------------------------------------------------------------------------
- * h3a_* — the LTX-2.5 audio VAE encoder (`minimax_h3::ltx_audio_vae`).
+ * h3a_* — the the refiner audio VAE encoder (`the audio VAE module`).
  *
  * Source of truth: `/data/ltx2-pin/packages/ltx-core`, pin d1511477 = tag
  * v1.2.0, `model/audio_vae/`. The graph is `audio_vae.py:172-247` and its two

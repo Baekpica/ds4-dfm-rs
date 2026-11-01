@@ -1930,7 +1930,7 @@ static void sol_forward_rejects_bad_args(h3d_context *gpu) {
 
 /* ---------------------------------------------------------------------------
  * VSA, the rule the reference's H3 stage itself runs (the tau threshold above
- * is its LTX refiner's). Read from the pinned FastVideo module:
+ * is its the refiner refiner's). Read from the pinned FastVideo module:
  *   video_sparse_attn_h3.py:380-383   tile summary = the tile MEAN, F32
  *   video_sparse_attn_h3.py:629       scores = q_pool @ k_pool^T / sqrt(head_dim)
  *   video_sparse_attn.py:161-163      k_vid = max(1, min(ceil((1-s)*tiles), tiles))

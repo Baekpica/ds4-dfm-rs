@@ -8,13 +8,13 @@ unit is gated. It states no math that was not read first-hand this session.
 
 ## 1. Scope, and what this port does and does not buy
 
-The refiner is conditioned on Gemma-4-12B features, post-connector. The release
+The transformer is conditioned on Gemma-4-12B features, post-connector. The release
 computes them once offline and serves two bf16 tensors
 (`runtime/prompt_cache.py:37`, `CONTEXT_SHAPES` = video `(1,1024,4096)`, audio
 `(1,1024,2048)`); at request time neither Gemma nor the connector is loaded
 (`runtime/prompt_cache.py:100-113`, `stage2_gemma_loaded`/`gemma_encode_calls` 0).
 Porting the encoder therefore buys **a Python-free build of the conditioning**,
-and per-request refiner prompts if we want them later. It does not change any
+and per-request prompts if we want them later. It does not change any
 request-time figure, and the encoder cannot be resident: measured below, its
 weights are 14.32 GiB against the release's 2.8 GiB of free pool
 (`configs/default.json` recipe; the release page records 116.9 GiB resident of
@@ -23,7 +23,7 @@ weights are 14.32 GiB against the release's 2.8 GiB of free pool
 ## 2. The artifact, measured
 
 File (recipe file, `runtime/prompt_cache.py:18-19` pins name and bytes):
-`gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors`,
+the released Gemma-4-12B INT8 convrot shard,
 15,372,969,374 B, sha256 `6ce688a0aa98a5fa36a9f1e6c3f42152a498cc2b53ee8c15674c64244f91487f`,
 now at `/mnt/h3-artifacts/Gemma4/` on the Spark (hashed on this workstation
 before the move). A bf16 sibling (26,263,858,182 B) sits beside it; the recipe
@@ -49,7 +49,7 @@ Contents (safetensors header, read over gvfs):
   `post_feedforward_layernorm`), all BF16 [3840]. Config from the file's own
   `__metadata__["gemma_config"]`
   (`architectures: ["Gemma4UnifiedForConditionalGeneration"]`, `model_type`
-  `gemma4_unified`, `gemma_version` `gemma4-12b-ltx-v1`).
+  `gemma4_unified`, `gemma_version` `gemma4-12b-…-v1`).
 - Caption projection: `text_embedding_projection.video_aggregate_embed.weight`
   [4096, 188160] and `...audio_aggregate_embed.weight` [2048, 188160], BF16 with
   biases; 188160 = 49 x 3840.
@@ -85,26 +85,26 @@ That is the handle for gating our port on hardware without the extension.
   `torch._int_mm` = cuBLASLt; zero-padded on M/K/N to the required alignments).
 - **Epilogue** (`:965-1035`): `result.float() * (x_scale_row * weight_scale_col)`
   in fp32 chunks, cast to `out_dtype` (bf16), then add bias in that dtype.
-- The LTX call site is `runtime/cache_ops/int8_policy.py:97-104`:
+- The call site is `runtime/cache_ops/int8_policy.py:97-104`:
   `torch.ops.comfy_kitchen.int8_linear(value, weight, weight_scale, bias,
   out_dtype_code, convrot=True, convrot_groupsize, None)`, wrapped by
   `DevInt8ConvRotLinear` (`:58-107`), whose weights are I8 `[out, in]` with a
   per-row F32 scale and an optional bias.
 
-## 4. The LTX driver chain the port must reproduce
+## 4. The driver chain the port must reproduce
 
-`packages/ltx-core/src/ltx_core/text_encoders/gemma/`:
+The release's `text_encoders/gemma/` package:
 
 | Step | File | What the port must mirror |
 |---|---|---|
-| Entry | `encoders/base_encoder.py:30-72` | `LTXGemmaTextEncoder.encode(prompts)` returns `[(hidden_states, mask)]`; system-prompt and generation defaults at `:76-92`, `:170-190` |
+| Entry | `encoders/base_encoder.py:30-72` | the encoder's `encode(prompts)` returns `[(hidden_states, mask)]`; system-prompt and generation defaults at `:76-92`, `:170-190` |
 | Assets | `gemma_assets.py:59-153`, `:230-292` | the embedded sidecars become an HF config, tokenizer and processor; `resolve_gemma_weight_paths` |
 | Weights | `encoders/encoder_configurator.py:231-481` | key ops for gemma3 / gemma4-unified / gemma4-dense, rotary buffers, model construction |
 | Tokenizer | `tokenizer.py:11-63` | `tokenize_with_weights` — the second element is the attention mask, not a per-token weight (`base_encoder.py:56-66`) |
 | Features | `feature_extractor.py:12-128` | `norm_and_concat_per_token_rms`, `_rescale_norm`, `FeatureExtractorV1/V2` with the aggregate embed |
 | Connector | `embeddings_connector.py:15-256` | eight `_BasicTransformerBlock1D`, `_replace_padded_with_learnable_registers`, the AV wiring |
 | Processor | `embeddings_processor.py:10-117` | `process_hidden_states`, `convert_to_additive_mask`, right-pad ordering, binary mask |
-| Consumer | `runtime/prompt_cache.py:24-70` | the payload contract the refiner validates |
+| Consumer | `runtime/prompt_cache.py:24-70` | the payload contract the cache validates |
 
 ## 5. Units, each with its gate
 
@@ -123,13 +123,13 @@ That is the handle for gating our port on hardware without the extension.
    eight 1D blocks, learnable registers. Gate: the two contexts against the
    pinned `process_hidden_states` output.
 5. **The cache payload**: emit and load the two contexts in the contract's shape
-   and dtype so the refiner path in `crates/ds4-core/src/minimax_h3/` can consume
+   and dtype so the path in `crates/ds4-core/src/minimax_h3/` can consume
    them; gate on `validate_payload`'s rules (`prompt_cache.py:44-70`).
 
 ## 6. Open items and risks
 
 - **The int8 connector file is absent**: the connector's INT8 weights live only in
-  `ltx-2.5-22b-dev-transformer-comfy-int8-convrot.safetensors`,
+  the INT8 convrot transformer shard (`…-transformer-comfy-int8-convrot.safetensors`),
   21,504,034,224 B (not on either host, searched this session). Unit 4 can be
   gated on the BF16 connector weights we do have; that is a named deviation, not
   the recipe, and the delivered cache must come from the recipe's INT8 weights.
@@ -146,8 +146,8 @@ That is the handle for gating our port on hardware without the extension.
   per-token statistics (`feature_extractor.py:30-66`), so a tokenizer that
   disagrees on where the real tokens end produces a plausible but wrong context.
   Corrected 2026-10-29: the pair is `(id, mask)`, not `(id, weight)`.
-- **Numeric contract**: the refiner block gate and this port gate are both
-  against pinned Python, not against bit identity; the int8 kernel itself can be
+- **Numeric contract**: this port's gate is against pinned Python, not against
+  bit identity; the int8 kernel itself can be
   held to bit equality with the eager reference because it is deterministic.
 
 ## 7. Reproduction
@@ -155,7 +155,7 @@ That is the handle for gating our port on hardware without the extension.
 Header and blob reads: a 20-line Python reader over the gvfs mount (the pattern
 used throughout this session) — 8-byte little-endian header length, JSON header,
 `data_offsets` relative to `8 + header_length`. Reference sources:
-`/data/ltx2-pin/packages/ltx-core/src/ltx_core/text_encoders/gemma/` and the
+the pinned release's `text_encoders/gemma/` package and the
 comfy-kitchen wheel unpacked from
 `python3 -m pip download comfy-kitchen==0.2.26 --no-deps -d <dir>` (both
 `manylinux_2_28_aarch64` and `manylinux_2_28_x86_64` exist).

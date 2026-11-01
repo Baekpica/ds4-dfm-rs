@@ -25,7 +25,7 @@ use std::process::ExitCode;
 use ds4_core::minimax_h3::media::{
     probe_visual_size, read_audio_f32, read_image_f32, read_video_f32, Fit,
 };
-use ds4_core::minimax_h3::render::{mux_mp4, RgbFrames};
+use ds4_core::minimax_h3::render::{mux_mp4, Encode, RgbFrames};
 
 const WIDTH: u32 = 32;
 const HEIGHT: u32 = 32;
@@ -66,6 +66,7 @@ fn run(path: &Path) -> Result<u64, String> {
         SAMPLES as i32,
         CHANNELS as i32,
         SAMPLE_RATE as i32,
+        Encode::default(),
     )?;
 
     let bytes = std::fs::metadata(path)

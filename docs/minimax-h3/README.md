@@ -10,6 +10,12 @@ The runtime reads the released BF16 safetensors. FL2VA supplies text-to-video
 and first/last-frame conditioning. Ref2VA supplies ordered image, video and
 audio references. There is no H3 GGUF or VQ loader.
 
+One process does the whole job: `h3-rs` encodes the prompt, the DiT denoises
+the latent at the requested canvas, the H3 video VAE decodes it, the H3 audio
+VAE decodes the soundtrack and FFmpeg muxes the MP4. Nothing upscales,
+re-renders or re-decodes the result afterwards, so the delivered clip is the
+model's own generation at the canvas the request names.
+
 ## Build and run
 
 Linux CUDA, the repository's Rust toolchain, FFmpeg and FFprobe are required.
@@ -99,13 +105,7 @@ The model's license is included in the downloaded repository.
 - [Reference probes and media comparison](../../tools/minimax_h3/README.md)
 - [GB10 maintainer validation, 2026-10-26](validation-2026-10-26.md)
 - [Speed baseline against h3.c, 2026-10-27](speed-2026-10-27.md)
-- [The Sol-H3-Spark pipeline: what it takes to run it here, 2026-10-28](ltx-sol-pipeline-plan-2026-10-28.md)
-- [The LTX-2.5 reference, its latent path and its cost model, 2026-10-28](ltx-reference-map-2026-10-28.md)
 - [The Gemma4 encoder and the AV connector: port map and numeric reference, 2026-10-29](gemma-connector-port-plan-2026-10-29.md)
-- [The LTX-2.5 refiner read at the pin the release runs, 2026-10-29](ltx-refiner-2026-10-29.md)
-- [The refiner's sparse attention: Sol-Attn, read at its source, 2026-10-29](ltx-sol-attn-2026-10-29.md)
-- [The latent path, ported and gated, 2026-10-29](latent-path-2026-10-29.md)
-- [The im2col-free convolution: 1.73x on the latent path, 2026-10-29](planar-conv-2026-10-29.md)
 - [The DiT's elementwise pair: a staged layout, bit for bit, 2026-10-29](dit-elementwise-2026-10-29.md)
 - [The projections' true shapes, the gap that was bookkeeping, and FP8 re-priced, 2026-10-29](dit-gemm-shape-2026-10-29.md)
 - [The projections in FP8, and the in-model gap, 2026-10-29](fp8-projections-2026-10-29.md)
@@ -119,8 +119,6 @@ The model's license is included in the downloaded repository.
 - [The server's steady state, 2026-10-28](steady-state-2026-10-28.md)
 - [The video VAE decoder's bench options, 2026-10-28](vae-options-2026-10-28.md)
 - [The reference's NVFP4-AWQ prompt encoder, 2026-10-28](nvfp4-encoder-2026-10-28.md)
-- [Sol-H3-Spark recon, 2026-10-28](sol-h3-spark-recon-2026-10-28.md)
-- [Sol-Attn's search step, 2026-10-28](sol-search-step-2026-10-28.md)
 - [The product route in one process: a job list on the resident engine, 2026-10-31](resident-product-2026-10-31.md)
 
 Model-free checks include H3 core and server unit tests, the portable

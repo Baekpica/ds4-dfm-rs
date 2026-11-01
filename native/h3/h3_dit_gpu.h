@@ -191,7 +191,7 @@ int h3d_fp8_scale_epilogue(h3d_context *context, h3d_tensor *output,
 /* ---- the release's INT8 convrot route, for the Gemma4 encoder ----
  *
  * The conditioning this port has to build offline is Gemma-4-12B features
- * through the LTX connector, and the release serves both quantized with Comfy's
+ * through the the refiner connector, and the release serves both quantized with Comfy's
  * `int8_tensorwise` + `convrot` layout (`runtime/cache_ops/int8_policy.py:97-104`,
  * `DevInt8ConvRotLinear`). The reference arithmetic is `comfy-kitchen` 0.2.26
  * (`/data/refs/comfy-kitchen-v0.2.26`): a normalized regular Hadamard rotation
@@ -313,7 +313,7 @@ int h3d_gelu_tanh(h3d_context *context, h3d_tensor *output,
                   size_t error_size);
 
 /* The MLP's `act_fn(gate_proj(x)) * up_proj(x)` (`:1089`): one BF16 product in
- * float with one rounding. The LTX path's `h3b_gate_mul` carries a SiLU gate,
+ * float with one rounding. The the refiner path's `h3b_gate_mul` carries a SiLU gate,
  * so this is its own op. */
 int h3d_mul(h3d_context *context, h3d_tensor *output, const h3d_tensor *left,
             const h3d_tensor *right, size_t elements, char *error,
@@ -392,9 +392,9 @@ int h3d_gemma_attention(h3d_context *context, h3d_tensor *output,
                         uint32_t head_dim, float scale, char *error,
                         size_t error_size);
 
-/* ---- the LTX AV connector and its feature extractor ----
+/* ---- the AV connector and its feature extractor ----
  *
- * Gemma-4-12B hidden states reach the refiner through LTX's own 1D connector
+ * Gemma-4-12B hidden states reach the refiner through the upstream 1D connector
  * (`ltx-core/src/ltx_core/text_encoders/gemma/{feature_extractor,
  * embeddings_connector,embeddings_processor}.py`, read at
  * `/data/ltx2-pin/packages`). Its norms, linears, SDPA, GELU and residual adds
@@ -452,7 +452,7 @@ int h3d_register_fill(h3d_context *context, h3d_tensor *output,
 /* `apply_split_rotary_emb` (`rope.py:42-85`) in place on head-major Q and K,
  * with `cos`/`sin` the BF16 `[rows, heads, head_dim / 2]` tables
  * (`split_freqs_cis` `:163-184`). */
-int h3d_ltx_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
+int h3d_text_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
                  const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
                  uint32_t heads, uint32_t head_dim, char *error,
                  size_t error_size);
@@ -576,8 +576,8 @@ int h3d_qkv_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
  * one block per (head, 8 rows), head-major input, row-major output. `head_dim`
  * is 128 (the video VAE's width) or 64 (the AV connector's audio half); the
  * tiled kernel is templated on it. The head-major operands are the H3 engine's
- * convention and `h3d_qkv_rope` is what writes them; an LTX caller must use
- * `h3d_ltx_attention` instead (2026-10-30). */
+ * convention and `h3d_qkv_rope` is what writes them; an caller must use
+ * `h3d_text_attention` instead (2026-10-30). */
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
              const h3d_tensor *query, const h3d_tensor *key,
              const h3d_tensor *value, uint32_t sequence, uint32_t heads,
@@ -588,26 +588,26 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
  * `1 / sqrt(head_dim)`, with the query and key row counts independent - which
  * the AV cross-attention needs (16,128 video queries, 126 audio keys).
  * `h3d_sdpa` is the H3 engine's convention (head-major operands, written by
- * `h3d_qkv_rope`); this is the one the LTX blocks read. */
-int h3d_ltx_attention(h3d_context *context, h3d_tensor *output,
+ * `h3d_qkv_rope`); this is the one the the refiner blocks read. */
+int h3d_text_attention(h3d_context *context, h3d_tensor *output,
                       const h3d_tensor *query, const h3d_tensor *key,
                       const h3d_tensor *value, uint32_t q_rows,
                       uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
                       float scale, char *error, size_t error_size);
 
-/* The same attention with tensor-core arithmetic (`h3d_ltx_attention_mma_kernel`,
+/* The same attention with tensor-core arithmetic (`h3d_text_attention_mma_kernel`,
  * a token-major port of the tower's MMA kernel). Head dimension 128 only, so
  * the video self- and text cross-attention can take it and A2V/V2A (64) cannot.
- * It is a different arithmetic class from `h3d_ltx_attention`, which the
+ * It is a different arithmetic class from `h3d_text_attention`, which the
  * one-block golden pinned bit for bit - hence two entry points and a switch
  * above them rather than a replacement. */
-int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
+int h3d_text_attention_mma(h3d_context *context, h3d_tensor *output,
                           const h3d_tensor *query, const h3d_tensor *key,
                           const h3d_tensor *value, uint32_t q_rows,
                           uint32_t kv_rows, uint32_t heads, uint32_t head_dim,
                           float scale, char *error, size_t error_size);
 
-/* The LTX-2.5 refiner block's elementwise set. Torch rounds BF16 elementwise
+/* The refiner block's elementwise set. Torch rounds BF16 elementwise
  * ops once each (`opmath_type<BFloat16>` is `float`) and every expression
  * below is a chain of separate ops, so these kernels round where the
  * expression does - a fused single-rounding form is a different function. */
@@ -615,7 +615,7 @@ int h3d_ltx_attention_mma(h3d_context *context, h3d_tensor *output,
 /* `PytorchPreAttention.__call__` (`ops.py:22-36`): `apply_rotary_emb` on the
  * query and the key with *different* tables and row counts, the A2V/V2A
  * cross-attention's `pe`/`k_pe` pair (`transformer.py:359-361`). */
-int h3d_ltx_rope_pair(h3d_context *context, h3d_tensor *query,
+int h3d_text_rope_pair(h3d_context *context, h3d_tensor *query,
                       h3d_tensor *key, const h3d_tensor *q_cos,
                       const h3d_tensor *q_sin, const h3d_tensor *k_cos,
                       const h3d_tensor *k_sin, uint32_t q_rows,
@@ -996,13 +996,13 @@ int h3d_sdpa_causal_f32(h3d_context *context, h3d_tensor *output,
  * trees are not reproducible here, and `tests/h3/sol_route_bm` measures what
  * the choice costs.
  *
- * `h3d_sol_search` routes from the query block's centroid, which is the
+ * `h3d_tok_search` routes from the query block's centroid, which is the
  * reference's column mean: sum_q (q.kc) / len = (sum_q q / len).kc, the same
  * number with 64x fewer multiplies, and both sides of its comparison then
  * come from one F32 centroid. The reference's own raw-row order is the oracle
  * `tests/h3/test_native.cu` checks this against, and `tests/h3/sol_route_bm`
  * reports what the substitution moves on the job's shape. */
-int h3d_sol_search(h3d_context *context, const struct h3d_sol_plan *plan,
+int h3d_tok_search(h3d_context *context, const struct h3d_sol_plan *plan,
                    const h3d_tensor *query, const h3d_tensor *key,
                    const h3d_tensor *value, uint32_t sequence, uint32_t heads,
                    float scale, float tau, uint32_t sink_start,
@@ -1033,7 +1033,7 @@ uint32_t h3d_sol_words(uint32_t sequence);
  * It reuses the tau path's kernels - the block pooling, the kc statistics and
  * the threshold kernel that produces `query_bar` - so the plan must carry the
  * same buffers, and the `threshold` it fills is not read by this policy. Only
- * the selection kernel is new. `h3d_sol_search`'s doc comment applies to every
+ * the selection kernel is new. `h3d_tok_search`'s doc comment applies to every
  * other deviation this shares with it. */
 int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
                 const h3d_tensor *query, const h3d_tensor *key,
@@ -1042,7 +1042,7 @@ int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
                 char *error, size_t error_size);
 
 /* The sparse forward the mask was built for: Sol-Attn's attention with the
- * exact/approximated split `h3d_sol_search` routed. One CTA per (query block,
+ * exact/approximated split `h3d_tok_search` routed. One CTA per (query block,
  * head), four warps of 16 query rows each. Per group of 32 KV blocks the
  * group's approximated blocks are folded into the running softmax from the
  * pooled summaries in one pass, then its exact blocks are walked in increasing
@@ -1060,20 +1060,20 @@ int h3d_sol_vsa(h3d_context *context, const struct h3d_sol_plan *plan,
  * approximated block leaves the running maximum untouched (`fwd.py:256-262`).
  * The mask is the plan's, so the sink range and the diagonal band arrive
  * already set and this function adds no policy of its own: it reads `kc`, `vc`
- * and `mask` and nothing else. Call `h3d_sol_search` for the same plan first.
+ * and `mask` and nothing else. Call `h3d_tok_search` for the same plan first.
  *
  * Deviations, named: BF16 `P` for both products, as the reference casts too
  * (`fwd.py:122,166`); one maximum per 64-key exact block; the port's `exp2`,
  * F32 accumulators and reduction trees against Triton's. `tests/h3/test_native.cu`
  * gates the walk against the reference's own rule. */
-int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
+int h3d_tok_forward(h3d_context *context, h3d_tensor *output,
                     const struct h3d_sol_plan *plan, const h3d_tensor *query,
                     const h3d_tensor *key, const h3d_tensor *value,
                     uint32_t sequence, uint32_t heads, float scale, char *error,
                     size_t error_size);
 
-/* The LTX-2.5 refiner's Sol-Attn, token-major `[rows][heads][128]`. The rule
- * is `h3d_sol_search`/`h3d_sol_forward`'s, unchanged: the released kernel's
+/* The refiner's Sol-Attn, token-major `[rows][heads][128]`. The rule
+ * is `h3d_tok_search`/`h3d_tok_forward`'s, unchanged: the released kernel's
  * `diag` tau policy (`sol_attn/preprocess.py:280-322`, `triton_ref/fwd.py`),
  * the only backend the Spark release admits (`Sol-H3-Spark/runtime/stage2_ops/
  * models.py:100-103`). It is a separate pair of entry points because the
@@ -1085,7 +1085,7 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
  * release's policy, not this pair's: `sol_attention.py:18` `STAGE2_TAUS =
  * (1.0, 1.25, 1.5)`, one tau per denoise step, and layers 1 through 47 use
  * Sol-Attn while layer 0 stays dense (`sol_attention.py:4-5,114-117`).
- * `h3d_sol_ltx_search` writes the plan's mask and `h3d_sol_ltx_forward` reads
+ * `h3d_tok_search` writes the plan's mask and `h3d_tok_forward` reads
  * it, so the two are called per layer, the search first.
  *
  * No sink: the video self-attention's sequence carries no text or audio
@@ -1093,21 +1093,21 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
  * the routing's sink range is empty.
  * Head dimension must be 128 (`interface.py:29-30`); the refiner's video
  * self-attention is 32 x 128. */
-int h3d_sol_ltx_search(h3d_context *context, const struct h3d_sol_plan *plan,
+int h3d_tok_search(h3d_context *context, const struct h3d_sol_plan *plan,
                        const h3d_tensor *query, const h3d_tensor *key,
                        const h3d_tensor *value, uint32_t sequence,
                        uint32_t heads, float scale, float tau, char *error,
                        size_t error_size);
-int h3d_sol_ltx_forward(h3d_context *context, h3d_tensor *output,
+int h3d_tok_forward(h3d_context *context, h3d_tensor *output,
                         const struct h3d_sol_plan *plan, const h3d_tensor *query,
                         const h3d_tensor *key, const h3d_tensor *value,
                         uint32_t sequence, uint32_t heads, float scale,
                         char *error, size_t error_size);
-/* The same forward on the tensor cores: `h3d_sol_forward_kernel`'s walk -
+/* The same forward on the tensor cores: `h3d_tok_forward_kernel`'s walk -
  * 64-row query blocks, a 32-block fold per mask word, exact blocks walked in
  * order - with the token-major reads this port needs. Same plan, same mask,
  * same numbers up to BF16 fragment rounding; one CTA per 64-query block. */
-int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
+int h3d_tok_forward_mma(h3d_context *context, h3d_tensor *output,
                             const struct h3d_sol_plan *plan,
                             const h3d_tensor *query, const h3d_tensor *key,
                             const h3d_tensor *value, uint32_t sequence,
@@ -1115,10 +1115,10 @@ int h3d_sol_ltx_forward_mma(h3d_context *context, h3d_tensor *output,
                             size_t error_size);
 
 /* ------------------------------------------------------------------------
- * h3b_* — the H3-to-LTX latent path (`minimax_h3::ltx_adapter`).
+ * h3b_* — the H3 latent resizer path (`the latent resizer module`).
  *
  * The profile's `stage2_ops/h3_upscale.py` (the pinned author node's
- * `LatentResizer3D` wrapped in its own N/D) and `stage2_ops/h3_ltx_adapter/`
+ * `LatentResizer3D` wrapped in its own N/D) and `stage2_ops/h3_the latent resizer/`
  * (the alignment and the 22-block factorized Conv3D adapter), ported. These
  * models have no C reference: the authority is that Python, read at
  * `/data/Sol-h3-Spark` and at the node's own pin `d7c01b90`.
@@ -1298,8 +1298,8 @@ int h3b_copy_offset(h3d_context *context, h3d_tensor *output,
                     size_t error_size);
 
 /* ------------------------------------------------------------------------
- * h3v_* — the LTX-2.5 video VAE decoder's own ops
- * (`minimax_h3::ltx_vae`).
+ * h3v_* — the the refiner video VAE decoder's own ops
+ * (`minimax_h3::the video VAE`).
  *
  * The decoder's convolutions are the `h3b_planar` path with
  * `replicate_t = 1`: 3x3x3, stride 1, one zero frame of spatial halo and one
@@ -1345,7 +1345,7 @@ int h3v_to_rgb(h3d_context *context, h3d_tensor *output, const h3d_tensor *input
                int dtype, uint32_t depth, uint32_t height, uint32_t width,
                char *error, size_t error_size);
 
-/* The LTX-2.5 audio VAE encoder (`minimax_h3::ltx_audio_vae`). Both take the
+/* The audio VAE encoder (`the audio VAE module`). Both take the
  * encoder's channels-last `[h][w][c]` F32 planes, which is the layout the F32
  * valid convolution `h3d_conv3d` reads. */
 

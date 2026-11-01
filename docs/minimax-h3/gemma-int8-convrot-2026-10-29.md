@@ -2,8 +2,8 @@
 
 Unit: the first step of the Gemma4 port
 ([`gemma-connector-port-plan-2026-10-29.md`](gemma-connector-port-plan-2026-10-29.md),
-section 5, unit 1) - the INT8 convrot linear the release serves Gemma-4-12B and
-the LTX connector through. The verdict the next unit needs: **the op is in
+section 5, unit 1) - the INT8 convrot linear the release serves Gemma-4-12B
+through. The verdict the next unit needs: **the op is in
 `native/h3`, every step but the rotation is bit-exact against a host
 transcription of the reference, the route costs rel RMS 1.3% against the BF16
 linear it replaces, and the release's own checkpoint weights are reproduced
@@ -11,7 +11,7 @@ from their BF16 source with 0-6 INT8 elements per tensor differing by one.** The
 gate also settled a question the source leaves open: the *offline weight*
 conversion ran with **F32** operands, not the BF16 a served activation uses.
 
-Commit: `b234a72d` on `feat/sol-h3`. Workstation `vizzio` (RTX 4070 SUPER,
+Commit: `b234a72d`. Workstation `vizzio` (RTX 4070 SUPER,
 sm_89, CUDA 13.3), Spark `gx10-e1d2` (GB10, sm_121a, CUDA 13.0, no
 `nvidia-clocks.service`, so its timings are indicative and not clock-pinned).
 The artifact is `/mnt/h3-artifacts/Gemma4/` on the Spark.
@@ -119,7 +119,7 @@ when the encoder's own cost matters (section 7).
 
 `tests/h3/test_int8_convrot.rs` (portable, `make tests/h3-suite`; `H3_GEMMA_DIR`
 or the first argument names the directory, exit 3 is a skip). It reads the two
-released files - `gemma4-12b-with-proj-ltx-2.5-bf16.safetensors`, 686 tensors,
+released files - the BF16 Gemma-4-12B shard, 686 tensors,
 and the INT8 sibling, 1,342 - and for two layers (0 and 47) and all seven
 quantized linears does two things:
 

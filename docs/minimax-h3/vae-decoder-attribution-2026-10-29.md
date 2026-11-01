@@ -8,7 +8,7 @@ linears no longer write a bias in a separate pass, their consumers add it on
 load.
 
 Commits: `c7bb59e1` (the fusion) and `a323cc7d` (the BF16-operand bench arm) plus
-the one carrying this record, on `feat/sol-h3`. Spark `gx10-e1d2`, sm_121a, CUDA
+the one carrying this record. Spark `gx10-e1d2`, sm_121a, CUDA
 13.0, no clock policy (busy 2.4-2.5 GHz). Job A as everywhere in this campaign:
 768x768, 107 frames, seed 42, four evaluations, `H3_DIT_SOL=0.9`,
 `H3_VAE_ATTENTION=tensor`, `H3_VAE_GEMM=bf16`, `H3_DIT_GEMM=fp8` (the tensorwise

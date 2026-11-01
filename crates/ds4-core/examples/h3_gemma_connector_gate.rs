@@ -365,7 +365,7 @@ fn probe(gpu: &Gpu, rows: usize, seed: u32) -> Result<(), String> {
             .map_err(|error| error.token())?;
         let cos = read_bf16(gpu, &cos_dev)?;
         let sin = read_bf16(gpu, &sin_dev)?;
-        gpu.ltx_rope(
+        gpu.text_rope(
             &query_dev,
             &key_dev,
             &cos_dev,
@@ -404,7 +404,7 @@ fn probe(gpu: &Gpu, rows: usize, seed: u32) -> Result<(), String> {
     // reference's `PytorchAttention` reads its operands (`attention.py:82-102`):
     // `q.view(b, -1, heads, dim_head).transpose(1, 2)`, SDPA at
     // `1 / sqrt(dim_head)`, then `.transpose(1, 2).reshape(b, -1, heads * dim)`.
-    // The operands are token-major - the layout every LTX caller produces,
+    // The operands are token-major - the layout every caller produces,
     // since `to_q`/`to_k`/`to_v` are plain `torch.nn.Linear`s.
     for (head_dim, label) in [
         (VIDEO_HEAD_DIM, "video"),
@@ -419,7 +419,7 @@ fn probe(gpu: &Gpu, rows: usize, seed: u32) -> Result<(), String> {
         let value_dev = upload_bf16(gpu, &value_bytes)?;
         let attention_dev = alloc(gpu, Device::Bf16, rows * inner)?;
         let scale = 1.0 / (head_dim as f32).sqrt();
-        gpu.ltx_attention(
+        gpu.text_attention(
             &attention_dev,
             &query_dev,
             &key_dev,

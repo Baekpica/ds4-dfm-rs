@@ -43,14 +43,6 @@ name = "h3_device_gate"
 required-features = ["h3-gates"]
 
 [[example]]
-name = "h3_ltx_adapter_gate"
-required-features = ["h3-gates"]
-
-[[example]]
-name = "h3_ltx_ops_gate"
-required-features = ["h3-gates"]
-
-[[example]]
 name = "h3_gemma_gate"
 required-features = ["h3-gates"]
 
@@ -60,10 +52,6 @@ required-features = ["h3-gates"]
 
 [[example]]
 name = "h3_prompt_cache_gate"
-required-features = ["h3-gates"]
-
-[[example]]
-name = "h3_ltx_refiner_gate"
 required-features = ["h3-gates"]
 
 [[example]]

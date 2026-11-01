@@ -1,9 +1,9 @@
 # Merging the FastH3 distilled adapter into a derived checkpoint (2026-10-28)
 
 The port serves the un-merged base MiniMax-H3 DiT, so every render needs twenty
-denoise evaluations. The reference's stage 1 needs four, and it can because it
+denoise evaluations. The reference does it in four, and it can because it
 merges `FastH3-VSA/vsa-datafree/adapter_model.safetensors` before its FP8
-conversion (`Sol-H3-Spark/configs/default.json:6-9`: `lora:
+conversion (the release's `configs/default.json:6-9`: `lora:
 FastH3_VSA_DataFree`, `dit: W8A8_FP8_after_BF16_LoRA_merge`, `updates: 4`).
 Twenty evaluations are also the blur seen at two steps: at two neither arm has
 converged, at twenty the picture is finished. This unit performs that merge
@@ -163,12 +163,12 @@ through deep snow at sunrise, cinematic", one binary, `sm_121a`, 2.4-2.5 GHz
 | run | model | steps | decoder | attention | wall | TEXT | LOAD | DENOISE | FRAMES |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | released | 20 | default | dense | 628 s | 10.838 | 7.503 | 406.454 | 198.856 |
-| 2 | released | 20 | fast | SOL 0.9 | 336 s | 27.779 | 8.218 | 258.386 | 36.861 |
+| 2 | released | 20 | fast | sparse 0.9 | 336 s | 27.779 | 8.218 | 258.386 | 36.861 |
 | 3 | derived | 4 | default | dense | 353 s | 27.993 | 39.976 | 79.391 | 200.985 |
-| 4 | derived | 4 | fast | SOL 0.9 | 165 s | 28.144 | 40.169 | 50.834 | 40.864 |
-| 5 | derived | 4 | default | SOL 0.9 | 328 s | 28.212 | 42.125 | 50.320 | 203.071 |
+| 4 | derived | 4 | fast | sparse 0.9 | 165 s | 28.144 | 40.169 | 50.834 | 40.864 |
+| 5 | derived | 4 | default | sparse 0.9 | 328 s | 28.212 | 42.125 | 50.320 | 203.071 |
 | 6 | derived | 4 | default | dense | 362 s | 28.209 | 45.847 | 81.147 | 202.391 |
-| 7 | released | 4 | fast | SOL 0.9 | ~166 s | 28.437 | 43.402 | 50.271 | 40.335 |
+| 7 | released | 4 | fast | sparse 0.9 | ~166 s | 28.437 | 43.402 | 50.271 | 40.335 |
 
 ### The step count the merge buys
 
@@ -203,11 +203,11 @@ order of magnitude.
 
 | render | laplacian variance |
 |---|---|
-| 2 steps, released, SOL + fast | 7.3 |
-| 4 steps, released, SOL + fast | 30.6 |
-| 4 steps, derived, SOL + fast | 62.2 |
+| 2 steps, released, sparse + fast | 7.3 |
+| 4 steps, released, sparse + fast | 30.6 |
+| 4 steps, derived, sparse + fast | 62.2 |
 | 4 steps, derived, default arms | 185.8 |
-| 20 steps, released, SOL + fast | 48.2 |
+| 20 steps, released, sparse + fast | 48.2 |
 | 20 steps, released, default arms | 38.9 |
 
 **The same measure over every frame.** The figures above are one frame; the
@@ -216,12 +216,12 @@ frames of each render, one binary and one scale for every row:
 
 | render | detail energy |
 |---|---|
-| 2 steps, released, SOL + fast | 0.824 |
-| 4 steps, released, SOL + fast | 1.734 |
-| 4 steps, derived, SOL + fast | 3.189 |
-| 4 steps, derived, SOL + default | 3.191 |
+| 2 steps, released, sparse + fast | 0.824 |
+| 4 steps, released, sparse + fast | 1.734 |
+| 4 steps, derived, sparse + fast | 3.189 |
+| 4 steps, derived, sparse + default | 3.191 |
 | 4 steps, derived, dense + default | 4.563 |
-| 20 steps, released, SOL + fast | 3.282 |
+| 20 steps, released, sparse + fast | 3.282 |
 | 20 steps, released, dense + default | 3.212 |
 
 This settles two things the mid frames could not. The derived four-step render

@@ -115,19 +115,16 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   sequence lengths](benchmarks/h3-attention-2026-10-27/README.md); and [why the
   tensor path is the default](minimax-h3/tensor-default-2026-10-27.md).
   October 28 adds the sparse arm — [the reference's VSA selector](minimax-h3/vsa-policy-2026-10-28.md)
-  and [the DiT's own attention through it](minimax-h3/sol-attention-2026-10-28.md)
   — and [the FastH3 distilled adapter merged into a derived checkpoint](minimax-h3/lora-merge-2026-10-28.md),
   which is what makes a four-step render a finished picture and cuts DENOISE
   5.1x. [The reference's NVFP4-AWQ prompt encoder](minimax-h3/nvfp4-encoder-2026-10-28.md)
   is the same forward reading 15.69 GB instead of 48.8 GiB: TEXT 27.4-28.2 s to
   15.5 s, the BF16 path bit-unchanged, the render's difference bounded at 7.7%
-  detail energy. Toward the Sol-H3-Spark port: [the server's steady state](minimax-h3/steady-state-2026-10-28.md)
+  detail energy. Toward the Spark: [the server's steady state](minimax-h3/steady-state-2026-10-28.md)
   (88.99 s hot, MP4-identical to the CLI); [where a DiT evaluation goes](minimax-h3/denoise-attribution-2026-10-28.md)
-  (per-kernel, projections 64% of it at 61-68% of the sm_121 peak); [the pipeline plan](minimax-h3/ltx-sol-pipeline-plan-2026-10-28.md)
-  and [the LTX-2.5 reference map](minimax-h3/ltx-reference-map-2026-10-28.md),
-  the latent path, the weights and the stage-2 cost model, with [the path itself
-  ported and gated](minimax-h3/latent-path-2026-10-29.md) at 4.15 s against the
-  release's 2.13 s.
+  (per-kernel, projections 64% of it at 61-68% of the sm_121 peak); and
+  [the product route in one process](minimax-h3/resident-product-2026-10-31.md),
+  a job list on the resident encoder and DiT.
 - **MiMo VQ:** [October 31 MTP context and long prefill](mimo2-vq-optimization-2026-10-31.md):
   MTP blocks see the prompt, E4M3 full-layer prefill scores;
   [2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-31/README.md).

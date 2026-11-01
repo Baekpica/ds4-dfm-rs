@@ -1,10 +1,10 @@
 /*
- * What the LTX refiner block's matmuls cost on their own, at the shape stage 2
+ * What the the refiner refiner block's matmuls cost on their own, at the shape stage 2
  * runs them, so a per-block profile can be split into the part cuBLASLt owns
  * and the part the port's own kernels own.
  *
  * One call here is one projection of one block
- * (`crates/ds4-core/src/minimax_h3/ltx_refiner.rs`): thirty-four of them across
+ * (`crates/ds4-core/src/minimax_h3/the refiner module.rs`): thirty-four of them across
  * the six attentions and two feed-forwards, at 16,128 video rows, 126 audio
  * rows and 1,024 context rows. The list is the block's forward order, and every
  * row count is the one the block passes - `Attention::run` takes the query and
@@ -37,7 +37,7 @@
 #include <cstring>
 #include <vector>
 
-/* The release's geometry (`ltx_refiner.rs`: `VIDEO_TOKENS`, `AUDIO_TOKENS`). */
+/* The release's geometry (`the refiner module.rs`: `VIDEO_TOKENS`, `AUDIO_TOKENS`). */
 enum {
     VIDEO_ROWS = 16 * 24 * 42,
     AUDIO_ROWS = 126,

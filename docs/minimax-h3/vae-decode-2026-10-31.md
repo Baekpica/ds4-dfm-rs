@@ -14,32 +14,18 @@ bounds the day's stability at 0.6%.
 
 ## 1. Which decoder runs, and what the release does
 
-Two decoders carry a H3 render, and the release runs only one of them at the
-product canvas:
+One decoder carries the product clip's H3 render, and the release never runs
+it:
 
-- **The release never decodes H3 video on the product route.** Stage 1 sets
+- **The release never decodes H3 video on the product route.** It sets
   `video_decode: false` (`configs/default.json:13`) and replaces the model's own
   `decode` with a refusal (`runtime/stage1.py:81-83`), recording
-  `"video_decode": False` in the run's own receipt (`:320`). Its 1344x768 output
-  comes from stage 2's **LTX Conv VAE**, tiled 128/24 frames, 448/64 and 768/64
-  pixels (`runtime/stage2_ops/models.py:20-22`, resolved at `:118-120`). At
-  `(121, 768, 1344)` that plan is four tiles (1 temporal because 121 <= 128, 2 by
-  448 at height, 2 by 768 at width), which cover 1,376,256 pixels against the
-  frame's 1,032,192, i.e. **1.33x the pixel area**, blended by trapezoidal masks
-  (`conv_video_decoder.py:359-482`).
-- **Our LTX port decodes that clip untiled**, and measures **14.4 s** at
-  `121x768x1344` (`ltx-vae-spark-2026-10-30.md` section 2; the product logs show
-  15.1-16.1 s including their own readback). Porting the release's tiling would
-  add a third of the pixel work to save memory the port does not need on a
-  119.7 GiB unified host, so it is **not ported**, and that stays a named
-  deviation. It is also why the LTX decode is not the phase to optimize.
-- **The product clip decodes with the H3 video VAE at 1344x768**, a route the
-  release does not have: the H3-only route exists because the LTX refiner moved
-  the subject (`refine-fidelity-plan-2026-10-31.md`). That decoder is the phase
-  this unit prices, and it is **not** untiled: it ports the reference's own
-  chunk plan (7 latent frames, 22 frames out of the first chunk, then 17 new
-  frames over a 5-frame overlap, `h3_video_vae.c:1092-1093`) and its own tile
-  plan (a search over 256..320 pixels with a 64-pixel minimum overlap,
+  `"video_decode": False` in the run's own receipt (`:320`).
+- **The product clip decodes with the H3 video VAE at 1344x768.** That decoder
+  is the phase this unit prices, and it is **not** untiled: it ports the
+  reference's own chunk plan (7 latent frames, 22 frames out of the first chunk,
+  then 17 new frames over a 5-frame overlap, `h3_video_vae.c:1092-1093`) and its
+  own tile plan (a search over 256..320 pixels with a 64-pixel minimum overlap,
   `:658-731`). At the product canvas that plan is **7 chunks x 15 tiles = 105
   submissions of 2,805 rows** and 3,780 block calls.
 
@@ -54,8 +40,8 @@ weights from `H3_VAE`, exit 3 when unset), one shape, one binary. `H3_VAE_GEMM`
 and `H3_VAE_ATTENTION` are the released words; the gate reads none of them
 itself.
 
-The latent is `/mnt/h3/upscaled.bin`: 24x37x48x84, the 2x upscale of
-`/mnt/h3/recipe.bin` that the upscaler isolation run wrote at 12:44. It is **not**
+The latent is `/mnt/h3/upscaled.bin`: 24x37x48x84, the file an isolation run
+wrote at 12:44 from `/mnt/h3/recipe.bin`. It is **not**
 the product clip's own draft (`scratch/clip.bin`, a different sample), because
 that clip's prompt is not in its record (section 7; the tool is
 `tools/make-h3-clip.sh`). Same shape, same plan, same weights; the decoder's cost
@@ -105,7 +91,7 @@ heuristic is doing its job; `H3_VAE_TILE_PIXELS` (the reference's own override,
 ## 3. Where the fastest arm's 48.5 s goes
 
 One nsys capture of the `bf16i`/`tensor` arm at the product canvas
-(`~/ds4-sol-h3/scratch/vae-bf16i.nsys-rep`, split by
+(the Spark checkout's `scratch/vae-bf16i.nsys-rep`, split by
 `misc/decn/decn-split.py`): decoder window **46.537 s**, 72,531 kernels, busy
 44.225 s (**95.0%**), 2.314 s of gaps.
 
@@ -211,15 +197,10 @@ kernels and a wider numerical surface, the decision `vae-bf16-arm-2026-10-29.md`
 section 6 deferred) plus two scheduling changes. Nothing in the GEMM is left:
 89.7 TFLOPS is the hardware.
 
-The alternative route does not need any of it: the release-shaped LTX decode is
-14.4 s at the same output canvas. The two are not interchangeable - that is why
-the H3-only route exists - but a product decision that prefers the release's
-picture should prefer its decoder too.
-
 ## 7. What this does not establish
 
-- **One latent, one canvas.** Every number is the product run's own upscaled
-  latent at 1344x768x124. The warm arms at 512x512x22 are a second shape; no
+- **One latent, one canvas.** Every number is the product run's own latent at
+  1344x768x124. The warm arms at 512x512x22 are a second shape; no
   other geometry was measured.
 - **The BF16 chain is a projection.** No BF16 twin of the elementwise kernels
   exists, and section 6's "after" column is arithmetic on section 3's measured

@@ -18,7 +18,7 @@ the attention mask).
 ## 1. The config, as the checkpoint states it
 
 `__metadata__["gemma_config"]` in
-`gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors`
+the released Gemma-4-12B INT8 convrot shard
 (`gemma_assets.py:109-118` reads the same key), under `text_config`:
 
 | Field | Value |

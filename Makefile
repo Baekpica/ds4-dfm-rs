@@ -405,18 +405,15 @@ H3_LINK_ARGS = -C metadata=$(shell cksum $(filter %.o,$^) </dev/null 2>/dev/null
 $(H3_OBJS): %.o: %.cu %.h
 	$(NVCC) $(H3_NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference ltx_adapter ltx_ops ltx_audio gemma gemma_connector prompt_cache ltx_refiner ltx_vae engine vae))
+H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference gemma gemma_connector prompt_cache engine vae))
 tests/h3_text_gate: native/h3/h3_text_gpu.o
 tests/h3_dit_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 tests/h3_gemma_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 tests/h3_gemma_connector_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-tests/h3_ltx_refiner_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 tests/h3_engine_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o
-tests/h3_ltx_vae_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-tests/h3_ltx_audio_gate: native/h3/h3_dit_gpu.o
 tests/h3_vision_gate: native/h3/h3_vision_gpu.o
 tests/h3_multimodal_gate: native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-tests/h3_video_encoder_gate tests/h3_audio_encoder_gate tests/h3_reference_gate tests/h3_ltx_adapter_gate tests/h3_ltx_ops_gate: native/h3/h3_dit_gpu.o
+tests/h3_video_encoder_gate tests/h3_audio_encoder_gate tests/h3_reference_gate: native/h3/h3_dit_gpu.o
 tests/h3_vae_gate: native/h3/h3_dit_gpu.o
 tests/h3_device_gate: native/h3/h3_device_gpu.o
 tests/h3_device_gate: H3_LIBS = $(DS4_RS_LIBS)

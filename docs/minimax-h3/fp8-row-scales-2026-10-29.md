@@ -11,8 +11,8 @@ be re-established first are in sections 1 and 2.
 
 ## 1. The host had a stray resident, and it was mine
 
-A `gdb -batch -ex run -ex bt ... --args ./tests/h3_dit_gate ...` from
-`~/ds4-sol-h3` started at 12:43:11 and hung (`Sl`, 0.9% CPU,
+A `gdb -batch -ex run -ex bt ... --args ./tests/h3_dit_gate ...` in the Spark
+checkout started at 12:43:11 and hung (`Sl`, 0.9% CPU,
 `futex_do_wait`, no progress for 58 minutes) while holding **18,655 MiB** of
 the GPU. Every capture and render between then and 13:42 ran beside it, and it
 cost real time: the same BF16 render that produced `5b5e735c...` at DENOISE
@@ -21,7 +21,7 @@ the GPU is idle (208 MHz, 7 W, no compute applications) and the two renders
 below are the clean ones.
 
 This is the campaign's own leak, not the operator's work: `h3_dit_gate` in
-`~/ds4-sol-h3` is this port's gate. Check `nvidia-smi
+the Spark checkout is this port's gate. Check `nvidia-smi
 --query-compute-apps` before any measurement, not just `pgrep -x h3-rs`.
 
 ## 2. The BF16 capture's 10x swiglu anomaly is reproducible and is not a shape mixture
@@ -86,7 +86,7 @@ both clips are finished.
 
 **Detail energy.** The campaign's instrument (`~/detail.sh`, "the whole-render
 mean of `|frame - luma-4 blur|`") is gone from the Spark and its input renders
-(`demo20-sol.mp4`, `sol-abA-sol-0.9.mp4`, the `nvfp4-gate-*` pair) with it, so
+(the twenty-step A/B pair, the `nvfp4-gate-*` pair) with it, so
 its recorded numbers cannot be reproduced or extended. The reimplementation
 used here is named, not substituted silently: mean over all 107 frames of
 `|frame - gblur(sigma)|` on luma, through FFmpeg's `signalstats`. Its own

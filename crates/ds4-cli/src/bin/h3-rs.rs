@@ -23,7 +23,7 @@ use std::time::Instant;
 use ds4_core::minimax_h3::dit::{
     Attention, Dit, DitError, LoadMode, LoadOptions, Reduction, VaeAttention, VaeGemm,
 };
-use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest, Upscale};
+use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, Encode, Preset, RgbFrames};
@@ -100,19 +100,13 @@ struct Options {
     /// `--save-audio`: the decoded soundtrack as raw little-endian F32,
     /// interleaved, at the printed rate and channel count.
     audio_out: Option<PathBuf>,
-    /// `--latent-only`: stop after the soundtrack. The reference's latency
-    /// route never decodes the H3 video: the latent goes straight to the
-    /// upscaler and the adapter (`runtime/stage1.py` records
-    /// `video_decode: False`, and its capture asserts `h3_decoder_calls == 0`).
+    /// `--latent-only`: stop after the soundtrack. The latent route never
+    /// decodes the H3 video; it is rendered by whatever reads the latent.
     latent_only: bool,
     /// `--jobs FILE`: the resident product route. One request per line,
-    /// rendered in one process through a resident encoder, DiT and upscaler
+    /// rendered in one process through a resident encoder and DiT
     /// (the one-shot path stays the default when this is absent).
     jobs: Option<PathBuf>,
-    /// `--upscaler FILE`: the stage-2 x2 latent upscaler. With `--jobs` every
-    /// request in the list takes the release's route: the line's canvas is the
-    /// draft's, the latent is doubled, and the doubled canvas is decoded.
-    upscaler: Option<PathBuf>,
     /// `--vae-workers` (`:1089`): the decode's chunk loop spread over this
     /// many device contexts. One is the reference's own serial loop.
     vae_workers: usize,
@@ -414,9 +408,9 @@ fn run() -> Result<ExitCode, String> {
         );
     }
 
-    // The latent route stops here: the reference hands the denoised latent to
-    // the upscaler and never materializes H3 video, so the 672x384 decode that
-    // would cost more than every denoise update together is not paid at all.
+    // The latent route stops here: the denoised latent is written out and no
+    // H3 video is materialized, so the decode that would cost more than every
+    // denoise update together is not paid at all.
     if options.latent_only {
         if options.latent_out.is_none() {
             return Err("--latent-only needs --save-latent".to_string());
@@ -522,11 +516,10 @@ fn run() -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The product route as a list: `runtime/stage1.py` drafts, and with an
-/// upscaler `runtime/stage2.py` doubles that latent and decodes the doubled
-/// canvas. The one-shot path above is the same work split across processes;
-/// here the encoder, the DiT and the upscaler stay resident, so clip N+1 pays
-/// only the denoise, the upscale and the decode.
+/// The product route as a list: one request per line, rendered through the
+/// resident engine. The one-shot path above is the same work with the weights
+/// loaded per clip; here the encoder and the DiT stay resident, so clip N+1
+/// pays only the denoise, the audio and the decode.
 ///
 /// Rollback is the absence of `--jobs`: every line of this function is new,
 /// and the one-shot path it returns to is the one the campaign measured.
@@ -548,22 +541,9 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
         check_frames(job.frames).map_err(|error| format!("line {}: {error}", index + 1))?;
     }
 
-    let upscale = options.upscaler.as_ref().map(|checkpoint| Upscale {
-        checkpoint: checkpoint.clone(),
-    });
     println!(
-        "JOBS count={} route={} upscaler={} model={}",
+        "JOBS count={} route=direct model={}",
         jobs.len(),
-        if upscale.is_some() {
-            "draft-upscale"
-        } else {
-            "direct"
-        },
-        options
-            .upscaler
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "none".to_string()),
         options.model_dir.display()
     );
 
@@ -586,7 +566,6 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
             attention: options.attention,
             vae_attention: options.vae_attention,
             vae_gemm: options.vae_gemm,
-            upscale: upscale.clone(),
             text_encoder: options.text_encoder.clone(),
             encode: options.encode,
             output: job.output.clone(),
@@ -599,7 +578,7 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
 
         println!(
             "JOB n={} canvas={}x{}x{} steps={} seed={} text={:.3}s{} load={:.3}s{} \
-             upscaler_load={:.3}s{} upscale={:.3}s denoise={:.3}s audio={:.3}s \
+             denoise={:.3}s audio={:.3}s \
              video={:.3}s mux={:.3}s wall={:.3}s video_fnv={:016x} audio_fnv={:016x} \
              frames_fnv={:016x} out={}",
             index + 1,
@@ -612,9 +591,6 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
             if report.text_hit { " (hit)" } else { "" },
             report.load_seconds,
             if report.prepared_hit { " (hit)" } else { "" },
-            report.upscaler_load_seconds,
-            if report.upscaler_hit { " (hit)" } else { "" },
-            report.upscale_seconds,
             report.denoise_seconds,
             report.audio_seconds,
             report.video_seconds,
@@ -1030,7 +1006,6 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         audio_out: None,
         latent_only: false,
         jobs: None,
-        upscaler: None,
         vae_workers: 1,
         vae_tile: None,
         encode: Encode::default(),
@@ -1143,7 +1118,9 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
                     return Err("--vae-workers is 1-64".to_string());
                 }
             }
-            "--upscaler" => options.upscaler = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--upscaler" => {
+                return Err("--upscaler was removed: H3 renders its own canvas".to_string())
+            }
             "--crf" => {
                 options.encode.crf = unsigned(&mut argv, &flag)?
                     .try_into()
@@ -1222,8 +1199,6 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
 
     if options.jobs.is_some() {
         check_jobs_mode(&options)?;
-    } else if options.upscaler.is_some() {
-        return Err("--upscaler applies to the --jobs route".to_string());
     }
 
     // The port runs the full stack; a truncated layer count is a diagnostic
@@ -1386,14 +1361,11 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --latent-only             stop after the soundtrack: no H3 video decode and
                             no mux (the reference's latency route)
   --jobs FILE               render a list of requests in one process, through a
-                            resident encoder, DiT and upscaler; one request per
+                            resident encoder and DiT; one request per
                             line, TAB-separated:
                             prompt, seed, steps, width, height, frames, output
                             (blank and # lines are skipped; per-request flags
                             above are refused, the line owns them)
-  --upscaler FILE           stage-2 x2 H3 latent upscaler; with --jobs the line's
-                            canvas is the draft's and the doubled canvas is
-                            decoded (the release's route)
   --preview-dir PATH        write one PPM preview per denoising step
   --vae-workers N           decode the video through N device contexts, 1-64
                             (default 1, the reference's serial chunk loop)

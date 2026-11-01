@@ -15,12 +15,8 @@ They are not linked into production hosts.
 | `ppm_diff.c` | Pixel differences, PSNR and spatial attribution |
 | `standin-renderer.sh` | Model-free HTTP plumbing, not model qualification |
 
-The H3-to-LTX latent path has no C reference: its authority is the Sol-H3-Spark
-profile's Python plus the author's ComfyUI node, so its probe is Python.
-
-| Tool | Purpose |
-|---|---|
-| `ltx/latent_oracle.py` | Golden tensors for the latent upscale, the adapter and the crop to 16 frames, run against the real checkpoints and pinned by sha256 in its manifest |
+The latent resizer's oracle is gone with the stage it probed. Every remaining
+probe here is media comparison against a reference checkout.
 
 Build probes against a reference checkout supplied by the operator. For
 example, after building its `libh3.a`:

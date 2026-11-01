@@ -2,12 +2,12 @@
 
 The conditioning's second half. Unit 2b ends at the tower's 49 hidden states and
 unit 3 at the ids; this unit turns those states into the two bf16 contexts the
-refiner consumes - video `(1, 1024, 4096)` and audio `(1, 1024, 2048)`
-(`runtime/prompt_cache.py:29-30`) - with LTX's own feature extractor and its two
-8-block 1D connectors.
+release serves - video `(1, 1024, 4096)` and audio `(1, 1024, 2048)`
+(`runtime/prompt_cache.py:29-30`) - with the released feature extractor and its
+two 8-block 1D connectors.
 
-Everything below was read first-hand from `/data/ltx2-pin/packages`
-(`ltx-core/src/ltx_core/text_encoders/gemma/`, the pin the release runs,
+Everything below was read first-hand from the released `text_encoders/gemma/`
+package (the pin the release runs,
 `d1511477` = v1.2.0) and from the checkpoints' own headers. No GPU job was run
 for the reading; the runs are in sections 5 and 6.
 
@@ -54,22 +54,24 @@ the checkpoint's own `ff.net.0.proj.bias` and `ff.net.2.bias` tensors show.
 
 The recipe names two INT8 files (`runtime/prompt_cache.py:16-28`). The Gemma one
 is present. The connector one is **not**: the manifest pins
-`diffusion_models/ltx-2.5-22b-dev-transformer-comfy-int8-convrot.safetensors`,
+the INT8 convrot transformer shard
+(`diffusion_models/…-transformer-comfy-int8-convrot.safetensors`),
 21,504,034,224 B, sha256 `2edbdb4465cd6c3b532cd67a31ddb38a63e97dcad20be3729675e2a4e8caf92b`
 (`configs/checkpoints.json`, key `offline_connector`), and `cache_builder.py:112-114`
 rejects any connector whose name or byte count disagrees.
 
-The Spark's `LTX-2.5/` holds `ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors`,
-whose byte count is exactly the recipe's 21,504,034,224 but whose name says
-`distilled`, not `dev`. It is not the pinned artifact and it is not used here.
-Whether the two files' connector tensors coincide (the distilled LoRA's targets
-are the transformer blocks and the edges, not `*_embeddings_connector.*`) is not
-established, and the recipe's own builder would refuse the file by name.
+The Spark's checkpoint directory holds a second INT8 convrot transformer shard,
+whose byte count is exactly the recipe's 21,504,034,224 but whose file name
+carries a different variant tag than the pin. It is not the pinned artifact and
+it is not used here.
+Whether the two files' connector tensors coincide (the second file's LoRA deltas
+target the transformer blocks and the edges, not `*_embeddings_connector.*`) is
+not established, and the recipe's own builder would refuse the file by name.
 
 Unit 4 therefore runs on **BF16 connector weights** (the release's own
-`gemma4-12b-with-proj-ltx-2.5-bf16.safetensors` and
-`ltx-2.5-22b-dev-transformer-bf16.safetensors`). That is a named deviation, not
-the recipe: `docs/setup.md:127-129` states a BF16-derived cache is not
+BF16 Gemma-4-12B shard and its BF16 transformer shard). That is a named
+deviation, not the recipe: `docs/setup.md:127-129` states a BF16-derived cache
+is not
 interchangeable with the INT8 one. The INT8 convrot route itself is already
 built and gated (`h3d_linear_int8_convrot`, units 1 and 2b), so swapping the
 operand source is a loader change, not a graph change.
@@ -95,7 +97,8 @@ and the feed-forward's two. `q_norm`, `k_norm`, `to_gate_logits` and
 
 The connector's norms, linears, SDPA, GELU and residual adds are the generic
 `h3d_rms_norm`, `h3d_linear`, `h3d_sdpa`, `h3d_gelu_tanh` and `h3d_add`. Six
-entries are new (`native/h3/h3_dit_gpu.{h,cu}`), all in the Gemma/LTX section:
+entries are new (`native/h3/h3_dit_gpu.{h,cu}`), all in the header's AV
+connector section:
 
 | entry | reference |
 |---|---|
@@ -104,7 +107,7 @@ entries are new (`native/h3/h3_dit_gpu.{h,cu}`), all in the Gemma/LTX section:
 | `h3d_connector_interleave` | `normed.reshape(B, T, D * L)`, `:62` |
 | `h3d_gather_rows` | `_apply_right_pad_order`, `embeddings_processor.py:40-42` |
 | `h3d_register_fill` | `_replace_padded_with_learnable_registers`, `embeddings_connector.py:139-151` |
-| `h3d_ltx_rope` | `apply_split_rotary_emb`, `rope.py:42-85` |
+| `h3d_text_rope` | `apply_split_rotary_emb`, `rope.py:42-85` |
 | `h3d_per_head_gate` | `PytorchGatedAttention`, `ops.py:94-106` |
 
 The RoPE tables are built on the host rather than on the device: the reference's

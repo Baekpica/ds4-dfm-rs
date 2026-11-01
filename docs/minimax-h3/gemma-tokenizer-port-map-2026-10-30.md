@@ -3,10 +3,10 @@
 Unit 3's source read. The asset lives inside the checkpoint as two U8 blobs -
 `tokenizer_json` (32,169,626 B) and `hf_asset__tokenizer_config.json`
 (2,749 B) - so nothing here needs a file from outside it. The wrapper the
-release calls is
-`/data/ltx2-pin/packages/ltx-core/src/ltx_core/text_encoders/gemma/tokenizer.py`,
-and the implementation under it is HuggingFace's `tokenizers`, which the pinned
-Python wraps. `transformers` 5.14.1 requires `tokenizers>=0.22.0,<=0.23.0`
+release calls is its
+`text_encoders/gemma/tokenizer.py`, and the implementation under it is
+HuggingFace's `tokenizers`, which the pinned Python wraps. `transformers`
+5.14.1 requires `tokenizers>=0.22.0,<=0.23.0`
 (`transformers-5.14.1.dist-info/METADATA`); 0.23.0 is not on crates.io, so the
 source read is **0.22.1**, fetched from crates.io and unpacked read-only at
 `/data/refs/tokenizers/tokenizers-0.22.1`.

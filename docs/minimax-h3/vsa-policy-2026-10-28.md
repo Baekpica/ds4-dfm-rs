@@ -1,11 +1,11 @@
 # VSA, the reference's own sparsity rule for the H3 stage (2026-10-28)
 
-The sparse forward this branch just ported (`docs/minimax-h3/sol-forward-2026-10-28.md`)
+The sparse forward this branch just ported
 consumes a mask; it does not decide one. For the stage this engine actually
 serves - the 50-block H3 DiT under `DENOISE` - the reference's decision rule is
-**VSA**, not Sol-Attn's tau threshold: `configs/default.json:12` selects
-`video_sparse_attn_h3` for stage 1 at `sparsity 0.9`, `tile_size 64`,
-`prefix_mode exempt`. Sol-Attn is the reference's stage 2, on the LTX refiner.
+**VSA**: `configs/default.json:12` selects
+`video_sparse_attn_h3` for the DiT at `sparsity 0.9`, `tile_size 64`,
+`prefix_mode exempt`.
 
 ## 1. Provenance
 
@@ -81,7 +81,7 @@ Deviations to state, not hide:
    the same span as a parameter.
 3. **Fold against drop.** The reference's VSA consumer *drops* the unselected
    tiles (the compression branch is what carries their mass back). This port's
-   Sol-Attn forward *folds* them from the pooled summaries, which is a strictly
+   forward *folds* them from the pooled summaries, which is a strictly
    better approximation of the dropped mass and costs the nine folded passes.
    Combining a VSA mask with the folding consumer is therefore a named,
    measured deviation - and `tests/h3/sol_forward_bm` already prices both halves

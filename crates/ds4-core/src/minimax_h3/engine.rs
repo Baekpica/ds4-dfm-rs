@@ -22,7 +22,6 @@ use sha2::{Digest, Sha256};
 
 use super::dit::{Attention, Dit, LoadOptions, VaeAttention, VaeGemm};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
-use super::ltx_adapter::{self, Arm as UpscalerArm, Upscaler};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
 use super::reference::{self, fnv_f32};
@@ -68,24 +67,11 @@ pub struct RenderRequest {
     /// (`veryfast`, CRF 19); an operator raises it to spend the render's own
     /// headroom on the delivered file.
     pub encode: Encode,
-    /// The release's second stage (`runtime/stage2.py:58-76`): the denoised
-    /// latent is doubled by the H3 upscaler and that latent is decoded instead
-    /// of the draft. `None` decodes the draft, which is the one-shot route.
-    pub upscale: Option<Upscale>,
     /// Which checkpoint encodes the prompt: the released BF16 shards, or the
     /// reference's NVFP4-AWQ artifact. The same forward either way, so this
     /// changes the phase's read time and nothing else the graph sees.
     pub text_encoder: Encoder,
     pub output: PathBuf,
-}
-
-/// The stage-2 upscaler a request asks for. Only the checkpoint is stated: the
-/// geometry follows from the request's own canvas and frame count
-/// (`ltx_adapter::geometry`), so a request cannot name a shape the upscaler
-/// was not built for without failing its own check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Upscale {
-    pub checkpoint: PathBuf,
 }
 
 /// What the render did, for the operator's log and the gate.
@@ -102,9 +88,6 @@ pub struct RenderReport {
     pub load_seconds: f64,
     pub denoise_seconds: f64,
     pub audio_seconds: f64,
-    pub upscale_seconds: f64,
-    pub upscaler_load_seconds: f64,
-    pub upscaler_hit: bool,
     pub video_seconds: f64,
     pub mux_seconds: f64,
 }
@@ -181,16 +164,6 @@ pub struct Engine {
     /// different embeddings.
     embedding: Option<([u8; 32], Encoder, Embedding)>,
     prepared: Option<Prepared>,
-    /// The stage-2 upscaler, held under the checkpoint and geometry it was
-    /// built for. It is a model of its own with its own device context, so it
-    /// obeys the same rule as the prepared DiT: one at a time, keyed.
-    upscaler: Option<(UpscalerKey, Upscaler)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct UpscalerKey {
-    checkpoint: PathBuf,
-    geometry: ltx_adapter::Geometry,
 }
 
 impl Engine {
@@ -209,7 +182,6 @@ impl Engine {
             tokenizer,
             embedding: None,
             prepared: None,
-            upscaler: None,
         })
     }
 
@@ -423,49 +395,15 @@ impl Engine {
             attention: request.vae_attention,
             gemm: request.vae_gemm,
         };
-        let (decoded, upscale_seconds, upscaler_load_seconds, upscaler_hit) = match &request.upscale
-        {
-            None => (
-                vae_video::decode(
-                    &self.component("video_vae/source"),
-                    &video,
-                    shape.video_t as usize,
-                    latent_h as usize,
-                    latent_w as usize,
-                    arms,
-                )
-                .map_err(|error| EngineError::new(format!("video VAE: {error}")))?,
-                0.0,
-                0.0,
-                false,
-            ),
-            Some(upscale) => {
-                let geometry = ltx_adapter::geometry(
-                    shape.frame_count as usize,
-                    request.height as usize,
-                    request.width as usize,
-                )
-                .map_err(|error| EngineError::new(format!("upscale geometry: {error}")))?;
-                let (doubled, seconds, load_seconds, hit) =
-                    self.upscale(upscale, &geometry, &video)?;
-                (
-                    // `stage2.py:58-76`: the doubled canvas is what the
-                    // video VAE decodes, and the geometry carries it.
-                    vae_video::decode(
-                        &self.component("video_vae/source"),
-                        &doubled,
-                        geometry.h3[1],
-                        geometry.h3[2],
-                        geometry.h3[3],
-                        arms,
-                    )
-                    .map_err(|error| EngineError::new(format!("video VAE: {error}")))?,
-                    seconds,
-                    load_seconds,
-                    hit,
-                )
-            }
-        };
+        let decoded = vae_video::decode(
+            &self.component("video_vae/source"),
+            &video,
+            shape.video_t as usize,
+            latent_h as usize,
+            latent_w as usize,
+            arms,
+        )
+        .map_err(|error| EngineError::new(format!("video VAE: {error}")))?;
         let video_seconds = video_started.elapsed().as_secs_f64();
 
         let decoded_frames = small(decoded.frames)?;
@@ -513,60 +451,9 @@ impl Engine {
             load_seconds,
             denoise_seconds,
             audio_seconds,
-            upscale_seconds,
-            upscaler_load_seconds,
-            upscaler_hit,
             video_seconds,
             mux_seconds,
         })
-    }
-
-    /// `runtime/stage2.py:58-76`: double the denoised latent in H3 space. The
-    /// upscaler is loaded once per checkpoint and geometry and then held, the
-    /// same rule the prepared DiT follows; a second request with the same
-    /// geometry pays only the forward.
-    ///
-    /// The forward runs on the upscaler's own device context, so the engine
-    /// carries the values across the boundary as the two-process route carries
-    /// a file: F32 in, BF16 at the checkpoint's boundary, F32 out.
-    fn upscale(
-        &mut self,
-        request: &Upscale,
-        geometry: &ltx_adapter::Geometry,
-        latent: &[f32],
-    ) -> Result<(Vec<f32>, f64, f64, bool), EngineError> {
-        let key = UpscalerKey {
-            checkpoint: request.checkpoint.clone(),
-            geometry: geometry.clone(),
-        };
-        let hit = self.upscaler.as_ref().is_some_and(|held| held.0 == key);
-
-        let mut load_seconds = 0.0;
-        if !hit {
-            // Both models own device memory; one is held at a time, as with the
-            // prepared DiT.
-            self.upscaler = None;
-            let started = Instant::now();
-            let upscaler = Upscaler::load(&request.checkpoint, UpscalerArm::Bf16, geometry)
-                .map_err(|error| EngineError::new(format!("upscaler: {error}")))?;
-            load_seconds = started.elapsed().as_secs_f64();
-            eprintln!(
-                "UPSCALER load={load_seconds:.3}s canvas={}x{}",
-                geometry.canvas_width, geometry.canvas_height
-            );
-            self.upscaler = Some((key, upscaler));
-        }
-
-        let started = Instant::now();
-        let doubled = self
-            .upscaler
-            .as_ref()
-            .expect("the upscaler was just inserted")
-            .1
-            .upscale(latent)
-            .map_err(|error| EngineError::new(format!("upscale: {error}")))?;
-
-        Ok((doubled, started.elapsed().as_secs_f64(), load_seconds, hit))
     }
 
     /// Read, encode and jitter the ordered references (`h3.c:1027-1200`).
@@ -820,7 +707,7 @@ impl RenderReport {
     pub fn summary(&self) -> String {
         format!(
             "frames={} evaluated={} text={:.3}s{} load={:.3}s{} denoise={:.3}s \
-             audio={:.3}s upscale={:.3}s{} video={:.3}s mux={:.3}s scale=1.0000",
+             audio={:.3}s video={:.3}s mux={:.3}s scale=1.0000",
             self.frames,
             self.evaluated,
             self.text_seconds,
@@ -829,8 +716,6 @@ impl RenderReport {
             if self.prepared_hit { " (hit)" } else { "" },
             self.denoise_seconds,
             self.audio_seconds,
-            self.upscale_seconds,
-            if self.upscaler_hit { " (hit)" } else { "" },
             self.video_seconds,
             self.mux_seconds,
         )

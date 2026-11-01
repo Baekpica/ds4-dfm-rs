@@ -1,14 +1,11 @@
 //! Does the resident engine pay the prompt encode and the DiT load once?
 //!
 //! Usage: h3_engine_gate [--width N --height N --frames N --steps N]
-//!          [--upscaler FILE]
 //!
 //! One `EngineHandle` renders the same request twice and prints both phase
 //! reports. The second render must hit the prompt embedding and the prepared
 //! DiT, and both renders must produce the same media hashes: residency is
-//! worth nothing if it changes the clip. `--upscaler` runs the release's
-//! second stage, so the canvas is the draft's and the same rules cover the
-//! upscaler it holds.
+//! worth nothing if it changes the clip.
 //!
 //! Live gate: it needs the FastH3 checkpoint and a GPU. The checkpoint is
 //! named by the environment, never by a path in this file: `H3_MODEL` for the
@@ -21,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ds4_core::minimax_h3::dit::{Attention, VaeAttention, VaeGemm};
-use ds4_core::minimax_h3::engine::{EngineHandle, RenderReport, RenderRequest, Upscale};
+use ds4_core::minimax_h3::engine::{EngineHandle, RenderReport, RenderRequest};
 use ds4_core::minimax_h3::render::Encode;
 use ds4_core::minimax_h3::text_forward::Encoder;
 
@@ -40,7 +37,6 @@ fn main() -> ExitCode {
     let mut height = HEIGHT;
     let mut frames = FRAMES;
     let mut steps = STEPS;
-    let mut upscaler: Option<PathBuf> = None;
     let mut vae_attention = Some(VaeAttention::Tensor);
     let mut vae_gemm = Some(VaeGemm::Reduced);
 
@@ -60,16 +56,6 @@ fn main() -> ExitCode {
             "--height" => height = value("--height").unwrap_or(height as i64) as i32,
             "--frames" => frames = value("--frames").unwrap_or(frames as i64) as i32,
             "--steps" => steps = value("--steps").unwrap_or(steps as i64) as usize,
-            // The stage-2 upscaler: with it the request pays the release's
-            // route (draft canvas, doubled decode); without it the draft is
-            // decoded, which is the cheaper residency check.
-            "--upscaler" => match argv.next() {
-                Some(path) => upscaler = Some(PathBuf::from(path)),
-                None => {
-                    eprintln!("--upscaler needs a checkpoint path");
-                    return ExitCode::from(2);
-                }
-            },
             // The decoder's arms. The gate keeps the campaign's fast arm so a
             // repeat of the residency numbers stays comparable; `env` leaves
             // them to `H3_VAE_ATTENTION`/`H3_VAE_GEMM`, which is the only way
@@ -103,7 +89,7 @@ fn main() -> ExitCode {
             "-h" | "--help" => {
                 println!(
                     "usage: h3_engine_gate [--width N --height N --frames N --steps N] \
-                     [--upscaler FILE] [--vae-arms env] [--vae-attention scalar|tensor] \
+                     [--vae-arms env] [--vae-attention scalar|tensor] \
                      [--vae-gemm fp32|bf16]"
                 );
                 return ExitCode::SUCCESS;
@@ -134,17 +120,13 @@ fn main() -> ExitCode {
     };
 
     println!(
-        "ENGINE model={} canvas={}x{}x{} steps={} seed={} upscaler={}",
+        "ENGINE model={} canvas={}x{}x{} steps={} seed={}",
         model.display(),
         width,
         height,
         frames,
         steps,
-        SEED,
-        upscaler
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "none".to_string())
+        SEED
     );
 
     let engine = match EngineHandle::spawn(&model) {
@@ -177,9 +159,6 @@ fn main() -> ExitCode {
             attention: Attention::Tensor,
             vae_attention,
             vae_gemm,
-            upscale: upscaler.as_ref().map(|checkpoint| Upscale {
-                checkpoint: checkpoint.clone(),
-            }),
             text_encoder: encoder.clone(),
             encode: Encode::default(),
             output: dir.join(format!("turn-{turn}.mp4")),
@@ -209,25 +188,15 @@ fn main() -> ExitCode {
         media(first),
         media(second)
     );
-    println!(
-        "UPSCALE first_load={:.3}s second_load={:.3}s hit={} seconds={:.3}/{:.3}",
-        first.upscaler_load_seconds,
-        second.upscaler_load_seconds,
-        second.upscaler_hit,
-        first.upscale_seconds,
-        second.upscale_seconds
-    );
-
-    let residency =
-        second.text_hit && second.prepared_hit && (upscaler.is_none() || second.upscaler_hit);
+    let residency = second.text_hit && second.prepared_hit;
 
     if residency && identical {
         println!("RESULT PASS residency");
         ExitCode::SUCCESS
     } else {
         println!(
-            "RESULT FAIL text_hit={} prepared_hit={} upscaler_hit={} identical={}",
-            second.text_hit, second.prepared_hit, second.upscaler_hit, identical
+            "RESULT FAIL text_hit={} prepared_hit={} identical={}",
+            second.text_hit, second.prepared_hit, identical
         );
         ExitCode::FAILURE
     }

@@ -38,8 +38,8 @@ against 21.7-22.0 s).
 
 The defect the operator saw is seed 42's short prompt: at 0.5 s the head is
 inside the body and at 1.0 s there is a second tail mass at the lower left.
-The same latent re-rendered here reproduces it exactly, and the upscale that
-carried it to 1344x768 changes nothing, so the defect is in the draft.
+The same latent re-rendered here reproduces it exactly, and the 1344x768
+render changes nothing, so the defect is in the draft.
 
 It is intermittent, not systematic. Of the four short-prompt 4-step seeds,
 one (42) shows it and three (43, 44, 45) are clean at all five times. Of the
@@ -93,7 +93,7 @@ release's stage 1 runs every step sparse on purpose
 
 ## 5. The product clip
 
-The adopted recipe rendered end to end, FP8 stage 1 plus the structured
+The adopted recipe rendered end to end, FP8 DiT plus the structured
 prompt, seed 42: `outputs/faithful-fp8-structured-1344x768.mp4`, 4,460,596 B,
 sha256 `8d818c8c...`, 5.175 s, H.264 1344x768 + AAC 32 kHz stereo, decode
 clean. Phases: TEXT 15.696 (187 tokens), LOAD 28.974 (cold), DENOISE 15.898
@@ -106,8 +106,8 @@ At 1.0 s the two clips separate in a crop of the same region: the short-prompt
 arm has a buried head and a stair-stepped silhouette (what the operator
 described as bad blurry pixels), the structured one has a formed head with
 ears, eye and muzzle, fur texture along the body, and a clean silhouette. The
-upscaler reproduces whatever structure the draft carries, so the alias comes
-from the draft and the prompt is what removes it.
+1344x768 render reproduces whatever structure the draft carries, so the alias
+comes from the draft and the prompt is what removes it.
 
 Its sharpness number is 15.45 against 20.64 for the short-prompt clip, and
 that is not evidence of a softer picture: the aliased silhouette is a hard
@@ -119,6 +119,5 @@ pictures of one scene, and these are two scenes.
 - The defect rate at 4 steps is estimated from four seeds; six would say
   whether it is one in four or one in ten.
 - Whether sparsity contributes needs a dense 4-step arm at seeds 44 and 45.
-- The FP8 stage-1 arm's seed-42 clip was clean at all four sampled times
-  (`docs/minimax-h3/sol-attn-paper-2026-10-31.md` section 1), so a structured
-  prompt under FP8 is the product recipe to render next.
+- The FP8 arm's seed-42 clip was clean at all four sampled times, so a
+  structured prompt under FP8 is the product recipe to render next.

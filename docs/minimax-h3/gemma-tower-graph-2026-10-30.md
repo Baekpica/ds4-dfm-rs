@@ -147,7 +147,7 @@ a deep run is gated on its state hashes instead, against the operator's golden.
 ## 7. Measurements
 
 Both hosts, the same checkpoint
-(`gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors`, 15,372,969,374 B).
+(the released Gemma-4-12B INT8 convrot shard, 15,372,969,374 B).
 The tower reads 994 of its tensors, 12,923,715,168 B:
 
 | Run | vizzio sm_89 | Spark sm_121 |
