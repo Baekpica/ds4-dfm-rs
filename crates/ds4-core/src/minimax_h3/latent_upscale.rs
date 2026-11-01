@@ -438,7 +438,10 @@ impl Upscaler {
                 // On the F16 arm the weight never leaves the checkpoint's own
                 // representation: the permutation is a gather, so it runs on
                 // the raw half words and the upload needs no rounding at all.
-                let weight = if half {
+                // Only the 3x3x3 weights take that route; a 1x1x1 is the
+                // pointwise product, which goes through the VAE's F32 linear.
+                let half_weight = half && kernel == 3;
+                let weight = if half_weight {
                     let mut words = bits(&name, &shape)?;
                     if kernel == 3 {
                         words = permute_kernel(&words, output as usize, input as usize, 3);
