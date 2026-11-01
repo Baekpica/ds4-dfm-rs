@@ -353,18 +353,17 @@ impl Upscaler {
     /// directory of shards with exact shape checks per tensor.
     pub fn open(dir: &Path, gpu: Gpu) -> Result<Upscaler, UpscaleError> {
         let mode = std::env::var("H3_UPSCALER_GEMM").unwrap_or_default();
-        // `f16` halves the operands the convolutions' GEMM reads and moves it to
-        // the half-precision tensor cores; `t*` is the TF32 class, plain `f32`
-        // (and unset) the F32 one. `f16` is tested first: it starts with the
-        // same letter `f32` does.
-        let half = mode.starts_with("f16") || mode.starts_with("h");
-        let tf32 = half || mode.starts_with('t') || mode.starts_with('T') || mode.is_empty();
-        // The measured arms: fp32 rows 12.36 s, fp32 columns 12.36 s, tf32 rows
-        // 12.31 s, tf32 columns 7.51 s, at 2.2e-6, 2.2e-6, 6.1e-5 and 6.1e-5
-        // relative error against the f64 reference. The column-major request is
-        // the one cuBLASLt answers with a TF32 tensor-core kernel, and it is
-        // the reference implementation's own precision class, so it is the
-        // default; `rows` is the arm that shows what the orientation costs.
+        // The default is F16, and it is both the fastest arm and the released
+        // model's own precision class: the checkpoint's weights are F16 and the
+        // reference implementation computes in it. `f32`/`tf32` run the F32
+        // operands the port was first verified on; `rows` is the orientation
+        // that shows what asking cuBLASLt the untransposed question costs.
+        let half = mode.is_empty() || mode.starts_with("f16") || mode.starts_with('h');
+        let tf32 = !mode.starts_with('f') || mode.starts_with("f16");
+        // The measured arms at 32x34x58, relative error against the f64
+        // reference in brackets: fp16 columns 3.88 s (6.5e-5), tf32 columns
+        // 7.10 s (6.2e-5), fp32 columns 12.3 s (1.9e-7). The column-major
+        // request is the one cuBLASLt answers with a tensor-core kernel.
         let columns = std::env::var("H3_UPSCALER_ORIENT")
             .map(|value| value.starts_with('c') || value.starts_with('C'))
             .unwrap_or(true);
