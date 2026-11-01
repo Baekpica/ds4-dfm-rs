@@ -14,6 +14,9 @@ for exact provenance. Historical entries retain their original scope.
 - DeepSeek V4 CLI and bench prompts encode on the host; the native bridge
   drops twelve entries the Rust host no longer calls (tokenizer, stop/EOS,
   C sampler, session position, model id, distributed worker).
+- A held instance lock (`DS4_LOCK_FILE`, default `/tmp/ds4.lock`) is an
+  error from `ds4`, `ds4-bench` and `ds4-server`. Native model open used to
+  call `exit(2)` inside the FFI call, ending the host without an error.
 
 ## v0.1.5 — 2026-11-01
 

@@ -73130,7 +73130,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
-    ds4_acquire_instance_lock();
+    if (!opt->host_instance_lock) ds4_acquire_instance_lock();
 
     bool load_slice = opt->load_slice;
     uint32_t load_layer_start = opt->load_layer_start;

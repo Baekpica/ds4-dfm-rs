@@ -24,6 +24,7 @@ mod inkling;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
+mod instance_lock;
 mod iquest;
 mod layout;
 mod ling31_mtp;
@@ -716,6 +717,8 @@ pub struct Model {
     /// family.  The server boots its ctx from here.
     v41_ctx: Option<u32>,
     _distributed: Option<FfiDistributed>,
+    /// Released after the native engine is freed (fields drop after `drop`).
+    _instance_lock: std::fs::File,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -2093,6 +2096,8 @@ impl Model {
         HOST_SAMPLER.call_once(|| unsafe {
             ds4_sys::ds4_bridge_set_host_sampler(Some(sample::host_draw));
         });
+        // Taken where native took it; a held lock returns an error.
+        let instance_lock = instance_lock::acquire()?;
         let mut raw = ptr::null_mut();
         let rc = unsafe {
             match ffi_distributed.as_mut() {
@@ -2133,6 +2138,7 @@ impl Model {
             runtime_budget,
             v41_ctx: v41_wire.as_ref().map(|w| w.ctx),
             _distributed: ffi_distributed,
+            _instance_lock: instance_lock,
             _not_send: PhantomData,
         })
     }

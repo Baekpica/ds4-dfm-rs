@@ -2245,6 +2245,8 @@ mod tests {
             runtime_budget: None,
             v41_ctx: Some(4096),
             _distributed: None,
+            // Stands in for the lock; only its drop matters.
+            _instance_lock: std::fs::File::open(path).unwrap(),
             _not_send: std::marker::PhantomData,
         }
     }

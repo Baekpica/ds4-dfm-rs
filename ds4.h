@@ -254,6 +254,9 @@ typedef struct {
        fit's headroom (the prewarm's footprint is post-placement growth by
        design, exactly like the lazy first-forward costs it replaces). */
     bool defer_boot_prewarm;
+    /* The caller holds the instance lock: Rust hosts take it before open and
+       report a held lock as an error instead of exiting here. */
+    bool host_instance_lock;
     ds4_distributed_options distributed;
 } ds4_engine_options;
 

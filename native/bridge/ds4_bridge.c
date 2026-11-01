@@ -156,6 +156,7 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.vision_path = opt->vision_path;
     eopt.n_threads = opt->n_threads;
     eopt.defer_boot_prewarm = opt->defer_boot_prewarm != 0;
+    eopt.host_instance_lock = true; /* ds4-core Model::open holds it */
     eopt.power_percent = opt->power_percent;
     eopt.warm_weights = opt->warm_weights != 0;
     eopt.quality = opt->quality != 0;
