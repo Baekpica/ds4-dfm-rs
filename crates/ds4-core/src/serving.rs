@@ -675,7 +675,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
     // V4.1 has no ds4_session, but its native prompt-end checkpoint provides
     // exact prefix reuse and KVC disk restoration. Common off|exact|auto
     // controls select that checkpoint; partial forks, banks and session
-    // snapshots remain unavailable. Reuse and disk support await live gates.
+    // snapshots remain unavailable. `--serving-check` qualifies reuse and disk.
     // Embedded speculation retains its recorded greedy qualification; the
     // context comes from model metadata, and --ctx is refused.
     if variant == Variant::DeepSeek41Flash {
@@ -685,8 +685,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             banks: BankLane::Serial,
             bank_support: Support::None,
             reuse: ReuseKind::Exact,
-            reuse_support: Support::Present,
-            disk: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
             snapshot: Support::None,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
@@ -708,10 +708,10 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             variant,
             banks: BankLane::Persistent,
             bank_support: Support::Qualified,
-            reuse: ReuseKind::Exact,
+            reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
@@ -731,11 +731,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
             disk: Support::Qualified,
-            snapshot: Support::Present,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Both,
@@ -752,11 +752,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Both,
@@ -824,11 +824,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::OptIn,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
             disk: Support::Qualified,
-            snapshot: Support::Present,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
@@ -845,11 +845,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::OptIn,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
@@ -907,11 +907,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Both,
@@ -930,11 +930,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Serial,
@@ -954,11 +954,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
@@ -978,11 +978,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Serial,
@@ -1065,7 +1065,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             banks: BankLane::Persistent,
             bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
+            reuse_support: Support::Qualified,
             disk: Support::Qualified,
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
@@ -1083,10 +1083,10 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::OptIn,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
             snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
@@ -1106,8 +1106,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             bank_support: Support::None,
             reuse: ReuseKind::Exact,
             reuse_support: Support::Qualified,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
@@ -1550,10 +1550,6 @@ pub fn resolve_plan(
         // downgraded plan keeps the family's verification level.
         prefix_reuse: if reuse == ReuseKind::None {
             Support::None
-        } else if reuse == ReuseKind::Exact && caps.variant == Variant::Kexaone236B {
-            // EXAONE's existing exact path stays qualified while its new
-            // checkpoint/fork path awaits its separate live gates.
-            Support::Qualified
         } else {
             caps.reuse_support
         },
@@ -2207,9 +2203,9 @@ fn resolve_reuse(
     }
 }
 
-/// Why partial reuse cannot run in this process. Checkpoint replay lives in
-/// the bank driver and needs the runtime's checkpoint store; the serial
-/// path only ever extends an exact prefix.
+/// Why partial reuse cannot run in this process. Checkpoint forks live in
+/// the bank driver and need the runtime's checkpoint store; the serial
+/// path resumes only inside its own live state.
 #[derive(Clone, Copy)]
 enum PartialBlock {
     Lane,
@@ -2727,7 +2723,7 @@ fn measured_limits(
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
         Variant::DeepSeek41Flash => {
-            "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are present, unqualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
+            "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are qualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
         }
         Variant::NaiveN05Flash => {
             "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
@@ -2736,16 +2732,16 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "text banks are opt-in; Chat restart hits need history-stable identity; images serial"
         }
         Variant::K2Horizon375B => {
-            "32K one-bank serving is qualified; disk KV and external owner import are not"
+            "32K one-bank serving and disk KV are qualified; external owner import is not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
-        Variant::Glm53FlashVq => "Eager CUDA sparse graph follows the native 1,048,576 context; short two-bank gates qualify partial reuse and disk KV; banks, MTP and serving workload limits remain unqualified",
+        Variant::Glm53FlashVq => "Eager CUDA sparse graph follows the native 1,048,576 context; short two-bank gates qualify partial reuse and disk KV; MTP and serving workload limits remain unqualified",
         Variant::Dots3NotePrev => {
-            "text banks, local-window partial reuse and serial MTP are present but unqualified"
+            "serial MTP is present but unqualified"
         }
-        Variant::InklingSmall => "serial text snapshots present; media snapshots unsupported",
+        Variant::InklingSmall => "serial text snapshots qualified; media snapshots unsupported",
         Variant::Kexaone236B => {
-            "exact reuse qualified; LLLG partial checkpoints await live qualification"
+            "LLLG ring rewind and partial checkpoints qualified"
         }
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
@@ -2919,11 +2915,11 @@ mod tests {
     fn vq_state_caps() {
         let caps = caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
         assert_eq!(caps.banks, BankLane::Persistent);
-        assert_eq!(caps.bank_support, Support::Present);
+        assert_eq!(caps.bank_support, Support::Qualified);
         assert_eq!(caps.reuse, ReuseKind::Partial);
         assert_eq!(caps.reuse_support, Support::Qualified);
         assert_eq!(caps.disk, Support::Qualified);
-        assert_eq!(caps.snapshot, Support::Present);
+        assert_eq!(caps.snapshot, Support::Qualified);
         assert_eq!(caps.mtp_support, Support::Present);
         assert_eq!(caps.qualified_ctx, None);
         assert_eq!(caps.qualified_banks, None);
@@ -2998,10 +2994,10 @@ mod tests {
         let controls = p.to_json()["controls"].clone();
         assert_eq!(controls["native_prefill_env"], "DS4_EXAONE_PREFILL_CHUNK");
         assert_eq!(controls["scheduler_chunks"], json!([256, 512, 1024]));
-        assert_eq!(controls["prefix_reuse"], "exact");
+        assert_eq!(controls["prefix_reuse"], "partial");
         assert_eq!(controls["banks"], "persistent");
         assert_eq!(controls["mtp"], "none");
-        assert_eq!(controls["disk"], "unverified");
+        assert_eq!(controls["disk"], "qualified");
         assert!(p.env_overrides().iter().any(|(key, value)| {
             key == controls["native_prefill_env"].as_str().unwrap() && value == "1280"
         }));
@@ -3826,8 +3822,8 @@ mod tests {
             assert_eq!(p.qualified.ctx, None);
             assert_eq!(p.qualified.banks_n, None);
             assert_eq!(p.qualified.prompt, None);
-            assert_eq!(p.qualified.banks, Support::Present);
-            assert_eq!(p.qualified.prefix_reuse, Support::Present);
+            assert_eq!(p.qualified.banks, Support::Qualified);
+            assert_eq!(p.qualified.prefix_reuse, Support::Qualified);
             assert_eq!(
                 p.qualified.mtp,
                 if mtp_mode == MtpMode::On {
@@ -3974,16 +3970,19 @@ mod tests {
     }
 
     #[test]
-    fn exaone_partial_is_present() {
-        let mut req = ServingRequest::default();
-        req.prefix_reuse = PrefixReuse::Partial;
-        let p = plan(req.clone(), ModelFamily::ExaoneMoe, Variant::Kexaone236B);
+    fn present_partial_is_opt_in() {
+        let mut req = ServingRequest {
+            ctx: 2048,
+            prefix_reuse: PrefixReuse::Partial,
+            ..ServingRequest::default()
+        };
+        let p = plan(req.clone(), ModelFamily::Glm53, Variant::Glm53Flash);
         assert!(!p.has_errors());
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
         assert_eq!(p.qualified.prefix_reuse, Support::Present);
 
         req.prefix_reuse = PrefixReuse::Auto;
-        let p = plan(req, ModelFamily::ExaoneMoe, Variant::Kexaone236B);
+        let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
         assert!(!p.has_errors());
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
         assert!(p.issues.iter().any(|i| i.code == "partial_unqualified"));
@@ -4075,13 +4074,13 @@ mod tests {
     }
 
     #[test]
-    fn exaone_auto_stays_exact() {
+    fn exaone_auto_uses_partial() {
         let p = plan(
             ServingRequest::default(),
             ModelFamily::ExaoneMoe,
             Variant::Kexaone236B,
         );
-        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
         assert!(!p.has_errors());
     }
 
@@ -4106,6 +4105,7 @@ mod tests {
         assert!(!p.uses_serial_mtp());
         assert_eq!(p.qualified.banks, Support::Present);
         assert_eq!(p.qualified.disk, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
         assert_eq!(p.caps.unwrap().snapshot, Support::Present);
         assert!(p.issues.iter().any(|i| i.code == "media_serial"));
     }
@@ -4120,14 +4120,14 @@ mod tests {
     }
 
     #[test]
-    fn k2_disk_is_warning_not_silent_success() {
+    fn k2_disk_is_qualified() {
         let mut req = ServingRequest::default();
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::ExaoneMoe, Variant::K2Horizon375B);
         assert!(!p.has_errors());
         assert!(p.effective.disk);
-        assert_eq!(p.qualified.disk, Support::Present);
-        assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
+        assert_eq!(p.qualified.disk, Support::Qualified);
+        assert!(!p.issues.iter().any(|i| i.code == "disk_unverified"));
     }
 
     #[test]
@@ -4169,8 +4169,8 @@ mod tests {
         assert_eq!(caps.banks, BankLane::Serial);
         assert_eq!(caps.bank_support, Support::None);
         assert_eq!(caps.reuse, ReuseKind::Exact);
-        assert_eq!(caps.reuse_support, Support::Present);
-        assert_eq!(caps.disk, Support::Present);
+        assert_eq!(caps.reuse_support, Support::Qualified);
+        assert_eq!(caps.disk, Support::Qualified);
         assert_eq!(caps.snapshot, Support::None);
         assert_eq!(caps.mtp, MtpKind::Embedded);
         assert_eq!(caps.mtp_support, Support::Qualified);
@@ -4179,8 +4179,8 @@ mod tests {
         assert_eq!(caps.qualified_banks, Some(1));
 
         // Item 4: the V4.1 disk half is the native KV prefix checkpoint, not
-        // a session snapshot -- --kv-disk-dir resolves (present, not
-        // qualified), and a request without it stays off.
+        // a session snapshot -- --kv-disk-dir resolves (qualified), and a
+        // request without it stays off.
         let p = plan(
             ServingRequest {
                 kv_disk_dir: Some("/tmp/v41-kv".into()),
@@ -4191,7 +4191,7 @@ mod tests {
         );
         assert!(!p.has_errors(), "{:?}", p.issues);
         assert!(p.effective.disk);
-        assert_eq!(p.qualified.disk, Support::Present);
+        assert_eq!(p.qualified.disk, Support::Qualified);
     }
 
     #[test]
@@ -4234,8 +4234,13 @@ mod tests {
     #[test]
     fn v41_prefix_controls() {
         for (request, effective, qualified, fork) in [
-            (PrefixReuse::Auto, ReuseKind::Exact, Support::Present, "1"),
-            (PrefixReuse::Exact, ReuseKind::Exact, Support::Present, "1"),
+            (PrefixReuse::Auto, ReuseKind::Exact, Support::Qualified, "1"),
+            (
+                PrefixReuse::Exact,
+                ReuseKind::Exact,
+                Support::Qualified,
+                "1",
+            ),
             (PrefixReuse::Off, ReuseKind::None, Support::None, "0"),
         ] {
             let p = plan(
@@ -4385,7 +4390,7 @@ mod tests {
     }
 
     #[test]
-    fn dots3_banks_are_present() {
+    fn dots3_banks_are_qualified() {
         let req = ServingRequest {
             max_seqs: MaxSeqs::Fixed(2),
             prefix_reuse: PrefixReuse::Partial,
@@ -4395,8 +4400,8 @@ mod tests {
         let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
         assert!(!p.has_errors(), "{:?}", p.issues);
         assert_eq!(p.effective.max_seqs, 2);
-        assert_eq!(p.qualified.banks, Support::Present);
-        assert_eq!(p.qualified.prefix_reuse, Support::Present);
+        assert_eq!(p.qualified.banks, Support::Qualified);
+        assert_eq!(p.qualified.prefix_reuse, Support::Qualified);
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
         assert!(p
             .env_overrides()
@@ -4531,15 +4536,15 @@ mod tests {
     }
 
     #[test]
-    fn inkling_disk_is_present() {
+    fn inkling_disk_is_qualified() {
         let mut req = ServingRequest::default();
         req.ctx = 1024;
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::Inkling, Variant::InklingSmall);
         assert!(!p.has_errors(), "{:?}", p.issues);
         assert!(p.effective.disk);
-        assert_eq!(p.qualified.disk, Support::Present);
-        assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
+        assert_eq!(p.qualified.disk, Support::Qualified);
+        assert!(!p.issues.iter().any(|i| i.code == "disk_unverified"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 // Only catalog membership is listed here. Every capability and bound comes
 // from the same policy used by admission and ds4-perf serving-controls.
-const VARIANTS: [Variant; 21] = [
+const VARIANTS: [Variant; 22] = [
     Variant::Flash,
     Variant::Pro,
     Variant::DeepSeek41Flash,
@@ -16,6 +16,7 @@ const VARIANTS: [Variant; 21] = [
     Variant::Dots3NotePrev,
     Variant::Qwen38FlashNext,
     Variant::Glm53Flash,
+    Variant::Glm53FlashVq,
     Variant::K2Horizon375B,
     Variant::InklingSmall,
     Variant::Step37Flash,
@@ -43,6 +44,9 @@ plan's `controls`, which also supply `ds4-perf serving-controls`.\n\
 `qualified` describes the recorded artifact and workload scope, not every\n\
 quantization, context, concurrency, media input or feature combination.\n\
 `unverified` means implemented (`Support::Present`); `none` means unsupported.\n\
+`ds4 --serving-check` runs every bank, reuse, disk and snapshot item and\n\
+prints declared beside measured; the [2026-11-02 record](benchmarks/serving-checklist-2026-11-02/README.md)\n\
+lists the artifacts it covers.\n\
 Consult the [release ledger](releases/v0.1.3.md) and\n\
 [family contracts](ds4-dfm-model-families.md) for evidence and limits.\n\n\
 ## Execution\n\n\

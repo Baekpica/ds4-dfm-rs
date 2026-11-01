@@ -73,6 +73,18 @@ for exact provenance. Historical entries retain their original scope.
   and A.X-K2: no layer slides, so no checkpoint is needed.
 - Step 3.7's serial restore no longer admits a rewind below the restored
   prefix: its rings get back one window, as the bank restore assumed.
+- Declarations follow the check: every bank, reuse, disk and snapshot item
+  worked on the 19 local artifacts
+  ([record](docs/benchmarks/serving-checklist-2026-11-02/README.md)), so
+  `serving_caps` marks them qualified. On the bank lane `--prefix-reuse
+  auto` now selects partial reuse for K-EXAONE, dots3, MiMo-V2.6-Flash,
+  IQuest, Ling-3.1 VQ, Beam VQ, MiniMax VQ and A.X-K2 VQ. The VQ families
+  keep their boot plan: Ling-3.1 and Beam map checkpoint slots only from
+  memory their banks leave, MiniMax and A.X-K2 need none; the other four
+  quote their pools at boot, as Solar, Motif-3 and Qwen do. Disk KV no
+  longer warns `disk_unverified` for these families, K2-Horizon, Inkling
+  and V4.1. GLM 5.3, DeepSeek V4 and Bonsai had no local artifact and keep
+  their declarations.
 
 ## v0.1.5 — 2026-11-01
 

@@ -152,8 +152,8 @@ from `ServingCaps` (`crates/ds4-core/src/serving.rs:663-684`).
 | property | value |
 | --- | --- |
 | banks | serial / none |
-| prefix reuse (plan surface) | exact / present; auto, exact and off controls |
-| disk KV | present, not qualified (`--kv-disk-dir`) |
+| prefix reuse (plan surface) | exact / qualified; auto, exact and off controls |
+| disk KV | qualified (`--kv-disk-dir`) |
 | snapshots | none |
 | MTP | embedded, qualified |
 | speculation lane | serial, draft min 1 |
@@ -270,7 +270,7 @@ noted, all recorded in the port plan:
   then the cross-block prefetch (below).
 - KV prefix reuse (unit U-B): the in-process checkpoint gated
   (`tests/ds41_kv_reuse_gate.sh`); the disk half rides the KVC store when
-  `--kv-disk-dir` is set (present, not qualified).
+  `--kv-disk-dir` is set (qualified by `ds4 --serving-check`).
 - Lifecycle (unit Z) and post-train (PT) are recorded in the port plan §6.18
   and [the post-train plan](ds41-posttrain-plan.md).
 
