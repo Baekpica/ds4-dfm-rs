@@ -104,6 +104,11 @@ owns the tool loop.
   unsupported settings and qualify each combination with live serving gates.
   Consult original upstream ds4 for serving flag conventions, without assuming
   that it implements the new model family.
+- Run `ds4 --serving-check` on every family's artifact: it runs each reuse,
+  disk KV, snapshot and bank item whatever `serving_caps` declares and prints
+  both. A declared item that fails is fixed or no longer declared; one that
+  works undeclared is a declaration gap. Reuse, disk, snapshot and bank
+  support is qualified by this check, not by hand.
 - Keep per-kernel diagnostic knobs and kill switches family-specific. Select
   optimizations from each family's measured prefill and decode bottlenecks.
 - Context length defaults to the model's native maximum (for example

@@ -8,9 +8,9 @@ The fixture uses the actual returned assistant message, including reasoning
 and whitespace.
 Its profiles are hand-written and cover 9 of the 19 families whose serving
 caps declare reuse, so a pass says nothing about the rest; a distributed
-coordinator cannot run it (native refuses banks for distributed roles). The
-replacement is a common host check over every family that declares reuse
-(`docs/rust-migration/C_CONTINUATION.md`, reuse check gap).
+coordinator cannot run it (native refuses banks for distributed roles).
+`ds4 --serving-check` is the common check over every family's serving caps;
+this gate remains for the server's answers and retire keys.
 Arithmetic correctness and byte-exact warm/cold output comparison are separate
 checks. A wrong answer on both paths fails arithmetic even when parity passes.
 Timings are functional observations, not a performance qualification.

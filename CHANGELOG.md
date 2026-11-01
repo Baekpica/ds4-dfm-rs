@@ -48,8 +48,15 @@ for exact provenance. Historical entries retain their original scope.
 - `--dist-replay-check` is deprecated: Rust hosts reject it. It only ran in
   the C CLI's one-shot coordinator, where it compared two fresh prefills;
   Rust hosts accepted it and did nothing. The property it guarded, reused or
-  restored state matching a fresh run, is recorded as a common host check to
-  build (`docs/rust-migration/C_CONTINUATION.md`).
+  restored state matching a fresh run, is now checked for every family by
+  `ds4 --serving-check`.
+- `ds4 --serving-check` runs every ServingCaps checklist item on the loaded
+  model, declared or not, and prints the declaration beside the result:
+  prefix, rewind and continue reuse, session disk KV and snapshots, and bank
+  warm, fork, partial, disk and width. A declared item that fails exits 1.
+  A row agrees when its top-1 is a no-reuse reference's; a flip inside the
+  spread between two accepted arithmetics (fresh prefill, decode-fed) is a
+  near tie. Each flip prints with its margins.
 - Serial lanes resume at the common prefix in fourteen more families instead
   of prefilling every non-extending prompt from zero. A.X-K2, MiniMax, Beam,
   Naive, Motif-3, dots3, Step 3.7, IQuest and K2-Horizon keep positional

@@ -75,6 +75,7 @@ pub struct ShadowArgs {
     pub dump_logprobs: Option<String>,
     pub dump_logits: Option<String>,
     pub dump_tokens: bool,
+    pub serving_check: bool,
     pub logprobs_top_k: i32,
     pub temp: f32,
     pub top_p: f32,
@@ -144,6 +145,7 @@ impl Default for ShadowArgs {
             dump_logprobs: None,
             dump_logits: None,
             dump_tokens: false,
+            serving_check: false,
             logprobs_top_k: 20,
             temp: 1.0,
             top_p: 1.0,
@@ -330,6 +332,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
                 parsed.prompt_file = Some(require_value(&arg, iter.next())?);
             }
             "--dump-tokens" => parsed.dump_tokens = true,
+            "--serving-check" => parsed.serving_check = true,
             "--dump-logits" => {
                 parsed.dump_logits = Some(
                     iter.next()
@@ -1334,21 +1337,63 @@ fn write_logits_file(path: &str, body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The chat prompt the logits dump and the serving check prefill.
+fn chat_prompt(
+    model: &ds4_core::Model,
+    args: &ShadowArgs,
+    prompt_text: &str,
+) -> Result<ds4_core::TokenBuffer, String> {
+    const THINK_NONE: i32 = 0;
+    const THINK_LOW: i32 = 1;
+
+    let think = if args.nothink { THINK_NONE } else { THINK_LOW };
+    if is_rendered_chat_prompt(prompt_text) {
+        model.tokenize_rendered_chat(prompt_text)
+    } else {
+        model.encode_chat_prompt(Some(args.system.as_str()), prompt_text, think)
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// `--serving-check`: the ServingCaps checklist on this model.
+fn run_serving_check(
+    model: &ds4_core::Model,
+    args: &ShadowArgs,
+    model_path: &str,
+    prompt_text: &str,
+) -> Result<i32, String> {
+    let list = if model.shape().variant == ds4_core::Variant::DeepSeek41Flash {
+        // V4.1's chat rendering is not ported; its items need only tokens.
+        let prompt = model.vocab().encode_text(prompt_text);
+        let base = ds4_core::V41RunOptions {
+            engram_dir: args.engram_dir.as_deref(),
+            no_engram: args.no_engram,
+            graph: Some(!args.no_graph),
+            zchain: args.zchain.as_deref(),
+            posttrain: args.posttrain.as_deref(),
+            ..Default::default()
+        };
+        ds4_core::serving_check_v41(model, std::path::Path::new(model_path), &base, &prompt)
+    } else {
+        let prompt = chat_prompt(model, args, prompt_text)?;
+        let ctx = if args.ctx_set {
+            args.ctx
+        } else {
+            ds4_core::checklist_ctx(prompt.len())
+        };
+        ds4_core::serving_check(model, prompt.as_slice(), ctx)
+    }
+    .map_err(|e| e.to_string())?;
+    print!("{list}");
+    Ok(if list.passed() { 0 } else { 1 })
+}
+
 fn run_logits_dump(
     model: &ds4_core::Model,
     args: &ShadowArgs,
     prompt_text: &str,
 ) -> Result<i32, String> {
-    const THINK_NONE: i32 = 0;
-    const THINK_LOW: i32 = 1;
-
-    let think = if args.nothink { THINK_NONE } else { THINK_LOW };
-    let prompt = if is_rendered_chat_prompt(prompt_text) {
-        model.tokenize_rendered_chat(prompt_text)
-    } else {
-        model.encode_chat_prompt(Some(args.system.as_str()), prompt_text, think)
-    }
-    .map_err(|e| e.to_string())?;
+    let prompt = chat_prompt(model, args, prompt_text)?;
     let n_prompt = prompt.len() as i32;
     let ctx = args.ctx;
     let mut session = session_ready(model, args, ctx)?;
@@ -1407,6 +1452,7 @@ Usage:
   {name} --cuda -m MODEL [--nothink] --dump-logits F \\
       (-p PROMPT | --prompt-file FILE)
   {name} -m MODEL --dump-tokens (-p PROMPT | --prompt-file FILE)
+  {name} --cuda -m MODEL --serving-check (-p PROMPT | --prompt-file FILE)
 
 C-compatible flags (same names as `ds4 --help`):
   -m, --model FILE        GGUF model path. Default: ds4flash.gguf
@@ -1439,6 +1485,10 @@ selected ids with top_k 0: that bridge hands the run no logits.
 --dump-logits writes full next-token logits as JSON after prompt prefill.
 --dump-tokens tokenizes -p/--prompt-file exactly as written, then exits
 without inference.
+--serving-check runs every ServingCaps checklist item (reuse, disk, snapshot,
+banks) and prints what the caps declare beside what works; it exits 1 when a
+declared item fails or reused state moves the output. ctx fits the prompt
+unless -c is explicit.
 One-shot sampling uses the native C sampler; an explicit --seed is
 reproducible across the C and Rust hosts.
 Thinking tags follow the C contract: TTY greys the body; pipes stay uncolored.
@@ -1608,6 +1658,9 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     if !worker && args.dump_logits.is_some() && generation_text.is_none() {
         return Err("--dump-logits requires -p or --prompt-file".into());
     }
+    if !worker && args.serving_check && generation_text.is_none() {
+        return Err("--serving-check requires -p or --prompt-file".into());
+    }
     /* The V4.1 route has no prompt: its run input is --gen-ids, and the dump
      * rides that (V41Dump), so the prompt requirement is the generic one's. */
     if !worker
@@ -1675,6 +1728,15 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
         return Err(
             "ds4-rs: --image needs --vision-golden (the one-shot image request is not ported yet)"
                 .into(),
+        );
+    }
+
+    if args.serving_check && !worker {
+        return run_serving_check(
+            &model,
+            &args,
+            model_path,
+            generation_text.as_deref().unwrap_or(""),
         );
     }
 

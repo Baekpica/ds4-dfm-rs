@@ -1162,6 +1162,17 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
     }
 }
 
+/// The switch a family's native reads before it builds banks; None where
+/// banks need no opt-in.
+pub(crate) fn bank_opt_in_env(family: ModelFamily) -> Option<&'static str> {
+    match family {
+        ModelFamily::Dots3Note => Some("DS4_DOTS3_BATCH"),
+        ModelFamily::Step37 => Some("DS4_STEP37_BATCH"),
+        ModelFamily::Qwen4Exp => Some("DS4_QWEN_BATCH"),
+        _ => None,
+    }
+}
+
 pub fn caps_from_shape(shape: Shape) -> ServingCaps {
     serving_caps(shape.family, shape.variant)
 }
@@ -1718,15 +1729,11 @@ impl ResolvedPlan {
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
         // serial MTP; Qwen width 1 is still a bank.
-        if matches!(
-            self.family,
-            Some(ModelFamily::Step37 | ModelFamily::Dots3Note)
-        ) {
-            let key = if self.family == Some(ModelFamily::Dots3Note) {
-                "DS4_DOTS3_BATCH"
-            } else {
-                "DS4_STEP37_BATCH"
-            };
+        if let Some(key) = self
+            .family
+            .filter(|f| matches!(f, ModelFamily::Step37 | ModelFamily::Dots3Note))
+            .and_then(bank_opt_in_env)
+        {
             out.push((
                 key.into(),
                 if self.effective.max_seqs > 1 {
@@ -1736,9 +1743,13 @@ impl ResolvedPlan {
                 },
             ));
         }
-        if self.family == Some(ModelFamily::Qwen4Exp) {
+        if let Some(key) = self
+            .family
+            .filter(|f| *f == ModelFamily::Qwen4Exp)
+            .and_then(bank_opt_in_env)
+        {
             out.push((
-                "DS4_QWEN_BATCH".into(),
+                key.into(),
                 if self.requested.backend == Backend::Cuda
                     && self.effective.max_seqs >= 1
                     && self.requested.max_seqs != MaxSeqs::Off
