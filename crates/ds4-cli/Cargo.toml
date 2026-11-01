@@ -20,11 +20,6 @@ path = "src/bin/ds4-bench-rs.rs"
 required-features = ["native"]
 
 [[bin]]
-name = "ds4-agent-rs"
-path = "src/bin/ds4-agent-rs.rs"
-required-features = ["native"]
-
-[[bin]]
 name = "h3-rs"
 path = "src/bin/h3-rs.rs"
 required-features = ["native"]
@@ -121,8 +116,6 @@ required-features = ["native"]
 [dependencies]
 ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
-ds4-kv = { path = "../ds4-kv" }
-ds4-web = { path = "../ds4-web" }
 ds4-server = { path = "../ds4-server" }
 serde_json = "1"
 libc = "0.2"

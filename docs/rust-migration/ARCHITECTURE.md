@@ -22,7 +22,7 @@ deletes its C-oracle parity case instead of mirroring into C.
 ## Ownership and execution
 
 ```text
-CLI / API clients / coding agent
+CLI / API clients (agents, frameworks)
                 |
 Rust host: model/session ownership, scheduling, serving,
            KV/state policy, distributed orchestration
@@ -61,21 +61,23 @@ another imperative input renderer.
 
 | Crate | Responsibility |
 |---|---|
-| `ds4-cli` | CLI, benchmark, coding agent |
+| `ds4-cli` | CLI and benchmark |
 | `ds4-server` | HTTP parsing/rendering, admission, scheduling, streaming, tools |
 | `ds4-core` | Safe model/session API, catalog, tokenizer, host state |
 | `ds4-kv` | KVC metadata, persistence policy, indexes and codecs |
 | `ds4-dist` | Distributed protocol and blocking orchestration |
-| `ds4-web` | Blocking agent web helpers |
 | `ds4-sys` | ds4 native inference bindings and reviewed OS adapters |
 | `ds4-perf` | Inspect, scout, compare and bounded performance experiments |
 | `ds4-perf-gpu` | Optional CUDA calibration and CUPTI collection via cudarc |
 
-`make` builds Rust production names `ds4`, `ds4-server`, `ds4-bench`, and
-`ds4-agent` when a backend build is selected. Cargo retains the `*-rs` binary
+`make` builds Rust production names `ds4`, `ds4-server` and `ds4-bench`
+when a backend build is selected. Cargo retains the `*-rs` binary
 names; Make provides those names as compatibility aliases. `ds4-c`,
-`ds4-c`, `ds4-server-c`, `ds4-bench-c`, and `ds4-agent-c` are deprecated:
+`ds4-server-c` and `ds4-bench-c` are deprecated:
 Rust owns host behavior, and they receive no features or fixes.
+ds4 is a serving engine: the built-in coding agent (`ds4-agent`, its C
+oracle and `ds4-web`) was removed; agents connect over HTTP and own their
+tool loop.
 `ds4-eval` and native family/kernel tests remain native.
 
 `ds4_cuda.cu`, `cuda/mmq/`, and other hardware kernels are not Rust migration

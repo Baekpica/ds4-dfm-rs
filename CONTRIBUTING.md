@@ -13,7 +13,7 @@ regression only when a necessary correctness repair justifies it explicitly.
 Host behavior (HTTP, parsing, templates, sampling, scheduling, KV policy,
 tools, CLI) is written once, in Rust. Native C/CUDA keeps only work that
 computes on tensors or devices. The C host executables (`ds4-c`,
-`ds4-server-c`, `ds4-bench-c`, `ds4-agent-c`) and C host logic in `ds4.c`
+`ds4-server-c`, `ds4-bench-c`) and C host logic in `ds4.c`
 that Rust now owns, such as the C sampler, are deprecated: do not add
 features or fixes to them. Move remaining host logic from C to Rust when a
 change touches it.
@@ -58,7 +58,7 @@ make cuda-spark                     # DGX Spark / GB10
 
 CUDA builds produce the Rust hosts, `ds4-eval` and the weight server. The
 deprecated C host oracles build only on request
-(`make ds4-c ds4-server-c ds4-bench-c ds4-agent-c`); proof and diagnostic
+(`make ds4-c ds4-server-c ds4-bench-c`); proof and diagnostic
 targets that use them declare their own dependencies.
 
 On macOS, `make` selects the inherited Metal build. `make cpu` builds the

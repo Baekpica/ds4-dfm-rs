@@ -109,9 +109,8 @@ the complete rendered token sequence; a matching text prefix alone is not
 sufficient. Changed prefixes are refilled. Invalid tool output is discarded
 before a non-streaming correction retry re-renders the valid conversation.
 
-The built-in `ds4-agent` executor implements DeepSeek DSML and rejects other
-families before loading weights. Use HTTP tool clients for their supported
-output protocols. The retained imperative renderers serve the DeepSeek
+Tool loops run in HTTP clients for each family's output protocol; the
+server frames calls and never executes them. The retained imperative renderers serve the DeepSeek
 exception and C parity fixtures, not the production Jinja path.
 
 ## Verification
