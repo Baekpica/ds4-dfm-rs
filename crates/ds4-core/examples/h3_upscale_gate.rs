@@ -33,10 +33,24 @@ const WIDTH_OUT: usize = 4;
 
 fn main() {
     let mut dir: Option<PathBuf> = None;
+    let mut bench: Option<(usize, usize, usize)> = None;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         match flag.as_str() {
             "--dir" => dir = argv.next().map(PathBuf::from),
+            "--bench" => {
+                let mut shape = [0usize; 3];
+                for slot in shape.iter_mut() {
+                    *slot = argv
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| {
+                            eprintln!("--bench wants time height width");
+                            std::process::exit(2);
+                        });
+                }
+                bench = Some((shape[0], shape[1], shape[2]));
+            }
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -44,13 +58,54 @@ fn main() {
         }
     }
     let dir = dir.unwrap_or_else(|| PathBuf::from("/mnt/h3-artifacts/models/latent_upscale"));
-    match run(&dir) {
+    let outcome = match bench {
+        Some((time, height, width)) => bench_run(&dir, time, height, width),
+        None => run(&dir),
+    };
+    match outcome {
         Ok(()) => {}
         Err(detail) => {
             eprintln!("FAIL {detail}");
             std::process::exit(1);
         }
     }
+}
+
+/// Real-size timing: the same resizer, a latent of the given shape, doubled in
+/// height and width. No reference here; this is the cost of the stage.
+fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(), String> {
+    let voxels = time * height * width;
+    let latent: Vec<f32> = (0..LATENT_CHANNELS * voxels)
+        .map(|index| {
+            let channel = index / voxels;
+            LATENTS_MEAN[channel] + ((index % 97) as f32 / 97.0 - 0.5) * LATENTS_STD[channel]
+        })
+        .collect();
+    let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
+    let started = std::time::Instant::now();
+    let upscaler = Upscaler::open(dir, gpu).map_err(|detail| detail.to_string())?;
+    let load = started.elapsed().as_secs_f64();
+
+    let mut best = f64::MAX;
+    for attempt in 0..2 {
+        let started = std::time::Instant::now();
+        let output = upscaler
+            .upscale(&latent, time, height, width, height * 2, width * 2)
+            .map_err(|detail| detail.to_string())?;
+        let elapsed = started.elapsed().as_secs_f64();
+        best = best.min(elapsed);
+        let mean = output.values.iter().sum::<f32>() / output.values.len() as f32;
+        println!(
+            "run {}: {time} x {height} x {width} -> {} x {} x {} in {:.3}s (mean {mean:.4})",
+            attempt + 1,
+            output.time,
+            output.height,
+            output.width,
+            elapsed
+        );
+    }
+    println!("load {load:.2}s, best {best:.3}s for {voxels} latent voxels");
+    Ok(())
 }
 
 fn fail<T>(detail: impl Into<String>) -> Result<T, String> {
