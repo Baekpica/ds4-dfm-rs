@@ -495,6 +495,86 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_zero_pad3d(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        pad_depth: u32,
+        pad_height: u32,
+        pad_width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_group_norm(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_channel_affine(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        scale: *const CTensor,
+        shift: *const CTensor,
+        channels: u32,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_temporal_dwconv(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        kernel: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_resize_hw(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        batch: u32,
+        depth: u32,
+        in_height: u32,
+        in_width: u32,
+        out_height: u32,
+        out_width: u32,
+        channels: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     fn h3d_cast_f32_to_bf16(
         context: *mut Context,
         output: *mut CTensor,
@@ -3841,6 +3921,184 @@ impl Gpu {
                 )
             },
             "conv3d",
+        )
+    }
+
+    /// `h3d_zero_pad3d`: zero padding for the resizer's 3x3x3 convolutions,
+    /// channels-last, `[batch, depth, height, width, channels]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn zero_pad3d(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        pad: [u32; 3],
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_zero_pad3d(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    pad[0],
+                    pad[1],
+                    pad[2],
+                    error,
+                    size,
+                )
+            },
+            "zero pad",
+        )
+    }
+
+    /// `h3d_group_norm`: GroupNorm without the SiLU epilogue, statistics over
+    /// the whole volume per (batch, group).
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_group_norm(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    groups,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "GroupNorm",
+        )
+    }
+
+    /// `h3d_channel_affine`: `input * scale[c] + shift[c]`, the resizer's
+    /// embedding modulation.
+    pub fn channel_affine(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        scale: &Tensor,
+        shift: &Tensor,
+        channels: u32,
+        elements: usize,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_channel_affine(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    scale.raw(),
+                    shift.raw(),
+                    channels,
+                    elements,
+                    error,
+                    size,
+                )
+            },
+            "channel affine",
+        )
+    }
+
+    /// `h3d_temporal_dwconv`: the resizer's depthwise convolution over time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn temporal_dwconv(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        kernel: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_temporal_dwconv(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    kernel,
+                    error,
+                    size,
+                )
+            },
+            "temporal depthwise conv",
+        )
+    }
+
+    /// `h3d_resize_hw`: trilinear resize with the temporal axis held fixed,
+    /// the upscale inside the resizer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_hw(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        batch: u32,
+        depth: u32,
+        in_height: u32,
+        in_width: u32,
+        out_height: u32,
+        out_width: u32,
+        channels: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_resize_hw(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    batch,
+                    depth,
+                    in_height,
+                    in_width,
+                    out_height,
+                    out_width,
+                    channels,
+                    error,
+                    size,
+                )
+            },
+            "trilinear resize",
         )
     }
 

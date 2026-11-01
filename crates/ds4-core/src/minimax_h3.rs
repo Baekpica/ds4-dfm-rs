@@ -37,6 +37,7 @@ pub mod gemma_token;
 pub mod host;
 pub mod jobs;
 pub mod layout;
+pub mod latent_upscale;
 pub mod local_api;
 pub mod lora;
 pub mod media;

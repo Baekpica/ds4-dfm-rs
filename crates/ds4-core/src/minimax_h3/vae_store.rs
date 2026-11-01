@@ -114,6 +114,19 @@ impl Store {
         Ok(tensor)
     }
 
+    /// The tensor's raw bytes after the same exact-shape check, for a caller
+    /// whose checkpoint is not F32: the latent upscaler's is F16 and widens the
+    /// halves itself. Every other caller wants [`Store::load`].
+    pub fn raw(&self, name: &str, shape: &[u64]) -> Result<&[u8], String> {
+        self.bytes(name, shape)
+    }
+
+    /// The shape the checkpoint records for `name`, so a reference
+    /// implementation can read a tensor without restating its dimensions.
+    pub fn shape(&self, name: &str) -> Option<Vec<u64>> {
+        self.sites.get(name).map(|site| site.shape.clone())
+    }
+
     fn bytes(&self, name: &str, shape: &[u64]) -> Result<&[u8], String> {
         let site = self
             .sites

@@ -6749,3 +6749,298 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
         h3d_sol_words(sequence), scale);
     return h3d_launch_ok("Sol-Attn forward", error, error_size);
 }
+
+/* -------------------------------------------------------------------------
+ * Latent resizer (`LatentResizer3D`): the H3 latent upscaler's own layers.
+ * The decoder already supplies `h3d_conv3d`, `h3d_group_norm_silu`, `h3d_silu_f32`
+ * and `h3d_vae_linear`; these five kernels are what it does not:
+ * zero padding for the 3x3x3 convolutions, the plain GroupNorm whose output
+ * the embedding modulates, the embedding's per-channel affine, the depthwise
+ * temporal convolution, and the trilinear resize that carries the upscale.
+ * Tensors are channels-last, `[batch, depth, height, width, channels]`, the
+ * layout `h3d_conv3d` already takes.
+ * ---------------------------------------------------------------------- */
+
+/* One block per (batch, group); two accumulating passes so the variance is
+ * the mean square deviation rather than a difference of squares. */
+__device__ static float h3d_block_sum(float value) {
+    __shared__ float shared[32];
+    __syncthreads();
+    uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    if (lane == 0) shared[warp] = value;
+    __syncthreads();
+    uint32_t warps = (blockDim.x + 31u) >> 5u;
+    value = (threadIdx.x < warps) ? shared[threadIdx.x] : 0.0f;
+    if (warp == 0) {
+        for (int offset = 16; offset > 0; offset >>= 1)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (threadIdx.x == 0) shared[0] = value;
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+__global__ static void h3d_zero_pad3d_kernel(
+    float *output, const float *input, uint32_t depth, uint32_t height,
+    uint32_t width, uint32_t channels, uint32_t pad_depth, uint32_t pad_height,
+    uint32_t pad_width, uint32_t out_depth, uint32_t out_height,
+    uint32_t out_width, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t x = (uint32_t)(row % out_width);
+    row /= out_width;
+    uint32_t y = (uint32_t)(row % out_height);
+    row /= out_height;
+    uint32_t t = (uint32_t)(row % out_depth);
+    uint32_t batch = (uint32_t)(row / out_depth);
+    int it = (int)t - (int)pad_depth;
+    int iy = (int)y - (int)pad_height;
+    int ix = (int)x - (int)pad_width;
+    float value = 0.0f;
+    if (it >= 0 && iy >= 0 && ix >= 0 && it < (int)depth &&
+        iy < (int)height && ix < (int)width) {
+        value = input[((((size_t)batch * depth + (uint32_t)it) * height +
+                        (uint32_t)iy) * width + (uint32_t)ix) * channels +
+                      channel];
+    }
+    output[index] = value;
+}
+
+int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t pad_depth, uint32_t pad_height, uint32_t pad_width,
+                   char *error, size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels) {
+        return h3d_set_error(error, error_size, "invalid zero pad shape");
+    }
+    uint32_t out_depth = depth + 2u * pad_depth;
+    uint32_t out_height = height + 2u * pad_height;
+    uint32_t out_width = width + 2u * pad_width;
+    size_t input_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * out_depth * out_height * out_width,
+                      channels, &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(output, H3D_F32, output_elements)) {
+        return h3d_set_error(error, error_size, "invalid zero pad tensors");
+    }
+    h3d_zero_pad3d_kernel<<<(unsigned)((output_elements + 255) / 256), 256, 0,
+                            context->stream>>>(
+        (float *)output->data, (const float *)input->data, depth, height, width,
+        channels, pad_depth, pad_height, pad_width, out_depth, out_height,
+        out_width, output_elements);
+    return h3d_launch_ok("zero pad", error, error_size);
+}
+
+__global__ static void h3d_group_norm_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t depth, uint32_t height, uint32_t width, uint32_t channels,
+    uint32_t groups, float epsilon) {
+    uint32_t group = blockIdx.x % groups;
+    uint32_t batch = blockIdx.x / groups;
+    uint32_t per_group = channels / groups;
+    uint32_t first = group * per_group;
+    size_t voxels = (size_t)depth * height * width;
+    float count = (float)(voxels * per_group);
+    float sum = 0.0f;
+    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
+        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
+        for (uint32_t channel = 0; channel < per_group; channel++)
+            sum += input[base + channel];
+    }
+    float mean = h3d_block_sum(sum) / count;
+    float squares = 0.0f;
+    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
+        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
+        for (uint32_t channel = 0; channel < per_group; channel++) {
+            float delta = input[base + channel] - mean;
+            squares += delta * delta;
+        }
+    }
+    float inverse = rsqrtf(h3d_block_sum(squares) / count + epsilon);
+    for (size_t voxel = threadIdx.x; voxel < voxels; voxel += blockDim.x) {
+        size_t base = ((size_t)batch * voxels + voxel) * channels + first;
+        for (uint32_t channel = 0; channel < per_group; channel++) {
+            uint32_t index = first + channel;
+            output[base + channel] =
+                (input[base + channel] - mean) * inverse * weight[index] +
+                bias[index];
+        }
+    }
+}
+
+int h3d_group_norm(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, const h3d_tensor *weight,
+                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t groups, float epsilon, char *error,
+                   size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels ||
+        !groups || channels % groups) {
+        return h3d_set_error(error, error_size, "invalid GroupNorm shape");
+    }
+    size_t elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &elements) ||
+        !h3d_is(input, H3D_F32, elements) || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, channels) || !h3d_is(bias, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid GroupNorm tensors");
+    }
+    h3d_group_norm_kernel<<<batch * groups, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, (const float *)bias->data, depth, height,
+        width, channels, groups, epsilon);
+    return h3d_launch_ok("GroupNorm", error, error_size);
+}
+
+/* `h = norm * (1 + scale) + shift` per channel, the ResBlock's embedding
+ * modulation with the scale and shift vectors passed as two pointers. */
+__global__ static void h3d_channel_affine_kernel(
+    float *output, const float *input, const float *scale, const float *shift,
+    uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    output[index] = input[index] * scale[channel] + shift[channel];
+}
+
+int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
+                       const h3d_tensor *input, const h3d_tensor *scale,
+                       const h3d_tensor *shift, uint32_t channels,
+                       size_t elements, char *error, size_t error_size) {
+    if (!context || !channels ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(scale, H3D_F32, channels) || !h3d_is(shift, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid channel affine tensors");
+    }
+    if (!elements) return 1;
+    h3d_channel_affine_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)scale->data, (const float *)shift->data, channels,
+        elements);
+    return h3d_launch_ok("channel affine", error, error_size);
+}
+
+/* `Conv3d(C, C, (k, 1, 1), pad=(k / 2, 0, 0), groups=C)`: depthwise over time,
+ * weights `[channels, 1, k, 1, 1]`. */
+__global__ static void h3d_temporal_dwconv_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t depth, uint32_t height, uint32_t width, uint32_t channels,
+    uint32_t kernel, uint32_t pad, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t x = (uint32_t)(row % width);
+    row /= width;
+    uint32_t y = (uint32_t)(row % height);
+    row /= height;
+    uint32_t t = (uint32_t)(row % depth);
+    uint32_t batch = (uint32_t)(row / depth);
+    float sum = bias ? bias[channel] : 0.0f;
+    for (uint32_t tap = 0; tap < kernel; tap++) {
+        int it = (int)t + (int)tap - (int)pad;
+        if (it < 0 || it >= (int)depth) continue;
+        size_t source = (((((size_t)batch * depth + (uint32_t)it) * height + y) *
+                          width + x) * channels + channel);
+        sum = fmaf(input[source], weight[(size_t)channel * kernel + tap], sum);
+    }
+    output[index] = sum;
+}
+
+int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                        uint32_t height, uint32_t width, uint32_t channels,
+                        uint32_t kernel, char *error, size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels ||
+        !kernel || (kernel & 1u) == 0u) {
+        return h3d_set_error(error, error_size, "invalid temporal conv shape");
+    }
+    size_t elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &elements) ||
+        !h3d_is(input, H3D_F32, elements) || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, (size_t)channels * kernel) ||
+        !h3d_is(bias, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid temporal conv tensors");
+    }
+    h3d_temporal_dwconv_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                 context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, (const float *)bias->data, depth, height,
+        width, channels, kernel, kernel / 2u, elements);
+    return h3d_launch_ok("temporal depthwise conv", error, error_size);
+}
+
+/* `F.interpolate(mode="trilinear", align_corners=False)` with the temporal axis
+ * held fixed: PyTorch's source index `(out + 0.5) * in / out - 0.5`, clamped at
+ * zero, and its tap order `h0 * (w0 * v00 + w1 * v01) + h1 * (w0 * v10 + w1 * v11)`. */
+__global__ static void h3d_resize_hw_kernel(
+    float *output, const float *input, uint32_t depth, uint32_t in_height,
+    uint32_t in_width, uint32_t out_height, uint32_t out_width,
+    uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t ox = (uint32_t)(row % out_width);
+    row /= out_width;
+    uint32_t oy = (uint32_t)(row % out_height);
+    row /= out_height;
+    uint32_t t = (uint32_t)(row % depth);
+    uint32_t batch = (uint32_t)(row / depth);
+    float sy = ((float)oy + 0.5f) * ((float)in_height / (float)out_height) - 0.5f;
+    if (sy < 0.0f) sy = 0.0f;
+    uint32_t y0 = (uint32_t)floorf(sy);
+    if (y0 > in_height - 1u) y0 = in_height - 1u;
+    float ly = sy - (float)y0;
+    uint32_t y1 = y0 + ((y0 < in_height - 1u) ? 1u : 0u);
+    float sx = ((float)ox + 0.5f) * ((float)in_width / (float)out_width) - 0.5f;
+    if (sx < 0.0f) sx = 0.0f;
+    uint32_t x0 = (uint32_t)floorf(sx);
+    if (x0 > in_width - 1u) x0 = in_width - 1u;
+    float lx = sx - (float)x0;
+    uint32_t x1 = x0 + ((x0 < in_width - 1u) ? 1u : 0u);
+    size_t base = ((size_t)batch * depth + t) * in_height * in_width * channels;
+    float v00 = input[base + ((size_t)y0 * in_width + x0) * channels + channel];
+    float v01 = input[base + ((size_t)y0 * in_width + x1) * channels + channel];
+    float v10 = input[base + ((size_t)y1 * in_width + x0) * channels + channel];
+    float v11 = input[base + ((size_t)y1 * in_width + x1) * channels + channel];
+    float left = v00 + (v01 - v00) * lx;
+    float right = v10 + (v11 - v10) * lx;
+    output[index] = left + (right - left) * ly;
+}
+
+int h3d_resize_hw(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                  uint32_t in_height, uint32_t in_width, uint32_t out_height,
+                  uint32_t out_width, uint32_t channels, char *error,
+                  size_t error_size) {
+    if (!context || !batch || !depth || !in_height || !in_width ||
+        !out_height || !out_width || !channels) {
+        return h3d_set_error(error, error_size, "invalid resize shape");
+    }
+    size_t input_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * depth * in_height * in_width, channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * depth * out_height * out_width, channels,
+                      &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(output, H3D_F32, output_elements)) {
+        return h3d_set_error(error, error_size, "invalid resize tensors");
+    }
+    h3d_resize_hw_kernel<<<(unsigned)((output_elements + 255) / 256), 256, 0,
+                           context->stream>>>(
+        (float *)output->data, (const float *)input->data, depth, in_height,
+        in_width, out_height, out_width, channels, output_elements);
+    return h3d_launch_ok("trilinear resize", error, error_size);
+}

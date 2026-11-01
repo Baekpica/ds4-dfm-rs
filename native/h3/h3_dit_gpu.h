@@ -986,6 +986,55 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
                     uint32_t sequence, uint32_t heads, float scale, char *error,
                     size_t error_size);
 
+/* The latent resizer's own layers (`LatentResizer3D`), all F32 and channels-last
+ * `[batch, depth, height, width, channels]`, the layout `h3d_conv3d` takes. The
+ * 3x3x3 convolutions pair `h3d_zero_pad3d` with `h3d_conv3d`, the 1x1x1 ones are
+ * `h3d_vae_linear`, and `h3d_group_norm_silu` / `h3d_silu_f32` supply the rest. */
+
+/* Zero padding for the 3x3x3 convolutions: `h3d_conv3d` is a valid
+ * convolution, so the padding is a separate pass, as the encoder does. */
+int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t pad_depth, uint32_t pad_height, uint32_t pad_width,
+                   char *error, size_t error_size);
+
+/* GroupNorm without the SiLU epilogue (`nn.GroupNorm(32, C)`): the ResBlock's
+ * `out_norm`, whose output the embedding then scales and shifts. Statistics are
+ * per (batch, group) over the whole volume, as PyTorch's are, and the variance
+ * is accumulated as a mean square deviation in a second pass. */
+int h3d_group_norm(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, const h3d_tensor *weight,
+                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t groups, float epsilon, char *error,
+                   size_t error_size);
+
+/* `h = input * scale[c] + shift[c]`: the ResBlock's embedding applied as
+ * `out_norm * (1 + scale) + shift` with the two halves of `emb_layers` held
+ * apart, so the caller passes `2 * channels` as a scale and a shift already. */
+int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
+                       const h3d_tensor *input, const h3d_tensor *scale,
+                       const h3d_tensor *shift, uint32_t channels,
+                       size_t elements, char *error, size_t error_size);
+
+/* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
+ * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
+int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                        uint32_t height, uint32_t width, uint32_t channels,
+                        uint32_t kernel, char *error, size_t error_size);
+
+/* `F.interpolate(mode="trilinear", align_corners=False)` with the temporal axis
+ * held fixed and only height and width resampled: this is the upscale itself,
+ * and the convolutions either side of it re-synthesize the detail. */
+int h3d_resize_hw(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                  uint32_t in_height, uint32_t in_width, uint32_t out_height,
+                  uint32_t out_width, uint32_t channels, char *error,
+                  size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif
