@@ -39,9 +39,9 @@ pub const GROUPS: u32 = 32;
 /// `nn.GroupNorm`'s default epsilon, which the node leaves alone.
 pub const EPSILON: f32 = 1e-5;
 pub const TEMPORAL_KERNEL: u32 = 5;
-/// Output rows per im2col tile: `3072 * 512 * 27 * 4` bytes of scratch, which
+/// Output rows per im2col tile: `8192 * 512 * 27 * 4` bytes of scratch, which
 /// is the largest tile this resizer asks for.
-pub const SCRATCH_TILE: u32 = 3072;
+pub const SCRATCH_TILE: u32 = 8192;
 const RES_BLOCKS: usize = 12;
 /// Why this pairing: every block list in the checkpoint is `ResBlockEmb3D`
 /// followed by `TemporalConv` when its index is `0 mod 3` and the next is not,
@@ -247,6 +247,11 @@ pub struct Upscaler {
     /// is evaluated on the host once per call and uploaded as two vectors.
     embed_in: (Vec<f32>, Vec<f32>),
     embed_out: (Vec<f32>, Vec<f32>),
+    /// `H3_UPSCALER_GEMM=tf32` asks for the FAST-TF32 GEMM, which is the
+    /// reference implementation's own precision class: it computes in F16, and
+    /// a TF32 product carries the same ten mantissa bits. `fp32` is the arm to
+    /// compare against, and the gate's default.
+    tf32: bool,
 }
 
 /// One block's position: `true` is a `TemporalConv`.
@@ -280,6 +285,15 @@ impl Upscaler {
     /// Open the released checkpoint in `dir`. The store is the video VAE's: a
     /// directory of shards with exact shape checks per tensor.
     pub fn open(dir: &Path, gpu: Gpu) -> Result<Upscaler, UpscaleError> {
+        let tf32 = std::env::var("H3_UPSCALER_GEMM")
+            .map(|value| value.starts_with('t') || value.starts_with('T'))
+            .unwrap_or(true);
+        Self::open_with(dir, gpu, tf32)
+    }
+
+    /// The same load with the GEMM arm stated instead of read from the
+    /// environment, so a gate can hold it fixed.
+    pub fn open_with(dir: &Path, gpu: Gpu, tf32: bool) -> Result<Upscaler, UpscaleError> {
         let store = Store::open(dir, "latent upscaler")?;
         let host = |name: &str, shape: &[u64]| -> Result<Vec<f32>, UpscaleError> {
             let bytes = store.raw(name, shape)?;
@@ -388,6 +402,7 @@ impl Upscaler {
 
         Ok(Upscaler {
             gpu,
+            tf32,
             conv_in,
             in_blocks,
             out_blocks,
@@ -656,6 +671,7 @@ impl Upscaler {
             conv.kernel,
             SCRATCH_TILE,
             scratch,
+            self.tf32,
         ))?;
         Ok(output)
     }

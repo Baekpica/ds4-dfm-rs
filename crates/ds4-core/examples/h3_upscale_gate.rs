@@ -83,7 +83,7 @@ fn bench_run(dir: &Path, time: usize, height: usize, width: usize) -> Result<(),
         .collect();
     let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
     let started = std::time::Instant::now();
-    let upscaler = Upscaler::open(dir, gpu).map_err(|detail| detail.to_string())?;
+    let upscaler = Upscaler::open_with(dir, gpu, false).map_err(|detail| detail.to_string())?;
     let load = started.elapsed().as_secs_f64();
 
     let mut best = f64::MAX;
@@ -127,7 +127,7 @@ fn run(dir: &Path) -> Result<(), String> {
     }
 
     let gpu = Gpu::create().map_err(|detail| format!("device: {detail}"))?;
-    let upscaler = Upscaler::open(dir, gpu).map_err(|detail| detail.to_string())?;
+    let upscaler = Upscaler::open_with(dir, gpu, false).map_err(|detail| detail.to_string())?;
     let started = std::time::Instant::now();
     let output = upscaler
         .upscale(&latent, TIME, HEIGHT, WIDTH_IN, HEIGHT_OUT, WIDTH_OUT)

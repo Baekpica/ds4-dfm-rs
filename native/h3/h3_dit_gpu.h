@@ -1033,7 +1033,7 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *bias, uint32_t depth, uint32_t height,
                     uint32_t width, uint32_t input_channels,
                     uint32_t output_channels, uint32_t kernel, uint32_t tile,
-                    const h3d_tensor *scratch, char *error,
+                    const h3d_tensor *scratch, uint32_t tf32, char *error,
                     size_t error_size);
 
 /* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the

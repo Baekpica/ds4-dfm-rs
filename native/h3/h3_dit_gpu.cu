@@ -6980,7 +6980,7 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *bias, uint32_t depth, uint32_t height,
                     uint32_t width, uint32_t input_channels,
                     uint32_t output_channels, uint32_t kernel, uint32_t tile,
-                    const h3d_tensor *scratch, char *error,
+                    const h3d_tensor *scratch, uint32_t tf32, char *error,
                     size_t error_size) {
     if (!context || !depth || !height || !width || !input_channels ||
         !output_channels || !kernel || !tile) {
@@ -7022,7 +7022,8 @@ int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
         if (!h3d_linear_lt_compute(
                 context, (char *)output->data + begin * output_channels * 4,
                 scratch->data, weight->data, (uint32_t)count, columns_per_row,
-                output_channels, CUDA_R_32F, CUBLAS_COMPUTE_32F, error,
+                output_channels, CUDA_R_32F,
+                tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F, error,
                 error_size)) {
             return 0;
         }

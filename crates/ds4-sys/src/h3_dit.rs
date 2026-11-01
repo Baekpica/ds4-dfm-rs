@@ -520,6 +520,7 @@ unsafe extern "C" {
         kernel: u32,
         tile: u32,
         scratch: *const CTensor,
+        tf32: u32,
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
@@ -3989,6 +3990,7 @@ impl Gpu {
         kernel: u32,
         tile: u32,
         scratch: &Tensor,
+        tf32: bool,
     ) -> Result<(), String> {
         self.call(
             |error, size| unsafe {
@@ -4006,6 +4008,7 @@ impl Gpu {
                     kernel,
                     tile,
                     scratch.raw(),
+                    tf32 as u32,
                     error,
                     size,
                 )
