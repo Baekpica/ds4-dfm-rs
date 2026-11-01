@@ -74,6 +74,7 @@ pub struct SessionLedger {
     pub n_layer: u32,
     pub n_nextn_predict: u32,
     pub(crate) dspark_gate: crate::minimax_mtp::DsparkGate,
+    pub(crate) pending_draw: Option<crate::sample::PendingDraw>,
 }
 
 impl SessionLedger {
@@ -94,6 +95,7 @@ impl SessionLedger {
             n_layer: 0,
             n_nextn_predict: 0,
             dspark_gate: Default::default(),
+            pending_draw: None,
         }
     }
 

@@ -282,6 +282,14 @@ int ds4_session_beam_trial(ds4_session *s, int first, int max_tokens, int *token
         beam_session_fail(s, err, errlen);
         return -1;
     }
+    if (spec_sampling(&s->spec)) {
+        const float *rows = spec_host_rows(d->logits, DS4_N_VOCAB, n);
+        if (!rows) {
+            beam_session_fail(s, err, errlen);
+            return -1;
+        }
+        spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, n, target);
+    }
     for (uint32_t i = 0; i < n; i++) {
         if (target[i] < 0 || (uint32_t)target[i] >= BEAM_TOKENS) {
             beam_session_fail(s, err, errlen);

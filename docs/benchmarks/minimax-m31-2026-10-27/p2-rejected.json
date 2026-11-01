@@ -1,0 +1,311 @@
+{
+  "status": "rejected",
+  "source_base": "cfcd6a77",
+  "reason": "repeated unprofiled decode regression outweighs prefill gain; GPU-state cause unresolved",
+  "cpu_policy": "original cohort unpinned; diagnostic pair and full profiles taskset 5-9,15-19",
+  "gen_tokens": 256,
+  "original": {
+    "complete": true,
+    "samples": {
+      "off1": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1200.53",
+          "gen_tokens": "256",
+          "gen_tps": "21.20",
+          "gen_tps_ss": "21.20",
+          "first_token_sec": "0.0494",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1122.01",
+          "gen_tokens": "256",
+          "gen_tps": "20.84",
+          "gen_tps_ss": "20.85",
+          "first_token_sec": "0.0498",
+          "kvcache_bytes": "2549102132"
+        }
+      ],
+      "on1": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1218.78",
+          "gen_tokens": "256",
+          "gen_tps": "20.74",
+          "gen_tps_ss": "20.74",
+          "first_token_sec": "0.0509",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1138.45",
+          "gen_tokens": "256",
+          "gen_tps": "20.36",
+          "gen_tps_ss": "20.36",
+          "first_token_sec": "0.0507",
+          "kvcache_bytes": "2549102132"
+        }
+      ],
+      "on2": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1215.26",
+          "gen_tokens": "256",
+          "gen_tps": "20.67",
+          "gen_tps_ss": "20.67",
+          "first_token_sec": "0.0524",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1137.31",
+          "gen_tokens": "256",
+          "gen_tps": "20.25",
+          "gen_tps_ss": "20.25",
+          "first_token_sec": "0.0510",
+          "kvcache_bytes": "2549102132"
+        }
+      ],
+      "off2": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1202.11",
+          "gen_tokens": "256",
+          "gen_tps": "21.20",
+          "gen_tps_ss": "21.21",
+          "first_token_sec": "0.0504",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1122.73",
+          "gen_tokens": "256",
+          "gen_tps": "20.80",
+          "gen_tps_ss": "20.81",
+          "first_token_sec": "0.0499",
+          "kvcache_bytes": "2549102132"
+        }
+      ],
+      "off3": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1197.08",
+          "gen_tokens": "256",
+          "gen_tps": "21.26",
+          "gen_tps_ss": "21.27",
+          "first_token_sec": "0.0494",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1120.90",
+          "gen_tokens": "256",
+          "gen_tps": "20.92",
+          "gen_tps_ss": "20.93",
+          "first_token_sec": "0.0496",
+          "kvcache_bytes": "2549102132"
+        }
+      ],
+      "on3": [
+        {
+          "ctx_tokens": "8192",
+          "prefill_tokens": "8192",
+          "prefill_tps": "1214.40",
+          "gen_tokens": "256",
+          "gen_tps": "20.80",
+          "gen_tps_ss": "20.80",
+          "first_token_sec": "0.0500",
+          "kvcache_bytes": "319338036"
+        },
+        {
+          "ctx_tokens": "65536",
+          "prefill_tokens": "57344",
+          "prefill_tps": "1134.13",
+          "gen_tokens": "256",
+          "gen_tps": "20.39",
+          "gen_tps_ss": "20.39",
+          "first_token_sec": "0.0518",
+          "kvcache_bytes": "2549102132"
+        }
+      ]
+    },
+    "frontiers": {
+      "8192": {
+        "prefill_tps": {
+          "off": [
+            1200.53,
+            1202.11,
+            1197.08
+          ],
+          "on": [
+            1218.78,
+            1215.26,
+            1214.4
+          ],
+          "off_median": 1200.53,
+          "on_median": 1215.26,
+          "change_pct": 1.226958093508701
+        },
+        "gen_tps": {
+          "off": [
+            21.2,
+            21.2,
+            21.26
+          ],
+          "on": [
+            20.74,
+            20.67,
+            20.8
+          ],
+          "off_median": 21.2,
+          "on_median": 20.74,
+          "change_pct": -2.169811320754722
+        },
+        "gen_tps_ss": {
+          "off": [
+            21.2,
+            21.21,
+            21.27
+          ],
+          "on": [
+            20.74,
+            20.67,
+            20.8
+          ],
+          "off_median": 21.21,
+          "on_median": 20.74,
+          "change_pct": -2.215935879302222
+        }
+      },
+      "65536": {
+        "prefill_tps": {
+          "off": [
+            1122.01,
+            1122.73,
+            1120.9
+          ],
+          "on": [
+            1138.45,
+            1137.31,
+            1134.13
+          ],
+          "off_median": 1122.01,
+          "on_median": 1137.31,
+          "change_pct": 1.3636242101229046
+        },
+        "gen_tps": {
+          "off": [
+            20.84,
+            20.8,
+            20.92
+          ],
+          "on": [
+            20.36,
+            20.25,
+            20.39
+          ],
+          "off_median": 20.84,
+          "on_median": 20.36,
+          "change_pct": -2.303262955854124
+        },
+        "gen_tps_ss": {
+          "off": [
+            20.85,
+            20.81,
+            20.93
+          ],
+          "on": [
+            20.36,
+            20.25,
+            20.39
+          ],
+          "off_median": 20.85,
+          "on_median": 20.36,
+          "change_pct": -2.350119904076753
+        }
+      }
+    }
+  },
+  "pinned_pair": {
+    "off1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1200.47",
+        "gen_tokens": "256",
+        "gen_tps": "21.02",
+        "gen_tps_ss": "21.03",
+        "first_token_sec": "0.0508",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1119.82",
+        "gen_tokens": "256",
+        "gen_tps": "20.68",
+        "gen_tps_ss": "20.69",
+        "first_token_sec": "0.0501",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1223.25",
+        "gen_tokens": "256",
+        "gen_tps": "20.69",
+        "gen_tps_ss": "20.69",
+        "first_token_sec": "0.0502",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1138.45",
+        "gen_tokens": "256",
+        "gen_tps": "20.29",
+        "gen_tps_ss": "20.29",
+        "first_token_sec": "0.0515",
+        "kvcache_bytes": "2549102132"
+      }
+    ]
+  },
+  "target": {
+    "rows-p1": {
+      "gpu__time_duration.sum": "1.422912",
+      "smsp__inst_executed.sum": "36409344.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "4718592.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": "6295552.000000",
+      "launch__registers_per_thread": "64"
+    },
+    "q8-before": {
+      "gpu__time_duration.sum": "554.336000",
+      "smsp__inst_executed.sum": "27131904.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "3145728.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": "1081344.000000",
+      "launch__registers_per_thread": "20"
+    },
+    "rows-p2": {
+      "gpu__time_duration.sum": "1.107136",
+      "smsp__inst_executed.sum": "61845504.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "4718592.000000",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": "5115904.000000",
+      "launch__registers_per_thread": "64"
+    }
+  },
+  "binary_sha256": "e25b57ece072c72745d43fa3ef9cf2d1624fe1c303d6662d662489b3ea4ca1ee",
+  "proof": "All 200064 logits and all 256 tokens bit-identical at both frontiers in every sample."
+}

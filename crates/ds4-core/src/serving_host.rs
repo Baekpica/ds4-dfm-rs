@@ -86,13 +86,14 @@ const GLMVQ_NATIVE_MAX: u32 = 4096;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
 const LING31_LATENT_ENV: &str = "DS4_LING31_LATENT";
 const LING31_FLASH_ENV: &str = "DS4_LING31_FLASH";
+const GLMVQ_KDA_MMA_ENV: &str = "DS4_GLMVQ_KDA_MMA";
 // FP8 latent caches round their per-row exponents up to 32 rows.
 const LING31_EXP_ALIGN: u64 = 32;
 // With FP8 latent rows one 262,144-token bank and a 2,048-row workspace
 // fit beside either release (7.7 GiB with the floor against 8.0 left by v1).
 // The chunk is part of the disk-KV identity, so it does not follow the
 // context; live-memory halving covers MTP, extra banks and BF16 latents.
-const LING31_NATIVE_DEFAULT: u32 = 2048;
+const LING31_NATIVE_DEFAULT: u32 = 4096;
 const LING31_NATIVE_MAX: u32 = 4096;
 // Halving floor when the quote does not fit: 512 rows keep 0.35 GiB of
 // workspace, most of it fixed; 1,024 rows prefill 9% below 2,048.
@@ -108,6 +109,9 @@ const LING31_ALIGN: u64 = 256;
 // FP8 MMA activation scales cover 128 inputs; glmvq_mma_item is five words.
 const LING31_SCALE_BLOCK: u64 = 128;
 const LING31_MMA_ITEM_BYTES: u64 = 20;
+// beam_w items: 128-token runs of one expert matrix, 32 bytes each.
+const LING31_WS_TOKENS: u64 = 128;
+const LING31_WS_ITEM_BYTES: u64 = 32;
 // Beam's 1M bank fits beside the 91.6 GiB trunk at 2,048-row chunks
 // (BEAM_PREFILL_DEFAULT, ds4_beam_bind.inc); 4,096 rows need ~1.4 GiB more.
 const BEAM_PREFILL_CHUNK_ENV: &str = "DS4_BEAM_PREFILL_CHUNK";
@@ -387,7 +391,12 @@ pub fn fill_quote_facts(
             let mla = u64::from(s.n_full_attn_count) + u64::from(drafts > 0);
             let logits = u64::from(s.n_vocab) * SIZEOF_F32;
             let bank = state + mla * ling31_latent_bytes(s, ctx) + logits + ctx * SIZEOF_I32;
-            let scratch = ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s);
+            // The 1019 recipe gathers BF16 embedding rows on the host and
+            // widens them to the F32 residual. Reserve this bounded staging
+            // for this family; older device-embedding recipes leave it unused.
+            let staging = u64::from(native) * u64::from(s.n_embd) * SIZEOF_F32;
+            let scratch =
+                ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s) + staging;
             let mtp = if drafts > 0 {
                 drafts * state
                     + (LING31_MTP_ROWS + 2) * u64::from(s.n_embd) * SIZEOF_F32
@@ -555,9 +564,14 @@ pub fn fill_quote_facts(
         }
         (ModelFamily::Mimo2, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
-            let bytes = crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0);
+            let bytes = mimo_context_bytes(caps.variant, ctx_tokens, cap);
             if quote_batch_alloc(req, caps, facts) {
-                let kv = crate::mimo2::kv_bytes(ctx_tokens, cap).unwrap_or(0);
+                let kv = if caps.variant == Variant::Mimo26FlashVq {
+                    crate::mimo2::vq_kv_bytes(ctx_tokens, cap)
+                } else {
+                    crate::mimo2::kv_bytes(ctx_tokens, cap)
+                }
+                .unwrap_or(0);
                 let draft = u64::from((crate::mimo2::SWA_WINDOW + cap - 1).min(ctx_tokens))
                     * u64::from(crate::mimo2::MTP_BLOCKS)
                     * 8
@@ -681,10 +695,16 @@ pub fn fill_quote_facts(
         }
     } else if caps.family == ModelFamily::Mimo2 {
         if host.vision || facts.vision_loaded {
-            let media_work = GIB;
+            // The VQ release prices its largest image's media buffers; the
+            // mixed artifact keeps its recorded 1 GiB.
+            let media_work = if caps.variant == Variant::Mimo26FlashVq {
+                crate::mimo2::media_workspace_bytes()
+            } else {
+                GIB
+            };
             let serial = if quote_bank_lane(req, caps, facts) {
                 let cap = native.min(ctx_tokens).max(1);
-                crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0)
+                mimo_context_bytes(caps.variant, ctx_tokens, cap)
             } else {
                 0
             };
@@ -851,7 +871,30 @@ pub fn attach_host_quote(
         mtp_bytes =
             part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
     }
-    let vision_bytes = artifact_span_bytes(vision_path);
+    // MiMo VQ maps its MTP part beside the trunk only when drafting with it,
+    // which its qualified MTP also does under auto (a DFlash `--mtp` file is
+    // priced as that file).
+    let drafts = req.mtp_mode == MtpMode::On
+        || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified);
+    if let (Variant::Mimo26FlashVq, true, Some(path), None) =
+        (caps.variant, drafts, model_path, mtp_path)
+    {
+        let part = |feature| crate::mimo2_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::Mimo2VqFeature::Mtp).saturating_sub(part(crate::Mimo2VqFeature::Trunk));
+    }
+    // MiMo VQ releases map their own vision and audio parts (the open's
+    // `media_paths`): price them and their media workspace without `--vision`.
+    let release_media = match (caps.variant, model_path) {
+        (Variant::Mimo26FlashVq, Some(path)) => match crate::mimo2_vq::media_paths(path) {
+            (Some(v), Some(a)) => {
+                Some(artifact_span_bytes(Some(&v)) + artifact_span_bytes(Some(&a)))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let vision_bytes = artifact_span_bytes(vision_path) + release_media.unwrap_or(0);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
     let drafter_pending = req.backend == Backend::Cuda
         && !resident
@@ -928,7 +971,7 @@ pub fn attach_host_quote(
             quote_available(live, mapped, resident).saturating_add(allocated)
         },
         native_chunk: req.native_chunk,
-        vision,
+        vision: vision || release_media.is_some(),
     };
     fill_quote_facts(facts, &quote_req, caps, shape, host);
     if !resident {
@@ -1028,6 +1071,11 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         // Beam's embedding part stays on SSD: only the trunk is resident.
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
+        }
+        // MiMo's embedding part stays on SSD; MTP joins only when drafting.
+        if crate::mimo2_vq::is_release(path) {
+            return crate::mimo2_vq::resident_bytes(path, crate::Mimo2VqFeature::Trunk)
+                .unwrap_or(0);
         }
         // MiniMax's embedding and vision parts stay on SSD.
         if crate::minimax_vq::is_release(path) {
@@ -1742,6 +1790,15 @@ fn dots3_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
         * u64::from(shape.n_swa_kv_lora + shape.n_rot)
         * SIZEOF_U16
         * CHECKPOINT_SLOTS
+}
+
+// C mimo2_memory for the artifact: the VQ release swaps the routed rows for
+// its own expert runtime.
+fn mimo_context_bytes(variant: Variant, ctx: u32, cap: u32) -> u64 {
+    if variant == Variant::Mimo26FlashVq {
+        return crate::mimo2::vq_context_bytes(ctx, cap).unwrap_or(0);
+    }
+    crate::mimo2::context_bytes(ctx, cap).unwrap_or(0)
 }
 
 fn mimo_checkpoint_pool_bytes() -> u64 {
@@ -2642,13 +2699,17 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
         + u64::from(s.n_expert)
         + 2 * used;
     let absorbed = 2 * rows.min(LING31_MLA_EXPAND_MIN) * heads * u64::from(s.n_kv_lora);
-    // ling31_gvq_scratch: chunked KDA planes or records, FP8 restores beside
-    // BF16 rows, the F32 router weight, BF16 rows, the q4p dense-down input.
+    // ling31_gvq_scratch: tensor-core KDA records (Solar chunked planes under
+    // DS4_GLMVQ_KDA_MMA=0), FP8 restores beside BF16 rows, the F32 router
+    // weight, BF16 rows, the q4p dense-down input.
     let planes = kda_prefill_scratch_bytes(rows, heads, u64::from(s.n_kda_head_dim));
+    let records = rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES;
     let kda = if planes == 0 {
         0
+    } else if std::env::var(GLMVQ_KDA_MMA_ENV).ok().as_deref() == Some("0") {
+        (planes + rows * heads * SIZEOF_F32).max(records)
     } else {
-        (planes + rows * heads * SIZEOF_F32).max(rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES)
+        records
     };
     let gvq = [
         kda,
@@ -2662,7 +2723,8 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
     .max()
     .unwrap_or(0);
     // l31_mma_plan above verify widths: E4M3 rows and scales, gate, SwiGLU
-    // E4M3 rows and scales, down, worklist and order.
+    // E4M3 rows and scales, down, worklist and order, then the 12-bit
+    // warp-specialized items and each pair's token row and scale.
     let align = |n: u64| n.div_ceil(LING31_ALIGN) * LING31_ALIGN;
     let pairs = rows * used;
     let mma = if rows > GLMVQ_VERIFY_ROWS {
@@ -2674,6 +2736,9 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
             + align(pairs * hidden * SIZEOF_U16)
             + align(pairs * LING31_MMA_ITEM_BYTES)
             + align(pairs * SIZEOF_U32)
+            + align(3 * (u64::from(s.n_expert) + pairs / LING31_WS_TOKENS) * LING31_WS_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+            + align(pairs * SIZEOF_F32)
     } else {
         0
     };
@@ -3444,7 +3509,7 @@ mod tests {
         // Native graph logs: workspace GiB per prefill chunk, state and
         // control MiB.
         let s = SHAPE_LING31_VQ;
-        for (rows, gib) in [(1024u64, 0.66), (2048, 1.26), (4096, 2.48)] {
+        for (rows, gib) in [(1024u64, 0.54), (2048, 1.03), (4096, 2.01)] {
             let quoted = ling31_workspace_bytes(s, rows) as f64 / GIB as f64;
             assert!((quoted - gib).abs() < 0.005, "{rows}: {quoted} GiB");
         }
@@ -3480,11 +3545,15 @@ mod tests {
         let latent = 32768 * (512 + 1 + 128);
         assert_eq!(ling31_latent_bytes(s, 32768), latent);
         let host = 157_184 * SIZEOF_F32 + 32768 * SIZEOF_I32;
-        assert_eq!(facts.native_chunk, Some(2048));
+        assert_eq!(facts.native_chunk, Some(4096));
         assert_eq!(facts.per_bank_bytes, Some(state + 10 * latent + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(ling31_workspace_bytes(s, 2048) + ling31_control_bytes(s))
+            Some(
+                ling31_workspace_bytes(s, 4096)
+                    + ling31_control_bytes(s)
+                    + 4096 * u64::from(s.n_embd) * SIZEOF_F32
+            )
         );
         assert_eq!(
             facts.mtp_state_bytes,
@@ -3781,8 +3850,8 @@ mod tests {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
         let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
-        for ctx in [4096, 131_072, 196_608, 262_144] {
-            assert_eq!(family_native_chunk(caps, ctx), 2048, "ctx {ctx}");
+        for ctx in [4096, 131_072, 262_144, 1_048_576] {
+            assert_eq!(family_native_chunk(caps, ctx), 4096, "ctx {ctx}");
         }
         assert_eq!(family_native_chunk(caps, 1000), 1000);
         let _pinned = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "1024");

@@ -12,13 +12,17 @@ s = (repo / 'ds4.c').read_text()
 fn = s.index('static int family_cont_spec(')
 a = s.index('    int emitted = 1;', fn)
 b = s.index('    if (gr) {\n        gr->graph[bank] = s.glm53_graph;', a)
+f = s.index('static bool cont_spec_forced(')
+forced = s[f:s.index('\n}\n', f) + 3]
 code = r'''
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #define DS4_SAMPLE_OVERRIDE_NONE (-1)
+#define DS4_SAMPLE_OVERRIDE_GREEDY (-2)
 #define DS4_SAMPLE_OVERRIDE_IS_TOKEN(v) ((v) >= 0)
+FORCED
 typedef struct { uint64_t tokens_decoded, spec_hits; } metrics_t;
 static metrics_t metrics;
 static metrics_t *ds4_metrics_get(void) { return &metrics; }
@@ -45,14 +49,24 @@ typedef struct {
     int *generated;
     uint32_t generated_len, max_new;
     int current, eos;
+    float temperature;
 } bank_t;
-static int abort_at;
+static int abort_at, greedy_after;
 static int deliver(void *ud, void *user, int token) { (void)ud; (void)user; return token != abort_at; }
+/* Tool syntax: the position after `greedy_after` takes the argmax. */
+static int override_at(void *ud, void *user) {
+    (void)ud;
+    return ((bank_t *)user)->current == greedy_after ? DS4_SAMPLE_OVERRIDE_GREEDY
+                                                     : DS4_SAMPLE_OVERRIDE_NONE;
+}
 
 /* Trial [10, 11, 12, 13] after 10 was emitted; returns the rows landed. */
-static int step(int keep, uint32_t max_new, int eos, int abort_token, uint64_t *hits) {
+static int step(int keep, uint32_t max_new, int eos, int abort_token, float temperature,
+                int greedy_token, uint64_t *hits) {
     int generated[8] = {10};
-    bank_t bank = {.generated = generated, .generated_len = 1, .max_new = max_new, .current = 10, .eos = eos};
+    bank_t bank = {.generated = generated, .generated_len = 1, .max_new = max_new, .current = 10,
+                   .eos = eos, .temperature = temperature, .sample_override = override_at};
+    bank.user = &bank;
     bank_t *cb = &bank;
     const int tokens[4] = {10, 11, 12, 13};
     int graph = 0;
@@ -63,6 +77,7 @@ static int step(int keep, uint32_t max_new, int eos, int abort_token, uint64_t *
     char err[16];
     const size_t errlen = sizeof(err);
     abort_at = abort_token;
+    greedy_after = greedy_token;
     metrics.spec_hits = 0;
     landed = 0;
 BODY
@@ -74,17 +89,24 @@ fail:
 }
 
 int main(void) {
-    static const struct { const char *name; int keep; uint32_t max_new; int eos, abort_token, rows; uint64_t hits; } cases[] = {
-        {"length_inside", 3, 3, -1, -1, 2, 2},
-        {"eos_inside", 3, 8, 12, -1, 2, 2},
-        {"abort_inside", 3, 8, -1, 11, 1, 1},
-        {"running", 3, 8, -1, -1, 3, 2},
+    static const struct {
+        const char *name; int keep; uint32_t max_new; int eos, abort_token; float temperature;
+        int greedy_token, rows; uint64_t hits;
+    } cases[] = {
+        {"length_inside", 3, 3, -1, -1, 0.0f, -1, 2, 2},
+        {"eos_inside", 3, 8, 12, -1, 0.0f, -1, 2, 2},
+        {"abort_inside", 3, 8, -1, 11, 0.0f, -1, 1, 1},
+        {"running", 3, 8, -1, -1, 0.0f, -1, 3, 2},
+        /* A sampling bank stops before a greedy position; argmax drafts pass it. */
+        {"greedy_sampled", 3, 8, -1, -1, 1.0f, 11, 2, 1},
+        {"greedy_argmax", 3, 8, -1, -1, 0.0f, 11, 3, 2},
     };
     int ok = 1;
     printf("{");
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         uint64_t hits = 0;
-        const int rows = step(cases[i].keep, cases[i].max_new, cases[i].eos, cases[i].abort_token, &hits);
+        const int rows = step(cases[i].keep, cases[i].max_new, cases[i].eos, cases[i].abort_token,
+                              cases[i].temperature, cases[i].greedy_token, &hits);
         const int pass = rows == cases[i].rows && hits == cases[i].hits;
         ok &= pass;
         printf("%s\"%s\":{\"rows\":%d,\"hits\":%llu,\"pass\":%s}", i ? "," : "", cases[i].name, rows,
@@ -93,7 +115,7 @@ int main(void) {
     printf("}\n");
     return ok ? 0 : 1;
 }
-'''.replace('BODY', s[a:b])
+'''.replace('BODY', s[a:b]).replace('FORCED', forced)
 with tempfile.TemporaryDirectory() as t:
     p = Path(t)
     (p / 'finish.c').write_text(code)

@@ -66,13 +66,23 @@ fn pipeline(v: &Value) -> Result<(), TokError> {
 
 pub(super) fn tables(root: &Path) -> Result<super::glm_vq::Tables, TokError> {
     let bytes = crate::beam_vq::asset(root, "tokenizer.json").map_err(|_| invalid())?;
-    let v: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    qwen2(&bytes, ADDED, VOCAB)
+}
+
+/// Qwen2's byte-level BPE tokenizer.json: the 151,643-word base, then
+/// `added` added tokens, padded to `rows` embedding rows (Beam, MiMo).
+pub(super) fn qwen2(
+    bytes: &[u8],
+    added: usize,
+    rows: usize,
+) -> Result<super::glm_vq::Tables, TokError> {
+    let v: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     pipeline(&v)?;
     let vocab = v["model"]["vocab"].as_object().ok_or_else(invalid)?;
     if vocab.len() != BASE {
         return Err(invalid());
     }
-    let mut tokens = vec![Vec::new(); VOCAB];
+    let mut tokens = vec![Vec::new(); rows];
     for (word, id) in vocab {
         let id = id
             .as_u64()
@@ -84,14 +94,15 @@ pub(super) fn tables(root: &Path) -> Result<super::glm_vq::Tables, TokError> {
         tokens[id] = word.as_bytes().to_vec();
     }
     let entries = v["added_tokens"].as_array().ok_or_else(invalid)?;
-    if entries.len() != ADDED {
+    if entries.len() != added {
         return Err(invalid());
     }
+    let ids = BASE as u64..(BASE + added) as u64;
     let mut added = Vec::new();
     for entry in entries {
         let id = entry["id"]
             .as_u64()
-            .filter(|&i| (BASE as u64..(BASE + ADDED) as u64).contains(&i))
+            .filter(|i| ids.contains(i))
             .ok_or_else(invalid)? as usize;
         let word = entry["content"]
             .as_str()

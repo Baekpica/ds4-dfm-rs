@@ -203,7 +203,10 @@ fn cont_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDr
         default_model: "ds4".into(),
         default_tokens: 8,
         default_effort: ThinkMode::None,
-        default_temp: 0.0,
+        sampling: crate::sampling::SamplingDefaults {
+            temperature: 0.0,
+            ..Default::default()
+        },
         live_ids: Vec::new(),
         engine_defaults: false,
     };
@@ -614,7 +617,10 @@ fn parse_env() -> ParseEnv {
         default_model: "ds4".into(),
         default_tokens: 16,
         default_effort: ThinkMode::None,
-        default_temp: 0.0,
+        sampling: crate::sampling::SamplingDefaults {
+            temperature: 0.0,
+            ..Default::default()
+        },
         live_ids: Vec::new(),
         engine_defaults: false,
     }

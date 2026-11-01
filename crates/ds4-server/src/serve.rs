@@ -79,6 +79,8 @@ pub struct ServerConfig {
     pub max_effort_default: bool,
     pub ctx: i32,
     pub default_tokens: i32,
+    /// Request-omitted sampling: server flags over the model's own values.
+    pub sampling: crate::sampling::SamplingDefaults,
     pub eos_policy: EosPolicy,
     pub cors: bool,
     pub codex_models_json: Option<String>,
@@ -181,6 +183,7 @@ impl Default for ServerConfig {
             max_effort_default: false,
             ctx: 8192,
             default_tokens: 393216,
+            sampling: Default::default(),
             eos_policy: EosPolicy::Default,
             cors: false,
             codex_models_json: None,
@@ -1261,7 +1264,7 @@ fn prepare_client(
                 default_model: cfg.model_id.clone(),
                 default_tokens: cfg.default_tokens,
                 default_effort: default_effort(cfg),
-                default_temp: crate::parse::default_temperature(),
+                sampling: cfg.sampling,
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
             };
@@ -1808,13 +1811,18 @@ fn ensure_serial_session_fit<W: Write>(
     // never invent a rightsize or a refuse.
     let probe = engine.serial_session_probe()?;
     let mut bounds = serial_fit_bounds(prompt_len, budget, i64::from(cfg.ctx));
-    let ling = ds4_core::shape_for_variant(ds4_core::Variant::Ling30FlashVl);
-    let ling_orig_ctx = ling.rope_orig_ctx as i64;
-    if engine.model_id() == ling.model_id() && i64::from(cfg.ctx) > ling_orig_ctx {
-        // Serial/image requests must retain the boot YaRN factor even when
-        // their graph shrinks beside the banks. Refuse if this floor cannot fit.
-        bounds.need_min = bounds.need_min.max(ling_orig_ctx + 1);
-        bounds.request_cap = bounds.request_cap.max(bounds.need_min);
+    for variant in [
+        ds4_core::Variant::Ling30FlashVl,
+        ds4_core::Variant::Ling31FlashVq,
+    ] {
+        let ling = ds4_core::shape_for_variant(variant);
+        let ling_orig_ctx = ling.rope_orig_ctx as i64;
+        if engine.model_id() == ling.model_id() && i64::from(cfg.ctx) > ling_orig_ctx {
+            // Serial/image requests must retain the boot YaRN factor even when
+            // their graph shrinks beside the banks. Refuse if this floor cannot fit.
+            bounds.need_min = bounds.need_min.max(ling_orig_ctx + 1);
+            bounds.request_cap = bounds.request_cap.max(bounds.need_min);
+        }
     }
     let cur_ctx = i64::from(probe.cur_ctx);
     // C: a mandatory live continuation is never resized — the retained
@@ -3793,7 +3801,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };
@@ -3899,7 +3910,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 16,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };
@@ -3954,7 +3968,10 @@ mod owner_tests {
             default_model: "ds4".into(),
             default_tokens: 8,
             default_effort: ThinkMode::None,
-            default_temp: 0.0,
+            sampling: crate::sampling::SamplingDefaults {
+                temperature: 0.0,
+                ..Default::default()
+            },
             live_ids: Vec::new(),
             engine_defaults: false,
         };
@@ -5000,31 +5017,36 @@ mod owner_tests {
 
     #[test]
     fn serial_fit_keeps_ling_yarn() {
-        for boot_ctx in [131_072, 131_073, 262_144] {
-            let cfg = serial_fit_cfg(boot_ctx);
-            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
-            let job = queued_completion("hello", 32);
-            let mut engine = FitProbeDecode::new(boot_ctx, true, boot_ctx);
-            engine.model_id = ds4_core::Variant::Ling30FlashVl as i32;
-            let mut cont = NoTrimCont;
-            let mut out = Vec::new();
+        for (variant, orig) in [
+            (ds4_core::Variant::Ling30FlashVl, 131_072),
+            (ds4_core::Variant::Ling31FlashVq, 262_144),
+        ] {
+            for boot_ctx in [orig, orig + 1, 2 * orig] {
+                let cfg = serial_fit_cfg(boot_ctx);
+                let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+                let job = queued_completion("hello", 32);
+                let mut engine = FitProbeDecode::new(boot_ctx, true, boot_ctx);
+                engine.model_id = variant as i32;
+                let mut cont = NoTrimCont;
+                let mut out = Vec::new();
 
-            assert!(ensure_serial_session_fit(
-                &cfg,
-                &inner,
-                &job,
-                &mut engine,
-                Some(&mut cont),
-                SerialFrameKind::Canonical,
-                26,
-                384,
-                0,
-                &mut out,
-            )
-            .is_none());
-            let target = engine.probe.cur_ctx;
-            assert_eq!(target > 131_072, boot_ctx > 131_072, "ctx={target}");
-            assert!(target <= boot_ctx);
+                assert!(ensure_serial_session_fit(
+                    &cfg,
+                    &inner,
+                    &job,
+                    &mut engine,
+                    Some(&mut cont),
+                    SerialFrameKind::Canonical,
+                    26,
+                    384,
+                    0,
+                    &mut out,
+                )
+                .is_none());
+                let target = engine.probe.cur_ctx;
+                assert_eq!(target > orig, boot_ctx > orig, "ctx={target}");
+                assert!(target <= boot_ctx);
+            }
         }
     }
 

@@ -6,6 +6,7 @@ impl crate::Session<'_> {
         first: i32,
         max_tokens: i32,
         eos: i32,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
     ) -> crate::Result<Vec<i32>> {
         if max_tokens <= 0 {
             return Ok(Vec::new());
@@ -50,6 +51,7 @@ impl crate::Session<'_> {
                 message: "invalid Inkling trial shape".into(),
             });
         };
+        let keep = limit(&tokens[..keep]).clamp(1, keep);
         // SAFETY: Category 8 FFI. keep is within the pending trial; native
         // commits device state and returns before Rust updates its timeline.
         let rc = unsafe {

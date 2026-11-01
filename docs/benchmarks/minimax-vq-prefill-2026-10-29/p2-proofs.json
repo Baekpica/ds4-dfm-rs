@@ -1,0 +1,90 @@
+[
+  {
+    "tag": "p2f-off1",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-on1",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-on2",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-off2",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-off3",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-on3",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p2f-profile-off",
+    "files": {
+      "cycles-65536.json": "ecbaccbacba013ee2ffd3fd9ae084e43a5526f2e0591da1c6a906019e553da39",
+      "cycles-8192.json": "ecbaccbacba013ee2ffd3fd9ae084e43a5526f2e0591da1c6a906019e553da39",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "76ac5eea4a2010781ff4b82a16d471b93802137e7db24e18c2bf5fef27ac500a",
+      "tokens-8192.json": "ca83904894c48b1af154bad38479fd7c83c762e4e7ed20275a918995ec75fb88"
+    }
+  },
+  {
+    "tag": "p2f-profile-on",
+    "files": {
+      "cycles-65536.json": "ecbaccbacba013ee2ffd3fd9ae084e43a5526f2e0591da1c6a906019e553da39",
+      "cycles-8192.json": "ecbaccbacba013ee2ffd3fd9ae084e43a5526f2e0591da1c6a906019e553da39",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "76ac5eea4a2010781ff4b82a16d471b93802137e7db24e18c2bf5fef27ac500a",
+      "tokens-8192.json": "ca83904894c48b1af154bad38479fd7c83c762e4e7ed20275a918995ec75fb88"
+    }
+  }
+]

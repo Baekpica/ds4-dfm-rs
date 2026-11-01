@@ -1,0 +1,1082 @@
+[
+  {
+    "position": 6144,
+    "layer": 0,
+    "sha256": "c34a9318579b464056aeba3abb550cdc0b324d61ea741fd9a0d6b038547d4a93",
+    "mean_union": 27.38671875,
+    "min_union": 18,
+    "max_union": 41,
+    "kernel_ms": 2.864679
+  },
+  {
+    "position": 6144,
+    "layer": 1,
+    "sha256": "b439b91fc9138d88823946dc7d3824a4087b1bcebdcf78f4dfe638b8fd3e99b2",
+    "mean_union": 22.81640625,
+    "min_union": 17,
+    "max_union": 33,
+    "kernel_ms": 2.494858
+  },
+  {
+    "position": 6144,
+    "layer": 2,
+    "sha256": "e74f6600c2660ea081e781678ba8155e540b4508694d823b4cccd813ef67a4e1",
+    "mean_union": 22.8212890625,
+    "min_union": 17,
+    "max_union": 32,
+    "kernel_ms": 2.48321
+  },
+  {
+    "position": 6144,
+    "layer": 3,
+    "sha256": "ecc05a2ac21540348e52d08d4cf3aac7cf141a378aa61c7a561fc42daa3ce0cd",
+    "mean_union": 24.4296875,
+    "min_union": 17,
+    "max_union": 34,
+    "kernel_ms": 2.588362
+  },
+  {
+    "position": 6144,
+    "layer": 4,
+    "sha256": "c8dfaa99c9a81f28128675463c5cda27fd1623ab072e74c367abfcc8991f6613",
+    "mean_union": 25.8955078125,
+    "min_union": 18,
+    "max_union": 37,
+    "kernel_ms": 2.700968
+  },
+  {
+    "position": 6144,
+    "layer": 5,
+    "sha256": "ac3480ec14a1c0f0d842bd09b8c5f27aa9231ff927be079b901efa5a4ce911b8",
+    "mean_union": 24.80859375,
+    "min_union": 17,
+    "max_union": 34,
+    "kernel_ms": 2.635273
+  },
+  {
+    "position": 6144,
+    "layer": 6,
+    "sha256": "f6bfe5f1bd52a5b4bde9f815666b73de5674b3b8414a163470b385b04f86d9cd",
+    "mean_union": 22.603515625,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.657929
+  },
+  {
+    "position": 6144,
+    "layer": 7,
+    "sha256": "6cb5aecdaad0ff6c1ce250f28237d8427d0ef3ef55cbd14fba5a20b54bf8e35f",
+    "mean_union": 23.564453125,
+    "min_union": 17,
+    "max_union": 35,
+    "kernel_ms": 2.551978
+  },
+  {
+    "position": 6144,
+    "layer": 8,
+    "sha256": "a28c526a4a13c829d70c58c7d8a44c0a711e3d1d9da7c34257ec3929dca3c4ee",
+    "mean_union": 28.0185546875,
+    "min_union": 18,
+    "max_union": 54,
+    "kernel_ms": 2.873703
+  },
+  {
+    "position": 6144,
+    "layer": 9,
+    "sha256": "ce6ea21b9bfd94c16c2bb8f1464316cb95d55bceb341f03b9c6d21ea50236070",
+    "mean_union": 25.67578125,
+    "min_union": 17,
+    "max_union": 44,
+    "kernel_ms": 2.67588
+  },
+  {
+    "position": 6144,
+    "layer": 10,
+    "sha256": "6af159665029ce54722966980a657975c575819dc9137a0b92af32a3618bbb59",
+    "mean_union": 22.3212890625,
+    "min_union": 18,
+    "max_union": 32,
+    "kernel_ms": 2.464202
+  },
+  {
+    "position": 6144,
+    "layer": 11,
+    "sha256": "6de561be5e3174ca33f67b2c87fbc99c8a03be7f322d6a2b924926d46e3cea13",
+    "mean_union": 23.75,
+    "min_union": 17,
+    "max_union": 34,
+    "kernel_ms": 2.553898
+  },
+  {
+    "position": 6144,
+    "layer": 12,
+    "sha256": "031fed9f12b55a8c01ae56d1e6b7bdc31b7f4d9803478619f5336b0f7a72682b",
+    "mean_union": 26.107421875,
+    "min_union": 17,
+    "max_union": 46,
+    "kernel_ms": 2.689832
+  },
+  {
+    "position": 6144,
+    "layer": 13,
+    "sha256": "7e3c954baac558fa38e6b5dde8dd6286a2cdd0a86e1478f83bc6b2c876b91376",
+    "mean_union": 27.541015625,
+    "min_union": 17,
+    "max_union": 53,
+    "kernel_ms": 2.768872
+  },
+  {
+    "position": 6144,
+    "layer": 14,
+    "sha256": "14dca96e649d1b8dc810c758db2c307f6bd4df98b5f816b68076ea5cfdb0e7f5",
+    "mean_union": 26.189453125,
+    "min_union": 17,
+    "max_union": 51,
+    "kernel_ms": 2.691337
+  },
+  {
+    "position": 6144,
+    "layer": 15,
+    "sha256": "850a16277e052b6ed7b07ffa0d38259fd82bbf0082888519f9b88ae03e48a466",
+    "mean_union": 22.974609375,
+    "min_union": 17,
+    "max_union": 30,
+    "kernel_ms": 2.487307
+  },
+  {
+    "position": 6144,
+    "layer": 16,
+    "sha256": "b7a62a78ea99650e42c98234a4a1e9a478b531b95f0d8d3a0fcc9a777becce2c",
+    "mean_union": 28.67578125,
+    "min_union": 18,
+    "max_union": 45,
+    "kernel_ms": 2.926214
+  },
+  {
+    "position": 6144,
+    "layer": 17,
+    "sha256": "b4d7723595c5c0b46ff6b583a823fb58dbfbc42b2dc81f7c4b7e33d095bfd7ea",
+    "mean_union": 24.0498046875,
+    "min_union": 18,
+    "max_union": 36,
+    "kernel_ms": 2.574153
+  },
+  {
+    "position": 6144,
+    "layer": 18,
+    "sha256": "d59903ca597b1afbb3b1dbc606df9bab43a6c3eaab0daa0bcedc7b3a60b18fa7",
+    "mean_union": 26.986328125,
+    "min_union": 19,
+    "max_union": 43,
+    "kernel_ms": 2.766888
+  },
+  {
+    "position": 6144,
+    "layer": 19,
+    "sha256": "c85b99e68ef4e20cced2a1b89446fcfe634b70ca24893ac6076e7b7e3c6fa2eb",
+    "mean_union": 29.3583984375,
+    "min_union": 21,
+    "max_union": 45,
+    "kernel_ms": 2.93511
+  },
+  {
+    "position": 6144,
+    "layer": 20,
+    "sha256": "ad6bdc4846f509e585fcc3141657f9f0940477d6065561dfb271717d16fe7d28",
+    "mean_union": 26.0849609375,
+    "min_union": 18,
+    "max_union": 37,
+    "kernel_ms": 2.711145
+  },
+  {
+    "position": 6144,
+    "layer": 21,
+    "sha256": "7977c4975fc4f69f010baed8b72f793b9124f5809841912df9bfe0f5851915aa",
+    "mean_union": 25.5986328125,
+    "min_union": 17,
+    "max_union": 36,
+    "kernel_ms": 3.065381
+  },
+  {
+    "position": 6144,
+    "layer": 22,
+    "sha256": "a9f4862e4770896291754820335fb1048f463237abd2320e94fc43041f0c32e8",
+    "mean_union": 25.7294921875,
+    "min_union": 18,
+    "max_union": 44,
+    "kernel_ms": 2.69556
+  },
+  {
+    "position": 6144,
+    "layer": 23,
+    "sha256": "50c2049719575eb3c78bdce7050c703ecc5ce40f87f1e6928b0f55c6ef5a9f39",
+    "mean_union": 24.361328125,
+    "min_union": 16,
+    "max_union": 38,
+    "kernel_ms": 2.59985
+  },
+  {
+    "position": 6144,
+    "layer": 24,
+    "sha256": "55221f1695168b6cddeeda75419ad606309aff5a9e5825da751c759a8555d88f",
+    "mean_union": 21.5166015625,
+    "min_union": 16,
+    "max_union": 32,
+    "kernel_ms": 2.403371
+  },
+  {
+    "position": 6144,
+    "layer": 25,
+    "sha256": "d7b09f4dfba041b75d1232ff733fd51fb68a2ca8ca2fb68532fbeb8c57ade416",
+    "mean_union": 25.40625,
+    "min_union": 18,
+    "max_union": 37,
+    "kernel_ms": 2.803079
+  },
+  {
+    "position": 6144,
+    "layer": 26,
+    "sha256": "9b5e5b6b71a4a332a151d3296a57a949cd0fbd0287f4f9eeece87ed981dc5cd3",
+    "mean_union": 25.2978515625,
+    "min_union": 17,
+    "max_union": 35,
+    "kernel_ms": 2.664073
+  },
+  {
+    "position": 6144,
+    "layer": 27,
+    "sha256": "67e639402098e86c780d8acb12173020ea94077df00454bcbb78f1a49acb4cec",
+    "mean_union": 22.7431640625,
+    "min_union": 16,
+    "max_union": 36,
+    "kernel_ms": 2.502378
+  },
+  {
+    "position": 6144,
+    "layer": 28,
+    "sha256": "1d742323ee7650ad891a2a826f8214fba0cd995a01c27b0e43ec1c39997293d2",
+    "mean_union": 24.0419921875,
+    "min_union": 17,
+    "max_union": 38,
+    "kernel_ms": 2.581225
+  },
+  {
+    "position": 6144,
+    "layer": 29,
+    "sha256": "3437d3cc64a1ba1031d79c2d70e07ba159f8913053e01d6a0661afff5d68105e",
+    "mean_union": 21.2392578125,
+    "min_union": 16,
+    "max_union": 36,
+    "kernel_ms": 2.382891
+  },
+  {
+    "position": 6144,
+    "layer": 30,
+    "sha256": "dbe34b7530c98776b07c78eb0093dfee253dede4fa79566711abafd6ff197960",
+    "mean_union": 21.26953125,
+    "min_union": 16,
+    "max_union": 32,
+    "kernel_ms": 2.371563
+  },
+  {
+    "position": 6144,
+    "layer": 31,
+    "sha256": "47e400aa52673549ada8ee47c4da491d670b9d98365153d296f9a292766c2e9c",
+    "mean_union": 22.7265625,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.48385
+  },
+  {
+    "position": 6144,
+    "layer": 32,
+    "sha256": "f727bd5ba2f05c2eba59896fc5decaa53db1361fba06353ce36ec02edddf778c",
+    "mean_union": 23.642578125,
+    "min_union": 16,
+    "max_union": 37,
+    "kernel_ms": 2.566154
+  },
+  {
+    "position": 6144,
+    "layer": 33,
+    "sha256": "348bd10067f4fea5f6f5feb122cfa616b90d2839e410574d581fd7907cad5cc4",
+    "mean_union": 23.677734375,
+    "min_union": 16,
+    "max_union": 36,
+    "kernel_ms": 2.561066
+  },
+  {
+    "position": 6144,
+    "layer": 34,
+    "sha256": "167092a71508c84894be25c1ac26bcb40e0d70e52d3fe5adcadd9f5f006b287d",
+    "mean_union": 22.310546875,
+    "min_union": 16,
+    "max_union": 38,
+    "kernel_ms": 2.446282
+  },
+  {
+    "position": 6144,
+    "layer": 35,
+    "sha256": "c9e1e1a1cecbe5c47e0eb74707006506e595872b3fd87bea2ec57f0a0ecf73f5",
+    "mean_union": 22.900390625,
+    "min_union": 17,
+    "max_union": 37,
+    "kernel_ms": 2.574057
+  },
+  {
+    "position": 6144,
+    "layer": 36,
+    "sha256": "2596d2068ea44044c7e066fff5d46512a6ecda6eba5e9e448e798fffaba4ab0a",
+    "mean_union": 21.763671875,
+    "min_union": 16,
+    "max_union": 37,
+    "kernel_ms": 2.540362
+  },
+  {
+    "position": 6144,
+    "layer": 37,
+    "sha256": "ea3fb270b5259ccec728dcf67407408757c50ccf5fb320b2bf1e20ecf4e39e19",
+    "mean_union": 23.49609375,
+    "min_union": 17,
+    "max_union": 36,
+    "kernel_ms": 2.526346
+  },
+  {
+    "position": 6144,
+    "layer": 38,
+    "sha256": "3d88d3a131a5d88545f518f09944f5b1b09bfd8cea92b31b9f2e89ac955cf06c",
+    "mean_union": 21.7646484375,
+    "min_union": 16,
+    "max_union": 37,
+    "kernel_ms": 2.416778
+  },
+  {
+    "position": 6144,
+    "layer": 39,
+    "sha256": "ca33fd529a7954afa5aeb6fdc3aa5948b66319fdddefde17b99fba33682c4d36",
+    "mean_union": 19.330078125,
+    "min_union": 16,
+    "max_union": 27,
+    "kernel_ms": 2.252844
+  },
+  {
+    "position": 6144,
+    "layer": 40,
+    "sha256": "387bcd856b3b1ba3e836c84ca8db343cc70bb9e1daf32e6ee39e857542607d67",
+    "mean_union": 22.2177734375,
+    "min_union": 16,
+    "max_union": 35,
+    "kernel_ms": 2.433194
+  },
+  {
+    "position": 6144,
+    "layer": 41,
+    "sha256": "1b6e04af132284535fb653a6f0d1f272781f971744c3f9eb4d2b642a3f96e353",
+    "mean_union": 19.423828125,
+    "min_union": 16,
+    "max_union": 30,
+    "kernel_ms": 2.23774
+  },
+  {
+    "position": 6144,
+    "layer": 42,
+    "sha256": "e54572f4c0c64560fb61e21dde423d3b3d881567f4f53da0f1996926ac5c70be",
+    "mean_union": 21.8740234375,
+    "min_union": 16,
+    "max_union": 43,
+    "kernel_ms": 2.601993
+  },
+  {
+    "position": 6144,
+    "layer": 43,
+    "sha256": "377ddbb9e96e2a5766705ea63cfc9da7cf795655b2a95ac6e26c8df88ced2d14",
+    "mean_union": 20.521484375,
+    "min_union": 16,
+    "max_union": 32,
+    "kernel_ms": 2.343372
+  },
+  {
+    "position": 6144,
+    "layer": 44,
+    "sha256": "c6459afd1d510b320f25af2483422b579f7fa79a0b1006fdf4c08e0ac75ddecf",
+    "mean_union": 21.5361328125,
+    "min_union": 16,
+    "max_union": 33,
+    "kernel_ms": 2.383851
+  },
+  {
+    "position": 6144,
+    "layer": 45,
+    "sha256": "e2f273976b6b5850a66e42410a424fcada7b3bbbacd91c5a5b6f973d5b5308e3",
+    "mean_union": 20.05078125,
+    "min_union": 16,
+    "max_union": 32,
+    "kernel_ms": 2.282732
+  },
+  {
+    "position": 6144,
+    "layer": 46,
+    "sha256": "b5b2bd93f7fa4cc736d2fb5be5ea6c6aab92b26b54fed3fe6ad7424fce465d21",
+    "mean_union": 22.29296875,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.440555
+  },
+  {
+    "position": 6144,
+    "layer": 47,
+    "sha256": "790a9451a1cb4c28ede4af63a5db71f578aa68ba19a01581c67f7a02cf3a602c",
+    "mean_union": 23.212890625,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.559081
+  },
+  {
+    "position": 6144,
+    "layer": 48,
+    "sha256": "2c97d38c3a270332cebb9134c85cb98ce9d8f17721c598efd90603271826a473",
+    "mean_union": 20.0029296875,
+    "min_union": 16,
+    "max_union": 28,
+    "kernel_ms": 2.353836
+  },
+  {
+    "position": 6144,
+    "layer": 49,
+    "sha256": "8eb526d0d80a44f3345c0a4af35da5a27f2c9f2c31d9494731268d4e6330c6cf",
+    "mean_union": 23.142578125,
+    "min_union": 16,
+    "max_union": 38,
+    "kernel_ms": 2.499275
+  },
+  {
+    "position": 6144,
+    "layer": 50,
+    "sha256": "8b8bb57e54c7170d41c900ab96745ec1350f0d1ff719865c14987e4ae2e9abaf",
+    "mean_union": 20.0595703125,
+    "min_union": 16,
+    "max_union": 30,
+    "kernel_ms": 2.28446
+  },
+  {
+    "position": 6144,
+    "layer": 51,
+    "sha256": "6cb3fd51671f6ff6370b81561e90b59fdede12f8c5599e93cf5a47a39ef474b3",
+    "mean_union": 19.4814453125,
+    "min_union": 16,
+    "max_union": 27,
+    "kernel_ms": 2.251052
+  },
+  {
+    "position": 6144,
+    "layer": 52,
+    "sha256": "315e40adadedf703ca16a18922d1bd23e7e434ce550490ba57e3a8f4d0447b91",
+    "mean_union": 23.0927734375,
+    "min_union": 16,
+    "max_union": 36,
+    "kernel_ms": 2.491722
+  },
+  {
+    "position": 6144,
+    "layer": 53,
+    "sha256": "2fd9981943fdb52ee1d8ca2221226068d16d6952affee9fbf1088eedd4bb9da7",
+    "mean_union": 20.5859375,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.312236
+  },
+  {
+    "position": 6144,
+    "layer": 54,
+    "sha256": "5daac1eba7ea7c59ad806281758495bfcba087b3963c67f5c86482cde000f661",
+    "mean_union": 21.814453125,
+    "min_union": 16,
+    "max_union": 37,
+    "kernel_ms": 2.439978
+  },
+  {
+    "position": 6144,
+    "layer": 55,
+    "sha256": "91ea5c64826b6cba15391b04a40b7334c503d88147e2012827127934f0aa0c0a",
+    "mean_union": 20.63671875,
+    "min_union": 16,
+    "max_union": 33,
+    "kernel_ms": 2.336299
+  },
+  {
+    "position": 6144,
+    "layer": 56,
+    "sha256": "52d3f367f6a8f98f0bccb383eaf574c674065dc0c63acb33dc7cb9a2e8313edf",
+    "mean_union": 20.455078125,
+    "min_union": 16,
+    "max_union": 30,
+    "kernel_ms": 2.387883
+  },
+  {
+    "position": 6144,
+    "layer": 57,
+    "sha256": "7f17867afe5ec4fe79f776d5de6c14aced5bd6c8d503d3a3b8a3181b37abf0ea",
+    "mean_union": 21.4248046875,
+    "min_union": 16,
+    "max_union": 34,
+    "kernel_ms": 2.380299
+  },
+  {
+    "position": 6144,
+    "layer": 58,
+    "sha256": "e75b93f9a89d81d5d5ad9a3a5aba9fcb38800f7fc0563c7a3afd04e02e1cc62d",
+    "mean_union": 19.3759765625,
+    "min_union": 16,
+    "max_union": 27,
+    "kernel_ms": 2.249292
+  },
+  {
+    "position": 6144,
+    "layer": 59,
+    "sha256": "ea18edf7c0125f156ae918490e0b743c793324cde11c2b08f82a86face3916cb",
+    "mean_union": 24.5126953125,
+    "min_union": 17,
+    "max_union": 43,
+    "kernel_ms": 2.577417
+  },
+  {
+    "position": 63488,
+    "layer": 0,
+    "sha256": "ae3857cc37c09639ea07c256a46213ebc5e309ba2a9c3293aa9241e0d2fc030f",
+    "mean_union": 39.3466796875,
+    "min_union": 20,
+    "max_union": 61,
+    "kernel_ms": 3.736511
+  },
+  {
+    "position": 63488,
+    "layer": 1,
+    "sha256": "50514612bbb5fd0783af2521ef1671a759a68b67f968d2261725f3a9db2532ef",
+    "mean_union": 29.1845703125,
+    "min_union": 21,
+    "max_union": 41,
+    "kernel_ms": 2.929126
+  },
+  {
+    "position": 63488,
+    "layer": 2,
+    "sha256": "ec35181c8326114091ba444d5031241b57628b787dd08a7368d1daa2adf24c59",
+    "mean_union": 26.810546875,
+    "min_union": 19,
+    "max_union": 38,
+    "kernel_ms": 2.751656
+  },
+  {
+    "position": 63488,
+    "layer": 3,
+    "sha256": "8e34b6689d2ccca247538e26824c011d22c7b6aa22a95856f007e2bd967b35b1",
+    "mean_union": 33.6083984375,
+    "min_union": 22,
+    "max_union": 48,
+    "kernel_ms": 3.183556
+  },
+  {
+    "position": 63488,
+    "layer": 4,
+    "sha256": "c9ddf7adaca229e1f57274e822208696c775fc797a43af98b6f4416e5a6fd3bc",
+    "mean_union": 41.640625,
+    "min_union": 24,
+    "max_union": 66,
+    "kernel_ms": 3.726751
+  },
+  {
+    "position": 63488,
+    "layer": 5,
+    "sha256": "ed5d87eda18670af8d1e8a5c95c8d91a2c26ec2716c0a14a75140e5039d94564",
+    "mean_union": 37.3828125,
+    "min_union": 22,
+    "max_union": 55,
+    "kernel_ms": 3.720192
+  },
+  {
+    "position": 63488,
+    "layer": 6,
+    "sha256": "a3cd5306dcb5499bab5dd736f672d4f6de705d541a241c116971a8c5bff92026",
+    "mean_union": 35.685546875,
+    "min_union": 21,
+    "max_union": 53,
+    "kernel_ms": 3.314435
+  },
+  {
+    "position": 63488,
+    "layer": 7,
+    "sha256": "cd50cf754509562a411c17f6e5aa2798672460c6f8a491655edc9132f49deaf5",
+    "mean_union": 38.1162109375,
+    "min_union": 21,
+    "max_union": 63,
+    "kernel_ms": 3.677759
+  },
+  {
+    "position": 63488,
+    "layer": 8,
+    "sha256": "ecdda4b227d52e0ff68adb739ede0c00120f7eccce39dfc8a18734084fccdf14",
+    "mean_union": 45.8193359375,
+    "min_union": 25,
+    "max_union": 93,
+    "kernel_ms": 3.994973
+  },
+  {
+    "position": 63488,
+    "layer": 9,
+    "sha256": "46a39f74658ffd35594221a5e6a333ac6eab7538b94ac8f57b995d4619d2590b",
+    "mean_union": 39.9609375,
+    "min_union": 22,
+    "max_union": 85,
+    "kernel_ms": 3.587393
+  },
+  {
+    "position": 63488,
+    "layer": 10,
+    "sha256": "723d628cd6722cd738ead39c9e3795a0d3073098f7867d49fba1ebba9676e952",
+    "mean_union": 33.3916015625,
+    "min_union": 22,
+    "max_union": 45,
+    "kernel_ms": 3.193476
+  },
+  {
+    "position": 63488,
+    "layer": 11,
+    "sha256": "f8d8d49055dbef3cae9687a8140c47f41856da1535fb64738ca8cd2ba3c1b78d",
+    "mean_union": 35.1513671875,
+    "min_union": 24,
+    "max_union": 52,
+    "kernel_ms": 3.286627
+  },
+  {
+    "position": 63488,
+    "layer": 12,
+    "sha256": "e687c3c8a27601b9f7cbe370382e5a6e33a1a44dbf32d5045a80138d92a9c3bb",
+    "mean_union": 40.8544921875,
+    "min_union": 23,
+    "max_union": 93,
+    "kernel_ms": 3.606753
+  },
+  {
+    "position": 63488,
+    "layer": 13,
+    "sha256": "1253444c807b80e566d91d72302dfb33f78da483402df57a18aaf0ee2e21c82c",
+    "mean_union": 45.2822265625,
+    "min_union": 22,
+    "max_union": 102,
+    "kernel_ms": 3.864414
+  },
+  {
+    "position": 63488,
+    "layer": 14,
+    "sha256": "2d81f0b13c3226b8f045d2cf97af2cd223a7138e0beb67dae87feefb85db4ae4",
+    "mean_union": 42.3525390625,
+    "min_union": 20,
+    "max_union": 104,
+    "kernel_ms": 3.674144
+  },
+  {
+    "position": 63488,
+    "layer": 15,
+    "sha256": "33f81319783194b518f0f5e9d01be916dfca82223079ff51c5b3472a7cdfcd3f",
+    "mean_union": 30.7548828125,
+    "min_union": 21,
+    "max_union": 42,
+    "kernel_ms": 3.023909
+  },
+  {
+    "position": 63488,
+    "layer": 16,
+    "sha256": "679992f4924f9a1bd4e2dec7bf32b0ec78df02becd55f7cadbd1776ed54cdd42",
+    "mean_union": 47.3564453125,
+    "min_union": 21,
+    "max_union": 89,
+    "kernel_ms": 4.174075
+  },
+  {
+    "position": 63488,
+    "layer": 17,
+    "sha256": "b627b8e8bd0a6d34328ef65ba9f124dbca77d45b4c42aed7b853fa530eb13aa0",
+    "mean_union": 33.048828125,
+    "min_union": 23,
+    "max_union": 60,
+    "kernel_ms": 3.181444
+  },
+  {
+    "position": 63488,
+    "layer": 18,
+    "sha256": "f52af3a6985b40dd3e78c941d11f612be4d94bfec34f1cad265c3a3f75f81946",
+    "mean_union": 41.3408203125,
+    "min_union": 25,
+    "max_union": 82,
+    "kernel_ms": 3.683392
+  },
+  {
+    "position": 63488,
+    "layer": 19,
+    "sha256": "a2c0d59c57c590464ab34f4bf69126db5989b179ad206eaa382fd9db98685a38",
+    "mean_union": 47.3291015625,
+    "min_union": 25,
+    "max_union": 77,
+    "kernel_ms": 4.052701
+  },
+  {
+    "position": 63488,
+    "layer": 20,
+    "sha256": "906014ed9d2382945177f895c31d62c314e8e89a1f013d15e1e091e3b43db684",
+    "mean_union": 43.44921875,
+    "min_union": 25,
+    "max_union": 72,
+    "kernel_ms": 3.850494
+  },
+  {
+    "position": 63488,
+    "layer": 21,
+    "sha256": "a10188329ad0c8907c0805ef2d53d55899f1ce5a9aedb365eb97a6040daa1d53",
+    "mean_union": 41.4951171875,
+    "min_union": 23,
+    "max_union": 76,
+    "kernel_ms": 3.707967
+  },
+  {
+    "position": 63488,
+    "layer": 22,
+    "sha256": "045590254800838c977059827267b203b69e311e82f2f2444cbaff474f400d20",
+    "mean_union": 49.1435546875,
+    "min_union": 24,
+    "max_union": 86,
+    "kernel_ms": 4.302554
+  },
+  {
+    "position": 63488,
+    "layer": 23,
+    "sha256": "af6e0d403adc3a6431277fa5673140e1dce11d506fb4ffaa44d48588f7453a3f",
+    "mean_union": 42.6943359375,
+    "min_union": 21,
+    "max_union": 88,
+    "kernel_ms": 3.801022
+  },
+  {
+    "position": 63488,
+    "layer": 24,
+    "sha256": "220c9e16e14fd804f4e2ba2653486ccd741ab375e21683b920f0019a6108e900",
+    "mean_union": 37.3837890625,
+    "min_union": 22,
+    "max_union": 82,
+    "kernel_ms": 3.539713
+  },
+  {
+    "position": 63488,
+    "layer": 25,
+    "sha256": "37045de9fbb3137a2851f6b9c2f552f05e3e5c1b87fcbde6f39d95146685027c",
+    "mean_union": 55.611328125,
+    "min_union": 28,
+    "max_union": 88,
+    "kernel_ms": 4.659159
+  },
+  {
+    "position": 63488,
+    "layer": 26,
+    "sha256": "b52cc42dc9dab0acb5694b6a8a0ccc84393582b1e3f3e898458b4a902c9d8f1f",
+    "mean_union": 46.1904296875,
+    "min_union": 24,
+    "max_union": 77,
+    "kernel_ms": 4.070909
+  },
+  {
+    "position": 63488,
+    "layer": 27,
+    "sha256": "0762064d289b1da9fa5365f2035a6ac0cc4117be306943b80f516ec66fb1b5b3",
+    "mean_union": 44.09375,
+    "min_union": 23,
+    "max_union": 89,
+    "kernel_ms": 4.000573
+  },
+  {
+    "position": 63488,
+    "layer": 28,
+    "sha256": "680f70740ce186a36bdfee842338eab89826f177e7c0c62ce71a806dd9c08b94",
+    "mean_union": 47.8603515625,
+    "min_union": 22,
+    "max_union": 88,
+    "kernel_ms": 4.187163
+  },
+  {
+    "position": 63488,
+    "layer": 29,
+    "sha256": "ae838037e2a55c895ecaedbcf1d01ea5e222b185d8a35c1c933e1c0524e6019d",
+    "mean_union": 41.181640625,
+    "min_union": 23,
+    "max_union": 78,
+    "kernel_ms": 3.786815
+  },
+  {
+    "position": 63488,
+    "layer": 30,
+    "sha256": "c6112ab8ff1b406100aecbc734d76215b67a9b750aa8af83dfd5d3cce494efa9",
+    "mean_union": 41.80078125,
+    "min_union": 23,
+    "max_union": 82,
+    "kernel_ms": 3.789279
+  },
+  {
+    "position": 63488,
+    "layer": 31,
+    "sha256": "789e728b366f5a81d4db5791cccf42fa537955851c63577bfffc62f2ff094753",
+    "mean_union": 45.3837890625,
+    "min_union": 26,
+    "max_union": 86,
+    "kernel_ms": 4.028221
+  },
+  {
+    "position": 63488,
+    "layer": 32,
+    "sha256": "19965b32aa1bd121f53bc81fd1c3a3f7b445339f47604e0b042284b471c5ba10",
+    "mean_union": 47.60546875,
+    "min_union": 23,
+    "max_union": 86,
+    "kernel_ms": 4.197627
+  },
+  {
+    "position": 63488,
+    "layer": 33,
+    "sha256": "b33f40f87e0b02f15dfc36602e7871e8865a07b56dd7c107b430a92179180e39",
+    "mean_union": 47.2197265625,
+    "min_union": 24,
+    "max_union": 88,
+    "kernel_ms": 4.438553
+  },
+  {
+    "position": 63488,
+    "layer": 34,
+    "sha256": "262ad64208299bad30e0aa22a18c03d1f5f1b47f228193dfbeceec1409461d27",
+    "mean_union": 44.34375,
+    "min_union": 24,
+    "max_union": 90,
+    "kernel_ms": 3.928926
+  },
+  {
+    "position": 63488,
+    "layer": 35,
+    "sha256": "58139a0c39ea73243d50e80d782072d3b105288e1c79784642c3e5927ecf9cdc",
+    "mean_union": 50.060546875,
+    "min_union": 27,
+    "max_union": 90,
+    "kernel_ms": 4.302618
+  },
+  {
+    "position": 63488,
+    "layer": 36,
+    "sha256": "d1eb5f32b1b0feadeaf6b2a4c45798e3309e115a00a465326a45d02f4beb7ebb",
+    "mean_union": 44.5439453125,
+    "min_union": 24,
+    "max_union": 89,
+    "kernel_ms": 3.963389
+  },
+  {
+    "position": 63488,
+    "layer": 37,
+    "sha256": "d94fab478392a3f65932f3292ce3870e179010466eb14e4cf2342c213a01f575",
+    "mean_union": 49.2138671875,
+    "min_union": 22,
+    "max_union": 84,
+    "kernel_ms": 4.259419
+  },
+  {
+    "position": 63488,
+    "layer": 38,
+    "sha256": "7f1e5d175e9828bb36cd09cbfda0f994ec9be174d18bc7f23fff551779ec3e90",
+    "mean_union": 42.755859375,
+    "min_union": 23,
+    "max_union": 74,
+    "kernel_ms": 3.85427
+  },
+  {
+    "position": 63488,
+    "layer": 39,
+    "sha256": "e5a091a7b724b44d93ca4bf8263ec7ead5d45ca813b0f2411f1b0b148852c719",
+    "mean_union": 32.4267578125,
+    "min_union": 22,
+    "max_union": 55,
+    "kernel_ms": 3.189156
+  },
+  {
+    "position": 63488,
+    "layer": 40,
+    "sha256": "fa0b645bc55edbb9a1c3ff830d5b765e392f9d0b343067fe016da3b3ebb9fea9",
+    "mean_union": 43.12890625,
+    "min_union": 22,
+    "max_union": 81,
+    "kernel_ms": 3.85747
+  },
+  {
+    "position": 63488,
+    "layer": 41,
+    "sha256": "105d01d7bf1432a9b1ce18f57ab44a7bc87596e09ea838bd610e6356598d2cad",
+    "mean_union": 32.283203125,
+    "min_union": 20,
+    "max_union": 63,
+    "kernel_ms": 3.175748
+  },
+  {
+    "position": 63488,
+    "layer": 42,
+    "sha256": "48ac88f7609b8a22a8e161f3c0eedce064f89e4ca4b463269b6cd0c061d1a471",
+    "mean_union": 44.763671875,
+    "min_union": 20,
+    "max_union": 97,
+    "kernel_ms": 3.997596
+  },
+  {
+    "position": 63488,
+    "layer": 43,
+    "sha256": "27f7b009d37734274512a370688c07c51fe209f4c3e86773a0dffd4f90be9298",
+    "mean_union": 33.01953125,
+    "min_union": 19,
+    "max_union": 58,
+    "kernel_ms": 3.389922
+  },
+  {
+    "position": 63488,
+    "layer": 44,
+    "sha256": "f007237fbdbc8cabcc980978eee132a2b7f0ac649ba139993f3ba26bcead9014",
+    "mean_union": 42.763671875,
+    "min_union": 20,
+    "max_union": 89,
+    "kernel_ms": 4.017597
+  },
+  {
+    "position": 63488,
+    "layer": 45,
+    "sha256": "dee1b06133f4f370402f6032c9ee7b2be78391478d9d92a0d82041a773f1cade",
+    "mean_union": 30.603515625,
+    "min_union": 19,
+    "max_union": 54,
+    "kernel_ms": 3.034661
+  },
+  {
+    "position": 63488,
+    "layer": 46,
+    "sha256": "a669a99b53211406632b690b071bb5b9539d52287aa9df56a213fde5b31c9753",
+    "mean_union": 39.45703125,
+    "min_union": 20,
+    "max_union": 88,
+    "kernel_ms": 3.81411
+  },
+  {
+    "position": 63488,
+    "layer": 47,
+    "sha256": "06374ac545fdc8aaf1e11eeff10dc5a8c317b3cb37cc2792e96fabad2c1a4aa7",
+    "mean_union": 31.5986328125,
+    "min_union": 17,
+    "max_union": 57,
+    "kernel_ms": 3.076741
+  },
+  {
+    "position": 63488,
+    "layer": 48,
+    "sha256": "928baf918e5a1dfe34c867d7be7858fe01ea9262d9f78d9daff57023cb847c4d",
+    "mean_union": 26.05859375,
+    "min_union": 18,
+    "max_union": 49,
+    "kernel_ms": 2.7258
+  },
+  {
+    "position": 63488,
+    "layer": 49,
+    "sha256": "587e296754d158925708b24996c1cae7469ee37c6688a4980c14fa8da1a07493",
+    "mean_union": 42.0380859375,
+    "min_union": 18,
+    "max_union": 94,
+    "kernel_ms": 3.740512
+  },
+  {
+    "position": 63488,
+    "layer": 50,
+    "sha256": "08a0d5e0e75f7e4e6ba89c1bb214facb7049e3db2fead72dc23cc7ef9a77ed04",
+    "mean_union": 29.1865234375,
+    "min_union": 19,
+    "max_union": 55,
+    "kernel_ms": 2.979142
+  },
+  {
+    "position": 63488,
+    "layer": 51,
+    "sha256": "a19625483d7d1293e98867529214d73ee18ef07acfbc0052aaf510559c5b3737",
+    "mean_union": 29.7353515625,
+    "min_union": 19,
+    "max_union": 53,
+    "kernel_ms": 3.04791
+  },
+  {
+    "position": 63488,
+    "layer": 52,
+    "sha256": "876e8ecc3f57193b2ec96a2d221ea8ba55e972288ca5bba30f063b3714ba964a",
+    "mean_union": 47.7529296875,
+    "min_union": 20,
+    "max_union": 95,
+    "kernel_ms": 4.160635
+  },
+  {
+    "position": 63488,
+    "layer": 53,
+    "sha256": "574fba774eccd53ac6ec72c98c7c13b97c3fea1d16f74130fb49c8f276bc5351",
+    "mean_union": 36.3759765625,
+    "min_union": 23,
+    "max_union": 76,
+    "kernel_ms": 3.562816
+  },
+  {
+    "position": 63488,
+    "layer": 54,
+    "sha256": "78c4087dbe40c742296d350fa75c7b43c380fbab124deb872198bd906caa26a3",
+    "mean_union": 42.5859375,
+    "min_union": 20,
+    "max_union": 102,
+    "kernel_ms": 3.797695
+  },
+  {
+    "position": 63488,
+    "layer": 55,
+    "sha256": "0ae213328a9694bc6623831a8797fd955007b58df7753ea5276a529874fff9bc",
+    "mean_union": 39.4140625,
+    "min_union": 18,
+    "max_union": 85,
+    "kernel_ms": 3.664384
+  },
+  {
+    "position": 63488,
+    "layer": 56,
+    "sha256": "f9cc153ed113c7ca2dd84b449226ad6c42a900d9ad4563264ab8c88f6c9eb555",
+    "mean_union": 37.8251953125,
+    "min_union": 19,
+    "max_union": 87,
+    "kernel_ms": 3.515361
+  },
+  {
+    "position": 63488,
+    "layer": 57,
+    "sha256": "44c3bf8f21e0bf373dadbb3110a9f42f1bda641aa8d73ab007eda42d162426cc",
+    "mean_union": 44.0380859375,
+    "min_union": 21,
+    "max_union": 93,
+    "kernel_ms": 3.935518
+  },
+  {
+    "position": 63488,
+    "layer": 58,
+    "sha256": "0f5b1719ec115e22075aadbf136c235c80f574975b3f6ed64ea77b03fba6621f",
+    "mean_union": 27.2578125,
+    "min_union": 19,
+    "max_union": 44,
+    "kernel_ms": 2.783624
+  },
+  {
+    "position": 63488,
+    "layer": 59,
+    "sha256": "c59b336de4c2c72448dc9647934fe9176ef7f7170c087b9e26f78cc3fdd67e86",
+    "mean_union": 41.3818359375,
+    "min_union": 24,
+    "max_union": 83,
+    "kernel_ms": 3.67904
+  }
+]

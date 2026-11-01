@@ -591,13 +591,6 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
-    pub fn ds4_bridge_bind_plan_match(
-        host: *const ds4_bridge_bind_plan,
-        native: *const ds4_bridge_bind_plan,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
     pub fn ds4_bridge_model_open(
         out: *mut *mut ds4_bridge_model,
         opt: *const ds4_bridge_model_open_options,
@@ -609,13 +602,6 @@ extern "C" {
         out: *mut *mut ds4_bridge_model,
         opt: *const ds4_bridge_model_open_options,
         distributed: *const ds4_bridge_distributed_options,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_model_run_distributed_worker(
-        m: *mut ds4_bridge_model,
-        ctx_size: i32,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;
@@ -725,6 +711,24 @@ extern "C" {
     ) -> c_int;
 
     pub fn ds4_bridge_glm53_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_ling31_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_ling31_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,
@@ -844,6 +848,12 @@ extern "C" {
         keep: i32,
         err: *mut c_char,
         errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_mimo2_sync_keep(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
     ) -> c_int;
 
     pub fn ds4_bridge_mimo2_encode_vision(
@@ -1061,8 +1071,6 @@ extern "C" {
         excluded_id: i32,
     ) -> c_int;
 
-    pub fn ds4_bridge_session_pos(s: *mut ds4_bridge_session) -> c_int;
-
     pub fn ds4_bridge_session_ctx(s: *mut ds4_bridge_session) -> c_int;
 
     pub fn ds4_bridge_session_graph_pending(s: *mut ds4_bridge_session) -> c_int;
@@ -1087,13 +1095,37 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
-    pub fn ds4_bridge_session_sample(
+    /// Every native draw goes through `f` (process-wide).
+    pub fn ds4_bridge_set_host_sampler(
+        f: Option<
+            unsafe extern "C" fn(
+                *const c_float,
+                u32,
+                c_float,
+                c_int,
+                c_float,
+                c_float,
+                *mut u64,
+                i32,
+                i32,
+            ) -> c_int,
+        >,
+    );
+
+    pub fn ds4_bridge_session_set_spec_sampler(
         s: *mut ds4_bridge_session,
-        temperature: c_float,
-        top_k: c_int,
-        top_p: c_float,
-        min_p: c_float,
-        rng: *mut u64,
+        verify: Option<
+            unsafe extern "C" fn(
+                *mut c_void,
+                *const c_float,
+                usize,
+                u32,
+                *const i32,
+                u32,
+                *mut i32,
+            ),
+        >,
+        ud: *mut c_void,
     ) -> c_int;
 
     pub fn ds4_bridge_session_sample_excluding(
@@ -1175,60 +1207,10 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
-    pub fn ds4_bridge_tokenize_text(
-        m: *mut ds4_bridge_model,
-        text: *const c_char,
-        out: *mut i32,
-        cap: c_int,
-        n_out: *mut c_int,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_tokenize_rendered_chat(
-        m: *mut ds4_bridge_model,
-        text: *const c_char,
-        out: *mut i32,
-        cap: c_int,
-        n_out: *mut c_int,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_token_text(
-        m: *mut ds4_bridge_model,
-        token: i32,
-        out: *mut c_char,
-        cap: usize,
-        n_out: *mut usize,
-        err: *mut c_char,
-        errlen: usize,
-    ) -> c_int;
-
-    pub fn ds4_bridge_token_eos(m: *mut ds4_bridge_model) -> c_int;
-
-    pub fn ds4_bridge_token_is_stop(m: *mut ds4_bridge_model, token: i32) -> c_int;
-
-    pub fn ds4_bridge_model_id(m: *mut ds4_bridge_model) -> c_int;
-
-    pub fn ds4_bridge_model_routed_quant_bits(m: *mut ds4_bridge_model) -> c_int;
-
     pub fn ds4_bridge_session_graph_fit_quote(
         m: *mut ds4_bridge_model,
         ctx_size: c_int,
         q: *mut ds4_bridge_graph_fit_quote,
-    ) -> c_int;
-
-    pub fn ds4_bridge_encode_chat_prompt(
-        m: *mut ds4_bridge_model,
-        system: *const c_char,
-        prompt: *const c_char,
-        think_mode: c_int,
-        out: *mut i32,
-        cap: c_int,
-        n_out: *mut c_int,
-        err: *mut c_char,
-        errlen: usize,
     ) -> c_int;
 
     pub fn ds4_bridge_session_copy_logits(

@@ -9,10 +9,46 @@ enum { GLMVQ_KDA_DIM = 128, GLMVQ_CONV = 4 };
  * to slot t of `stride` floats, at the same offsets as the live state. */
 struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
 
+enum glmvq_kda_reads { GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD };
+enum glmvq_kda_conv_mode { GLMVQ_KDA_SCALAR, GLMVQ_KDA_VECTOR };
+
+static bool glmvq_kda_conv4_fits(const float *qt, const float *kt, const float *vt,
+        const float *qw, const float *kw, const float *vw, glmvq_kda_snap snap) {
+    const uintptr_t inputs = (uintptr_t)qt | (uintptr_t)kt | (uintptr_t)vt |
+        (uintptr_t)qw | (uintptr_t)kw | (uintptr_t)vw;
+    const uintptr_t shots = (uintptr_t)snap.q | (uintptr_t)snap.k | (uintptr_t)snap.v | snap.stride * sizeof(float);
+    return !(inputs & 15u) && (!snap.state || !(shots & 15u));
+}
+
+__device__ __forceinline__ float glmvq_kda_conv4(float *tail, const float *weight, float raw, float *snap) {
+    const float4 prev = *(const float4 *)tail;
+    const float4 win = make_float4(prev.y, prev.z, prev.w, raw);
+    *(float4 *)tail = win;
+    if (snap) { *(float4 *)snap = win; }
+    const float4 w = *(const float4 *)weight;
+    float value = glmvq_add(0.0f, glmvq_mul(win.x, w.x));
+    value = glmvq_add(value, glmvq_mul(win.y, w.y));
+    value = glmvq_add(value, glmvq_mul(win.z, w.z));
+    return glmvq_add(value, glmvq_mul(win.w, w.w));
+}
+
+template <glmvq_kda_reads READS>
+__device__ __forceinline__ float glmvq_kda_read(const float *p) {
+    // Reload the small shared vectors instead of spilling the held state.
+    if constexpr (READS == GLMVQ_KDA_RELOAD) { return *(const volatile float *)p; }
+    return *p;
+}
+
 /* Source baseline: modeling_glm5_next.py:340-369,409-449,453-514.
  * Conv and beta are BF16; the recurrent matrix is FP32. Sequence order is
  * explicit, so an append consumes exactly the prior state and raw conv tail.
- * This bounded fallback precedes profiling of the existing chunked KDA path. */
+ * This bounded fallback precedes profiling of the existing chunked KDA path.
+ * HELD keeps column d of the head's state in registers across the rows:
+ * one read and write per call instead of two of each per row (MTP verify
+ * rows re-read it from L2), same operations and order. One decode row
+ * keeps the memory loops (255 registers measured 1.5% slower there). */
+template <bool HELD = false, glmvq_kda_reads READS = GLMVQ_KDA_CACHED,
+    glmvq_kda_conv_mode CONV = GLMVQ_KDA_SCALAR>
 __global__ void glmvq_kda(float *output, float *state,
         float *q_tail, float *k_tail, float *v_tail,
         const float *q_raw, const float *k_raw, const float *v_raw,
@@ -30,30 +66,44 @@ __global__ void glmvq_kda(float *output, float *state,
     __shared__ float qs[GLMVQ_KDA_DIM], ks[GLMVQ_KDA_DIM], decay[GLMVQ_KDA_DIM];
     const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)dim));
     const float a = expf(a_log[head]);
+    float st[HELD ? GLMVQ_KDA_DIM : 1];
+    if constexpr (HELD) {
+        #pragma unroll
+        for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) { st[key] = state[state_base + (uint64_t)key * dim + d]; }
+    }
 
     for (uint32_t t = 0; t < rows; t++) {
         const uint64_t input = (uint64_t)t * width + channel, tail = channel * GLMVQ_CONV;
-        for (uint32_t tap = 0; tap + 1 < GLMVQ_CONV; tap++) {
-            q_tail[tail + tap] = q_tail[tail + tap + 1];
-            k_tail[tail + tap] = k_tail[tail + tap + 1];
-            v_tail[tail + tap] = v_tail[tail + tap + 1];
-        }
-        q_tail[tail + GLMVQ_CONV - 1] = q_raw[input];
-        k_tail[tail + GLMVQ_CONV - 1] = k_raw[input];
-        v_tail[tail + GLMVQ_CONV - 1] = v_raw[input];
         const bool keep = snap.state && t + 1 < rows;
-        if (keep) {
-            for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
-                snap.q[t * snap.stride + tail + tap] = q_tail[tail + tap];
-                snap.k[t * snap.stride + tail + tap] = k_tail[tail + tap];
-                snap.v[t * snap.stride + tail + tap] = v_tail[tail + tap];
-            }
-        }
         float qc = 0.0f, kc = 0.0f, vc = 0.0f;
-        for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
-            qc = glmvq_add(qc, glmvq_mul(q_tail[tail + tap], q_weight[tail + tap]));
-            kc = glmvq_add(kc, glmvq_mul(k_tail[tail + tap], k_weight[tail + tap]));
-            vc = glmvq_add(vc, glmvq_mul(v_tail[tail + tap], v_weight[tail + tap]));
+        if constexpr (CONV == GLMVQ_KDA_VECTOR) {
+            qc = glmvq_kda_conv4(q_tail + tail, q_weight + tail, q_raw[input],
+                keep ? snap.q + t * snap.stride + tail : nullptr);
+            kc = glmvq_kda_conv4(k_tail + tail, k_weight + tail, k_raw[input],
+                keep ? snap.k + t * snap.stride + tail : nullptr);
+            vc = glmvq_kda_conv4(v_tail + tail, v_weight + tail, v_raw[input],
+                keep ? snap.v + t * snap.stride + tail : nullptr);
+        } else {
+            for (uint32_t tap = 0; tap + 1 < GLMVQ_CONV; tap++) {
+                q_tail[tail + tap] = q_tail[tail + tap + 1];
+                k_tail[tail + tap] = k_tail[tail + tap + 1];
+                v_tail[tail + tap] = v_tail[tail + tap + 1];
+            }
+            q_tail[tail + GLMVQ_CONV - 1] = q_raw[input];
+            k_tail[tail + GLMVQ_CONV - 1] = k_raw[input];
+            v_tail[tail + GLMVQ_CONV - 1] = v_raw[input];
+            if (keep) {
+                for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+                    snap.q[t * snap.stride + tail + tap] = q_tail[tail + tap];
+                    snap.k[t * snap.stride + tail + tap] = k_tail[tail + tap];
+                    snap.v[t * snap.stride + tail + tap] = v_tail[tail + tap];
+                }
+            }
+            for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+                qc = glmvq_add(qc, glmvq_mul(q_tail[tail + tap], q_weight[tail + tap]));
+                kc = glmvq_add(kc, glmvq_mul(k_tail[tail + tap], k_weight[tail + tap]));
+                vc = glmvq_add(vc, glmvq_mul(v_tail[tail + tap], v_weight[tail + tap]));
+            }
         }
         qc = glmvq_round(qc); kc = glmvq_round(kc); vc = glmvq_round(vc);
         q[d] = glmvq_round(__fdiv_rn(qc, glmvq_add(1.0f, expf(-qc))));
@@ -77,24 +127,45 @@ __global__ void glmvq_kda(float *output, float *state,
         __syncthreads();
 
         float memory = 0.0f;
-        for (uint32_t key = 0; key < dim; key++) {
-            const uint64_t at = state_base + (uint64_t)key * dim + d;
-            const float decayed = glmvq_mul(state[at], decay[key]);
-            state[at] = decayed;
-            memory = glmvq_add(memory, glmvq_mul(decayed, k[key]));
+        if constexpr (HELD) {
+            #pragma unroll
+            for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
+                st[key] = glmvq_mul(st[key], glmvq_kda_read<READS>(decay + key));
+                memory = glmvq_add(memory, glmvq_mul(st[key], glmvq_kda_read<READS>(k + key)));
+            }
+        } else {
+            for (uint32_t key = 0; key < dim; key++) {
+                const uint64_t at = state_base + (uint64_t)key * dim + d;
+                const float decayed = glmvq_mul(state[at], decay[key]);
+                state[at] = decayed;
+                memory = glmvq_add(memory, glmvq_mul(decayed, k[key]));
+            }
         }
         const float beta = glmvq_round(glmvq_sigmoid(beta_logits[(uint64_t)t * heads + head]));
         const float delta = glmvq_mul(glmvq_add(v[d], -memory), beta);
         float result = 0.0f;
-        for (uint32_t key = 0; key < dim; key++) {
-            const uint64_t at = state_base + (uint64_t)key * dim + d;
-            const float updated = glmvq_add(state[at], glmvq_mul(k[key], delta));
-            state[at] = updated;
-            if (keep) { snap.state[t * snap.stride + at] = updated; }
-            result = glmvq_add(result, glmvq_mul(updated, q[key]));
+        if constexpr (HELD) {
+            #pragma unroll
+            for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
+                st[key] = glmvq_add(st[key], glmvq_mul(glmvq_kda_read<READS>(k + key), delta));
+                if (keep) { snap.state[t * snap.stride + state_base + (uint64_t)key * dim + d] = st[key]; }
+                result = glmvq_add(result, glmvq_mul(st[key], glmvq_kda_read<READS>(q + key)));
+            }
+        } else {
+            for (uint32_t key = 0; key < dim; key++) {
+                const uint64_t at = state_base + (uint64_t)key * dim + d;
+                const float updated = glmvq_add(state[at], glmvq_mul(k[key], delta));
+                state[at] = updated;
+                if (keep) { snap.state[t * snap.stride + at] = updated; }
+                result = glmvq_add(result, glmvq_mul(updated, q[key]));
+            }
         }
         output[input] = glmvq_round(result);
         __syncthreads();
+    }
+    if constexpr (HELD) {
+        #pragma unroll
+        for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) { state[state_base + (uint64_t)key * dim + d] = st[key]; }
     }
 }
 
@@ -164,7 +235,8 @@ __global__ void glmvq_kda_prep(float *qn, float *kn, float *vv, float *gl, float
  * bit; k stays F32 (it feeds the state), q is kept as F16. Records are F16
  * except U; the scan rounds the state to F16 per chunk and splits V' into
  * two F16 halves. Every product accumulates in F32. */
-enum { GLMVQ_KC = 64, GLMVQ_KLOCAL = 512, GLMVQ_KSCAN = 256, GLMVQ_KAROW = GLMVQ_KC + 1,
+enum { GLMVQ_KC = 64, GLMVQ_KINPUT = GLMVQ_KC / 4 * 32, GLMVQ_KLOCAL = GLMVQ_KINPUT + 32,
+       GLMVQ_KSCAN = 256, GLMVQ_KAROW = GLMVQ_KC + 1,
        GLMVQ_KTILES = (GLMVQ_KC / 4) * (GLMVQ_KC / 4 + 1) / 2, GLMVQ_KSUB = 16 };
 
 // One (chunk, head) record; padding tokens of a short last chunk are zero.
@@ -199,8 +271,8 @@ __device__ __forceinline__ float *glmvq_kda_tblock(float *tmp, uint32_t i, uint3
     return tmp + slot * GLMVQ_KSUB * GLMVQ_KSUB;
 }
 
-/* One CTA per (chunk, head), 16 warps. Produces everything that does not
- * depend on the incoming state. The chunk's conv window reads the previous
+/* One CTA per (chunk, head); 17 warps cover all 544 A/Mq tasks at once.
+ * Produces everything independent of the incoming state. The conv window reads the previous
  * call's tail for its first three tokens; the tail advances later. */
 __device__ __forceinline__ float4 glmvq_kda_load4(const float *p) { return *(const float4 *)p; }
 __device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
@@ -210,14 +282,15 @@ __device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
 }
 
 // Q (raw q/k/v) and F (forget) are F32 or BF16 projection outputs read in place.
-template <typename Q, typename F>
-__global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *records,
+template <typename Q, typename F, uint32_t THREADS = GLMVQ_KLOCAL>
+__global__ void __launch_bounds__(THREADS, 1) glmvq_kda_local(uint8_t *records,
         const float *q_tail, const float *k_tail, const float *v_tail,
         const Q *q_raw, const Q *k_raw, const Q *v_raw,
         const F *forget, const float *beta_logits,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
         uint32_t heads, float lower_bound) {
+    static_assert(THREADS == GLMVQ_KINPUT || THREADS == GLMVQ_KLOCAL, "16 or 17 local warps");
     constexpr uint32_t C = GLMVQ_KC, D = GLMVQ_KDA_DIM, AR = GLMVQ_KAROW, S = GLMVQ_KSUB;
     extern __shared__ __align__(16) uint8_t kda_shared[];
     __half *sq = (__half *)kda_shared;
@@ -233,7 +306,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     // Inputs as the recurrence computes them. Warp w takes tokens 4w..4w+3 and
     // lane l dims 4l..4l+3: the conv window is 7 raw rows and the recurrence's
     // L2-norm tree (strides 64..1) becomes xor shuffles 16..1, then 2, 1 in-lane.
-    {
+    if (tid < GLMVQ_KINPUT) {
         const uint32_t d0 = lane * 4;
         const uint64_t ch = (uint64_t)head * D + d0;
         const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)D));
@@ -312,9 +385,9 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             const uint32_t t = 4 * warp + lane;
             sb[t] = t < n ? glmvq_round(glmvq_sigmoid(beta_logits[(uint64_t)(t0 + t) * heads + head])) : 0.0f;
         }
-        for (uint32_t i = tid; i < C * AR; i += GLMVQ_KLOCAL) { sa[i] = 0.0f; }
+        for (uint32_t i = tid; i < C * AR; i += GLMVQ_KINPUT) { sa[i] = 0.0f; }
         ((uint4 *)(rec + GLMVQ_KR_MQ))[tid] = make_uint4(0, 0, 0, 0);
-        static_assert(GLMVQ_KC * GLMVQ_KC * 2 == GLMVQ_KLOCAL * 16, "one Mq clear per thread");
+        static_assert(GLMVQ_KC * GLMVQ_KC * 2 == GLMVQ_KINPUT * 16, "one Mq clear per thread");
     }
     __syncthreads();
 
@@ -329,7 +402,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     {
         const float *glast = sg + (n - 1) * D;
         __half *qt = (__half *)(rec + GLMVQ_KR_QT), *kt = (__half *)(rec + GLMVQ_KR_KT);
-        for (uint32_t i = tid; i < C * D / 2; i += GLMVQ_KLOCAL) {
+        for (uint32_t i = tid; i < C * D / 2; i += THREADS) {
             const uint32_t t = i / (D / 2), d = i % (D / 2) * 2;
             float lo = 0.0f, hi = 0.0f;
             if (t < n) {
@@ -338,7 +411,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             }
             *(uint32_t *)(qt + t * D + d) = glmvq_h2(lo, hi);
         }
-        for (uint32_t i = tid; i < C * D / 2; i += GLMVQ_KLOCAL) {
+        for (uint32_t i = tid; i < C * D / 2; i += THREADS) {
             const uint32_t d = i % D, t = i / D * 2;
             const float lo = t < n ? sk[t * D + d] * __expf(glast[d] - sg[t * D + d]) : 0.0f;
             const float hi = t + 1 < n ? sk[(t + 1) * D + d] * __expf(glast[d] - sg[(t + 1) * D + d]) : 0.0f;
@@ -353,7 +426,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     // below e^-87. Each lane rotates its d order to spread the banks.
     {
         __half *mq = (__half *)(rec + GLMVQ_KR_MQ);
-        for (uint32_t task = tid; task < GLMVQ_KTILES * 4; task += GLMVQ_KLOCAL) {
+        for (uint32_t task = tid; task < GLMVQ_KTILES * 4; task += THREADS) {
             const uint32_t tile = task >> 2, part = task & 3;
             uint32_t bt = 0;
             while ((bt + 1) * (bt + 2) / 2 <= tile) { bt++; }
@@ -431,7 +504,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
         };
         for (uint32_t dist = 1; dist < 4; dist++) {
             const uint32_t count = 4 - dist;
-            for (uint32_t o = tid; o < count * S * S; o += GLMVQ_KLOCAL) {
+            for (uint32_t o = tid; o < count * S * S; o += THREADS) {
                 const uint32_t j = o / (S * S), i = j + dist, r = o / S % S, c = o % S;
                 float acc = 0.0f;
                 for (uint32_t k = j; k < i; k++) {
@@ -441,7 +514,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
                 x[o] = acc;
             }
             __syncthreads();
-            for (uint32_t o = tid; o < count * S * S; o += GLMVQ_KLOCAL) {
+            for (uint32_t o = tid; o < count * S * S; o += THREADS) {
                 const uint32_t j = o / (S * S), i = j + dist, r = o / S % S, c = o % S;
                 float acc = 0.0f;
                 #pragma unroll
@@ -450,27 +523,29 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             }
             __syncthreads();
         }
-        for (uint32_t o = tid; o < 6 * S * S; o += GLMVQ_KLOCAL) {
+        for (uint32_t o = tid; o < 6 * S * S; o += THREADS) {
             const uint32_t b = o / (S * S), r = o / S % S, c = o % S;
             const uint32_t j = b < 3 ? b : b < 5 ? b - 3 : 0, i = j + (b < 3 ? 1 : b < 5 ? 2 : 3);
             sa[(i * S + r) * AR + j * S + c] = tmp[o];
         }
     }
     // K~ beta = beta k e^G replaces G, which nothing reads after this.
-    for (uint32_t i = tid; i < C * D; i += GLMVQ_KLOCAL) {
+    for (uint32_t i = tid; i < C * D; i += THREADS) {
         const uint32_t t = i / D;
         sg[i] = t < n ? sb[t] * sk[i] * __expf(sg[i]) : 0.0f;
     }
     __syncthreads();
-    #pragma unroll
-    for (uint32_t j = 0; j < 4; j++) {
+    if (tid < GLMVQ_KINPUT) {
         #pragma unroll
-        for (uint32_t i = 0; i < 4; i++) { sv[(4 * warp + j) * D + lane * 4 + i] = __float2bfloat16_rn(vkeep[j][i]); }
+        for (uint32_t j = 0; j < 4; j++) {
+            #pragma unroll
+            for (uint32_t i = 0; i < 4; i++) { sv[(4 * warp + j) * D + lane * 4 + i] = __float2bfloat16_rn(vkeep[j][i]); }
+        }
     }
     __syncthreads();
 
     // W = T K~beta and U = T beta V: warp w owns rows 4w..4w+3, lane 4 dims.
-    {
+    if (tid < GLMVQ_KINPUT) {
         const uint32_t tb = warp * 4, db = lane * 4, last = min(tb + 4, n);
         float aw[4][4] = {}, au[4][4] = {};
         for (uint32_t s = 0; s < last; s++) {

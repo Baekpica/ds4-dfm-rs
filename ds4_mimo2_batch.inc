@@ -148,7 +148,7 @@ static bool mimo2_ckpt_restore(ds4_mimo2_batch_runtime *rt, uint32_t src,
     uint64_t offset = (uint64_t)slot * rt->checkpoint_slot_bytes;
     for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
         if (mimo2_is_full(il)) {
-            const uint64_t row = 4ull * (192 + 128) * sizeof(uint16_t);
+            const uint64_t row = mimo2_kv_row(il);
             if (src != dst && !ds4_gpu_tensor_copy(dg->kv[il], 0,
                     sg->kv[il], 0, (uint64_t)pos * row)) { return false; }
             continue;
@@ -207,7 +207,7 @@ static void mimo2_batch_free(ds4_mimo2_batch_runtime *rt) {
 }
 
 static ds4_mimo2_batch_runtime *mimo2_batch_create(
-        uint32_t ctx, uint32_t max_seq, uint32_t cap) {
+        const ds4_model *m, const ds4_weights *w, uint32_t ctx, uint32_t max_seq, uint32_t cap) {
     if (!ctx || max_seq < 1 || max_seq > M2_BANK_MAX ||
         !cap || cap > ctx) { return NULL; }
     ds4_mimo2_batch_runtime *rt = xcalloc(1, sizeof(*rt));
@@ -215,7 +215,7 @@ static ds4_mimo2_batch_runtime *mimo2_batch_create(
     rt->max_seq = max_seq;
     rt->prefill_cap = cap;
     rt->graph = xcalloc(max_seq, sizeof(*rt->graph));
-    if (!mimo2_graph_alloc(&rt->graph[0], ctx, cap, false)) {
+    if (!mimo2_graph_alloc(&rt->graph[0], m, w, ctx, cap, false)) {
         mimo2_batch_free(rt);
         return NULL;
     }
@@ -274,8 +274,7 @@ static bool mimo2_bank_copy(ds4_mimo2_batch_runtime *rt, uint32_t src,
     if (sg->failed || sg->position != tokens || tokens > dg->context) { return false; }
     dg->failed = true;
     for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
-        const uint64_t row = (mimo2_is_full(il) ? 4ull : 8ull) *
-                             (192 + 128) * sizeof(uint16_t);
+        const uint64_t row = mimo2_kv_row(il);
         if (mimo2_is_full(il)) {
             if (!ds4_gpu_tensor_copy(dg->kv[il], 0, sg->kv[il], 0,
                                      (uint64_t)tokens * row)) { return false; }

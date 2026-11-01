@@ -8,6 +8,47 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## MiniMax VQ residual storage
+
+`DS4_MINIMAX_CUR_BF16=0` restores F32 storage of BF16-rounded residuals.
+By default, text prefill wider than eight rows stores the same values as
+BF16; decode, verify, media spans and tensor traces keep F32. Embedding,
+RMS, residual adds, the head and DSpark taps carry the selected format.
+Arithmetic and tensor allocations are unchanged. See the
+[October 27 measurements](../docs/minimax-vq-optimization-2026-10-27.md).
+
+`DS4_MINIMAX_REDUCE_RESIDUAL=0` restores separate expert reduction and
+residual launches. The default consumes the reduced expert branch directly
+in the residual/norm/q4p kernel for text prefill wider than eight rows.
+It preserves ascending expert order and both BF16 rounding boundaries;
+decode, media spans and traces keep the separate path.
+
+`DS4_MINIMAX_PRELOAD_DECODE=0` skips targeted decode-kernel preparation.
+The default resolves 25 Q4, joint projection and decode epilogue functions during
+graph allocation, before prefill, without launches or new tensor buffers.
+The measured sustained decode gain and unresolved driver/cache mechanism
+are recorded in the same report.
+
+`DS4_MINIMAX_NORM_Q8=0` restores the separate indexer input quantizer and
+F32 norm materialization. By default, text-prefill residuals (including the
+fused MoE path) emit exact MMQ Q8 into existing context scratch when QKV
+also consumes prepared q4p input. Decode, verify, media and traces keep
+F32 norm. Prepared QKV runs before the indexer without borrowing that scratch.
+
+`DS4_MINIMAX_GU16=0` restores 32-warps for one-row R13+8 expert gate/up.
+The default uses 16 warps there to avoid register spills; plain R13,
+prefill and wider verification retain their schedules. Arithmetic and
+tensor allocations are unchanged. The October 27 report records both
+the cold NCU regression and the adopted repeated whole-workload gain.
+
+`DS4_MINIMAX_DECODE_RESIDUAL=0` restores separate one-row expert reduction
+and residual handling. The default adds the reduced branch directly to F32
+cur, then applies RMS without rounding the already-rounded cur again.
+Verify widths, prefill, media spans and tracing retain their paths. Both
+rounding boundaries and ascending expert order are preserved; tensor
+allocations are unchanged. The October 27 report records the actual API
+regression gate, in-model target timing and paired throughput evidence.
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision
@@ -352,6 +393,20 @@ The bandwidth figure is informational; we don't tier on it.
   The default caches causal-prefix scores for separate Q/K/V buffers with
   16 heads, head dimension 64, stride 1024 and 1–8192 rows. Windowed/local
   audio and other layouts retain their existing paths.
+- `DS4_MIMO2VQ_GA8=0` restores the MiMo VQ release's earlier full-layer FP8
+  attention: `mimo2_hmma::prefill<Fp8>` above eight rows and the split walk
+  at 1–8. The default `mimo2_ga8` kernels widen each FP8 tile once per head
+  pair and run single f16 Q and P. Read once per process. See the
+  [optimization report](../docs/mimo2-vq-optimization-2026-10-30.md).
+- `DS4_MIMO2VQ_GA8_QK=f16` restores f16 Q against widened K tiles in the VQ
+  release's full-layer prefill attention. The default `mimo2_ga8::prefill8`
+  feeds the stored E4M3 K codes to FP8 MMAs with E4M3 Q (one scale per row
+  and head); `=fp8x2` adds a residual Q component, a diagnostic of the Q
+  rounding. Read once per process. See the
+  [optimization report](../docs/mimo2-vq-optimization-2026-10-31.md).
+- `DS4_MIMO2VQ_MMAW=0` keeps the VQ release's prefill experts on
+  `glmvq_mma8_kernel`; the default warp-specialized kernels produce the same
+  rows bit for bit.
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

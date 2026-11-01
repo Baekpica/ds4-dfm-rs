@@ -31,7 +31,7 @@ fn orders(properties: Value) -> Vec<ToolSchemaOrder> {
         default_model: "glm-5.3-flash".into(),
         default_tokens: 2048,
         default_effort: ds4_server::ThinkMode::None,
-        default_temp: ds4_server::default_temperature(),
+        sampling: Default::default(),
         live_ids: Vec::new(),
         engine_defaults: false,
     };

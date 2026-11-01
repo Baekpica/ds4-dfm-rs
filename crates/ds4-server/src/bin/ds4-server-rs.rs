@@ -44,6 +44,61 @@ fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
     })
 }
 
+/// Resolve request-omitted sampling (flags > model > OpenAI) and seed the
+/// per-request seed sequence.
+fn apply_sampling(
+    cfg: &mut ServerConfig,
+    model: Option<&str>,
+    mut flags: ds4_server::sampling::SamplingSource,
+    tokens_set: bool,
+    seed: Option<u64>,
+) {
+    use ds4_server::sampling::{init_seeds, model_source, SamplingDefaults};
+    // Deprecated alias of --temp, kept for the speed-bench scripts.
+    if flags.temperature.is_none() {
+        if let Some(t) = std::env::var("DS4_SERVER_DEFAULT_TEMP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            eprintln!("ds4-server-rs: DS4_SERVER_DEFAULT_TEMP is deprecated; use --temp");
+            flags.temperature = Some(t);
+        }
+    }
+    let model = model
+        .map(|m| model_source(Path::new(m)))
+        .unwrap_or_default();
+    cfg.sampling = SamplingDefaults::default().with(&model).with(&flags);
+    if !tokens_set {
+        if let Some(n) = model.max_tokens {
+            cfg.default_tokens = n;
+        }
+    }
+    init_seeds(seed);
+    let d = cfg.sampling;
+    let from = |f: Option<f32>, m: Option<f32>| match (f, m) {
+        (Some(_), _) => "flag",
+        (None, Some(_)) => "model",
+        _ => "default",
+    };
+    eprintln!(
+        "ds4-server-rs: request defaults temperature={} ({}) top_p={} ({}) top_k={} min_p={} max_tokens={} seed={}",
+        d.temperature,
+        from(flags.temperature, model.temperature),
+        d.top_p,
+        from(flags.top_p, model.top_p),
+        d.top_k,
+        d.min_p,
+        cfg.default_tokens,
+        seed.map_or("per-request".to_string(), |s| format!("{s} (sequence)")),
+    );
+}
+
+fn number_arg<T: std::str::FromStr>(flag: &str, value: Option<String>) -> T {
+    value
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| cli_error(&format!("{flag} requires a number")))
+}
+
 fn main() {
     let mut cfg = ServerConfig::default();
     let mut model_path: Option<String> = None;
@@ -57,6 +112,10 @@ fn main() {
     let mut expected_plan: Option<ExpectedPlan> = None;
     let mut dist = DistArgs::default();
     let mut ctx_set = false;
+    // Request-omitted sampling: these flags over the model's own values.
+    let mut sampling_flags = ds4_server::sampling::SamplingSource::default();
+    let mut tokens_set = false;
+    let mut seed: Option<u64> = None;
     let mut v41_flags = V41Flags::default();
     let mut mem_budget_mb: Option<i32> = None;
     // The reference's two exact-replay switches (`ds4_help.c:378-379`).
@@ -180,7 +239,15 @@ fn main() {
                 };
             }
             "--cuda" => backend = Backend::Cuda,
+            "--temp" | "--temperature" => {
+                sampling_flags.temperature = Some(number_arg(&arg, args.next()));
+            }
+            "--top-p" => sampling_flags.top_p = Some(number_arg(&arg, args.next())),
+            "--min-p" => sampling_flags.min_p = Some(number_arg(&arg, args.next())),
+            "--top-k" => sampling_flags.top_k = Some(number_arg(&arg, args.next())),
+            "--seed" => seed = Some(number_arg(&arg, args.next())),
             "--tokens" | "-n" => {
+                tokens_set = true;
                 cfg.default_tokens = args
                     .next()
                     .and_then(|v| v.parse().ok())
@@ -296,6 +363,13 @@ fn main() {
         }
     }
     kv.validate().unwrap_or_else(|error| cli_error(&error));
+    apply_sampling(
+        &mut cfg,
+        model_path.as_deref(),
+        sampling_flags,
+        tokens_set,
+        seed,
+    );
     if mtp_path.is_some() && model_path.is_none() {
         cli_error("--mtp requires --model");
     }
@@ -1327,7 +1401,7 @@ mod v41_controls {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--vision-gguf GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--vision-gguf GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [--temp T] [--top-p P] [--top-k K] [--min-p P] [--seed N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
          [--ssd-streaming] [--ssd-streaming-cache-experts auto|N|GB] [--ssd-streaming-cold]\n\
          [--ignore-eos-in-reasoning] [--ignore-eos]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\

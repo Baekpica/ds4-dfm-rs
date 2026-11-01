@@ -7,7 +7,7 @@
 #include <limits.h>
 
 enum glmvq_storage { GLMVQ_WEIGHT_BF16, GLMVQ_WEIGHT_FP8, GLMVQ_WEIGHT_VQ, GLMVQ_WEIGHT_Q4 };
-enum glmvq_compute { GLMVQ_COMPUTE_BF16, GLMVQ_COMPUTE_F32 };
+enum glmvq_compute { GLMVQ_COMPUTE_BF16, GLMVQ_COMPUTE_F32, GLMVQ_COMPUTE_TF32 };
 
 struct glmvq_source {
     const void *data;
@@ -22,7 +22,7 @@ struct glmvq_source {
 static uint64_t glmvq_linear_bytes(const glmvq_source &w, uint32_t tokens,
         glmvq_compute compute) {
     const uint64_t count = (uint64_t)w.rows * w.cols;
-    if (compute == GLMVQ_COMPUTE_F32) { return count * sizeof(float); }
+    if (compute != GLMVQ_COMPUTE_BF16) { return count * sizeof(float); }
     const uint64_t restored = w.storage == GLMVQ_WEIGHT_BF16 ? 0 : count;
     return (restored + (uint64_t)tokens * (w.rows + w.cols)) * sizeof(__nv_bfloat16);
 }
@@ -47,15 +47,18 @@ static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
     const uint64_t count = (uint64_t)w.rows * w.cols;
     const unsigned blocks = (unsigned)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
     const float alpha = 1.0f, beta = 0.0f;
-    if (compute == GLMVQ_COMPUTE_F32) {
+    if (compute != GLMVQ_COMPUTE_BF16) {
         if (w.storage != GLMVQ_WEIGHT_BF16 || !w.data) { return CUBLAS_STATUS_INVALID_VALUE; }
         glmvq_convert<<<blocks, GLMVQ_THREADS, 0, stream>>>(
             (const __nv_bfloat16 *)w.data, (float *)scratch, count);
         if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
         // mHC and router explicitly use .float(); never truncate to TF32/BF16.
+        // TF32 only for inputs that are BF16 values: nothing truncates.
+        const bool tf32 = compute == GLMVQ_COMPUTE_TF32;
         return cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, w.rows, tokens, w.cols,
             &alpha, scratch, CUDA_R_32F, w.cols, input, CUDA_R_32F, w.cols,
-            &beta, output, CUDA_R_32F, w.rows, CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT);
+            &beta, output, CUDA_R_32F, w.rows, tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F_PEDANTIC,
+            tf32 ? CUBLAS_GEMM_DEFAULT_TENSOR_OP : CUBLAS_GEMM_DEFAULT);
     }
 
     __nv_bfloat16 *cursor = (__nv_bfloat16 *)scratch;

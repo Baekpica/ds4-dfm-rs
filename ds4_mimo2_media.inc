@@ -37,6 +37,13 @@ typedef struct {
     m2a_layer codec[M2A_LAYERS];
     m2a_layer local[M2A_LOCAL];
     ds4_gpu_tensor *buf[M2B_N];
+    /* VQ release: the audio part's own model and one host buffer of F32
+     * vectors the kernels read like a model map (offsets below and in the
+     * layers are into it); RVQ books stay F32 in the audio part. */
+    const ds4_model *audio;
+    float *shadow;
+    uint64_t shadow_bytes;
+    uint64_t patch_off[2], conv1_off, conv2_off, down_off, codes_off, book_off[M2A_CH];
 } ds4_mimo2_media;
 
 static const ds4_tensor *m2_req(const ds4_model *m, const char *name,
@@ -77,6 +84,8 @@ static void mimo2_media_free(ds4_mimo2_media *media) {
         ds4_gpu_tensor_free(media->buf[i]);
         media->buf[i] = NULL;
     }
+    free(media->shadow);
+    media->shadow = NULL;
 }
 
 static int m2_finite(const float *data, size_t n) {
@@ -276,6 +285,203 @@ static void mimo2_media_bind(ds4_mimo2_media *w, const ds4_model *m) {
     w->bound = true;
 }
 
+/* The VQ release's sidecars: vision-q8_0.gguf (ViT + merger) and
+ * audio-q8_0.gguf (codec encoder, RVQ books, speech embeddings, patch
+ * encoder, projector), Q8_0 matrices under HF names. Matrices bind in
+ * place. Every vector the kernels read as F32 (norms, biases, sinks,
+ * convolutions, speech embeddings, and the Conv3d patch kernel split by
+ * frame as the mixed projector stores it) is widened once into the shadow,
+ * so the media graph keeps the mixed artifact's arithmetic. Window patterns
+ * are the source config's (vit_window_attn_types; codec layers alternate
+ * windowed and full). */
+typedef struct { float *data; uint64_t len, cap; } m2vq_shadow;
+
+static uint64_t m2vq_put(m2vq_shadow *s, uint64_t n) {
+    if (s->len + n > s->cap) {
+        uint64_t cap = s->cap ? s->cap : (uint64_t)1 << 20;
+        while (s->len + n > cap) { cap *= 2; }
+        s->data = xrealloc(s->data, cap * sizeof(float));
+        s->cap = cap;
+    }
+    const uint64_t at = s->len;
+    s->len += n;
+    return at;
+}
+
+static void m2vq_widen(float *out, const ds4_model *m, const ds4_tensor *t) {
+    const uint8_t *src = (const uint8_t *)m->map + t->abs_offset;
+    for (uint64_t i = 0; i < t->elements; i++) {
+        uint32_t bits = 0;
+        if (t->type == DS4_TENSOR_F32) {
+            memcpy(&bits, src + i * 4, 4);
+        } else {
+            uint16_t half = 0;
+            memcpy(&half, src + i * 2, 2);
+            bits = (uint32_t)half << 16;
+        }
+        memcpy(&out[i], &bits, sizeof(float));
+    }
+}
+
+// A BF16/F32 vector of `n` values widened into the shadow; its byte offset.
+static uint64_t m2vq_vec(m2vq_shadow *s, const ds4_model *m, const char *name, uint64_t n) {
+    const ds4_tensor *t = required_tensor(m, name);
+    if (t->elements != n || (t->type != DS4_TENSOR_BF16 && t->type != DS4_TENSOR_F32)) { ds4_die(name); }
+    const uint64_t at = m2vq_put(s, n);
+    m2vq_widen(s->data + at, m, t);
+    return at * sizeof(float);
+}
+
+static uint64_t m2vq_vecf(m2vq_shadow *s, const ds4_model *m, const char *fmt, uint32_t il, uint64_t n) {
+    char name[128];
+    snprintf(name, sizeof(name), fmt, il);
+    return m2vq_vec(s, m, name, n);
+}
+
+// A Q8_0 matrix [out, in] (GGUF dims [in, out]).
+static const ds4_tensor *m2vq_mat(const ds4_model *m, const char *fmt, uint32_t il, uint64_t in, uint64_t out) {
+    char name[128];
+    snprintf(name, sizeof(name), fmt, il);
+    const ds4_tensor *t = required_tensor(m, name);
+    if (t->type != DS4_TENSOR_Q8_0 || t->ndim != 2 || t->dim[0] != in || t->dim[1] != out) { ds4_die(name); }
+    return t;
+}
+
+static void mimo2vq_media_bind(ds4_mimo2_media *w, const ds4_model *vm, const ds4_model *am) {
+    static const int vision_mode[M2V_DEPTH] = {
+        -1, 0, 0, 0, 0, 1, 1, 1, 1, -1, 0, 0, 0, 0, 1, 1, 1, 1, -1, 0, 0, 0, 0, 1, 1, 1, 1, -1};
+    m2vq_shadow s = {0};
+    memset(w, 0, sizeof(*w));
+    w->audio = am;
+    w->vision_window = 64;
+    // Conv3d [1280][3][2][16][16] -> one F32 [1280][3][16][16] kernel per frame.
+    const ds4_tensor *patch = required_tensor(vm, "visual.patch_embed.proj.weight");
+    if (patch->type != DS4_TENSOR_BF16 || patch->elements != (uint64_t)M2V_H * 1536) { ds4_die("MiMo VQ patch embedding"); }
+    float *conv = xmalloc((size_t)patch->elements * sizeof(float));
+    m2vq_widen(conv, vm, patch);
+    for (uint32_t t = 0; t < 2; t++) {
+        const uint64_t at = m2vq_put(&s, (uint64_t)M2V_H * 768);
+        for (uint64_t o = 0; o < M2V_H; o++) {
+            for (uint32_t c = 0; c < 3; c++) {
+                memcpy(s.data + at + (o * 3 + c) * 256, conv + ((o * 3 + c) * 2 + t) * 256, 256 * sizeof(float));
+            }
+        }
+        w->patch_off[t] = at * sizeof(float);
+    }
+    free(conv);
+    w->post_w = m2vq_vec(&s, vm, "visual.merger.ln_q.weight", M2V_H);
+    w->mm0 = m2vq_mat(vm, "visual.merger.mlp.0.weight", 0, M2V_MERGED, M2V_MERGED);
+    w->mm2 = m2vq_mat(vm, "visual.merger.mlp.2.weight", 0, M2V_MERGED, M2V_OUT);
+    for (uint32_t il = 0; il < M2V_DEPTH; il++) {
+        m2v_layer *l = &w->vision[il];
+        l->mode = vision_mode[il];
+        l->qkv = m2vq_mat(vm, "visual.blocks.%u.attn.qkv.weight", il, M2V_H, M2V_QKV);
+        l->out = m2vq_mat(vm, "visual.blocks.%u.attn.proj.weight", il, M2V_Q, M2V_H);
+        l->gate = m2vq_mat(vm, "visual.blocks.%u.mlp.gate_proj.weight", il, M2V_H, M2V_FF);
+        l->up = m2vq_mat(vm, "visual.blocks.%u.mlp.up_proj.weight", il, M2V_H, M2V_FF);
+        l->down = m2vq_mat(vm, "visual.blocks.%u.mlp.down_proj.weight", il, M2V_FF, M2V_H);
+        l->ln1 = m2vq_vecf(&s, vm, "visual.blocks.%u.norm1.weight", il, M2V_H);
+        l->ln2 = m2vq_vecf(&s, vm, "visual.blocks.%u.norm2.weight", il, M2V_H);
+        l->qkv_b = m2vq_vecf(&s, vm, "visual.blocks.%u.attn.qkv.bias", il, M2V_QKV);
+        l->out_b = m2vq_vecf(&s, vm, "visual.blocks.%u.attn.proj.bias", il, M2V_H);
+        l->gate_b = m2vq_vecf(&s, vm, "visual.blocks.%u.mlp.gate_proj.bias", il, M2V_FF);
+        l->up_b = m2vq_vecf(&s, vm, "visual.blocks.%u.mlp.up_proj.bias", il, M2V_FF);
+        l->down_b = m2vq_vecf(&s, vm, "visual.blocks.%u.mlp.down_proj.bias", il, M2V_H);
+        if (l->mode != -1) { l->sinks = m2vq_vecf(&s, vm, "visual.blocks.%u.attn.sinks", il, M2V_HEADS); }
+    }
+    const char *enc = "audio_tokenizer.encoder.";
+    char name[160];
+#define M2VQ_A(field, suffix, n) do { \
+    snprintf(name, sizeof(name), "%s%s", enc, suffix); \
+    field = m2vq_vec(&s, am, name, n); \
+} while (0)
+    M2VQ_A(w->conv1_off, "conv1.weight", (uint64_t)3 * M2A_MELS * M2A_H);
+    M2VQ_A(w->conv1_b, "conv1.bias", M2A_H);
+    M2VQ_A(w->conv2_off, "conv2.weight", (uint64_t)3 * M2A_H * M2A_H);
+    M2VQ_A(w->conv2_b, "conv2.bias", M2A_H);
+    M2VQ_A(w->down_off, "down_sample_layer.0.weight", (uint64_t)2 * M2A_H * M2A_H);
+    M2VQ_A(w->down_w, "down_sample_norm.weight", M2A_H);
+    M2VQ_A(w->down_b, "down_sample_norm.bias", M2A_H);
+    M2VQ_A(w->post_a, "layer_norm.weight", M2A_H);
+    M2VQ_A(w->post_ab, "layer_norm.bias", M2A_H);
+#undef M2VQ_A
+    w->max_bins = 1024;
+    for (uint32_t q = 0; q < M2A_CH; q++) {
+        snprintf(name, sizeof(name), "%squantizer.vq.layers.%u._codebook.embed", enc, q);
+        const ds4_tensor *book = required_tensor(am, name);
+        if (book->type != DS4_TENSOR_F32 || book->ndim != 2 || book->dim[0] != M2A_H ||
+            !book->dim[1] || book->dim[1] > (uint64_t)w->max_bins) { ds4_die(name); }
+        w->bins[q] = (int)book->dim[1];
+        w->book_off[q] = book->abs_offset;
+    }
+    // Speech embeddings, one BF16 [1280][1024] table per channel, as one F32 table.
+    const uint64_t codes = m2vq_put(&s, (uint64_t)M2A_CH * M2A_VOCAB * M2A_H);
+    for (uint32_t q = 0; q < M2A_CH; q++) {
+        snprintf(name, sizeof(name), "speech_embeddings.%u.weight", q);
+        const ds4_tensor *t = required_tensor(am, name);
+        if (t->type != DS4_TENSOR_BF16 || t->elements != (uint64_t)M2A_VOCAB * M2A_H) { ds4_die(name); }
+        m2vq_widen(s.data + codes + (uint64_t)q * M2A_VOCAB * M2A_H, am, t);
+    }
+    w->codes_off = codes * sizeof(float);
+    for (uint32_t il = 0; il < M2A_LAYERS; il++) {
+        m2a_layer *l = &w->codec[il];
+        // Codec layers alternate a 128-key window (even) and full attention.
+        l->window = il % 2 ? -1 : 128;
+        l->q = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.self_attn.q_proj.weight", il, M2A_H, M2A_H);
+        l->k = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.self_attn.k_proj.weight", il, M2A_H, M2A_H);
+        l->v = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.self_attn.v_proj.weight", il, M2A_H, M2A_H);
+        l->out = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.self_attn.out_proj.weight", il, M2A_H, M2A_H);
+        l->up = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.fc1.weight", il, M2A_H, M2A_FF);
+        l->down = m2vq_mat(am, "audio_tokenizer.encoder.layers.%u.fc2.weight", il, M2A_FF, M2A_H);
+        l->ln1 = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.self_attn_layer_norm.weight", il, M2A_H);
+        l->ln1_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.self_attn_layer_norm.bias", il, M2A_H);
+        l->ln2 = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.final_layer_norm.weight", il, M2A_H);
+        l->ln2_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.final_layer_norm.bias", il, M2A_H);
+        l->q_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.self_attn.q_proj.bias", il, M2A_H);
+        l->v_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.self_attn.v_proj.bias", il, M2A_H);
+        l->out_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.self_attn.out_proj.bias", il, M2A_H);
+        l->up_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.fc1.bias", il, M2A_FF);
+        l->down_b = m2vq_vecf(&s, am, "audio_tokenizer.encoder.layers.%u.fc2.bias", il, M2A_H);
+        l->have_out_b = 1;
+        l->have_ff_b = 1;
+    }
+    const char *loc = "audio_encoder.input_local_transformer.layers.%u.";
+    for (uint32_t il = 0; il < M2A_LOCAL; il++) {
+        m2a_layer *l = &w->local[il];
+        char fmt[160];
+        l->window = -1;
+#define M2VQ_LM(field, suffix, in, out) do { \
+    snprintf(fmt, sizeof(fmt), "%s%s", loc, suffix); \
+    field = m2vq_mat(am, fmt, il, in, out); \
+} while (0)
+#define M2VQ_LV(field, suffix, n) do { \
+    snprintf(fmt, sizeof(fmt), "%s%s", loc, suffix); \
+    field = m2vq_vecf(&s, am, fmt, il, n); \
+} while (0)
+        M2VQ_LM(l->q, "self_attn.q_proj.weight", M2A_H, M2A_H);
+        M2VQ_LM(l->k, "self_attn.k_proj.weight", M2A_H, M2A_H);
+        M2VQ_LM(l->v, "self_attn.v_proj.weight", M2A_H, M2A_H);
+        M2VQ_LM(l->out, "self_attn.o_proj.weight", M2A_H, M2A_H);
+        M2VQ_LM(l->gate, "mlp.gate_proj.weight", M2A_H, M2A_FF);
+        M2VQ_LM(l->up, "mlp.up_proj.weight", M2A_H, M2A_FF);
+        M2VQ_LM(l->down, "mlp.down_proj.weight", M2A_FF, M2A_H);
+        M2VQ_LV(l->ln1, "input_layernorm.weight", M2A_H);
+        M2VQ_LV(l->ln2, "post_attention_layernorm.weight", M2A_H);
+        M2VQ_LV(l->q_b, "self_attn.q_proj.bias", M2A_H);
+        M2VQ_LV(l->k_b, "self_attn.k_proj.bias", M2A_H);
+        M2VQ_LV(l->v_b, "self_attn.v_proj.bias", M2A_H);
+        l->have_k_b = 1;
+#undef M2VQ_LM
+#undef M2VQ_LV
+    }
+    w->local_norm = m2vq_vec(&s, am, "audio_encoder.input_local_transformer.norm.weight", M2A_H);
+    w->proj1 = m2vq_mat(am, "audio_encoder.projection.mlp.0.weight", 0, M2A_H * M2A_GROUP, M2A_H * M2A_GROUP * 4);
+    w->proj2 = m2vq_mat(am, "audio_encoder.projection.mlp.2.weight", 0, M2A_H * M2A_GROUP * 4, M2V_OUT);
+    w->shadow = s.data;
+    w->shadow_bytes = s.len * sizeof(float);
+    w->bound = true;
+}
+
 static int m2_fail(const char *what) {
     fprintf(stderr, "ds4: MiMo media failed: %s\n", what);
     return 1;
@@ -288,6 +494,9 @@ static int mimo2_vision_rows(ds4_mimo2_media *media, const ds4_model *model,
         n > M2V_MAX || (gh % 2) || (gw % 2) || (n % 4)) {
         return m2_fail("vision shape");
     }
+    // The VQ release reads its widened vectors from the shadow (mimo2vq_media_bind).
+    const void *vmap = media->shadow ? (const void *)media->shadow : model->map;
+    const uint64_t vsize = media->shadow ? media->shadow_bytes : model->size;
     const uint32_t units = n / 4;
     const uint64_t hidden_bytes = (uint64_t)n * M2V_H * sizeof(float);
     ds4_gpu_tensor *in = m2_slot(media, M2B_IN, (uint64_t)n * 3 * 2 * 16 * 16 * sizeof(float));
@@ -300,8 +509,9 @@ static int mimo2_vision_rows(ds4_mimo2_media *media, const ds4_model *model,
     ds4_gpu_tensor *proj = m2_slot(media, M2B_PROJ, (uint64_t)units * M2V_OUT * sizeof(float));
     if (!in || !hid || !norm || !qkv || !attn || !ff || !ff2 || !proj ||
         !ds4_gpu_tensor_write(in, 0, patches, (uint64_t)n * 1536 * sizeof(float)) ||
-        !ds4_gpu_mimo2_patch(hid, in, model->map, model->size,
-                             media->patch0->abs_offset, media->patch1->abs_offset,
+        !ds4_gpu_mimo2_patch(hid, in, vmap, vsize,
+                             media->shadow ? media->patch_off[0] : media->patch0->abs_offset,
+                             media->shadow ? media->patch_off[1] : media->patch1->abs_offset,
                              n, M2V_H, 3, 2, 16)) {
         return m2_fail("patch");
     }
@@ -376,29 +586,29 @@ static int mimo2_vision_rows(ds4_mimo2_media *media, const ds4_model *model,
         }
         if (rc) { break; }
         rc = !m2_upload_rope(media, col ? cos_col : cos, col ? sin_col : sin, n, M2V_HD) ||
-            !ds4_gpu_rms_norm_weight_rows_tensor(norm, hid, model->map, model->size,
+            !ds4_gpu_rms_norm_weight_rows_tensor(norm, hid, vmap, vsize,
                                                  layer->ln1, M2V_H, n, 1e-6f) ||
             !plain_graph_matmul_tensor(qkv, model, layer->qkv, M2V_H, M2V_QKV, norm, n) ||
-            !ds4_gpu_mimo2_bias(qkv, model->map, model->size, layer->qkv_b, n, M2V_QKV) ||
+            !ds4_gpu_mimo2_bias(qkv, vmap, vsize, layer->qkv_b, n, M2V_QKV) ||
             !ds4_gpu_mimo2_rope(qkv, media->buf[M2B_COS], media->buf[M2B_SIN],
                                 n, M2V_HEADS, M2V_HD, M2V_QKV, 0) ||
             !ds4_gpu_mimo2_rope(qkv, media->buf[M2B_COS], media->buf[M2B_SIN],
                                 n, M2V_KV, M2V_HD, M2V_QKV, M2V_Q) ||
-            !ds4_gpu_mimo2_attn(attn, qkv, qkv, qkv, model->map, model->size, layer->sinks,
+            !ds4_gpu_mimo2_attn(attn, qkv, qkv, qkv, vmap, vsize, layer->sinks,
                                 layer->mode != -1, n, M2V_HEADS, M2V_KV, M2V_HD,
                                 M2V_QKV, M2V_QKV, M2V_QKV, 0, M2V_Q, M2V_Q + M2V_KVW,
                                 layer->mode == -1 ? -1 : media->vision_window, 0, 0) ||
             !plain_graph_matmul_tensor(norm, model, layer->out, M2V_Q, M2V_H, attn, n) ||
-            !ds4_gpu_mimo2_bias(norm, model->map, model->size, layer->out_b, n, M2V_H) ||
+            !ds4_gpu_mimo2_bias(norm, vmap, vsize, layer->out_b, n, M2V_H) ||
             !ds4_gpu_exaone_add_tensor(hid, norm, (uint64_t)n * M2V_H) ||
-            !ds4_gpu_rms_norm_weight_rows_tensor(norm, hid, model->map, model->size,
+            !ds4_gpu_rms_norm_weight_rows_tensor(norm, hid, vmap, vsize,
                                                  layer->ln2, M2V_H, n, 1e-6f) ||
             !plain_graph_matmul_tensor(ff, model, layer->gate, M2V_H, M2V_FF, norm, n) ||
             !plain_graph_matmul_tensor(ff2, model, layer->up, M2V_H, M2V_FF, norm, n) ||
-            !ds4_gpu_mimo2_swiglu(ff, ff, ff2, model->map, model->size,
+            !ds4_gpu_mimo2_swiglu(ff, ff, ff2, vmap, vsize,
                                   layer->gate_b, layer->up_b, 1, n, M2V_FF) ||
             !plain_graph_matmul_tensor(norm, model, layer->down, M2V_FF, M2V_H, ff, n) ||
-            !ds4_gpu_mimo2_bias(norm, model->map, model->size, layer->down_b, n, M2V_H) ||
+            !ds4_gpu_mimo2_bias(norm, vmap, vsize, layer->down_b, n, M2V_H) ||
             !ds4_gpu_exaone_add_tensor(hid, norm, (uint64_t)n * M2V_H);
         prev = layer->mode;
     }
@@ -409,7 +619,7 @@ static int mimo2_vision_rows(ds4_mimo2_media *media, const ds4_model *model,
             !ds4_gpu_tensor_copy(hid, 0, norm, 0, hidden_bytes);
     }
     rc = rc ||
-        !ds4_gpu_mimo2_ln(norm, hid, model->map, model->size, media->post_w, 0, 0,
+        !ds4_gpu_mimo2_ln(norm, hid, vmap, vsize, media->post_w, 0, 0,
                           n, M2V_H, 1e-6f) ||
         !plain_graph_matmul_tensor(hid, model, media->mm0, M2V_MERGED, M2V_MERGED, norm, units) ||
         !ds4_gpu_mimo2_gelu(hid, units * M2V_MERGED) ||
@@ -431,6 +641,9 @@ static int m2_mha(ds4_mimo2_media *media, const ds4_model *model, ds4_gpu_tensor
                   ds4_gpu_tensor *norm, uint32_t n, const m2a_layer *layer,
                   int causal, int group) {
     const uint32_t width = M2A_HEADS * M2A_HD;
+    // The VQ release reads its widened vectors from the shadow (mimo2vq_media_bind).
+    const void *vmap = media->shadow ? (const void *)media->shadow : model->map;
+    const uint64_t vsize = media->shadow ? media->shadow_bytes : model->size;
     ds4_gpu_tensor *q = m2_slot(media, M2B_QKV, (uint64_t)n * width * sizeof(float));
     ds4_gpu_tensor *k = m2_slot(media, M2B_ATTN, (uint64_t)n * width * sizeof(float));
     ds4_gpu_tensor *v = m2_slot(media, M2B_FF, (uint64_t)n * width * sizeof(float));
@@ -440,15 +653,15 @@ static int m2_mha(ds4_mimo2_media *media, const ds4_model *model, ds4_gpu_tensor
         !plain_graph_matmul_tensor(q, model, layer->q, M2A_H, width, norm, n) ||
         !plain_graph_matmul_tensor(k, model, layer->k, M2A_H, width, norm, n) ||
         !plain_graph_matmul_tensor(v, model, layer->v, M2A_H, width, norm, n) ||
-        !ds4_gpu_mimo2_bias(q, model->map, model->size, layer->q_b, n, width) ||
-        (layer->have_k_b && !ds4_gpu_mimo2_bias(k, model->map, model->size, layer->k_b, n, width)) ||
-        !ds4_gpu_mimo2_bias(v, model->map, model->size, layer->v_b, n, width) ||
+        !ds4_gpu_mimo2_bias(q, vmap, vsize, layer->q_b, n, width) ||
+        (layer->have_k_b && !ds4_gpu_mimo2_bias(k, vmap, vsize, layer->k_b, n, width)) ||
+        !ds4_gpu_mimo2_bias(v, vmap, vsize, layer->v_b, n, width) ||
         !ds4_gpu_mimo2_rope(q, media->buf[M2B_COS], media->buf[M2B_SIN], n, M2A_HEADS, M2A_HD, width, 0) ||
         !ds4_gpu_mimo2_rope(k, media->buf[M2B_COS], media->buf[M2B_SIN], n, M2A_HEADS, M2A_HD, width, 0) ||
         !ds4_gpu_mimo2_attn(attn, q, k, v, NULL, 0, 0, 0, n, M2A_HEADS, M2A_HEADS, M2A_HD,
                             width, width, width, 0, 0, 0, layer->window, causal, group) ||
         !plain_graph_matmul_tensor(proj, model, layer->out, width, M2A_H, attn, n) ||
-        (layer->have_out_b && !ds4_gpu_mimo2_bias(proj, model->map, model->size, layer->out_b, n, M2A_H)) ||
+        (layer->have_out_b && !ds4_gpu_mimo2_bias(proj, vmap, vsize, layer->out_b, n, M2A_H)) ||
         !ds4_gpu_exaone_add_tensor(hidden, proj, (uint64_t)n * M2A_H)) {
         return 0;
     }
@@ -462,6 +675,9 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
         !frames || frames > M2A_MAX_FRAMES) {
         return m2_fail("audio shape");
     }
+    // The VQ release reads its widened vectors from the shadow (mimo2vq_media_bind).
+    const void *vmap = media->shadow ? (const void *)media->shadow : model->map;
+    const uint64_t vsize = media->shadow ? media->shadow_bytes : model->size;
     const uint32_t n2 = (frames - 1) / 2 + 1;
     const uint32_t n3 = n2 / 2 + (n2 % 2);
     const uint32_t padded = (n3 + M2A_GROUP - 1) / M2A_GROUP * M2A_GROUP;
@@ -479,11 +695,11 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
     ds4_gpu_tensor *norm = m2_slot(media, M2B_NORM, (uint64_t)frames * M2A_H * sizeof(float));
     int rc = !in || !hid || !norm ||
         !ds4_gpu_tensor_write(in, 0, packed, (uint64_t)M2A_MELS * frames * sizeof(float)) ||
-        !ds4_gpu_mimo2_conv1d(hid, in, model->map, model->size, media->conv1->abs_offset,
+        !ds4_gpu_mimo2_conv1d(hid, in, vmap, vsize, media->shadow ? media->conv1_off : media->conv1->abs_offset,
                               media->conv1_b, 1, frames, frames, M2A_MELS, M2A_H, 3, 1, 1) ||
         !ds4_gpu_mimo2_gelu(hid, frames * M2A_H) ||
         !ds4_gpu_mimo2_to_ctime(norm, hid, frames, M2A_H) ||
-        !ds4_gpu_mimo2_conv1d(hid, norm, model->map, model->size, media->conv2->abs_offset,
+        !ds4_gpu_mimo2_conv1d(hid, norm, vmap, vsize, media->shadow ? media->conv2_off : media->conv2->abs_offset,
                               media->conv2_b, 1, frames, n2, M2A_H, M2A_H, 3, 2, 1) ||
         !ds4_gpu_mimo2_gelu(hid, n2 * M2A_H);
     free(packed);
@@ -500,19 +716,19 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
     for (uint32_t il = 0; il < M2A_LAYERS && !rc; il++) {
         const m2a_layer *layer = &media->codec[il];
         rc = !m2_upload_rope(media, cos, sin, n2, M2A_HD) ||
-            !ds4_gpu_mimo2_ln(norm, hid, model->map, model->size, layer->ln1, layer->ln1_b, 1,
+            !ds4_gpu_mimo2_ln(norm, hid, vmap, vsize, layer->ln1, layer->ln1_b, 1,
                               n2, M2A_H, 1e-5f) ||
             !m2_mha(media, model, hid, norm, n2, layer, 1, 0) ||
-            !ds4_gpu_mimo2_ln(norm, hid, model->map, model->size, layer->ln2, layer->ln2_b, 1,
+            !ds4_gpu_mimo2_ln(norm, hid, vmap, vsize, layer->ln2, layer->ln2_b, 1,
                               n2, M2A_H, 1e-5f);
         ds4_gpu_tensor *up = m2_slot(media, M2B_FF, (uint64_t)n2 * M2A_FF * sizeof(float));
         ds4_gpu_tensor *proj = m2_slot(media, M2B_PROJ, (uint64_t)n2 * M2A_H * sizeof(float));
         rc = rc || !up || !proj ||
             !plain_graph_matmul_tensor(up, model, layer->up, M2A_H, M2A_FF, norm, n2) ||
-            !ds4_gpu_mimo2_bias(up, model->map, model->size, layer->up_b, n2, M2A_FF) ||
+            !ds4_gpu_mimo2_bias(up, vmap, vsize, layer->up_b, n2, M2A_FF) ||
             !ds4_gpu_mimo2_gelu(up, n2 * M2A_FF) ||
             !plain_graph_matmul_tensor(proj, model, layer->down, M2A_FF, M2A_H, up, n2) ||
-            !ds4_gpu_mimo2_bias(proj, model->map, model->size, layer->down_b, n2, M2A_H) ||
+            !ds4_gpu_mimo2_bias(proj, vmap, vsize, layer->down_b, n2, M2A_H) ||
             !ds4_gpu_exaone_add_tensor(hid, proj, (uint64_t)n2 * M2A_H);
         if (il == 2) {
             skip = m2_slot(media, M2B_IN, (uint64_t)n2 * M2A_H * sizeof(float));
@@ -520,22 +736,23 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
         }
     }
     rc = rc || !skip || !ds4_gpu_exaone_add_tensor(hid, skip, (uint64_t)n2 * M2A_H) ||
-        !ds4_gpu_mimo2_ln(norm, hid, model->map, model->size, media->post_a, media->post_ab, 1,
+        !ds4_gpu_mimo2_ln(norm, hid, vmap, vsize, media->post_a, media->post_ab, 1,
                           n2, M2A_H, 1e-5f) ||
         !ds4_gpu_tensor_copy(hid, 0, norm, 0, (uint64_t)n2 * M2A_H * sizeof(float));
     ds4_gpu_tensor *ctime = m2_slot(media, M2B_QKV, (uint64_t)n2 * M2A_H * sizeof(float));
     ds4_gpu_tensor *down = m2_slot(media, M2B_NORM, (uint64_t)n3 * M2A_H * sizeof(float));
     rc = rc || !ctime || !down ||
         !ds4_gpu_mimo2_to_ctime(ctime, hid, n2, M2A_H) ||
-        !ds4_gpu_mimo2_conv1d(down, ctime, model->map, model->size, media->down_conv->abs_offset,
+        !ds4_gpu_mimo2_conv1d(down, ctime, vmap, vsize, media->shadow ? media->down_off : media->down_conv->abs_offset,
                               0, 0, n2, n3, M2A_H, M2A_H, 2, 2, 0) ||
         !ds4_gpu_mimo2_gelu(down, n3 * M2A_H) ||
-        !ds4_gpu_mimo2_ln(hid, down, model->map, model->size, media->down_w, media->down_b, 1,
+        !ds4_gpu_mimo2_ln(hid, down, vmap, vsize, media->down_w, media->down_b, 1,
                           n3, M2A_H, 1e-5f);
     ds4_gpu_tensor *ids = m2_slot(media, M2B_IDX, (uint64_t)padded * M2A_CH * sizeof(int));
     rc = rc || !ids;
     for (int q = 0; q < M2A_CH && !rc; q++) {
-        const uint64_t off = media->codebook->abs_offset +
+        // RVQ books stay F32 in the model (the mixed projector packs them).
+        const uint64_t off = media->shadow ? media->book_off[q] : media->codebook->abs_offset +
             (uint64_t)q * (uint64_t)media->max_bins * M2A_H * sizeof(float);
         ds4_gpu_tensor *idq = m2_slot(media, M2B_PROJ, (uint64_t)n3 * sizeof(int));
         rc = !idq || !ds4_gpu_mimo2_rvq(idq, hid, model->map, model->size, off, n3, M2A_H,
@@ -562,17 +779,17 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
     }
     ds4_gpu_tensor *emb = m2_slot(media, M2B_HID, (uint64_t)padded * M2A_H * sizeof(float));
     rc = rc || !emb || !ds4_gpu_mimo2_code_sum(
-        emb, ids, model->map, model->size, media->codes->abs_offset,
+        emb, ids, vmap, vsize, media->shadow ? media->codes_off : media->codes->abs_offset,
         padded, M2A_H, M2A_VOCAB, M2A_CH);
     for (uint32_t i = 0; i < padded; i++) { pos[i] = i % M2A_GROUP; }
     m2_rope_1d(cos, sin, pos, padded, M2A_HD, 640000.f);
     for (uint32_t il = 0; il < M2A_LOCAL && !rc; il++) {
         const m2a_layer *layer = &media->local[il];
         rc = !m2_upload_rope(media, cos, sin, padded, M2A_HD) ||
-            !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, model->map, model->size,
+            !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, vmap, vsize,
                                                  layer->ln1, M2A_H, padded, 1e-6f) ||
             !m2_mha(media, model, emb, norm, padded, layer, 0, M2A_GROUP) ||
-            !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, model->map, model->size,
+            !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, vmap, vsize,
                                                  layer->ln2, M2A_H, padded, 1e-6f);
         ds4_gpu_tensor *gate = m2_slot(media, M2B_FF, (uint64_t)padded * M2A_FF * sizeof(float));
         ds4_gpu_tensor *up = m2_slot(media, M2B_FF2, (uint64_t)padded * M2A_FF * sizeof(float));
@@ -588,7 +805,7 @@ static int mimo2_audio_rows(ds4_mimo2_media *media, const ds4_model *model,
     ds4_gpu_tensor *proj = m2_slot(media, M2B_PROJ, (uint64_t)groups * M2V_OUT * sizeof(float));
     norm = m2_slot(media, M2B_NORM, (uint64_t)padded * M2A_H * sizeof(float));
     rc = rc || !flat || !proj || !norm ||
-        !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, model->map, model->size,
+        !ds4_gpu_rms_norm_weight_rows_tensor(norm, emb, vmap, vsize,
                                              media->local_norm, M2A_H, padded, 1e-6f) ||
         !plain_graph_matmul_tensor(flat, model, media->proj1, M2A_H * M2A_GROUP,
                                    M2A_H * M2A_GROUP * 4, norm, groups) ||

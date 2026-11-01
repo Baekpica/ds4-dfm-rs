@@ -12,14 +12,80 @@ optimization round (the 85-90% targets of the
 | Item | Value |
 |---|---|
 | GPU | NVIDIA GB10, compute capability 12.1, 48 SMs |
+| CPU performance cores on the reference host | `5-9,15-19` (operator-confirmed 2026-10-27); sysfs reports 3.9 GHz maximum, versus 2.808 GHz on the other cores. Prefer these cores for parallel CPU work, within the caller's allowed CPU set. |
 | Build target | `-gencode arch=compute_121a,code=sm_121a` (`make cuda-spark`); `-arch=sm_121a` alone emits plain `sm_121` and ptxas rejects the FP8/FP4 `mma` kinds |
 | Tensor-core instructions | `mma.sync` only: ptxas rejects `wgmma` and `tcgen05` for `sm_121a`; `cp.async.bulk` (TMA-style copies) and mbarriers are available |
-| SM clock | device attribute 2,418 MHz (nvidia-smi lists 3,003 MHz). Observed under load: 2,184-2,190 MHz while the host capped clocks at 300-2,200 MHz (2026-09-14 to 2026-10-21); 2,410-2,590 MHz on 2026-10-24 with no cap in effect |
+| SM clock | device attribute 2,418 MHz (nvidia-smi lists 3,003 MHz). Observed under load: 2,184-2,190 MHz with the 300-2,200 MHz policy (2026-09-14 to 2026-10-21); historical reports list 2,410-2,590 MHz on 2026-10-24. A reported clock alone does not establish the configured policy; see below. |
 | Memory | 128 GB LPDDR5X shared by CPU and GPU; Linux sees 121.6 GiB |
 | Driver, toolkit | 615.71.10, CUDA 13.4 (2026-10-24) |
 
 Every compute peak below scales with the SM clock: record the observed clock
 next to any A/B or roofline figure.
+
+Use `taskset -c 5-9,15-19` for this host's parallel builds and benchmark
+processes, so their CPU helpers inherit the performance-core set. Record
+affinity with measurements; a main-thread CPU sample alone does not describe
+the placement of all helper threads. This core numbering is host-specific.
+
+## Clock policy and measurement stability
+
+The reference host uses **300–2200 MHz**, reconfirmed by the operator on
+2026-10-27. This is an operating constraint for stable absolute throughput
+and to reduce the DGX Spark trip risk reported by the operator.
+The operator installed and enabled `/etc/systemd/system/nvidia-clocks.service`:
+
+```ini
+[Unit]
+Description=Set NVIDIA GPU Clock Limits (300-2200 MHz)
+Wants=nvidia-persistenced.service
+After=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -lgc 300,2200
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target
+```
+
+It reapplies the range automatically at boot. Read-only verification on
+2026-10-27 found **enabled, active (exited), Result=success, ExecMainStatus=0**;
+the current-boot journal records the successful 300–2200 MHz setup at
+20:13:45 KST. Persistence daemon is active. These are a dated verification,
+not a substitute for checking a future boot:
+
+```sh
+systemctl is-enabled nvidia-clocks.service
+systemctl show nvidia-clocks.service -p ActiveState -p SubState -p Result -p ExecMainStatus
+journalctl -b -u nvidia-clocks.service --no-pager
+```
+
+Do not ask the user to rerun the sudo command for each measurement or
+reboot when this service is enabled and successful. Record
+`/proc/sys/kernel/random/boot_id`, service status and observed busy clocks.
+Do not stop/restart the service for inspection: `ExecStop` resets the
+range. Agents preserve the unit and range, and use profiler clock control
+`none` where supported (NCU: `--clock-control none`). If the unit is
+missing/failed or observations conflict, investigate read-only and request
+user action only when necessary. `nvidia-smi`'s maximum supported clock is
+not the configured cap.
+
+Judge paired gains/losses together with absolute prefill/decode levels and
+repeat ranges. Investigate substantial drift in clocks, throttling,
+temperature, memory/PSI, cache, other work or speculative acceptance before
+adoption/rejection. Keep raw samples and show observed ranges; do not hide
+instability by smoothing or averaging. Separate cold-load stalls from
+completed prefill/decode measurements.
+
+The October 24 MiniMax card receipt reports 2,411–2,431 MHz at run
+boundaries, but archives no per-sample clock CSV. The operator recalls the
+300–2200 MHz setting there too; these records are not reconciled. Preserve
+the dated observations and label the uncertainty rather than asserting an
+uncapped run from missing metadata. The October 27 final MiniMax sweeps
+record 2,177–2,190 MHz at GPU utilization of at least 80%.
 
 ## Compute (dense `mma.sync`)
 

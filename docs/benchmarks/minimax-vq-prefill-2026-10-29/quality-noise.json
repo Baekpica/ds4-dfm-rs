@@ -1,0 +1,218 @@
+{
+  "prefill": 2048,
+  "context": 131072,
+  "nll_band": 0.02,
+  "top1_floor": 0.95,
+  "pass": true,
+  "all": {
+    "positions": 1799,
+    "top1": 0.9155086158977209,
+    "top8_overlap": 0.8690939410783769,
+    "logit_err_mean": 0.6213970088905729,
+    "logit_err_max": 16.82421875,
+    "nll": 2.5853125915563906,
+    "reference_nll": 2.5495682827257657,
+    "nll_rms_diff": 0.619190289991628
+  },
+  "assistant": {
+    "positions": 1529,
+    "top1": 0.960758665794637,
+    "top8_overlap": 0.9034499672988882,
+    "logit_err_mean": 0.4717339764551995,
+    "logit_err_max": 6.3125,
+    "nll": 1.5661883188573054,
+    "reference_nll": 1.5653922741048047,
+    "nll_rms_diff": 0.34312954346654695
+  },
+  "cases": [
+    {
+      "case": 0,
+      "tokens": 8448,
+      "prefill": 8192,
+      "prefill_s": 22.457882906,
+      "decode_s": 13.162914994,
+      "all": {
+        "positions": 257,
+        "top1": 0.953307392996109,
+        "top8_overlap": 0.9071011673151751,
+        "logit_err_mean": 0.42242217898832685,
+        "logit_err_max": 3.6875,
+        "nll": 1.4763307407278747,
+        "reference_nll": 1.4666661579483138,
+        "nll_rms_diff": 0.2530693506728415
+      },
+      "assistant": {
+        "positions": 256,
+        "top1": 0.953125,
+        "top8_overlap": 0.90771484375,
+        "logit_err_mean": 0.42193603515625,
+        "logit_err_max": 3.6875,
+        "nll": 1.4763307407278747,
+        "reference_nll": 1.4666661579483138,
+        "nll_rms_diff": 0.2530693506728415
+      }
+    },
+    {
+      "case": 1,
+      "tokens": 8448,
+      "prefill": 8192,
+      "prefill_s": 22.293732404,
+      "decode_s": 13.414871681,
+      "all": {
+        "positions": 257,
+        "top1": 0.7859922178988327,
+        "top8_overlap": 0.77431906614786,
+        "logit_err_mean": 1.1270387404623663,
+        "logit_err_max": 16.82421875,
+        "nll": 5.554546313356221,
+        "reference_nll": 5.35607245002455,
+        "nll_rms_diff": 1.029154473561067
+      },
+      "assistant": {
+        "positions": 124,
+        "top1": 0.9354838709677419,
+        "top8_overlap": 0.8881048387096774,
+        "logit_err_mean": 0.5438508064516129,
+        "logit_err_max": 6.3125,
+        "nll": 2.0224451004851933,
+        "reference_nll": 2.1158805169361172,
+        "nll_rms_diff": 0.49117190799867866
+      }
+    },
+    {
+      "case": 2,
+      "tokens": 8448,
+      "prefill": 8192,
+      "prefill_s": 22.295075997,
+      "decode_s": 13.247775541,
+      "all": {
+        "positions": 257,
+        "top1": 0.9688715953307393,
+        "top8_overlap": 0.9153696498054474,
+        "logit_err_mean": 0.44187743190661477,
+        "logit_err_max": 3.25,
+        "nll": 1.2997026419734783,
+        "reference_nll": 1.2761890224991577,
+        "nll_rms_diff": 0.3054215645692281
+      },
+      "assistant": {
+        "positions": 256,
+        "top1": 0.96875,
+        "top8_overlap": 0.91552734375,
+        "logit_err_mean": 0.440673828125,
+        "logit_err_max": 3.25,
+        "nll": 1.2997026419734783,
+        "reference_nll": 1.2761890224991577,
+        "nll_rms_diff": 0.3054215645692281
+      }
+    },
+    {
+      "case": 3,
+      "tokens": 33024,
+      "prefill": 32768,
+      "prefill_s": 95.164364579,
+      "decode_s": 13.576589834,
+      "all": {
+        "positions": 257,
+        "top1": 0.953307392996109,
+        "top8_overlap": 0.9066147859922179,
+        "logit_err_mean": 0.42790916828793774,
+        "logit_err_max": 2.75,
+        "nll": 1.8537047145073666,
+        "reference_nll": 1.8571716276358394,
+        "nll_rms_diff": 0.25944886824201485
+      },
+      "assistant": {
+        "positions": 257,
+        "top1": 0.953307392996109,
+        "top8_overlap": 0.9066147859922179,
+        "logit_err_mean": 0.42790916828793774,
+        "logit_err_max": 2.75,
+        "nll": 1.8537047145073666,
+        "reference_nll": 1.8571716276358394,
+        "nll_rms_diff": 0.25944886824201485
+      }
+    },
+    {
+      "case": 4,
+      "tokens": 65792,
+      "prefill": 65536,
+      "prefill_s": 193.388559374,
+      "decode_s": 13.665101897,
+      "all": {
+        "positions": 257,
+        "top1": 0.9571984435797666,
+        "top8_overlap": 0.9046692607003891,
+        "logit_err_mean": 0.4558912937743191,
+        "logit_err_max": 5.125,
+        "nll": 1.446412285770094,
+        "reference_nll": 1.4491066059858748,
+        "nll_rms_diff": 0.29725802359642683
+      },
+      "assistant": {
+        "positions": 256,
+        "top1": 0.95703125,
+        "top8_overlap": 0.9052734375,
+        "logit_err_mean": 0.4534454345703125,
+        "logit_err_max": 5.125,
+        "nll": 1.446412285770094,
+        "reference_nll": 1.4491066059858748,
+        "nll_rms_diff": 0.29725802359642683
+      }
+    },
+    {
+      "case": 5,
+      "tokens": 65792,
+      "prefill": 65536,
+      "prefill_s": 193.137521196,
+      "decode_s": 13.388948045,
+      "all": {
+        "positions": 257,
+        "top1": 0.8093385214007782,
+        "top8_overlap": 0.7704280155642024,
+        "logit_err_mean": 0.9516435318883755,
+        "logit_err_max": 15.28125,
+        "nll": 5.193593753729371,
+        "reference_nll": 5.192429959509432,
+        "nll_rms_diff": 1.109446575217275
+      },
+      "assistant": {
+        "positions": 124,
+        "top1": 0.967741935483871,
+        "top8_overlap": 0.8699596774193549,
+        "logit_err_mean": 0.5969317036290323,
+        "logit_err_max": 3.375,
+        "nll": 2.1048084827311224,
+        "reference_nll": 2.105971491356376,
+        "nll_rms_diff": 0.6298336527611772
+      }
+    },
+    {
+      "case": 6,
+      "tokens": 65792,
+      "prefill": 65536,
+      "prefill_s": 193.298871647,
+      "decode_s": 13.349118577,
+      "all": {
+        "positions": 257,
+        "top1": 0.980544747081712,
+        "top8_overlap": 0.9051556420233463,
+        "logit_err_mean": 0.5229967169260701,
+        "logit_err_max": 3.375,
+        "nll": 1.2728976908303256,
+        "reference_nll": 1.2493421554771915,
+        "nll_rms_diff": 0.28415347375830413
+      },
+      "assistant": {
+        "positions": 256,
+        "top1": 0.98046875,
+        "top8_overlap": 0.90576171875,
+        "logit_err_mean": 0.5193023681640625,
+        "logit_err_max": 3.375,
+        "nll": 1.2728976908303256,
+        "reference_nll": 1.2493421554771915,
+        "nll_rms_diff": 0.28415347375830413
+      }
+    }
+  ]
+}

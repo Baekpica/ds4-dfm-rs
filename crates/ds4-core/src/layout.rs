@@ -3780,6 +3780,9 @@ pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpe
 }
 
 pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
+    if shape.variant == crate::Variant::Mimo26FlashVq {
+        return crate::mimo2_vq::layouts();
+    }
     match shape.family {
         ModelFamily::Inkling => crate::inkling::main_layouts(),
         ModelFamily::Step37 => crate::Step37Plan::layouts(),
@@ -3938,7 +3941,22 @@ fn expect_gate_up(
 
 pub fn validate_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
     let by_name = plan_by_name(plan);
-    expect_specs(&expected_layouts(&plan.shape), &by_name)?;
+    let mut specs = expected_layouts(&plan.shape);
+    if plan.shape.family == ModelFamily::Ling31Vq {
+        // The artifact validator pins each recipe's 12/13-bit allocation.
+        // Both books have eight-dimensional E4M3 words and the same binding.
+        for spec in specs
+            .iter_mut()
+            .filter(|s| s.name.ends_with(".mlp.vq_codebook"))
+        {
+            if let Some(tensor) = by_name.get(spec.name.as_str()) {
+                if matches!(tensor.dim[1], 4096 | 8192) {
+                    spec.dim[1] = tensor.dim[1];
+                }
+            }
+        }
+    }
+    expect_specs(&specs, &by_name)?;
     if matches!(
         plan.shape.family,
         ModelFamily::DeepSeek4

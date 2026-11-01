@@ -21,6 +21,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [Serving contract](serving-contract.md) | Shared options, requested/effective/qualified plans, owner/worker and reuse |
 | [Generated capabilities](serving-capabilities.md) | Runtime lanes, modes, bounds and recorded qualification |
 | [Chat templates](chat-templates.md) | Official input assets, normalization and continuation |
+| [Sampled speculation](speculative-sampling.md) | Draft verification at every temperature: policy, family contract and coverage |
 | [API matrix](ds4-api-surface-matrix.md) | HTTP objects, routing, media forms and unsupported requests |
 | [Memory guard](host-memory-guard.md) | Large-model admission, job limits and cleanup |
 | [MiniMax-H3 API](minimax-h3/api-usage.md) | Start the separate video host, create/poll/download jobs and manage retention |
@@ -58,7 +59,9 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Ling-3.1 VQ](ling31-flash-vq.md) | GVQ1 release directory (v2 recipe), FP8 latent KV, embedded MTP, 262K banks beside a 106 GiB trunk, 2K–64K sweep |
 | [Beam-1.0 VQ](beam-vq.md) | GVQ1 release directory, FP8 full-layer KV, Harmony header forcing, DFlash2 drafter and its losslessness gate, 1M in one bank, 2K–64K sweep |
 | [A.X-K2 VQ](axk2-vq.md) | GVQ1 v2 (9/10-bit) release directory, MLA with the DSA indexer, FP8 latent and key rows, 262K in one bank, reference-parity receipt, 2K–64K sweep |
+| [A.X-K2 optimization campaign](axk2-optimization-2026-10-29.md) | Three prefill and three decode adoptions, paired evidence, costs, fallbacks and the October 29 publication sweep |
 | [MiMo RL](mimo2-serving-2026-09-25.md) | Recorded mixed serving, bank reuse and memory limits |
+| [MiMo-V2.6-Flash VQ](mimo2-vq.md) | GVQ1 release directory (RL and UNCENSORED), FP8 full-layer KV, Q8_0 vision/audio parts, embedded MTP or DFlash, native 1M on the serial lane, 2K–64K sweep |
 | [MiMo MOPD](ds4-dfm-model-families.md#mimo-mopd) | Separate artifact, text performance and DFlash boundaries |
 | [Naive](naive-n05-flash.md) | MQ87, banks, disk KV, long-context gates and drafter limits |
 | [IQuest-Q1](iquest-q1.md) | Canonical mixed weights, hybrid Q8 KV, embedded MTP and pending Spark gates |
@@ -77,6 +80,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Repository instructions](../AGENTS.md) | Shared development and agent rules |
 | [Architecture](rust-migration/ARCHITECTURE.md) | Rust/native ownership, crates and source layout |
 | [FFI contract](rust-migration/FFI_CONTRACT.md) | Opaque inference boundary |
+| [C continuation](rust-migration/C_CONTINUATION.md) | Remaining C: native by necessity, deprecated, gaps Rust takes next |
 | [ds4-perf](ds4-perf.md) | Inspect, scout, compare, optimize and serving workloads |
 | [Optimization playbook](prefill-decode-optimization-playbook.md) | Execution-path diagnosis and numerical proof |
 | [Speed benchmarks](../speed-bench/README.md) | Manual sweep CSVs and plotting |
@@ -88,6 +92,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 
 | Ledger | Recorded scope |
 |---|---|
+| [v0.1.5](releases/v0.1.5.md) | VQ families (A.X-K2, Ling-3.1 1019, MiMo), sampled speculation, standard sampling |
 | [v0.1.4](releases/v0.1.4.md) | Cumulative model/VQ support, inference work, audit repairs and bounded GB10 smoke |
 | [v0.1.3](releases/v0.1.3.md) | Common serving controls and scoped P0–P4 qualification |
 | [v0.1.2](releases/v0.1.2.md) | Shared Jinja and Inkling checkpoint |
@@ -100,8 +105,21 @@ Other recipes and dated gates retain their hardware and workload limits.
 The [performance guide](performance.md) explains the README examples.
 These reports preserve successful gates, rejected experiments and unresolved limits.
 
+- **Ling-3.1 1019:** [October 28 follow-up](ling31-optimization-2026-10-28-followup.md),
+  per-change throughput, numerical gates and Decode variability.
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost.
+- **MiMo VQ:** [October 31 MTP context and long prefill](mimo2-vq-optimization-2026-10-31.md):
+  MTP blocks see the prompt, E4M3 full-layer prefill scores;
+  [2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-31/README.md).
+  [October 30 prefill/decode campaign](mimo2-vq-optimization-2026-10-30.md):
+  full-layer FP8 attention for prefill and decode, warp-specialized experts;
+  [2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-30/README.md) and
+  [serving receipts](benchmarks/mimo2-vq-serving-2026-10-30/README.md).
+- **MiniMax VQ:** [October 29 long-context prefill](minimax-vq-optimization-2026-10-29.md),
+  measured adoptions and calibrated numerical costs; [October 27 prefill/decode campaign](minimax-vq-optimization-2026-10-27.md),
+  three adopted rounds each; [fresh 2K–64K DSpark graph](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md),
+  raw clocks, exact output checks and observed repeat ranges.
 - **Ponytail audit:** [October 26 repairs, cleanup and local-model 8K smoke](benchmarks/2026-10-26-ponytail-audit/README.md).
 - **Qwen:** [September 4 long prefill](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),

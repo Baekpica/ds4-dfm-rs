@@ -44,7 +44,8 @@ fn family_is_its_own_contract() {
         (512, 1280, 4)
     );
     let caps = ds4_core::caps_from_shape(shape);
-    assert_eq!(caps.ctx_max, Some(262_144));
+    assert_eq!(caps.ctx_max, Some(1_048_576));
+    assert_eq!(ds4_core::native_ctx_default(caps), Some(262_144));
     assert_eq!(caps.qualified_ctx, None);
 }
 
@@ -67,6 +68,36 @@ fn release_features_select_parts() {
     assert_eq!(mtp.shards.len(), TRUNK_PARTS + 2);
     assert_eq!(mtp.tensors.len(), MTP_TENSORS);
     println!("LING31_RELEASE_PASS trunk={TRUNK_TENSORS} mtp={MTP_TENSORS}");
+}
+
+#[test]
+#[ignore = "requires the 1019 release in DS4_LING31_MODEL; hashes every part, no GPU"]
+fn release_1019_all12_parts() {
+    let root = root();
+    let id = identify_gguf(&root).unwrap();
+    assert_eq!(id.split_count, 70);
+    ds4_core::validate_gguf(&root).unwrap();
+    let trunk = TensorInventory::open_ling31(&root, ds4_core::Ling31Feature::Trunk).unwrap();
+    assert_eq!(trunk.shards.len(), 70);
+    assert!(trunk
+        .tensors
+        .iter()
+        .all(|t| !t.name.starts_with("model.layers.72.")));
+    let mtp = TensorInventory::open_ling31(&root, ds4_core::Ling31Feature::Mtp).unwrap();
+    assert_eq!(mtp.shards.len(), 72);
+    assert_eq!(mtp.tensors.len(), 107_480);
+    assert_eq!(
+        mtp.tensors.last().unwrap().name,
+        "model.word_embeddings.weight"
+    );
+    let books = mtp
+        .tensors
+        .iter()
+        .filter(|t| t.name.ends_with(".mlp.vq_codebook"))
+        .collect::<Vec<_>>();
+    assert_eq!(books.len(), 69);
+    assert!(books.iter().all(|t| t.dim[0] == 8 && t.dim[1] == 4096));
+    println!("LING31_1019_ALL12_PASS parts=72 tensors=107480 books=69");
 }
 
 #[test]

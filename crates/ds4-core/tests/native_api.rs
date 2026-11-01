@@ -13,10 +13,6 @@ fn open_distributed(config: &DistributedConfig) {
     let _ = Model::open_distributed("model.gguf", Backend::Cpu, 0, true, None, None, config);
 }
 
-fn run_worker(model: &Model) {
-    let _ = model.run_distributed_worker(4096);
-}
-
 #[test]
 fn model_exposes_distributed_oracle_boundary() {
     let config = DistributedConfig {
@@ -36,5 +32,4 @@ fn model_exposes_distributed_oracle_boundary() {
     };
     assert_eq!(config.role, DistributedRole::Worker);
     let _ = open_distributed as fn(&DistributedConfig);
-    let _ = run_worker as fn(&Model);
 }

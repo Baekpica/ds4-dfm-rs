@@ -537,6 +537,15 @@ int ds4_session_glm53_trial(ds4_session *s, int first, int max_tokens,
 #endif
     if (!glm53_mtp_trial(g, &s->engine->model, &s->engine->weights,
             first, n, s->logits, tokens, target)) { return glm53_mtp_fail(s, err, len); }
+    if (spec_sampling(&s->spec)) {
+        // The batched GLM VQ verify leaves its rows on the device.
+        const float *rows = g->mtp_logit_rows ? g->mtp_logit_rows + DS4_N_VOCAB : NULL;
+#ifdef GLM53_MTP_VERIFY
+        if (g->gvq && g->mtp_stash) { rows = spec_host_rows(g->mtp_logits, DS4_N_VOCAB, n); }
+#endif
+        if (!rows) { return glm53_mtp_fail(s, err, len); }
+        spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, n, target);
+    }
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1u);
     return (int)n;
 }

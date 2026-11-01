@@ -1,0 +1,68 @@
+[
+  {
+    "tag": "p1-off1",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "81e112a08d7609389197f522d283d336b2e90d1187f6d4a67ddc3dc87070a85a",
+      "frontier_065536.logits.json": "9bffc40e5c9a723800ceb5b10748eca90eef34e067cc53b705a7c3248434fe1d",
+      "tokens-65536.json": "4c7d82750bd12ab36a38cb0417c8adff00d6861e385c511321a00857e9860bb8",
+      "tokens-8192.json": "67cbd2693d2b1a8c226a8ffbd1f75e78e8690806ef1e927d89c9dfb1333ed21d"
+    }
+  },
+  {
+    "tag": "p1-on1",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p1-on2",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  },
+  {
+    "tag": "p1-off2",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "81e112a08d7609389197f522d283d336b2e90d1187f6d4a67ddc3dc87070a85a",
+      "frontier_065536.logits.json": "9bffc40e5c9a723800ceb5b10748eca90eef34e067cc53b705a7c3248434fe1d",
+      "tokens-65536.json": "4c7d82750bd12ab36a38cb0417c8adff00d6861e385c511321a00857e9860bb8",
+      "tokens-8192.json": "67cbd2693d2b1a8c226a8ffbd1f75e78e8690806ef1e927d89c9dfb1333ed21d"
+    }
+  },
+  {
+    "tag": "p1-off3",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "81e112a08d7609389197f522d283d336b2e90d1187f6d4a67ddc3dc87070a85a",
+      "frontier_065536.logits.json": "9bffc40e5c9a723800ceb5b10748eca90eef34e067cc53b705a7c3248434fe1d",
+      "tokens-65536.json": "4c7d82750bd12ab36a38cb0417c8adff00d6861e385c511321a00857e9860bb8",
+      "tokens-8192.json": "67cbd2693d2b1a8c226a8ffbd1f75e78e8690806ef1e927d89c9dfb1333ed21d"
+    }
+  },
+  {
+    "tag": "p1-on3",
+    "files": {
+      "cycles-65536.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "cycles-8192.json": "d66bc9ba563d98947ffab1b91f62f7f470a7a9592ec9aa2f0e9763930c2b99b8",
+      "frontier_008192.logits.json": "f2587a6c2c3f617e3f0bafcdfa7cf694c2229f10efa3ec1ea2488499fa5c1dcd",
+      "frontier_065536.logits.json": "e3f6f4afa0dd97a03b49b1dbb1934d216c9f71180997a7751c233cf50f15abb0",
+      "tokens-65536.json": "4f9de6a6f4dc9062e605601b6e36f0771f653b0f5268cb47c8b7f7f79b463d9b",
+      "tokens-8192.json": "21dbaabb45a6750bf58067645c4020bebd7f2770feb602d9c45556ec03732d1c"
+    }
+  }
+]

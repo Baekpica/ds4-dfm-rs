@@ -22,6 +22,7 @@ pub mod parse;
 pub mod render;
 pub mod retry;
 pub mod route;
+pub mod sampling;
 pub mod serve;
 #[cfg(test)]
 mod serve_503_body_test;
@@ -62,9 +63,9 @@ pub use cont::{
 };
 pub use dist_cli::DistArgs;
 pub use dsml::{
-    agent_turn_reasoning_cap, dsml_decode_state_for_text, dump_script as dsml_dump_script,
-    DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy, ToolSyntax,
-    SAMPLE_OVERRIDE_GREEDY, SAMPLE_OVERRIDE_NONE,
+    dsml_decode_state_for_text, dump_script as dsml_dump_script, DsmlDecodeState,
+    DsmlDecodeTracker, SampleOverride, SamplePolicy, ToolSyntax, SAMPLE_OVERRIDE_GREEDY,
+    SAMPLE_OVERRIDE_NONE,
 };
 pub use error::{
     anthropic_error_body, anthropic_error_type, http_head, http_reason, http_response_bytes,
@@ -106,10 +107,9 @@ pub use models::{
     model_one_json, models_list_json,
 };
 pub use parse::{
-    default_temperature, parse_anthropic_request, parse_chat_request, parse_completion_request,
-    parse_request, parse_responses_request, ChatMsg, ChatPart, ImageMime, ParseEnv, ParsedRequest,
-    RequestImage, ToolCall, ToolChoice, ToolSchemaOrder, DEFAULT_MIN_P, DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
+    parse_anthropic_request, parse_chat_request, parse_completion_request, parse_request,
+    parse_responses_request, ChatMsg, ChatPart, ImageMime, ParseEnv, ParsedRequest, RequestImage,
+    ToolCall, ToolChoice, ToolSchemaOrder,
 };
 pub use render::{
     append_tool_result_text, render_chat, render_chat_choice, render_dots3_chat, render_dsml_chat,

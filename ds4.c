@@ -27,6 +27,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <string.h>
 #include <strings.h>
 #include <sys/file.h>
@@ -70,6 +73,7 @@
 #include "ds4_beam.h"
 #include "ds4_minimax.h"
 #include "ds4_axk2.h"
+#include "ds4_mimo2vq.h"
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
  * builds too.  ds4_gpu.h owns the same ABI enum in accelerator builds. */
@@ -414,6 +418,7 @@ typedef enum {
     DS4_VARIANT_BEAM_VQ         = 19,
     DS4_VARIANT_MINIMAX_VQ      = 20,
     DS4_VARIANT_AXK2_VQ         = 21,
+    DS4_VARIANT_MIMO26_FLASH_VQ = 22,
 } ds4_variant;
 
 typedef struct {
@@ -2930,6 +2935,11 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_MIMO26_FLASH:
         g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+        break;
+    case DS4_VARIANT_MIMO26_FLASH_VQ:
+        g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+        g_ds4_shape.variant = DS4_VARIANT_MIMO26_FLASH_VQ;
+        g_ds4_shape.name = "MiMo-V2.6-Flash-VQ";
         break;
     case DS4_VARIANT_IQUEST_Q1:
         g_ds4_shape = DS4_SHAPE_IQUEST_Q1;
@@ -5600,6 +5610,16 @@ typedef struct {
     ds4_minimax_draft_layer layer[MINIMAX_DRAFT_LAYERS];
 } ds4_minimax_draft;
 
+/* MiMo VQ: one MoE layer's K8192 book, its GVR8 book on R13+8 layers, and
+ * the GVQ record indices of gate[256], up[256], down[256] (the MoE call's
+ * matrix table, filled when the pointer plan binds). */
+typedef struct {
+    ds4_tensor *book, *res_book;
+    ds4_tensor *gate[DS4_MIMO2VQ_EXPERTS], *up[DS4_MIMO2VQ_EXPERTS], *down[DS4_MIMO2VQ_EXPERTS];
+    ds4_tensor *gate_res[DS4_MIMO2VQ_EXPERTS], *up_res[DS4_MIMO2VQ_EXPERTS], *down_res[DS4_MIMO2VQ_EXPERTS];
+    uint32_t matrices[3 * DS4_MIMO2VQ_EXPERTS];
+} ds4_mimo2vq_layer;
+
 /* A.X-K2: the gated RMSNorms' rank-16 gates and the routed experts with
  * their gate (4L), up (4L+3) and down (4L+2) books. */
 typedef struct {
@@ -5622,6 +5642,7 @@ typedef struct {
     ds4_minimax_layer *minimax; /* MiniMax VQ: index norms and layers 3-59's experts. */
     ds4_minimax_draft *minimax_draft; /* MiniMax DSpark, when its part is mapped. */
     ds4_axk2_layer *axk2;       /* A.X-K2 VQ: gated-norm gates and layers 1-60's experts. */
+    ds4_mimo2vq_layer *mimo2vq; /* MiMo VQ: layers 1-47's experts (index il - 1). */
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -10101,6 +10122,7 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
 
 #include "ds4_mimo2_plan.h"
 #include "ds4_mimo2_bind.inc"
+#include "ds4_mimo2vq_bind.inc"
 #include "ds4_naive_bind.inc"
 #include "ds4_iquest_bind.inc"
 
@@ -10376,7 +10398,11 @@ static void weights_bind(
     }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
-        mimo2_bind(w, m);
+        if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) {
+            mimo2vq_bind(w, m);
+        } else {
+            mimo2_bind(w, m);
+        }
         return;
     }
 
@@ -11018,6 +11044,7 @@ static void weights_free(ds4_weights *w) {
     free(w->minimax);
     free(w->minimax_draft);
     free(w->axk2);
+    free(w->mimo2vq);
     memset(w, 0, sizeof(*w));
 }
 
@@ -23812,7 +23839,7 @@ static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
 
 static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
                                   const ds4_weights *w, const int *tokens, unsigned n,
-                                  int *argmax) {
+                                  int *argmax, float *rows) {
     if (!argmax || !n || n > IK_VERIFY_ROWS || n > g->undo_cap ||
         g->n_layers != INKLING_LAYERS || !inkling_graph_forward(g, m, w, tokens, n)) {
         return false;
@@ -23824,7 +23851,9 @@ static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
         ds4_gpu_tensor *id = ds4_gpu_tensor_view(g->buf[IK_TOKENS],
                                                   (uint64_t)i * sizeof(int), sizeof(int));
         bool ok = id && inkling_head_logits(g, m, w, g->buf[IK_FINAL], i + 1) &&
-            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB);
+            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB) &&
+            (!rows || ds4_gpu_tensor_read(g->logits, 0, rows + (size_t)i * DS4_N_VOCAB,
+                                           (uint64_t)DS4_N_VOCAB * sizeof(float)));
         ds4_gpu_tensor_free(id);
         if (!ok) {
             return false;
@@ -37600,6 +37629,10 @@ typedef struct {
     const ds4_tensor *attn_norm[5], *q[5], *k[5], *v[5], *o[5];
     const ds4_tensor *q_norm[5], *k_norm[5], *sinks[5];
     const ds4_tensor *ffn_norm[5], *gate[5], *up[5], *down[5];
+    /* VQ release part: its own mask-token row, and the BF16 q/k norms and
+     * sinks widened once for the attention's host-side weight upload. */
+    const ds4_tensor *mask;
+    float q_weight[5][128], k_weight[5][128], sink[5][64];
 } ds4_mimo2_dflash;
 #endif
 
@@ -37610,6 +37643,7 @@ struct ds4_engine {
 #ifndef DS4_NO_GPU
     ds4_glm53_stream glm53_stream;
     ds4_model vision_model;
+    ds4_model audio_model;  /* MiMo VQ: the release's audio part. */
     ds4_glm53_vision_weights vision_weights;
     ds4_step37_vision_weights step37_vision_weights;
     ds4_ling3vl_vision_weights ling3vl_vision_weights;
@@ -40865,6 +40899,13 @@ static int sample_full_vocab(
     return id;
 }
 
+static ds4_host_sample_fn g_host_sample;
+
+void ds4_set_host_sampler(ds4_host_sample_fn fn) { g_host_sample = fn; }
+
+/* Every native draw. A Rust host registers its sampler and draws here;
+ * the C body below is DEPRECATED: only the C oracle executables, which
+ * register none, still reach it. */
 static int sample_top_p_min_p_excluding(
         const float *logits,
         uint32_t     n_vocab,
@@ -40875,6 +40916,10 @@ static int sample_top_p_min_p_excluding(
         uint64_t    *rng,
         int          excluded_id,
         int          excluded_eot) {
+    if (g_host_sample) {
+        return g_host_sample(logits, n_vocab, temperature, top_k, top_p, min_p, rng,
+                             excluded_id, excluded_eot);
+    }
     if (temperature <= 0.0f) {
         return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
     }
@@ -41002,6 +41047,49 @@ static int sample_top_p_min_p_override_excluding(
                                         top_k, top_p, min_p, rng,
                                         excluded_id, excluded_eot);
 }
+
+/* The host's sample-and-match a speculative trial verifies with; NULL keeps
+ * argmax targets. */
+typedef struct {
+    ds4_spec_verify_fn verify;
+    void *ud;
+} ds4_spec_sampler;
+
+#ifndef DS4_NO_GPU
+static bool spec_sampling(const ds4_spec_sampler *sp) {
+    return sp && sp->verify;
+}
+
+/* Verify targets drawn by the host's sampler (sample-and-match, the default
+ * of TensorRT-LLM and llama.cpp; vLLM's and SGLang's target-only acceptance
+ * keeps the same distribution): the host draws row i (after tokens[..=i]) in
+ * order and stops at the first draw that rejects the next draft (Rust's
+ * sample::match_rows on the serial lane). */
+static void spec_sample_rows(const ds4_spec_sampler *sp, const float *rows, size_t stride,
+                             uint32_t vocab, const int *tokens, uint32_t n, int *target) {
+    sp->verify(sp->ud, rows, stride, vocab, tokens, n, target);
+}
+
+/* Host rows for spec_sample_rows: the families that reduce verify rows to
+ * argmax on the device read them only when a request samples. Thread-local
+ * and grown on demand, so a borrowed bank session owns nothing. */
+static float *spec_host_buffer(size_t floats) {
+    static __thread float *buf;
+    static __thread size_t cap;
+    if (floats > cap) {
+        float *grown = realloc(buf, floats * sizeof(float));
+        if (!grown) { return NULL; }
+        buf = grown;
+        cap = floats;
+    }
+    return buf;
+}
+
+static const float *spec_host_rows(const ds4_gpu_tensor *rows, uint32_t vocab, uint32_t n) {
+    float *buf = spec_host_buffer((size_t)vocab * n);
+    return buf && ds4_gpu_tensor_read(rows, 0, buf, (uint64_t)vocab * n * sizeof(float)) ? buf : NULL;
+}
+#endif
 
 static void print_top_logits(
         FILE          * fp,
@@ -48065,6 +48153,8 @@ struct ds4_session {
     uint64_t generation;
     bool checkpoint_valid;
     bool mtp_draft_valid;
+    /* The sampler a speculative trial verifies with; set around one trial. */
+    ds4_spec_sampler spec;
     /* S6 lazy session graph: graph alloc deferred to the first GPU-touching
      * root API (ds4_session_ensure_graph).  Host state (checkpoint, ctx_size,
      * prefill_cap, logits) is live from create; pos/ctx/tokens readers never
@@ -62569,7 +62659,7 @@ static int mimo2_batch_ctx_create_impl(
     ctx->seq_cap = (uint32_t)ctx_size;
     ctx->max_seq = chosen;
     for (;;) {
-        ctx->mimo2 = mimo2_batch_create(ctx->ctx_size, ctx->max_seq, cap);
+        ctx->mimo2 = mimo2_batch_create(&e->model, &e->weights, ctx->ctx_size, ctx->max_seq, cap);
         if (ctx->mimo2) { break; }
         if (mode == M2_STRICT_BANKS || ctx->max_seq <= 1u) {
             MBC_ERR("batch_ctx_create: MiMo bank allocation failed (ctx=%d max_seq=%u)",
@@ -65773,11 +65863,29 @@ static void family_banked_capture_checkpoint(
     }
 }
 
-#ifndef __APPLE__
-static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
-        int *tokens, int *target, int capacity, char *err, size_t errlen);
-static int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen);
-#endif
+
+/* A sampling bank's sample-and-match (sample::match_rows on the bank's own
+ * sampler and stream). Every draw is spent; family_cont_spec emits the last
+ * kept row's draw as the next token only where that draw was not cut. */
+static void cont_spec_verify(void *ud, const float *rows, size_t stride, uint32_t vocab,
+                             const int *tokens, uint32_t n, int *target) {
+    ds4_family_cont_bank *cb = ud;
+    uint32_t drawn = 0;
+    while (drawn < n) {
+        target[drawn] = sample_top_p_min_p(rows + (size_t)drawn * stride, vocab, cb->temperature,
+                                           cb->top_k, cb->top_p, cb->min_p, &cb->rng);
+        drawn++;
+        if (drawn == n || target[drawn - 1] != tokens[drawn]) { break; }
+    }
+    for (uint32_t i = drawn; i < n; i++) { target[i] = target[drawn - 1]; }
+}
+
+/* Drafts are checked with the bank's sampler: a forced token, or a greedy
+ * position (tool syntax) in a sampling bank, ends the accepted prefix. */
+static bool cont_spec_forced(int override, float temperature) {
+    return DS4_SAMPLE_OVERRIDE_IS_TOKEN(override) ||
+        (override == DS4_SAMPLE_OVERRIDE_GREEDY && temperature > 0.0f);
+}
 
 /* Borrow one bank as a serial session for the family device trial and
  * commit. Rust selects the accepted prefix; callbacks may shorten it further
@@ -65803,14 +65911,16 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         (gr && (!gr->graph[bank].mtp_ready || gr->failed[bank])) ||
         (ir && !ir->graph[bank].mtp_enabled) || (lr && !lr->graph[bank].mtp_drafts) ||
         !cb->step_accept || (!gr && !ir && !lr && cb->sample_exclude) || current_excluded >= 0 ||
-        cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
+    /* A sampling bank verifies with its own sampler and stream (sample-and-
+     * match); an uncut prefix's last draw is the next token. */
     ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
         .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
                    : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
-                       .len = (int)pos, .cap = (int)ctx->seq_cap}};
+                       .len = (int)pos, .cap = (int)ctx->seq_cap},
+        .spec = {.verify = cb->temperature > 0.0f ? cont_spec_verify : NULL, .ud = cb}};
     if (gr) {
         s.glm53_graph_ready = true; s.glm53_graph = gr->graph[bank];
     } else if (ir) {
@@ -65828,7 +65938,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     const unsigned capacity = gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : lr ? L31_MTP_ROWS
         : nr ? N05_DF_BLOCK : S37_VERIFY;
     if (budget > capacity) { budget = capacity; }
-    if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(first_override)) { budget = 1; }
+    if (cont_spec_forced(first_override, cb->temperature)) { budget = 1; }
     int tokens[IQ_DRAFT_SLOTS + 1], target[IQ_DRAFT_SLOTS + 1];
     int n = gr
         ? ds4_session_glm53_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
@@ -65857,7 +65967,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         if (cb->sample_exclude && cb->sample_exclude(ud, cb->user) >= 0) { break; }
         const int override = i == 1 ? first_override : (cb->sample_override
             ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE);
-        if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(override)) { break; }
+        if (cont_spec_forced(override, cb->temperature)) { break; }
         const int token = tokens[i];
         cb->generated[cb->generated_len++] = token;
         cb->current = token;
@@ -65909,9 +66019,14 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
             ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE);
         const int excluded = cb->sample_exclude
             ? cb->sample_exclude(ud, cb->user) : -1;
-        const int token = sample_top_p_min_p_override_excluding(s.logits, DS4_N_VOCAB,
-            cb->temperature, cb->top_k, cb->top_p, cb->min_p, &cb->rng, override,
-            excluded, &ctx->e->vocab);
+        /* An uncut sampled prefix already drew this row (target[keep - 1]);
+         * a cut or a different policy here takes a fresh draw. */
+        const bool drawn = s.spec.verify && emitted == keep &&
+            override == DS4_SAMPLE_OVERRIDE_NONE && excluded < 0;
+        const int token = drawn ? target[keep - 1]
+            : sample_top_p_min_p_override_excluding(s.logits, DS4_N_VOCAB,
+                cb->temperature, cb->top_k, cb->top_p, cb->min_p, &cb->rng, override,
+                excluded, &ctx->e->vocab);
         if (token < 0) {
             payload_set_err(err, errlen, "bank speculative EOS exclusion left no token");
             goto fail;
@@ -72991,6 +73106,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     e->mtp_model.fd = -1;
 #ifndef DS4_NO_GPU
     e->vision_model.fd = -1;
+    e->audio_model.fd = -1;
 #endif
     e->backend = opt->backend;
     e->quality = opt->quality;
@@ -73311,6 +73427,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 return 1;
             }
             v41_vision_bind(&e->weights, &e->vision_model);
+        } else if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) {
+            /* The release's audio part sits beside its vision part; Rust
+             * hashed both with the release before this open. */
+            char audio[4096];
+            const char *slash = strrchr(opt->vision_path, '/');
+            const int dir = slash ? (int)(slash - opt->vision_path) + 1 : 0;
+            if (snprintf(audio, sizeof(audio), "%.*saudio-q8_0.gguf", dir, opt->vision_path) >= (int)sizeof(audio)) {
+                ds4_die("MiMo VQ audio part path too long");
+            }
+            model_open(&e->audio_model, audio, true, false);
+            mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
@@ -73427,7 +73554,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > BEAM_DF_BLOCK - 1) { e->mtp_draft_tokens = BEAM_DF_BLOCK - 1; }
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
 #ifndef DS4_NO_GPU
-            if (!mimo2_dflash_bind(&e->dflash, &e->mtp_model)) {
+            const bool bound = DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ
+                ? mimo2vq_dflash_bind(&e->dflash, &e->mtp_model)
+                : mimo2_dflash_bind(&e->dflash, &e->mtp_model);
+            if (!bound) {
                 fprintf(stderr, "ds4: DFlash file is not the five-layer draft\n");
                 ds4_engine_close(e);
                 *out = NULL;
@@ -73586,7 +73716,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) &&
+             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) &&
             res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
             fprintf(stderr, "ds4: VQ source pointer plans require eager weight residency\n");
             ds4_engine_close(e);
@@ -73646,7 +73776,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * The builder defers to BASE imports, but an MTP-only manifest must
          * leave BASE's local producer available. Failure/opt-out keeps raw. */
         {
-            if (!load_slice && !opt->ssd_streaming) {
+            // MiMo VQ's memory plan has no additive Q8 replica of its body.
+            if (!load_slice && !opt->ssd_streaming && DS4_MODEL_VARIANT != DS4_VARIANT_MIMO26_FLASH_VQ) {
                 int built = 0;
                 if ((e->model.split_count > 1u || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) &&
                     e->model.n_tensors <= UINT32_MAX) {
@@ -73803,6 +73934,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     e->vision_model.size,
                     e->vision_model.tensor_data_pos,
                     e->vision_model.size - e->vision_model.tensor_data_pos) != 0;
+            // MiMo VQ: the audio part and the widened media vectors.
+            if (e->vision_map_ready && e->audio_model.map) {
+                const ds4_mimo2_media *media = &e->mimo2_media;
+                e->vision_map_ready = ds4_gpu_set_aux_model_map_range(
+                        e->audio_model.map, e->audio_model.size, e->audio_model.tensor_data_pos,
+                        e->audio_model.size - e->audio_model.tensor_data_pos) != 0 &&
+                    ds4_gpu_set_aux_model_map_range(media->shadow, media->shadow_bytes, 0,
+                        media->shadow_bytes) != 0;
+            }
             if (!e->vision_map_ready) {
                 fprintf(stderr,
                         "ds4: CUDA failed to map the vision encoder\n");
@@ -73973,7 +74113,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     // Beam's, MiniMax's and A.X-K2's BF16 token tables stay host-read SSD parts.
                     if (si == 0 && (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-                                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) &&
+                                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                                    DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ ||
+                                    (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ && ling31_embedding_ssd(mm))) &&
                         t == e->weights.token_embd) {
                         tin[i].active = 0;
                         continue;
@@ -74013,7 +74155,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ;
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                    DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);
@@ -74126,6 +74269,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
+        if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ &&
+            !mimo2vq_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: MiMo VQ source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
 #endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
                 ds4_backend_name(e->backend));
@@ -74144,6 +74294,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
+#endif
+#ifdef __GLIBC__
+    /* Freed load buffers (16 MiB O_DIRECT reads per part) stay in glibc's
+     * arenas once its mmap threshold rises: 0.75 GiB of a Ling-3.1 server's
+     * RSS. Return them before callers fit banks from free memory. */
+    malloc_trim(0);
 #endif
 
     *out = e;
@@ -74417,6 +74573,7 @@ void ds4_engine_close(ds4_engine *e) {
     glm53_stream_report(&e->glm53_stream);
     glm53_stream_free(&e->glm53_stream);
     if (e->vision_model.map) model_close(&e->vision_model);
+    if (e->audio_model.map) model_close(&e->audio_model);
 #endif
     model_close(&e->model);
 #ifndef DS4_NO_GPU
@@ -75119,7 +75276,8 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = mimo2_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            mimo2_graph_alloc(&s->mimo2_graph, ctx, s->prefill_cap, s->engine->mimo2_dflash);
+            mimo2_graph_alloc(&s->mimo2_graph, &e->model, &e->weights, ctx, s->prefill_cap,
+                s->engine->mimo2_dflash);
         ds4_gpu_mem_scope_end();
         if (!ok) {
             mimo2_graph_free(&s->mimo2_graph);
@@ -77204,7 +77362,7 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
             return -1;
         }
         predicted[row] = sample_argmax(s->logits, DS4_N_VOCAB);
-        if (cache_logits) {
+        if (cache_logits || spec_sampling(&s->spec)) {
             memcpy(s->step37_spec.verify_logits + (size_t)row * DS4_N_VOCAB,
                    s->logits, DS4_N_VOCAB * sizeof(float));
         }
@@ -77213,6 +77371,10 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
     s->step37_trial_n = n;
     memcpy(tokens, s->step37_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, s->step37_spec.verify_logits, DS4_N_VOCAB, DS4_N_VOCAB,
+                         tokens, n, target);
+    }
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);
     return (int)n;
 #endif
@@ -77303,10 +77465,13 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
     }
     int predicted[IK_VERIFY_ROWS];
     s->inkling_trial[0] = first;
-    if ((n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
+    // A sampling request draws its targets from the head rows (DS4_N_VOCAB, as ordinary decode reads).
+    float *rows = spec_sampling(&s->spec) ? spec_host_buffer((size_t)n * DS4_N_VOCAB) : NULL;
+    if ((spec_sampling(&s->spec) && !rows) ||
+        (n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
                                         &e->mtp_model, &e->inkling_mtp, s->checkpoint.v,
                                         first, s->inkling_trial + 1, n - 1)) ||
-        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted)) {
+        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted, rows)) {
         inkling_trial_failed(s);
         payload_set_err(err, errlen, "Inkling draft/target verification failed");
         return -1;
@@ -77314,6 +77479,7 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
     s->inkling_trial_n = n;
     memcpy(tokens, s->inkling_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
+    if (rows) { spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, n, target); }
     return (int)n;
 #endif
 }
@@ -78369,6 +78535,11 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p, rng);
 }
 
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud) {
+    if (!s) { return; }
+    s->spec = (ds4_spec_sampler){.verify = verify, .ud = ud};
+}
+
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id) {
@@ -79200,6 +79371,16 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         accepted[0] = first_token;
         return 1;
     }
+#ifndef DS4_NO_GPU
+    /* The Qwen and DeepSeek V4 serial verifiers below compare argmax rows; a
+     * sampling session commits one target token (their bank lanes verify
+     * sampled drafts). */
+    if (spec_sampling(&s->spec)) {
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) { return -1; }
+        accepted[0] = first_token;
+        return 1;
+    }
+#endif
     if (ds4_session_is_qwen4exp(s)) {
 #ifdef DS4_NO_GPU
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;

@@ -1,0 +1,909 @@
+{
+  "validator_sha256": "85a25daec747eafe06b67ba20570d644014828bf2cdd9984eb3601910c9a079e",
+  "coverage": "Every frontier: 200064 finite F32 logits, 128 greedy IDs, speculative=true/draft=3, emitted budget 128; repeats 2/3 bit-exact logits and IDs to repeat 1; repeat 1 exact to completed 4096-cap payload. Full guard/affinity exit status and memory floors checked.",
+  "runs": [
+    {
+      "frontiers": 32,
+      "generation_tokens": 128,
+      "speculative": true,
+      "draft": 3,
+      "exact_to_first": false,
+      "cycles": [
+        {
+          "frontier": 2048,
+          "calls": 66,
+          "max_emitted": 4,
+          "emitted_per_call": 1.9393939393939394
+        },
+        {
+          "frontier": 4096,
+          "calls": 87,
+          "max_emitted": 4,
+          "emitted_per_call": 1.471264367816092
+        },
+        {
+          "frontier": 6144,
+          "calls": 51,
+          "max_emitted": 4,
+          "emitted_per_call": 2.5098039215686274
+        },
+        {
+          "frontier": 8192,
+          "calls": 113,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1327433628318584
+        },
+        {
+          "frontier": 10240,
+          "calls": 50,
+          "max_emitted": 4,
+          "emitted_per_call": 2.56
+        },
+        {
+          "frontier": 12288,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 14336,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 16384,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 18432,
+          "calls": 91,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4065934065934067
+        },
+        {
+          "frontier": 20480,
+          "calls": 110,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1636363636363636
+        },
+        {
+          "frontier": 22528,
+          "calls": 116,
+          "max_emitted": 4,
+          "emitted_per_call": 1.103448275862069
+        },
+        {
+          "frontier": 24576,
+          "calls": 101,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2673267326732673
+        },
+        {
+          "frontier": 26624,
+          "calls": 77,
+          "max_emitted": 4,
+          "emitted_per_call": 1.6623376623376624
+        },
+        {
+          "frontier": 28672,
+          "calls": 99,
+          "max_emitted": 4,
+          "emitted_per_call": 1.292929292929293
+        },
+        {
+          "frontier": 30720,
+          "calls": 112,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1428571428571428
+        },
+        {
+          "frontier": 32768,
+          "calls": 103,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2427184466019416
+        },
+        {
+          "frontier": 34816,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 36864,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 38912,
+          "calls": 106,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2075471698113207
+        },
+        {
+          "frontier": 40960,
+          "calls": 72,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7777777777777777
+        },
+        {
+          "frontier": 43008,
+          "calls": 68,
+          "max_emitted": 4,
+          "emitted_per_call": 1.8823529411764706
+        },
+        {
+          "frontier": 45056,
+          "calls": 60,
+          "max_emitted": 4,
+          "emitted_per_call": 2.1333333333333333
+        },
+        {
+          "frontier": 47104,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 49152,
+          "calls": 60,
+          "max_emitted": 4,
+          "emitted_per_call": 2.1333333333333333
+        },
+        {
+          "frontier": 51200,
+          "calls": 104,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2307692307692308
+        },
+        {
+          "frontier": 53248,
+          "calls": 46,
+          "max_emitted": 4,
+          "emitted_per_call": 2.782608695652174
+        },
+        {
+          "frontier": 55296,
+          "calls": 74,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7297297297297298
+        },
+        {
+          "frontier": 57344,
+          "calls": 93,
+          "max_emitted": 4,
+          "emitted_per_call": 1.3763440860215055
+        },
+        {
+          "frontier": 59392,
+          "calls": 48,
+          "max_emitted": 4,
+          "emitted_per_call": 2.6666666666666665
+        },
+        {
+          "frontier": 61440,
+          "calls": 61,
+          "max_emitted": 4,
+          "emitted_per_call": 2.098360655737705
+        },
+        {
+          "frontier": 63488,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 65536,
+          "calls": 89,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4382022471910112
+        }
+      ],
+      "repeat": 1,
+      "first_repeat_exact_to_completed_4096_cap_output": true,
+      "proof_file_sha256": {
+        "cycles-10240.json": "318526bd46d121dc748bd976258183c3d83c03021e4e9222a8dc16ff528265b1",
+        "cycles-12288.json": "9583bde1b49017f0e0fad5e34e622f4bf590ae80b648a2a3470915df9106bda5",
+        "cycles-14336.json": "51ef05b78ee6115e30534e84bf4bf8b2440cffcc6c75a11682732d61e4aee570",
+        "cycles-16384.json": "e841d6d06dd0a84acf19c3daaa3ff611614804e3694008af4df62fdf9345c680",
+        "cycles-18432.json": "89081aef254353f792b4deb84d45442622e1aac1b912b835597e834844e822c5",
+        "cycles-2048.json": "5ec11437ca7af333d6120db9afe36abc7f688cb8f5b6e85fafe15350cac29cf5",
+        "cycles-20480.json": "403187e846bfe10d7e93dc40eabd4449c46896272dfe2bea6be5c3a1490ef97b",
+        "cycles-22528.json": "095fbce24166c4410cd4832b87be7bb0546332ad513ff86e71a617f15f43875b",
+        "cycles-24576.json": "7708108b5df36929988dda1780bfc34ed366ccfe1cffc71d7ebfe3c1060af825",
+        "cycles-26624.json": "45d4fe7df1f0f36608ec05c5ed5e7ecc3a971b9fe1b9b156435369b1804bd30a",
+        "cycles-28672.json": "5f6ae9c206d631b53ae9bb0b43b10286c2a481fffcea538aed97df2e6c355771",
+        "cycles-30720.json": "7cb708af08c6d0f4fb2de209149f4ccf1ea66d6e73498ce8de113b2f384d6c5b",
+        "cycles-32768.json": "98fa1e01253398934d667bf92be57ddcd20d70cebbe783bb5b32fbf97370cc72",
+        "cycles-34816.json": "6f8684989579fc0f33bad5518f13bdc513ee312d41894c2ff3fc90ee2f131921",
+        "cycles-36864.json": "251812ba6f749240545522824cb21bf7bab4ad65145aec7a195f38c906a49b6b",
+        "cycles-38912.json": "42cdbaaa23294922a49d28e008c8ccb2eb055be2c303c69e370b2278f2f06473",
+        "cycles-4096.json": "16b48fe23d939be5f6c02849553239e1cd560e2814a409f38645c32f145d0a85",
+        "cycles-40960.json": "ae4d042f81dfa720e77f7bf760bec398d863b096bb3a1c9211d72a18fa929709",
+        "cycles-43008.json": "da5264ad8cdade824464e767d3cad66c28dfeed5248a906d75159fefa752496a",
+        "cycles-45056.json": "88a2d44bd935e8713c8cba37bc18b023941e3f56afffa10e73f152a45485f9bd",
+        "cycles-47104.json": "ad5412c37b3e5d8d89e8821f7523be71b177a816462f52244278da1648f07503",
+        "cycles-49152.json": "7007c0990f10092896c232ea58a9d931df15a3d7b4df439daea37d04537f459e",
+        "cycles-51200.json": "97d27f1c326552a067d63eee5f1bc279d6647306809320ccdf5fb3c8ad82243b",
+        "cycles-53248.json": "11fcd563fd46d54e3d370f4e311b4c2e65ad22c37679a67c9b4cc9dba70d9f92",
+        "cycles-55296.json": "a80b118812800b5cafc3184e110b56d3563ce7b7b9095643f9e7048978d78b2f",
+        "cycles-57344.json": "5912836eba6616c9b642f7dfd2cdf4d928e664ac32a65c71330abec189317259",
+        "cycles-59392.json": "2e60d4b608352b6496701d708e11d6a724c33f5364ff743ddd349c13f473d5ef",
+        "cycles-6144.json": "c4485b91858056ab1e04775ef8d516728cacbff1976614302404ad0c3a3415a5",
+        "cycles-61440.json": "f4fa9b5ff41350414c21ecd8a071846891e18a9e4c8fed5638ad726b7ea6539a",
+        "cycles-63488.json": "44e6264659fedeec5c89b1197bcd95cdfdf9f2c490d9ebdfc074a9b3c7e2c913",
+        "cycles-65536.json": "0776bdebeac5e73ff443209ab26eeee571c2074165bd066f474c19433ed07831",
+        "cycles-8192.json": "e61b03b19bd422550270bff149093b2c9a4fcf0ded829b7436c26256a3cde09f",
+        "frontier_002048.logits.json": "9027990221c60b378f5799b20b550838ef1f3004110a4c975ae9b891ee0d5958",
+        "frontier_004096.logits.json": "3577edf2b9989ca8df0d9a033615aca490945f535b300539dc35f8219a182daf",
+        "frontier_006144.logits.json": "bdc30ace2887aefbafe39e5b9e305986015bbba39a07356b0e7b5833c8d2bdc9",
+        "frontier_008192.logits.json": "75e932e7d34cc627b630a9b65d8451862b24a4c95fff57260ac1aed9d72465e9",
+        "frontier_010240.logits.json": "3aef64055f5800eee677487ac47d855909138eac1e1bea03e6e2548d39f2a885",
+        "frontier_012288.logits.json": "bc0877790d13e4b8c4f0bbe13d9b1c391cb9e22e37bf3292eb8505bd3726070b",
+        "frontier_014336.logits.json": "bebec237733049b582b7e0c716bccfa6e27e67d1a1c3d6e77280f69a8bcc0a43",
+        "frontier_016384.logits.json": "0f58d7400169e8d1aa83007540cfa8f13e390ac357a0cfcc05b5d88f1b4f8f6c",
+        "frontier_018432.logits.json": "b1948707164a2e7677630ee0b18c5ebdace9023793f78967979e113e22294541",
+        "frontier_020480.logits.json": "74ae42283481580df3f37866b86112749ee77f2a4af37b3db02792823e8dda61",
+        "frontier_022528.logits.json": "cefdbf715a916c3e671bdc2ab6dc50c6524172f80512f4c00cc77eb97897ebff",
+        "frontier_024576.logits.json": "423ba85e2ae8ec28e6b0ea74a3c1b22457516199d22e67a916d1e276d8c44960",
+        "frontier_026624.logits.json": "898c9e04fe8519539dd1606709be04fffde52f27b7f564fd3babb66f94a145d1",
+        "frontier_028672.logits.json": "14af5c831b7d28f9ff889fb26bcfd7758351e44da3d340ae2f50c1e0c83ac3d0",
+        "frontier_030720.logits.json": "089cb101162325b47b9e23faa603040e1c85f33b62e19b047418eea173346072",
+        "frontier_032768.logits.json": "5d02315b22ee53cb77a7da49564ec461485484ddb38077c3a1653aa47979ce65",
+        "frontier_034816.logits.json": "8e7939d4c3677ef4c60d67706e9d62f5cb887ba9d820774edd053d83e929e24b",
+        "frontier_036864.logits.json": "ff4834b0ade7011151deb6fa5ba1ddce41ac527a9890a27c0108e8b0edda4722",
+        "frontier_038912.logits.json": "7c991fb12ed0e937dcd5ee47ebf9906b1763d7700395108ec8b127414b1170e7",
+        "frontier_040960.logits.json": "4be84a0abf09a30ceb59fa0b73977ef761bd87a078017e94608ad43f9352e47d",
+        "frontier_043008.logits.json": "b5fdaf6e90990e970c3c703475d619b0c859d7d62384e4c7c66baa7f54647442",
+        "frontier_045056.logits.json": "6272b1bee736d92295d30151422944e5a7aa4c86ab3d9fd7983486c93ccfe694",
+        "frontier_047104.logits.json": "6fb05f59e2953889c8953ce5814d86594523f812e378398303a8998661906253",
+        "frontier_049152.logits.json": "8297a530e1a94de7812431bdc7b7807fd4e9be392eafd5d26a7404564cfe1633",
+        "frontier_051200.logits.json": "3b3edd8280b3c1fec5381c9092df8033dd253971b67fbfb98bb9919941d4faab",
+        "frontier_053248.logits.json": "dc97ae3461db2acca1a3890a74f6fe6e39ce957ebe14bb4af47708558b8e97a1",
+        "frontier_055296.logits.json": "fefdf3786e4b0753655996b1c2a8d047fb88c69de69d113472b1694d7340b548",
+        "frontier_057344.logits.json": "cc4c028a7e1e97638ae096288b466d1778be19f9c3238afe8c9f19ffcac52bc3",
+        "frontier_059392.logits.json": "1bcac6279e502ce03a988e9357f47848e5ebf5282666e096cef83a67f50bf2af",
+        "frontier_061440.logits.json": "622bd35dc1040fc0c134966c6c449de76a132b0d7de88c78248a46276dd6d9cb",
+        "frontier_063488.logits.json": "c6b271dded23f8edb4f3110cdd0081bc8a8e874cb1b15ed38c86c14c7c77b38f",
+        "frontier_065536.logits.json": "5dbdb8627b5a1601b0218bc71504c97b99d21ccaf8f7248a70df54d492a18f40",
+        "tokens-10240.json": "07e120c0cd90acdd671ae84bf390236e05344a6d893e328f44b68558046594ee",
+        "tokens-12288.json": "bcf94fae2b084b784e65c596fac9959daa3ecac2346c5056ae1e93321d88b3b8",
+        "tokens-14336.json": "c198edc11c9c53d92546ca14e8da6fd67c4a2800315b4e95086bc0ae65476b0a",
+        "tokens-16384.json": "bdcf5abf8c8ed39047116d3bc990846924fb34cceffccbf239c1a714a245dc8e",
+        "tokens-18432.json": "25f4381a771555e2431ef447516b936b2ee82448353adbed240a25ac6548733b",
+        "tokens-2048.json": "4c738d53889d409edb305b2c5a76fb1c31d946695f5882c429c54890860582d7",
+        "tokens-20480.json": "a99400e4cf9087506bb599dd229038965531960b7e75bd3e36d7a9ea25dbc119",
+        "tokens-22528.json": "bb3ef57c7b8fd8c12a27210d9f6b5642805a40671e9482238b18da6bb8eb5fa6",
+        "tokens-24576.json": "d9f691354f57d74988023c212bc1ad6c778ba9706fc457dfe5ebdb897e8b71cf",
+        "tokens-26624.json": "1ed9ffa99cc3a731e26c43c681336a9591d5be9605eff61768d816efc6e0900f",
+        "tokens-28672.json": "d960cf4b1560ea8d47992b6a0f5b318254ec4899078d98a5bb365e432b361336",
+        "tokens-30720.json": "c739aee44c57c5a47e965eca67f7a6f434f110c8fa26a8709bac70575b10c7e2",
+        "tokens-32768.json": "86a49c83c2391748b3ddd1e8fff5a22f94d95a30bb98cde2f08a465436355054",
+        "tokens-34816.json": "17c8eeaaee3d5fc22fb48c57e766c752dd611645d24a4a05aa9c9495d6aba54e",
+        "tokens-36864.json": "2de5b6418b83fbacfa1228dc5d62e88dbccaac86e5c3685e10892d24738f025d",
+        "tokens-38912.json": "cf55e86f0ac9a8a0b00ed5bcd5d599b6045dd8c102a0b8d9e0c797a101d50c66",
+        "tokens-4096.json": "bc6ed99cba772adb1530ea8adf207ddf5219f47cb12512253fcfcae272759c94",
+        "tokens-40960.json": "ab5b3d5008177dc4bde6cd06486c02cbbe4eba1679cf3bc3861750b8ba364022",
+        "tokens-43008.json": "6f3e42754a581064be2c2732ce6e2a0d152037aee3c025528d69ef67e9c0f4ae",
+        "tokens-45056.json": "617acdfeb90e391d998c81b80ad36d15a19658d980a1e32124d0f8a88fd33782",
+        "tokens-47104.json": "5ef739417acf8b966e1adaf8f0373b06c176175fb8cbbddb32ed42483b67a6cb",
+        "tokens-49152.json": "043d255500668e5abe4b4b41585cd9db3b364772a26d922874efbaebab3a9f7d",
+        "tokens-51200.json": "b5bcc08e3c94a598281e3fc5d79328e011e8d4041bdf232bef2be4c1d12dd8c2",
+        "tokens-53248.json": "6fd65f26cfadcd83c2503b315d4aa60b3f48caf6a4231fd836f213968913b139",
+        "tokens-55296.json": "cab9ca081533ed41e5e3c0ebfba48854387c43fcb200487a3abcb434f39fe34a",
+        "tokens-57344.json": "bf1d853dc28b1023593c6ece935e4ee825208d9c58a106794c7a072c701112c9",
+        "tokens-59392.json": "8ec6cf0dfe9b5df791ff6c0b0e5a2a4d046166b71b3baa92e43ff1c7b4e173cf",
+        "tokens-6144.json": "ccfa2a964aa125154824545bc9306943da3ef78c79667d26464b6ea27d24a9c8",
+        "tokens-61440.json": "ec0ef6dde70d6fbf35a2c338e6edd761dc2a0e04503e14fa5fb5effa02bd4d73",
+        "tokens-63488.json": "1954f8ea2c737590c816eb04a88de18833fbc69a93da52347a43efdc95c213f7",
+        "tokens-65536.json": "538bceb2bc374ea53919f9a41358f1328afd89d8bc90f74f571edaed62a2de28",
+        "tokens-8192.json": "107d50cfc03e92b2cf5e8a1fef81afdf4ac01339578fbde0bc1496f84600b715"
+      }
+    },
+    {
+      "frontiers": 32,
+      "generation_tokens": 128,
+      "speculative": true,
+      "draft": 3,
+      "exact_to_first": true,
+      "cycles": [
+        {
+          "frontier": 2048,
+          "calls": 68,
+          "max_emitted": 4,
+          "emitted_per_call": 1.8823529411764706
+        },
+        {
+          "frontier": 4096,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 6144,
+          "calls": 51,
+          "max_emitted": 4,
+          "emitted_per_call": 2.5098039215686274
+        },
+        {
+          "frontier": 8192,
+          "calls": 113,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1327433628318584
+        },
+        {
+          "frontier": 10240,
+          "calls": 38,
+          "max_emitted": 4,
+          "emitted_per_call": 3.3684210526315788
+        },
+        {
+          "frontier": 12288,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 14336,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 16384,
+          "calls": 89,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4382022471910112
+        },
+        {
+          "frontier": 18432,
+          "calls": 91,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4065934065934067
+        },
+        {
+          "frontier": 20480,
+          "calls": 110,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1636363636363636
+        },
+        {
+          "frontier": 22528,
+          "calls": 116,
+          "max_emitted": 4,
+          "emitted_per_call": 1.103448275862069
+        },
+        {
+          "frontier": 24576,
+          "calls": 101,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2673267326732673
+        },
+        {
+          "frontier": 26624,
+          "calls": 77,
+          "max_emitted": 4,
+          "emitted_per_call": 1.6623376623376624
+        },
+        {
+          "frontier": 28672,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 30720,
+          "calls": 112,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1428571428571428
+        },
+        {
+          "frontier": 32768,
+          "calls": 103,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2427184466019416
+        },
+        {
+          "frontier": 34816,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 36864,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 38912,
+          "calls": 106,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2075471698113207
+        },
+        {
+          "frontier": 40960,
+          "calls": 72,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7777777777777777
+        },
+        {
+          "frontier": 43008,
+          "calls": 68,
+          "max_emitted": 4,
+          "emitted_per_call": 1.8823529411764706
+        },
+        {
+          "frontier": 45056,
+          "calls": 60,
+          "max_emitted": 4,
+          "emitted_per_call": 2.1333333333333333
+        },
+        {
+          "frontier": 47104,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 49152,
+          "calls": 48,
+          "max_emitted": 4,
+          "emitted_per_call": 2.6666666666666665
+        },
+        {
+          "frontier": 51200,
+          "calls": 104,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2307692307692308
+        },
+        {
+          "frontier": 53248,
+          "calls": 46,
+          "max_emitted": 4,
+          "emitted_per_call": 2.782608695652174
+        },
+        {
+          "frontier": 55296,
+          "calls": 74,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7297297297297298
+        },
+        {
+          "frontier": 57344,
+          "calls": 93,
+          "max_emitted": 4,
+          "emitted_per_call": 1.3763440860215055
+        },
+        {
+          "frontier": 59392,
+          "calls": 48,
+          "max_emitted": 4,
+          "emitted_per_call": 2.6666666666666665
+        },
+        {
+          "frontier": 61440,
+          "calls": 62,
+          "max_emitted": 4,
+          "emitted_per_call": 2.064516129032258
+        },
+        {
+          "frontier": 63488,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 65536,
+          "calls": 90,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4222222222222223
+        }
+      ],
+      "repeat": 2,
+      "first_repeat_exact_to_completed_4096_cap_output": false,
+      "proof_file_sha256": {
+        "cycles-10240.json": "593740e35d3fa98ecdd04e30cc2955f47e55a07b6e4e91ea9b42c1824c7a9e68",
+        "cycles-12288.json": "9583bde1b49017f0e0fad5e34e622f4bf590ae80b648a2a3470915df9106bda5",
+        "cycles-14336.json": "51ef05b78ee6115e30534e84bf4bf8b2440cffcc6c75a11682732d61e4aee570",
+        "cycles-16384.json": "9bf72a1e42e000bcb3076dc4968e9954a98c478d12a651c371665f0ac0423e9a",
+        "cycles-18432.json": "89081aef254353f792b4deb84d45442622e1aac1b912b835597e834844e822c5",
+        "cycles-2048.json": "1a109c6126b25747f61cb1885a5ec3aa5e67bb35c74ab840ac2933a41dfbf0f4",
+        "cycles-20480.json": "403187e846bfe10d7e93dc40eabd4449c46896272dfe2bea6be5c3a1490ef97b",
+        "cycles-22528.json": "095fbce24166c4410cd4832b87be7bb0546332ad513ff86e71a617f15f43875b",
+        "cycles-24576.json": "7708108b5df36929988dda1780bfc34ed366ccfe1cffc71d7ebfe3c1060af825",
+        "cycles-26624.json": "45d4fe7df1f0f36608ec05c5ed5e7ecc3a971b9fe1b9b156435369b1804bd30a",
+        "cycles-28672.json": "6439070fdf6f004ffaba61feb0857729128cd890c9ef0cb6d57a4324c6368686",
+        "cycles-30720.json": "7cb708af08c6d0f4fb2de209149f4ccf1ea66d6e73498ce8de113b2f384d6c5b",
+        "cycles-32768.json": "98fa1e01253398934d667bf92be57ddcd20d70cebbe783bb5b32fbf97370cc72",
+        "cycles-34816.json": "6f8684989579fc0f33bad5518f13bdc513ee312d41894c2ff3fc90ee2f131921",
+        "cycles-36864.json": "251812ba6f749240545522824cb21bf7bab4ad65145aec7a195f38c906a49b6b",
+        "cycles-38912.json": "42cdbaaa23294922a49d28e008c8ccb2eb055be2c303c69e370b2278f2f06473",
+        "cycles-4096.json": "11dc9f75592e24a30b90354bf46bdbae97c144e1a7c0184cde706d9b875372d7",
+        "cycles-40960.json": "ae4d042f81dfa720e77f7bf760bec398d863b096bb3a1c9211d72a18fa929709",
+        "cycles-43008.json": "da5264ad8cdade824464e767d3cad66c28dfeed5248a906d75159fefa752496a",
+        "cycles-45056.json": "88a2d44bd935e8713c8cba37bc18b023941e3f56afffa10e73f152a45485f9bd",
+        "cycles-47104.json": "ad5412c37b3e5d8d89e8821f7523be71b177a816462f52244278da1648f07503",
+        "cycles-49152.json": "3eaf927b1886662a3671ca2b0f65611f7a9fb279e290db5050a9c44c6e5ff0ea",
+        "cycles-51200.json": "97d27f1c326552a067d63eee5f1bc279d6647306809320ccdf5fb3c8ad82243b",
+        "cycles-53248.json": "11fcd563fd46d54e3d370f4e311b4c2e65ad22c37679a67c9b4cc9dba70d9f92",
+        "cycles-55296.json": "a80b118812800b5cafc3184e110b56d3563ce7b7b9095643f9e7048978d78b2f",
+        "cycles-57344.json": "5912836eba6616c9b642f7dfd2cdf4d928e664ac32a65c71330abec189317259",
+        "cycles-59392.json": "2e60d4b608352b6496701d708e11d6a724c33f5364ff743ddd349c13f473d5ef",
+        "cycles-6144.json": "c4485b91858056ab1e04775ef8d516728cacbff1976614302404ad0c3a3415a5",
+        "cycles-61440.json": "161502017ada3a47161011b8dd47354aa47d5ef6ab0132ac170c5adf6a3f37b7",
+        "cycles-63488.json": "519bfbeefbb8344f2255cba5f45a0d87e0db8ddbb1b70c025635c18de60dcf5b",
+        "cycles-65536.json": "cdd0817a9b0af8fc9c6d4036b702399e59b00f334be2accebe43e63d49f0ba4f",
+        "cycles-8192.json": "ffe73678cb24920bbb01c2db2fdcb3020f00ccd1fe14abd7924255fdc908bfb4",
+        "frontier_002048.logits.json": "9027990221c60b378f5799b20b550838ef1f3004110a4c975ae9b891ee0d5958",
+        "frontier_004096.logits.json": "3577edf2b9989ca8df0d9a033615aca490945f535b300539dc35f8219a182daf",
+        "frontier_006144.logits.json": "bdc30ace2887aefbafe39e5b9e305986015bbba39a07356b0e7b5833c8d2bdc9",
+        "frontier_008192.logits.json": "75e932e7d34cc627b630a9b65d8451862b24a4c95fff57260ac1aed9d72465e9",
+        "frontier_010240.logits.json": "3aef64055f5800eee677487ac47d855909138eac1e1bea03e6e2548d39f2a885",
+        "frontier_012288.logits.json": "bc0877790d13e4b8c4f0bbe13d9b1c391cb9e22e37bf3292eb8505bd3726070b",
+        "frontier_014336.logits.json": "bebec237733049b582b7e0c716bccfa6e27e67d1a1c3d6e77280f69a8bcc0a43",
+        "frontier_016384.logits.json": "0f58d7400169e8d1aa83007540cfa8f13e390ac357a0cfcc05b5d88f1b4f8f6c",
+        "frontier_018432.logits.json": "b1948707164a2e7677630ee0b18c5ebdace9023793f78967979e113e22294541",
+        "frontier_020480.logits.json": "74ae42283481580df3f37866b86112749ee77f2a4af37b3db02792823e8dda61",
+        "frontier_022528.logits.json": "cefdbf715a916c3e671bdc2ab6dc50c6524172f80512f4c00cc77eb97897ebff",
+        "frontier_024576.logits.json": "423ba85e2ae8ec28e6b0ea74a3c1b22457516199d22e67a916d1e276d8c44960",
+        "frontier_026624.logits.json": "898c9e04fe8519539dd1606709be04fffde52f27b7f564fd3babb66f94a145d1",
+        "frontier_028672.logits.json": "14af5c831b7d28f9ff889fb26bcfd7758351e44da3d340ae2f50c1e0c83ac3d0",
+        "frontier_030720.logits.json": "089cb101162325b47b9e23faa603040e1c85f33b62e19b047418eea173346072",
+        "frontier_032768.logits.json": "5d02315b22ee53cb77a7da49564ec461485484ddb38077c3a1653aa47979ce65",
+        "frontier_034816.logits.json": "8e7939d4c3677ef4c60d67706e9d62f5cb887ba9d820774edd053d83e929e24b",
+        "frontier_036864.logits.json": "ff4834b0ade7011151deb6fa5ba1ddce41ac527a9890a27c0108e8b0edda4722",
+        "frontier_038912.logits.json": "7c991fb12ed0e937dcd5ee47ebf9906b1763d7700395108ec8b127414b1170e7",
+        "frontier_040960.logits.json": "4be84a0abf09a30ceb59fa0b73977ef761bd87a078017e94608ad43f9352e47d",
+        "frontier_043008.logits.json": "b5fdaf6e90990e970c3c703475d619b0c859d7d62384e4c7c66baa7f54647442",
+        "frontier_045056.logits.json": "6272b1bee736d92295d30151422944e5a7aa4c86ab3d9fd7983486c93ccfe694",
+        "frontier_047104.logits.json": "6fb05f59e2953889c8953ce5814d86594523f812e378398303a8998661906253",
+        "frontier_049152.logits.json": "8297a530e1a94de7812431bdc7b7807fd4e9be392eafd5d26a7404564cfe1633",
+        "frontier_051200.logits.json": "3b3edd8280b3c1fec5381c9092df8033dd253971b67fbfb98bb9919941d4faab",
+        "frontier_053248.logits.json": "dc97ae3461db2acca1a3890a74f6fe6e39ce957ebe14bb4af47708558b8e97a1",
+        "frontier_055296.logits.json": "fefdf3786e4b0753655996b1c2a8d047fb88c69de69d113472b1694d7340b548",
+        "frontier_057344.logits.json": "cc4c028a7e1e97638ae096288b466d1778be19f9c3238afe8c9f19ffcac52bc3",
+        "frontier_059392.logits.json": "1bcac6279e502ce03a988e9357f47848e5ebf5282666e096cef83a67f50bf2af",
+        "frontier_061440.logits.json": "622bd35dc1040fc0c134966c6c449de76a132b0d7de88c78248a46276dd6d9cb",
+        "frontier_063488.logits.json": "c6b271dded23f8edb4f3110cdd0081bc8a8e874cb1b15ed38c86c14c7c77b38f",
+        "frontier_065536.logits.json": "5dbdb8627b5a1601b0218bc71504c97b99d21ccaf8f7248a70df54d492a18f40",
+        "tokens-10240.json": "07e120c0cd90acdd671ae84bf390236e05344a6d893e328f44b68558046594ee",
+        "tokens-12288.json": "bcf94fae2b084b784e65c596fac9959daa3ecac2346c5056ae1e93321d88b3b8",
+        "tokens-14336.json": "c198edc11c9c53d92546ca14e8da6fd67c4a2800315b4e95086bc0ae65476b0a",
+        "tokens-16384.json": "bdcf5abf8c8ed39047116d3bc990846924fb34cceffccbf239c1a714a245dc8e",
+        "tokens-18432.json": "25f4381a771555e2431ef447516b936b2ee82448353adbed240a25ac6548733b",
+        "tokens-2048.json": "4c738d53889d409edb305b2c5a76fb1c31d946695f5882c429c54890860582d7",
+        "tokens-20480.json": "a99400e4cf9087506bb599dd229038965531960b7e75bd3e36d7a9ea25dbc119",
+        "tokens-22528.json": "bb3ef57c7b8fd8c12a27210d9f6b5642805a40671e9482238b18da6bb8eb5fa6",
+        "tokens-24576.json": "d9f691354f57d74988023c212bc1ad6c778ba9706fc457dfe5ebdb897e8b71cf",
+        "tokens-26624.json": "1ed9ffa99cc3a731e26c43c681336a9591d5be9605eff61768d816efc6e0900f",
+        "tokens-28672.json": "d960cf4b1560ea8d47992b6a0f5b318254ec4899078d98a5bb365e432b361336",
+        "tokens-30720.json": "c739aee44c57c5a47e965eca67f7a6f434f110c8fa26a8709bac70575b10c7e2",
+        "tokens-32768.json": "86a49c83c2391748b3ddd1e8fff5a22f94d95a30bb98cde2f08a465436355054",
+        "tokens-34816.json": "17c8eeaaee3d5fc22fb48c57e766c752dd611645d24a4a05aa9c9495d6aba54e",
+        "tokens-36864.json": "2de5b6418b83fbacfa1228dc5d62e88dbccaac86e5c3685e10892d24738f025d",
+        "tokens-38912.json": "cf55e86f0ac9a8a0b00ed5bcd5d599b6045dd8c102a0b8d9e0c797a101d50c66",
+        "tokens-4096.json": "bc6ed99cba772adb1530ea8adf207ddf5219f47cb12512253fcfcae272759c94",
+        "tokens-40960.json": "ab5b3d5008177dc4bde6cd06486c02cbbe4eba1679cf3bc3861750b8ba364022",
+        "tokens-43008.json": "6f3e42754a581064be2c2732ce6e2a0d152037aee3c025528d69ef67e9c0f4ae",
+        "tokens-45056.json": "617acdfeb90e391d998c81b80ad36d15a19658d980a1e32124d0f8a88fd33782",
+        "tokens-47104.json": "5ef739417acf8b966e1adaf8f0373b06c176175fb8cbbddb32ed42483b67a6cb",
+        "tokens-49152.json": "043d255500668e5abe4b4b41585cd9db3b364772a26d922874efbaebab3a9f7d",
+        "tokens-51200.json": "b5bcc08e3c94a598281e3fc5d79328e011e8d4041bdf232bef2be4c1d12dd8c2",
+        "tokens-53248.json": "6fd65f26cfadcd83c2503b315d4aa60b3f48caf6a4231fd836f213968913b139",
+        "tokens-55296.json": "cab9ca081533ed41e5e3c0ebfba48854387c43fcb200487a3abcb434f39fe34a",
+        "tokens-57344.json": "bf1d853dc28b1023593c6ece935e4ee825208d9c58a106794c7a072c701112c9",
+        "tokens-59392.json": "8ec6cf0dfe9b5df791ff6c0b0e5a2a4d046166b71b3baa92e43ff1c7b4e173cf",
+        "tokens-6144.json": "ccfa2a964aa125154824545bc9306943da3ef78c79667d26464b6ea27d24a9c8",
+        "tokens-61440.json": "ec0ef6dde70d6fbf35a2c338e6edd761dc2a0e04503e14fa5fb5effa02bd4d73",
+        "tokens-63488.json": "1954f8ea2c737590c816eb04a88de18833fbc69a93da52347a43efdc95c213f7",
+        "tokens-65536.json": "538bceb2bc374ea53919f9a41358f1328afd89d8bc90f74f571edaed62a2de28",
+        "tokens-8192.json": "107d50cfc03e92b2cf5e8a1fef81afdf4ac01339578fbde0bc1496f84600b715"
+      }
+    },
+    {
+      "frontiers": 32,
+      "generation_tokens": 128,
+      "speculative": true,
+      "draft": 3,
+      "exact_to_first": true,
+      "cycles": [
+        {
+          "frontier": 2048,
+          "calls": 68,
+          "max_emitted": 4,
+          "emitted_per_call": 1.8823529411764706
+        },
+        {
+          "frontier": 4096,
+          "calls": 64,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0
+        },
+        {
+          "frontier": 6144,
+          "calls": 51,
+          "max_emitted": 4,
+          "emitted_per_call": 2.5098039215686274
+        },
+        {
+          "frontier": 8192,
+          "calls": 113,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1327433628318584
+        },
+        {
+          "frontier": 10240,
+          "calls": 38,
+          "max_emitted": 4,
+          "emitted_per_call": 3.3684210526315788
+        },
+        {
+          "frontier": 12288,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 14336,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 16384,
+          "calls": 89,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4382022471910112
+        },
+        {
+          "frontier": 18432,
+          "calls": 94,
+          "max_emitted": 4,
+          "emitted_per_call": 1.3617021276595744
+        },
+        {
+          "frontier": 20480,
+          "calls": 107,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1962616822429906
+        },
+        {
+          "frontier": 22528,
+          "calls": 116,
+          "max_emitted": 4,
+          "emitted_per_call": 1.103448275862069
+        },
+        {
+          "frontier": 24576,
+          "calls": 101,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2673267326732673
+        },
+        {
+          "frontier": 26624,
+          "calls": 77,
+          "max_emitted": 4,
+          "emitted_per_call": 1.6623376623376624
+        },
+        {
+          "frontier": 28672,
+          "calls": 88,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4545454545454546
+        },
+        {
+          "frontier": 30720,
+          "calls": 112,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1428571428571428
+        },
+        {
+          "frontier": 32768,
+          "calls": 103,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2427184466019416
+        },
+        {
+          "frontier": 34816,
+          "calls": 115,
+          "max_emitted": 4,
+          "emitted_per_call": 1.1130434782608696
+        },
+        {
+          "frontier": 36864,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 38912,
+          "calls": 106,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2075471698113207
+        },
+        {
+          "frontier": 40960,
+          "calls": 72,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7777777777777777
+        },
+        {
+          "frontier": 43008,
+          "calls": 68,
+          "max_emitted": 4,
+          "emitted_per_call": 1.8823529411764706
+        },
+        {
+          "frontier": 45056,
+          "calls": 49,
+          "max_emitted": 4,
+          "emitted_per_call": 2.6122448979591835
+        },
+        {
+          "frontier": 47104,
+          "calls": 89,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4382022471910112
+        },
+        {
+          "frontier": 49152,
+          "calls": 48,
+          "max_emitted": 4,
+          "emitted_per_call": 2.6666666666666665
+        },
+        {
+          "frontier": 51200,
+          "calls": 104,
+          "max_emitted": 4,
+          "emitted_per_call": 1.2307692307692308
+        },
+        {
+          "frontier": 53248,
+          "calls": 46,
+          "max_emitted": 4,
+          "emitted_per_call": 2.782608695652174
+        },
+        {
+          "frontier": 55296,
+          "calls": 74,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7297297297297298
+        },
+        {
+          "frontier": 57344,
+          "calls": 82,
+          "max_emitted": 4,
+          "emitted_per_call": 1.5609756097560976
+        },
+        {
+          "frontier": 59392,
+          "calls": 74,
+          "max_emitted": 4,
+          "emitted_per_call": 1.7297297297297298
+        },
+        {
+          "frontier": 61440,
+          "calls": 61,
+          "max_emitted": 4,
+          "emitted_per_call": 2.098360655737705
+        },
+        {
+          "frontier": 63488,
+          "calls": 63,
+          "max_emitted": 4,
+          "emitted_per_call": 2.0317460317460316
+        },
+        {
+          "frontier": 65536,
+          "calls": 90,
+          "max_emitted": 4,
+          "emitted_per_call": 1.4222222222222223
+        }
+      ],
+      "repeat": 3,
+      "first_repeat_exact_to_completed_4096_cap_output": false,
+      "proof_file_sha256": {
+        "cycles-10240.json": "593740e35d3fa98ecdd04e30cc2955f47e55a07b6e4e91ea9b42c1824c7a9e68",
+        "cycles-12288.json": "9583bde1b49017f0e0fad5e34e622f4bf590ae80b648a2a3470915df9106bda5",
+        "cycles-14336.json": "51ef05b78ee6115e30534e84bf4bf8b2440cffcc6c75a11682732d61e4aee570",
+        "cycles-16384.json": "9bf72a1e42e000bcb3076dc4968e9954a98c478d12a651c371665f0ac0423e9a",
+        "cycles-18432.json": "eacd3c661bfc2ac39c4205ab703af418cc23aeeb41f8049767f2a88c803cd081",
+        "cycles-2048.json": "1a109c6126b25747f61cb1885a5ec3aa5e67bb35c74ab840ac2933a41dfbf0f4",
+        "cycles-20480.json": "5f8d54adee7ef7a4a5acb75361d0b86d292cb7047520391e1fdf9be58fdd5ad6",
+        "cycles-22528.json": "095fbce24166c4410cd4832b87be7bb0546332ad513ff86e71a617f15f43875b",
+        "cycles-24576.json": "7708108b5df36929988dda1780bfc34ed366ccfe1cffc71d7ebfe3c1060af825",
+        "cycles-26624.json": "45d4fe7df1f0f36608ec05c5ed5e7ecc3a971b9fe1b9b156435369b1804bd30a",
+        "cycles-28672.json": "6439070fdf6f004ffaba61feb0857729128cd890c9ef0cb6d57a4324c6368686",
+        "cycles-30720.json": "7cb708af08c6d0f4fb2de209149f4ccf1ea66d6e73498ce8de113b2f384d6c5b",
+        "cycles-32768.json": "98fa1e01253398934d667bf92be57ddcd20d70cebbe783bb5b32fbf97370cc72",
+        "cycles-34816.json": "6f8684989579fc0f33bad5518f13bdc513ee312d41894c2ff3fc90ee2f131921",
+        "cycles-36864.json": "251812ba6f749240545522824cb21bf7bab4ad65145aec7a195f38c906a49b6b",
+        "cycles-38912.json": "42cdbaaa23294922a49d28e008c8ccb2eb055be2c303c69e370b2278f2f06473",
+        "cycles-4096.json": "f9c01b5eebfc29b548393ea558a406fb7ba0b95155ab3594cabfb7f42ec35c23",
+        "cycles-40960.json": "ae4d042f81dfa720e77f7bf760bec398d863b096bb3a1c9211d72a18fa929709",
+        "cycles-43008.json": "da5264ad8cdade824464e767d3cad66c28dfeed5248a906d75159fefa752496a",
+        "cycles-45056.json": "cde2e1a3e3210a94ee432d408c4a1e1c3c0825d0f4ee8492b17eea831d0f26a9",
+        "cycles-47104.json": "d437e7d5984dae4e5c1b8fed2387865d86ab6018ebb59b24c4ae120640817025",
+        "cycles-49152.json": "3eaf927b1886662a3671ca2b0f65611f7a9fb279e290db5050a9c44c6e5ff0ea",
+        "cycles-51200.json": "97d27f1c326552a067d63eee5f1bc279d6647306809320ccdf5fb3c8ad82243b",
+        "cycles-53248.json": "11fcd563fd46d54e3d370f4e311b4c2e65ad22c37679a67c9b4cc9dba70d9f92",
+        "cycles-55296.json": "a80b118812800b5cafc3184e110b56d3563ce7b7b9095643f9e7048978d78b2f",
+        "cycles-57344.json": "c0a2a6cf4490bdf08f9c31ce15b1e8958b4c7547e62fc2aa973f4ff2b2f40b56",
+        "cycles-59392.json": "bea248e25ad80075d4597240194aa12062d7dfee780cd8961fea7ef5b6f53e41",
+        "cycles-6144.json": "c4485b91858056ab1e04775ef8d516728cacbff1976614302404ad0c3a3415a5",
+        "cycles-61440.json": "2fd3526aed30f8d77251d14ba510e88d2e2bae883c168e39dc44073ba02aace1",
+        "cycles-63488.json": "519bfbeefbb8344f2255cba5f45a0d87e0db8ddbb1b70c025635c18de60dcf5b",
+        "cycles-65536.json": "cdd0817a9b0af8fc9c6d4036b702399e59b00f334be2accebe43e63d49f0ba4f",
+        "cycles-8192.json": "ffe73678cb24920bbb01c2db2fdcb3020f00ccd1fe14abd7924255fdc908bfb4",
+        "frontier_002048.logits.json": "9027990221c60b378f5799b20b550838ef1f3004110a4c975ae9b891ee0d5958",
+        "frontier_004096.logits.json": "3577edf2b9989ca8df0d9a033615aca490945f535b300539dc35f8219a182daf",
+        "frontier_006144.logits.json": "bdc30ace2887aefbafe39e5b9e305986015bbba39a07356b0e7b5833c8d2bdc9",
+        "frontier_008192.logits.json": "75e932e7d34cc627b630a9b65d8451862b24a4c95fff57260ac1aed9d72465e9",
+        "frontier_010240.logits.json": "3aef64055f5800eee677487ac47d855909138eac1e1bea03e6e2548d39f2a885",
+        "frontier_012288.logits.json": "bc0877790d13e4b8c4f0bbe13d9b1c391cb9e22e37bf3292eb8505bd3726070b",
+        "frontier_014336.logits.json": "bebec237733049b582b7e0c716bccfa6e27e67d1a1c3d6e77280f69a8bcc0a43",
+        "frontier_016384.logits.json": "0f58d7400169e8d1aa83007540cfa8f13e390ac357a0cfcc05b5d88f1b4f8f6c",
+        "frontier_018432.logits.json": "b1948707164a2e7677630ee0b18c5ebdace9023793f78967979e113e22294541",
+        "frontier_020480.logits.json": "74ae42283481580df3f37866b86112749ee77f2a4af37b3db02792823e8dda61",
+        "frontier_022528.logits.json": "cefdbf715a916c3e671bdc2ab6dc50c6524172f80512f4c00cc77eb97897ebff",
+        "frontier_024576.logits.json": "423ba85e2ae8ec28e6b0ea74a3c1b22457516199d22e67a916d1e276d8c44960",
+        "frontier_026624.logits.json": "898c9e04fe8519539dd1606709be04fffde52f27b7f564fd3babb66f94a145d1",
+        "frontier_028672.logits.json": "14af5c831b7d28f9ff889fb26bcfd7758351e44da3d340ae2f50c1e0c83ac3d0",
+        "frontier_030720.logits.json": "089cb101162325b47b9e23faa603040e1c85f33b62e19b047418eea173346072",
+        "frontier_032768.logits.json": "5d02315b22ee53cb77a7da49564ec461485484ddb38077c3a1653aa47979ce65",
+        "frontier_034816.logits.json": "8e7939d4c3677ef4c60d67706e9d62f5cb887ba9d820774edd053d83e929e24b",
+        "frontier_036864.logits.json": "ff4834b0ade7011151deb6fa5ba1ddce41ac527a9890a27c0108e8b0edda4722",
+        "frontier_038912.logits.json": "7c991fb12ed0e937dcd5ee47ebf9906b1763d7700395108ec8b127414b1170e7",
+        "frontier_040960.logits.json": "4be84a0abf09a30ceb59fa0b73977ef761bd87a078017e94608ad43f9352e47d",
+        "frontier_043008.logits.json": "b5fdaf6e90990e970c3c703475d619b0c859d7d62384e4c7c66baa7f54647442",
+        "frontier_045056.logits.json": "6272b1bee736d92295d30151422944e5a7aa4c86ab3d9fd7983486c93ccfe694",
+        "frontier_047104.logits.json": "6fb05f59e2953889c8953ce5814d86594523f812e378398303a8998661906253",
+        "frontier_049152.logits.json": "8297a530e1a94de7812431bdc7b7807fd4e9be392eafd5d26a7404564cfe1633",
+        "frontier_051200.logits.json": "3b3edd8280b3c1fec5381c9092df8033dd253971b67fbfb98bb9919941d4faab",
+        "frontier_053248.logits.json": "dc97ae3461db2acca1a3890a74f6fe6e39ce957ebe14bb4af47708558b8e97a1",
+        "frontier_055296.logits.json": "fefdf3786e4b0753655996b1c2a8d047fb88c69de69d113472b1694d7340b548",
+        "frontier_057344.logits.json": "cc4c028a7e1e97638ae096288b466d1778be19f9c3238afe8c9f19ffcac52bc3",
+        "frontier_059392.logits.json": "1bcac6279e502ce03a988e9357f47848e5ebf5282666e096cef83a67f50bf2af",
+        "frontier_061440.logits.json": "622bd35dc1040fc0c134966c6c449de76a132b0d7de88c78248a46276dd6d9cb",
+        "frontier_063488.logits.json": "c6b271dded23f8edb4f3110cdd0081bc8a8e874cb1b15ed38c86c14c7c77b38f",
+        "frontier_065536.logits.json": "5dbdb8627b5a1601b0218bc71504c97b99d21ccaf8f7248a70df54d492a18f40",
+        "tokens-10240.json": "07e120c0cd90acdd671ae84bf390236e05344a6d893e328f44b68558046594ee",
+        "tokens-12288.json": "bcf94fae2b084b784e65c596fac9959daa3ecac2346c5056ae1e93321d88b3b8",
+        "tokens-14336.json": "c198edc11c9c53d92546ca14e8da6fd67c4a2800315b4e95086bc0ae65476b0a",
+        "tokens-16384.json": "bdcf5abf8c8ed39047116d3bc990846924fb34cceffccbf239c1a714a245dc8e",
+        "tokens-18432.json": "25f4381a771555e2431ef447516b936b2ee82448353adbed240a25ac6548733b",
+        "tokens-2048.json": "4c738d53889d409edb305b2c5a76fb1c31d946695f5882c429c54890860582d7",
+        "tokens-20480.json": "a99400e4cf9087506bb599dd229038965531960b7e75bd3e36d7a9ea25dbc119",
+        "tokens-22528.json": "bb3ef57c7b8fd8c12a27210d9f6b5642805a40671e9482238b18da6bb8eb5fa6",
+        "tokens-24576.json": "d9f691354f57d74988023c212bc1ad6c778ba9706fc457dfe5ebdb897e8b71cf",
+        "tokens-26624.json": "1ed9ffa99cc3a731e26c43c681336a9591d5be9605eff61768d816efc6e0900f",
+        "tokens-28672.json": "d960cf4b1560ea8d47992b6a0f5b318254ec4899078d98a5bb365e432b361336",
+        "tokens-30720.json": "c739aee44c57c5a47e965eca67f7a6f434f110c8fa26a8709bac70575b10c7e2",
+        "tokens-32768.json": "86a49c83c2391748b3ddd1e8fff5a22f94d95a30bb98cde2f08a465436355054",
+        "tokens-34816.json": "17c8eeaaee3d5fc22fb48c57e766c752dd611645d24a4a05aa9c9495d6aba54e",
+        "tokens-36864.json": "2de5b6418b83fbacfa1228dc5d62e88dbccaac86e5c3685e10892d24738f025d",
+        "tokens-38912.json": "cf55e86f0ac9a8a0b00ed5bcd5d599b6045dd8c102a0b8d9e0c797a101d50c66",
+        "tokens-4096.json": "bc6ed99cba772adb1530ea8adf207ddf5219f47cb12512253fcfcae272759c94",
+        "tokens-40960.json": "ab5b3d5008177dc4bde6cd06486c02cbbe4eba1679cf3bc3861750b8ba364022",
+        "tokens-43008.json": "6f3e42754a581064be2c2732ce6e2a0d152037aee3c025528d69ef67e9c0f4ae",
+        "tokens-45056.json": "617acdfeb90e391d998c81b80ad36d15a19658d980a1e32124d0f8a88fd33782",
+        "tokens-47104.json": "5ef739417acf8b966e1adaf8f0373b06c176175fb8cbbddb32ed42483b67a6cb",
+        "tokens-49152.json": "043d255500668e5abe4b4b41585cd9db3b364772a26d922874efbaebab3a9f7d",
+        "tokens-51200.json": "b5bcc08e3c94a598281e3fc5d79328e011e8d4041bdf232bef2be4c1d12dd8c2",
+        "tokens-53248.json": "6fd65f26cfadcd83c2503b315d4aa60b3f48caf6a4231fd836f213968913b139",
+        "tokens-55296.json": "cab9ca081533ed41e5e3c0ebfba48854387c43fcb200487a3abcb434f39fe34a",
+        "tokens-57344.json": "bf1d853dc28b1023593c6ece935e4ee825208d9c58a106794c7a072c701112c9",
+        "tokens-59392.json": "8ec6cf0dfe9b5df791ff6c0b0e5a2a4d046166b71b3baa92e43ff1c7b4e173cf",
+        "tokens-6144.json": "ccfa2a964aa125154824545bc9306943da3ef78c79667d26464b6ea27d24a9c8",
+        "tokens-61440.json": "ec0ef6dde70d6fbf35a2c338e6edd761dc2a0e04503e14fa5fb5effa02bd4d73",
+        "tokens-63488.json": "1954f8ea2c737590c816eb04a88de18833fbc69a93da52347a43efdc95c213f7",
+        "tokens-65536.json": "538bceb2bc374ea53919f9a41358f1328afd89d8bc90f74f571edaed62a2de28",
+        "tokens-8192.json": "107d50cfc03e92b2cf5e8a1fef81afdf4ac01339578fbde0bc1496f84600b715"
+      }
+    }
+  ]
+}

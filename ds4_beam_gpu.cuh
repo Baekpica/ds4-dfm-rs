@@ -417,10 +417,10 @@ static int beam_mma_run(ds4_beam_moe *moe, float *out, const float *input, const
         beam_w_pairs<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, pscale, xs, grouped, BEAM_GPU_USED,
             (uint32_t)pairs);
         cudaError_t err = beam_w_launch<GLMVQ_MMA_GATE>(witems, nwide, book, x8, token, pscale, gate,
-            BEAM_GPU_FFN, BEAM_GPU_HIDDEN, nullptr, nullptr, moe->sms, stream);
+            BEAM_GPU_FFN, BEAM_GPU_HIDDEN, nullptr, nullptr, INFINITY, moe->sms, stream);
         if (err == cudaSuccess) {
             err = beam_w_launch<GLMVQ_MMA_UP>(witems + nwide, nwide, book, x8, token, pscale, gate,
-                BEAM_GPU_FFN, BEAM_GPU_HIDDEN, mid8, ms, moe->sms, stream);
+                BEAM_GPU_FFN, BEAM_GPU_HIDDEN, mid8, ms, INFINITY, moe->sms, stream);
         }
         if (err == cudaSuccess) {
             err = beam_w_down_launch(witems + 2 * nwide, nwide, book, mid8, ms, down, BEAM_GPU_HIDDEN, BEAM_GPU_FFN,

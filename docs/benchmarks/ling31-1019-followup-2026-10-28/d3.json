@@ -1,0 +1,6038 @@
+{
+  "round": "D3",
+  "candidate_id": "d4",
+  "description": "Keep verify expert result arrays in registers with static epilogue indices",
+  "artifact": {
+    "model": "Baekpica/Ling-3.1-flash-1019-VQ-GGUF",
+    "manifest_sha256": "940c92ca2d347e47b929dceb7d25acc852f31a58c443e368a78d1484bd4265d9",
+    "fixture_sha256": "ef463ee0f6bc3da80dd1aa17705bdf017af759b3f31b220ab22d23fb5eee4c2c",
+    "corpus_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+  },
+  "hardware": {
+    "gpu": "GB10 sm_121a",
+    "cuda": "13.4.92",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "busy_sm_clock_mhz": [
+      2184,
+      2190
+    ],
+    "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+  },
+  "protocol": {
+    "modes": [
+      "mtp2"
+    ],
+    "limit": 128,
+    "assistant_context": 4096,
+    "corpus_context": 8321,
+    "warmup": "8192 corpus tokens plus 8 decode calls",
+    "sessions": "A new independent session for the corpus and each of ten held assistant cases",
+    "fresh_processes_per_mode": 6,
+    "order": [
+      "off1",
+      "on1",
+      "on2",
+      "off2",
+      "off3",
+      "on3"
+    ],
+    "ordinary_model": "Model::open with MTP disabled; no draft-state maintenance",
+    "aggregation": "Assistant token count divided by summed assistant decode seconds; corpus separate",
+    "helper_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+    "control": "DS4_LING31_VERIFY_REGS"
+  },
+  "statistics": {
+    "pairs": [
+      {
+        "pair": 1,
+        "names": [
+          "d4-mtp2-off-1",
+          "d4-mtp2-on-1"
+        ],
+        "assistant_off": 27.86374896279864,
+        "assistant_on": 28.08134751160731,
+        "assistant_gain_pct": 0.7809378023724944,
+        "corpus_off": 21.242325584851933,
+        "corpus_on": 21.487202037558983,
+        "corpus_gain_pct": 1.1527761013213844,
+        "prefill_off": 1199.2966800746933,
+        "prefill_on": 1199.1423410185182,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.025705589,
+            "on_seconds": 5.957034321,
+            "gain_pct": 1.1527761013213844,
+            "off_prefill_seconds": 6.830670122,
+            "on_prefill_seconds": 6.831549283
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.869609223,
+            "on_seconds": 3.82169494,
+            "gain_pct": 1.2537443137729865,
+            "off_prefill_seconds": 0.358317031,
+            "on_prefill_seconds": 0.366915618
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.313181376,
+            "on_seconds": 2.292829502,
+            "gain_pct": 0.8876313734731411,
+            "off_prefill_seconds": 0.282520282,
+            "on_prefill_seconds": 0.274643549
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.718964299,
+            "on_seconds": 2.7054087510000002,
+            "gain_pct": 0.5010536021586187,
+            "off_prefill_seconds": 0.268247246,
+            "on_prefill_seconds": 0.265016219
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.481529528,
+            "on_seconds": 1.4766937119999999,
+            "gain_pct": 0.3274758984008086,
+            "off_prefill_seconds": 0.30483643,
+            "on_prefill_seconds": 0.304735196
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.935543177,
+            "on_seconds": 3.908426607,
+            "gain_pct": 0.6937976000734869,
+            "off_prefill_seconds": 0.306921251,
+            "on_prefill_seconds": 0.310276572
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.674072116,
+            "on_seconds": 0.662466678,
+            "gain_pct": 1.7518523399602692,
+            "off_prefill_seconds": 0.31497906,
+            "on_prefill_seconds": 0.321652604
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.401982975,
+            "on_seconds": 3.3907184360000002,
+            "gain_pct": 0.3322168800688807,
+            "off_prefill_seconds": 0.470647533,
+            "on_prefill_seconds": 0.485704729
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.607499568,
+            "on_seconds": 5.570575108,
+            "gain_pct": 0.6628482568518335,
+            "off_prefill_seconds": 0.341839018,
+            "on_prefill_seconds": 0.348034483
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.906322322,
+            "on_seconds": 0.891208431,
+            "gain_pct": 1.6958873451231815,
+            "off_prefill_seconds": 0.556338639,
+            "on_prefill_seconds": 0.550576149
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.895432575,
+            "on_seconds": 0.884162239,
+            "gain_pct": 1.2746909450404464,
+            "off_prefill_seconds": 0.587270279,
+            "on_prefill_seconds": 0.588114549
+          }
+        ]
+      },
+      {
+        "pair": 2,
+        "names": [
+          "d4-mtp2-off-2",
+          "d4-mtp2-on-2"
+        ],
+        "assistant_off": 27.907382521517647,
+        "assistant_on": 28.11550378464691,
+        "assistant_gain_pct": 0.7457570159752347,
+        "corpus_off": 21.203209905577783,
+        "corpus_on": 21.462752633536045,
+        "corpus_gain_pct": 1.2240728130979317,
+        "prefill_off": 1193.245630023264,
+        "prefill_on": 1199.458559310971,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.03682181,
+            "on_seconds": 5.963820307,
+            "gain_pct": 1.2240728130979317,
+            "off_prefill_seconds": 6.865309031,
+            "on_prefill_seconds": 6.829748253
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.847985988,
+            "on_seconds": 3.85184662,
+            "gain_pct": -0.10022808229056546,
+            "off_prefill_seconds": 0.35655197,
+            "on_prefill_seconds": 0.358730279
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.321739134,
+            "on_seconds": 2.28426789,
+            "gain_pct": 1.6404049701893575,
+            "off_prefill_seconds": 0.274785513,
+            "on_prefill_seconds": 0.274841208
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.708626918,
+            "on_seconds": 2.712147871,
+            "gain_pct": -0.12982157195955413,
+            "off_prefill_seconds": 0.263409911,
+            "on_prefill_seconds": 0.265553119
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.479235844,
+            "on_seconds": 1.4626608,
+            "gain_pct": 1.1332117467016234,
+            "off_prefill_seconds": 0.30654562,
+            "on_prefill_seconds": 0.306146764
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.934267753,
+            "on_seconds": 3.891728504,
+            "gain_pct": 1.0930682589054497,
+            "off_prefill_seconds": 0.308442156,
+            "on_prefill_seconds": 0.307611716
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.671370638,
+            "on_seconds": 0.661346719,
+            "gain_pct": 1.515682880404512,
+            "off_prefill_seconds": 0.316793618,
+            "on_prefill_seconds": 0.322113031
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.41117889,
+            "on_seconds": 3.384442671,
+            "gain_pct": 0.7899740547858247,
+            "off_prefill_seconds": 0.475667706,
+            "on_prefill_seconds": 0.48211173
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.595963834,
+            "on_seconds": 5.552993215,
+            "gain_pct": 0.7738280479782755,
+            "off_prefill_seconds": 0.34480741,
+            "on_prefill_seconds": 0.343622243
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.900923863,
+            "on_seconds": 0.894157389,
+            "gain_pct": 0.7567430614835668,
+            "off_prefill_seconds": 0.552091954,
+            "on_prefill_seconds": 0.556857693
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.89249919,
+            "on_seconds": 0.877487342,
+            "gain_pct": 1.7107765869060154,
+            "off_prefill_seconds": 0.588384726,
+            "on_prefill_seconds": 0.595826855
+          }
+        ]
+      },
+      {
+        "pair": 3,
+        "names": [
+          "d4-mtp2-off-3",
+          "d4-mtp2-on-3"
+        ],
+        "assistant_off": 27.805803934436693,
+        "assistant_on": 28.122239646704543,
+        "assistant_gain_pct": 1.1380203680281031,
+        "corpus_off": 21.25703629615133,
+        "corpus_on": 21.473767178875967,
+        "corpus_gain_pct": 1.0195724357109803,
+        "prefill_off": 1190.4549894410698,
+        "prefill_on": 1189.6633743372245,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.021535562,
+            "on_seconds": 5.960761283,
+            "gain_pct": 1.0195724357109803,
+            "off_prefill_seconds": 6.88140255,
+            "on_prefill_seconds": 6.885981511
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.881784667,
+            "on_seconds": 3.8515626,
+            "gain_pct": 0.7846702790186955,
+            "off_prefill_seconds": 0.352746789,
+            "on_prefill_seconds": 0.347767035
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.3054061040000002,
+            "on_seconds": 2.28845882,
+            "gain_pct": 0.7405544662586694,
+            "off_prefill_seconds": 0.270746518,
+            "on_prefill_seconds": 0.274488624
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.732215384,
+            "on_seconds": 2.697682245,
+            "gain_pct": 1.2801040250016493,
+            "off_prefill_seconds": 0.26642251,
+            "on_prefill_seconds": 0.268903836
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.487559358,
+            "on_seconds": 1.472273388,
+            "gain_pct": 1.0382562182126298,
+            "off_prefill_seconds": 0.309355478,
+            "on_prefill_seconds": 0.311799726
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.9520495220000003,
+            "on_seconds": 3.896180726,
+            "gain_pct": 1.4339374872211819,
+            "off_prefill_seconds": 0.305941384,
+            "on_prefill_seconds": 0.308811037
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.670390913,
+            "on_seconds": 0.665236986,
+            "gain_pct": 0.7747505187572168,
+            "off_prefill_seconds": 0.320529634,
+            "on_prefill_seconds": 0.321557698
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.402401606,
+            "on_seconds": 3.365338112,
+            "gain_pct": 1.1013304686337655,
+            "off_prefill_seconds": 0.472451622,
+            "on_prefill_seconds": 0.483107896
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.624316834,
+            "on_seconds": 5.547112029,
+            "gain_pct": 1.3918017987806452,
+            "off_prefill_seconds": 0.347056656,
+            "on_prefill_seconds": 0.345876223
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.902708594,
+            "on_seconds": 0.89325547,
+            "gain_pct": 1.0582777623516781,
+            "off_prefill_seconds": 0.55588846,
+            "on_prefill_seconds": 0.553312206
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.899077895,
+            "on_seconds": 0.88985336,
+            "gain_pct": 1.0366354069843542,
+            "off_prefill_seconds": 0.593560161,
+            "on_prefill_seconds": 0.586088818
+          }
+        ]
+      }
+    ],
+    "assistant": {
+      "off": [
+        27.86374896279864,
+        27.907382521517647,
+        27.805803934436693
+      ],
+      "on": [
+        28.08134751160731,
+        28.11550378464691,
+        28.122239646704543
+      ],
+      "median_gain_pct": 0.9035209949113332
+    },
+    "corpus": {
+      "off": [
+        21.242325584851933,
+        21.203209905577783,
+        21.25703629615133
+      ],
+      "on": [
+        21.487202037558983,
+        21.462752633536045,
+        21.473767178875967
+      ],
+      "median_gain_pct": 1.0895303958107005
+    },
+    "prefill": {
+      "off": [
+        1199.2966800746933,
+        1193.245630023264,
+        1190.4549894410698
+      ],
+      "on": [
+        1199.1423410185182,
+        1199.458559310971,
+        1189.6633743372245
+      ],
+      "median_gain_pct": 0.4941741119252274
+    }
+  },
+  "receipts": [
+    {
+      "name": "d4-mtp2-off-1",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-1.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-1.json"
+      ],
+      "start": 1793190430.608917,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793190548.81559,
+      "available_gib_min": 6.353660583496094,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "5353ec78a4385e88e70531adcf51c03adf54381f4f2e9e9cc518d3d8e646a7e8",
+      "raw_log_sha256": "9712403e63794feeba7290c5fc2f47eb5ba7cfb8da87543a1cc4870f372e7fad"
+    },
+    {
+      "name": "d4-mtp2-on-1",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-1.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-1.json"
+      ],
+      "start": 1793190549.4046156,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793190673.9074023,
+      "available_gib_min": 6.358364105224609,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "945f41a7d3ec52b6ade3db369a370c541b808b931036f8f6fae07e2b2c22e452",
+      "raw_log_sha256": "6337bbeb3c38188cdbc8b9959cebf44062e73827f40cba15625183ef10d63813"
+    },
+    {
+      "name": "d4-mtp2-off-2",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-2.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-2.json"
+      ],
+      "start": 1793190799.0170534,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793190923.177518,
+      "available_gib_min": 6.378253936767578,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "8fd14c8b41ab814dcd71651aa567683747616a722f8374b4822cc52aab9fc7c7",
+      "raw_log_sha256": "988bbf45090ffce12d3977af390737295e8a6d68b8396d3bd4aef35956ad607e"
+    },
+    {
+      "name": "d4-mtp2-on-2",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-2.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-2.json"
+      ],
+      "start": 1793190674.4949307,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793190798.3860714,
+      "available_gib_min": 6.377933502197266,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "c59ca465e8a1ff8b00024541507faae588e50e3b43b499461c8f3755dd7a2078",
+      "raw_log_sha256": "732c9f81831ffd9b9a116502ffc3e054faae4e7625970100b1fb30b76dc6b2b0"
+    },
+    {
+      "name": "d4-mtp2-off-3",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-3.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-off-3.json"
+      ],
+      "start": 1793190923.7744882,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793191042.61705,
+      "available_gib_min": 6.381050109863281,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "8cece55eafbb158f01814abdb0d380b7a03aa5756207e5ead2c0a0eab30d964a",
+      "raw_log_sha256": "0732c8e9607b0cb0f6eb17d13ebe1b0daa84223a162c5f44c860657407245a13"
+    },
+    {
+      "name": "d4-mtp2-on-3",
+      "kind": "mtp2",
+      "controls": {
+        "DS4_LING31_VERIFY_REGS": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-3.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/workload_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "mtp2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-mtp2-on-3.json"
+      ],
+      "start": 1793191043.2290797,
+      "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+      "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+      "binary_sha256": "bf1bb669dc2ec1059c7d5269376ba76252bd19a4960f5b95c6a2e20dcffa69e8",
+      "source_sha256": "ec1690b851e0a467a8565a6f601306ec3edd3d0cfeffdb9a0bfcac00bf42798b",
+      "status": 0,
+      "end": 1793191168.0559504,
+      "available_gib_min": 6.284088134765625,
+      "psi_full_avg10_max": 0.0,
+      "raw_result_sha256": "85e6400f4fb5d6544db3776da5ee39ff492d77f94ce27af282f275ff6eb97cb9",
+      "raw_log_sha256": "15e41f3f03d3bc957528a199c6bb62b504abd31267b71febc8264957c8588b06"
+    }
+  ],
+  "f32_proofs": [
+    {
+      "pair": 1,
+      "case": "corpus_8k",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 1,
+      "case": "corpus_8k",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 1,
+      "case": "held_en",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 1,
+      "case": "held_en",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 1,
+      "case": "held_zh",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 1,
+      "case": "held_zh",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 1,
+      "case": "held_code",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 1,
+      "case": "held_code",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 1,
+      "case": "held_math",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 1,
+      "case": "held_math",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 1,
+      "case": "held_json",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 1,
+      "case": "held_json",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_summary",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_summary",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_free",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_free",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_call",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_call",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_followup",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_followup",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    },
+    {
+      "pair": 2,
+      "case": "corpus_8k",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 2,
+      "case": "corpus_8k",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 2,
+      "case": "held_en",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 2,
+      "case": "held_en",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 2,
+      "case": "held_zh",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 2,
+      "case": "held_zh",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 2,
+      "case": "held_code",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 2,
+      "case": "held_code",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 2,
+      "case": "held_math",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 2,
+      "case": "held_math",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 2,
+      "case": "held_json",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 2,
+      "case": "held_json",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_summary",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_summary",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_free",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_free",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_call",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_call",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_followup",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_followup",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    },
+    {
+      "pair": 3,
+      "case": "corpus_8k",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 3,
+      "case": "corpus_8k",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 3,
+      "case": "held_en",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 3,
+      "case": "held_en",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 3,
+      "case": "held_zh",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 3,
+      "case": "held_zh",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 3,
+      "case": "held_code",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 3,
+      "case": "held_code",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 3,
+      "case": "held_math",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 3,
+      "case": "held_math",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 3,
+      "case": "held_json",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 3,
+      "case": "held_json",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_summary",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_summary",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_free",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_free",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_call",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_call",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_followup",
+      "field": "frontier_logits",
+      "floats": 157184,
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_followup",
+      "field": "end_logits",
+      "floats": 157184,
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    }
+  ],
+  "baseline_commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+  "unchanged_sass": [
+    {
+      "name": "void glmvq_decode_reduce<(glmvq_reduce)1, 4096u>(float*, float const*, float const*, glmvq_decode_item const*, float const*)",
+      "instructions": 80,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_decode_down<12u, 32u, (glmvq_decode_gain)1, 1280u, false, 4096u, 8u>(glmvq_decode_item const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 712,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_decode_gu<12u, 32u, (glmvq_decode_output)0, (glmvq_decode_gain)1, 1280u, (glmvq_clamp)1, false, 4096u>(glmvq_decode_item const*, uint4 const*, float const*, __nv_bfloat16*, float, float*, float*, uint4 const*)",
+      "instructions": 1784,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_bf16_dot<(glmvq_dot_math)0, 1u>(__nv_bfloat16 const*, float const*, float*, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 440,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_bf16_dot<(glmvq_dot_math)1, 1u>(__nv_bfloat16 const*, float const*, float*, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 368,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_q4_small<1u>(unsigned char const*, float const*, float*, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 352,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_q4_stream<1u, (glmvq_q4_load)1>(unsigned char const*, float const*, float*, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 464,
+      "assembly_equal": true
+    },
+    {
+      "name": "step37_attn_gate(float*, float const*, unsigned long)",
+      "instructions": 40,
+      "assembly_equal": true
+    },
+    {
+      "name": "void l31_residual_rms<float, float, float>(float*, float const*, __nv_bfloat16 const*, float*, unsigned int, float)",
+      "instructions": 1240,
+      "assembly_equal": true
+    },
+    {
+      "name": "void l31_store_latent<(ds4_l31_latent)2>(void*, __nv_bfloat16*, float const*, float const*, unsigned int, unsigned int)",
+      "instructions": 120,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_swiglu<float, (glmvq_clamp)1>(float const*, float const*, float*, unsigned long, float)",
+      "instructions": 136,
+      "assembly_equal": true
+    },
+    {
+      "name": "l31_decode_route(glmvq_decode_item*, int const*, unsigned int const*, glmvq_source const*)",
+      "instructions": 120,
+      "assembly_equal": true
+    },
+    {
+      "name": "void l31_fa_kernel<true>(float*, float*, float*, float const*, float const*, void const*, signed char const*, __nv_bfloat16 const*, unsigned int, unsigned int, float)",
+      "instructions": 2064,
+      "assembly_equal": true
+    },
+    {
+      "name": "l31_fa_combine(float*, float const*, float const*, unsigned int)",
+      "instructions": 400,
+      "assembly_equal": true
+    },
+    {
+      "name": "ling3vl_rms_norm(float*, float const*, float const*, unsigned int, unsigned int, unsigned int, float)",
+      "instructions": 96,
+      "assembly_equal": true
+    },
+    {
+      "name": "ling3vl_value_project_bf16(float*, float const*, __nv_bfloat16 const*, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 360,
+      "assembly_equal": true
+    },
+    {
+      "name": "ling3vl_qk_absorb_bf16(float*, float const*, __nv_bfloat16 const*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "instructions": 360,
+      "assembly_equal": true
+    },
+    {
+      "name": "ling3vl_mrope(float*, int const*, float const*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, float)",
+      "instructions": 432,
+      "assembly_equal": true
+    },
+    {
+      "name": "ling3vl_router(int*, float*, float const*, float const*, float)",
+      "instructions": 3288,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_q4m<1u, 16u, 16u, 2u, (glmvq_q4m_epilogue)2>(unsigned char const*, unsigned char const*, float const*, float*, unsigned int, unsigned int, unsigned int, float)",
+      "instructions": 920,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_q4_stream_many<1u>(glmvq_q4_many, float const*, unsigned int, unsigned int, unsigned int)",
+      "instructions": 496,
+      "assembly_equal": true
+    },
+    {
+      "name": "glmvq_rms_warp(float const*, __nv_bfloat16 const*, float const*, float*, unsigned int, unsigned int, float, glmvq_norm)",
+      "instructions": 1264,
+      "assembly_equal": true
+    },
+    {
+      "name": "glmvq_rms(float const*, __nv_bfloat16 const*, float const*, float*, unsigned int, float, glmvq_norm)",
+      "instructions": 2312,
+      "assembly_equal": true
+    },
+    {
+      "name": "glmvq_copy(unsigned int*, unsigned int const*, unsigned long)",
+      "instructions": 32,
+      "assembly_equal": true
+    },
+    {
+      "name": "glmvq_round_rows(float*, unsigned long)",
+      "instructions": 32,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)0, 2560u, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 2184,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)0, 2560u, (glmvq_clamp)1, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 4056,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)1, 2560u, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1848,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)1, 2560u, (glmvq_clamp)1, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3368,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<12u, 32u, (glmvq_decode_gain)0, 2560u, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 2112,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<12u, 32u, (glmvq_decode_gain)0, 2560u, (glmvq_clamp)1, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3856,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<12u, 32u, (glmvq_decode_gain)1, 2560u, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1768,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<12u, 32u, (glmvq_decode_gain)1, 2560u, (glmvq_clamp)1, false, 5120u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3168,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)0, 1280u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1608,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)0, 1280u, (glmvq_clamp)1, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3984,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)1, 1280u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1392,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)1, 1280u, (glmvq_clamp)1, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3296,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<12u, 32u, (glmvq_decode_gain)0, 1280u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1560,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<12u, 32u, (glmvq_decode_gain)0, 1280u, (glmvq_clamp)1, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3800,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<12u, 32u, (glmvq_decode_gain)1, 1280u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1360,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<12u, 32u, (glmvq_decode_gain)1, 1280u, (glmvq_clamp)1, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3120,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)1, 2048u, true, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 2192,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)1, 2048u, (glmvq_clamp)0, true, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 4040,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)0, 2048u, true, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 2536,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)0, 2048u, (glmvq_clamp)0, true, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 4704,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)1, 2048u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 1800,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)1, 2048u, (glmvq_clamp)0, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3304,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_down<13u, 32u, (glmvq_decode_gain)0, 2048u, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, __nv_bfloat16 const*, float*, uint4 const*)",
+      "instructions": 2152,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_verify_gu<13u, 32u, (glmvq_decode_gain)0, 2048u, (glmvq_clamp)0, false, 4096u>(glmvq_verify_item const*, glmvq_verify_plan const*, uint4 const*, float const*, unsigned int, __nv_bfloat16*, float, uint4 const*)",
+      "instructions": 3984,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<false, (glmvq_kda_reads)0, (glmvq_kda_conv_mode)1>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 880,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<true, (glmvq_kda_reads)0, (glmvq_kda_conv_mode)1>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 2648,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<true, (glmvq_kda_reads)1, (glmvq_kda_conv_mode)1>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 3248,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<false, (glmvq_kda_reads)0, (glmvq_kda_conv_mode)0>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 880,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<true, (glmvq_kda_reads)0, (glmvq_kda_conv_mode)0>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 2656,
+      "assembly_equal": true
+    },
+    {
+      "name": "void glmvq_kda<true, (glmvq_kda_reads)1, (glmvq_kda_conv_mode)0>(float*, float*, float*, float*, float*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, float const*, unsigned int, unsigned int, float, glmvq_kda_snap)",
+      "instructions": 3256,
+      "assembly_equal": true
+    }
+  ],
+  "fixture": {
+    "command": "tests/test_glm_vq_verify --vq",
+    "status": 0,
+    "log": "vq union bits=13 ffn=2048 gain-weight rows=2 experts=11 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-weight rows=2 experts=11 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-weight rows=3 experts=12 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-weight rows=3 experts=12 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-weight rows=4 experts=11 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-weight rows=4 experts=11 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=2 experts=12 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=2 experts=12 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=3 experts=12 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=3 experts=12 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=4 experts=12 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=2048 gain-dot rows=4 experts=12 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=2 experts=15 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=2 experts=15 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=3 experts=21 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=3 experts=21 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=4 experts=26 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-weight rows=4 experts=26 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=2 experts=15 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=2 experts=15 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=3 experts=21 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=3 experts=21 index=1: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=4 experts=26 index=0: output, intermediates, canaries ok\nvq union bits=12 ffn=1280 gain-dot rows=4 experts=26 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=2 experts=15 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=2 experts=15 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=3 experts=21 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=3 experts=21 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=4 experts=26 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-weight rows=4 experts=26 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=2 experts=15 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=2 experts=15 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=3 experts=21 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=3 experts=21 index=1: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=4 experts=26 index=0: output, intermediates, canaries ok\nvq union bits=13 ffn=1280 gain-dot rows=4 experts=26 index=1: output, intermediates, canaries ok\n"
+  },
+  "isolated": {
+    "samples": [
+      {
+        "flag": "off",
+        "pair": 1,
+        "samples_us": [
+          287.856934,
+          286.776459,
+          287.985901,
+          286.719971,
+          286.173157
+        ],
+        "median_us": 286.776459,
+        "hash": "cef719f1d24e04bc"
+      },
+      {
+        "flag": "on",
+        "pair": 1,
+        "samples_us": [
+          271.199524,
+          284.272003,
+          283.673401,
+          283.684235,
+          273.282379
+        ],
+        "median_us": 283.673401,
+        "hash": "cef719f1d24e04bc"
+      },
+      {
+        "flag": "on",
+        "pair": 2,
+        "samples_us": [
+          283.038574,
+          283.576935,
+          283.233429,
+          282.301178,
+          273.883301
+        ],
+        "median_us": 283.038574,
+        "hash": "cef719f1d24e04bc"
+      },
+      {
+        "flag": "off",
+        "pair": 2,
+        "samples_us": [
+          287.218353,
+          286.723755,
+          286.606598,
+          286.940704,
+          277.04895
+        ],
+        "median_us": 286.723755,
+        "hash": "cef719f1d24e04bc"
+      },
+      {
+        "flag": "off",
+        "pair": 3,
+        "samples_us": [
+          287.30304,
+          287.602814,
+          287.010376,
+          287.75058,
+          275.615021
+        ],
+        "median_us": 287.30304,
+        "hash": "cef719f1d24e04bc"
+      },
+      {
+        "flag": "on",
+        "pair": 3,
+        "samples_us": [
+          283.069641,
+          283.530365,
+          283.801422,
+          282.818359,
+          284.30542
+        ],
+        "median_us": 283.530365,
+        "hash": "cef719f1d24e04bc"
+      }
+    ],
+    "ncu": {
+      "gu": {
+        "verify-replay-base": {
+          "gpu__time_duration.sum": {
+            "value": 169.376,
+            "unit": "us"
+          },
+          "launch__registers_per_thread": {
+            "value": 60.0,
+            "unit": "register/thread"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 45918976.0,
+            "unit": "inst"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 25600.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+            "value": 573440.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 1171456.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 30720.0,
+            "unit": "sector"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 58.368,
+            "unit": "Kbyte/block"
+          }
+        },
+        "verify-static": {
+          "gpu__time_duration.sum": {
+            "value": 166.272,
+            "unit": "us"
+          },
+          "launch__registers_per_thread": {
+            "value": 64.0,
+            "unit": "register/thread"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 45682176.0,
+            "unit": "inst"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 0.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+            "value": 0.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 1171456.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 30720.0,
+            "unit": "sector"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 58.368,
+            "unit": "Kbyte/block"
+          }
+        }
+      },
+      "down": {
+        "verify-replay-base": {
+          "gpu__time_duration.sum": {
+            "value": 147.136,
+            "unit": "us"
+          },
+          "launch__registers_per_thread": {
+            "value": 57.0,
+            "unit": "register/thread"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 27838592.0,
+            "unit": "inst"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 57344.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+            "value": 917504.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 1020544.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 98304.0,
+            "unit": "sector"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 54.272,
+            "unit": "Kbyte/block"
+          }
+        },
+        "verify-static": {
+          "gpu__time_duration.sum": {
+            "value": 133.76,
+            "unit": "us"
+          },
+          "launch__registers_per_thread": {
+            "value": 56.0,
+            "unit": "register/thread"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 27416192.0,
+            "unit": "inst"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 0.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+            "value": 0.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 1020544.0,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 98304.0,
+            "unit": "sector"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 54.272,
+            "unit": "Kbyte/block"
+          }
+        }
+      }
+    },
+    "route_capture_sha256": "fa03c202c7ea5261dc095401925dfeebf96b9748132546a0def0a8117199437c",
+    "routes": {
+      "capture_sha256": "fa03c202c7ea5261dc095401925dfeebf96b9748132546a0def0a8117199437c",
+      "records": [
+        {
+          "ordinal": 0,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            169,
+            104,
+            430,
+            166,
+            170,
+            223,
+            176,
+            255,
+            255,
+            257,
+            273,
+            347,
+            281,
+            297,
+            223,
+            430,
+            273,
+            52,
+            257,
+            223,
+            289,
+            158,
+            255,
+            294
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "1": 12,
+            "2": 3,
+            "3": 2
+          }
+        },
+        {
+          "ordinal": 1,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            188,
+            92,
+            189,
+            20,
+            380,
+            35,
+            174,
+            21,
+            380,
+            189,
+            451,
+            398,
+            420,
+            386,
+            391,
+            164,
+            423,
+            321,
+            413,
+            325,
+            279,
+            316,
+            303,
+            380
+          ],
+          "unique": 21,
+          "count_histogram": {
+            "1": 19,
+            "2": 1,
+            "3": 1
+          }
+        },
+        {
+          "ordinal": 2,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            237,
+            367,
+            154,
+            251,
+            399,
+            177,
+            359,
+            416,
+            237,
+            219,
+            154,
+            177,
+            197,
+            58,
+            16,
+            13,
+            434,
+            237,
+            58,
+            64,
+            5,
+            427,
+            16,
+            399
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "3": 1,
+            "1": 11,
+            "2": 5
+          }
+        },
+        {
+          "ordinal": 3,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            105,
+            221,
+            244,
+            379,
+            264,
+            336,
+            103,
+            255,
+            221,
+            244,
+            197,
+            235,
+            55,
+            264,
+            214,
+            116,
+            235,
+            255,
+            221,
+            244,
+            55,
+            218,
+            56,
+            193
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "1": 10,
+            "3": 2,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 4,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            229,
+            361,
+            364,
+            178,
+            351,
+            213,
+            510,
+            145,
+            434,
+            213,
+            361,
+            113,
+            223,
+            364,
+            125,
+            338,
+            351,
+            364,
+            184,
+            479,
+            128,
+            450,
+            28,
+            476
+          ],
+          "unique": 19,
+          "count_histogram": {
+            "1": 15,
+            "2": 3,
+            "3": 1
+          }
+        },
+        {
+          "ordinal": 5,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            413,
+            458,
+            355,
+            456,
+            404,
+            329,
+            201,
+            420,
+            458,
+            201,
+            456,
+            420,
+            246,
+            20,
+            414,
+            238,
+            458,
+            385,
+            135,
+            456,
+            420,
+            375,
+            326,
+            475
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "1": 13,
+            "3": 3,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 6,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            198,
+            451,
+            458,
+            160,
+            498,
+            467,
+            187,
+            13,
+            187,
+            426,
+            507,
+            247,
+            479,
+            467,
+            160,
+            484,
+            467,
+            247,
+            297,
+            214,
+            187,
+            186,
+            164,
+            160
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "1": 13,
+            "3": 3,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 7,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            167,
+            134,
+            320,
+            442,
+            263,
+            418,
+            144,
+            129,
+            167,
+            418,
+            396,
+            165,
+            371,
+            383,
+            113,
+            90,
+            167,
+            34,
+            461,
+            470,
+            113,
+            90,
+            149,
+            165
+          ],
+          "unique": 18,
+          "count_histogram": {
+            "3": 1,
+            "1": 13,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 8,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            127,
+            392,
+            232,
+            454,
+            204,
+            252,
+            387,
+            390,
+            127,
+            419,
+            21,
+            253,
+            232,
+            208,
+            405,
+            193,
+            343,
+            127,
+            156,
+            72,
+            401,
+            437,
+            419,
+            134
+          ],
+          "unique": 20,
+          "count_histogram": {
+            "3": 1,
+            "1": 17,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 9,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            256,
+            511,
+            175,
+            449,
+            148,
+            9,
+            19,
+            490,
+            511,
+            9,
+            449,
+            238,
+            301,
+            26,
+            256,
+            230,
+            19,
+            511,
+            9,
+            449,
+            301,
+            305,
+            277,
+            139
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "2": 3,
+            "3": 3,
+            "1": 9
+          }
+        },
+        {
+          "ordinal": 10,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            10,
+            317,
+            33,
+            454,
+            174,
+            496,
+            129,
+            458,
+            10,
+            245,
+            454,
+            33,
+            126,
+            113,
+            72,
+            465,
+            10,
+            245,
+            126,
+            33,
+            454,
+            497,
+            72,
+            465
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 3,
+            "1": 7,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 11,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            65,
+            409,
+            428,
+            238,
+            184,
+            190,
+            221,
+            180,
+            409,
+            65,
+            119,
+            310,
+            190,
+            169,
+            117,
+            153,
+            65,
+            499,
+            409,
+            119,
+            471,
+            310,
+            115,
+            66
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "3": 2,
+            "1": 12,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 12,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            132,
+            253,
+            231,
+            224,
+            169,
+            350,
+            240,
+            396,
+            132,
+            253,
+            231,
+            177,
+            396,
+            162,
+            387,
+            173,
+            231,
+            177,
+            1,
+            253,
+            132,
+            396,
+            240,
+            162
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 13,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            507,
+            486,
+            481,
+            225,
+            236,
+            402,
+            93,
+            240,
+            507,
+            486,
+            236,
+            343,
+            402,
+            439,
+            333,
+            426,
+            507,
+            241,
+            486,
+            236,
+            333,
+            93,
+            204,
+            324
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "3": 3,
+            "1": 9,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 14,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            436,
+            496,
+            76,
+            256,
+            82,
+            455,
+            121,
+            89,
+            436,
+            496,
+            505,
+            422,
+            52,
+            455,
+            297,
+            441,
+            496,
+            436,
+            276,
+            52,
+            441,
+            17,
+            62,
+            297
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 2,
+            "1": 10,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 15,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            3,
+            355,
+            76,
+            490,
+            24,
+            473,
+            83,
+            488,
+            76,
+            416,
+            355,
+            351,
+            490,
+            437,
+            488,
+            415,
+            251,
+            437,
+            268,
+            296,
+            490,
+            415,
+            427,
+            315
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "1": 11,
+            "2": 5,
+            "3": 1
+          }
+        },
+        {
+          "ordinal": 16,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            105,
+            347,
+            348,
+            224,
+            2,
+            254,
+            97,
+            196,
+            347,
+            177,
+            2,
+            254,
+            154,
+            224,
+            205,
+            371,
+            371,
+            347,
+            254,
+            97,
+            224,
+            177,
+            205,
+            104
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "1": 5,
+            "3": 3,
+            "2": 5
+          }
+        },
+        {
+          "ordinal": 17,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            424,
+            494,
+            0,
+            415,
+            292,
+            447,
+            482,
+            488,
+            415,
+            494,
+            321,
+            447,
+            359,
+            476,
+            366,
+            27,
+            494,
+            476,
+            321,
+            344,
+            482,
+            27,
+            447,
+            415
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "1": 7,
+            "3": 3,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 18,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            29,
+            189,
+            159,
+            293,
+            349,
+            269,
+            303,
+            183,
+            140,
+            159,
+            189,
+            295,
+            477,
+            328,
+            303,
+            293,
+            140,
+            328,
+            159,
+            189,
+            75,
+            303,
+            293,
+            87
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "1": 8,
+            "3": 4,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 19,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            37,
+            460,
+            191,
+            217,
+            506,
+            137,
+            223,
+            12,
+            166,
+            191,
+            200,
+            460,
+            506,
+            160,
+            139,
+            131,
+            148,
+            460,
+            506,
+            502,
+            37,
+            213,
+            200,
+            191
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "2": 2,
+            "3": 3,
+            "1": 11
+          }
+        },
+        {
+          "ordinal": 20,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            16,
+            447,
+            221,
+            493,
+            10,
+            395,
+            415,
+            9,
+            9,
+            25,
+            318,
+            295,
+            395,
+            358,
+            441,
+            299,
+            25,
+            9,
+            395,
+            231,
+            441,
+            33,
+            318,
+            295
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "1": 10,
+            "3": 2,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 21,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            388,
+            69,
+            411,
+            421,
+            109,
+            495,
+            169,
+            88,
+            69,
+            421,
+            109,
+            495,
+            364,
+            86,
+            388,
+            362,
+            69,
+            421,
+            86,
+            109,
+            364,
+            242,
+            388,
+            411
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "3": 4,
+            "2": 4,
+            "1": 4
+          }
+        },
+        {
+          "ordinal": 22,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            113,
+            107,
+            441,
+            187,
+            242,
+            440,
+            84,
+            114,
+            492,
+            223,
+            113,
+            218,
+            147,
+            114,
+            107,
+            448,
+            113,
+            223,
+            345,
+            107,
+            114,
+            492,
+            218,
+            448
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 3,
+            "1": 7,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 23,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            503,
+            123,
+            7,
+            94,
+            423,
+            470,
+            437,
+            422,
+            390,
+            109,
+            503,
+            437,
+            220,
+            240,
+            418,
+            94,
+            503,
+            390,
+            7,
+            220,
+            418,
+            437,
+            506,
+            423
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 2,
+            "1": 6,
+            "2": 6
+          }
+        },
+        {
+          "ordinal": 24,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            39,
+            356,
+            36,
+            478,
+            84,
+            60,
+            50,
+            113,
+            152,
+            356,
+            60,
+            140,
+            392,
+            160,
+            179,
+            181,
+            356,
+            152,
+            469,
+            160,
+            140,
+            354,
+            478,
+            113
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "1": 9,
+            "3": 1,
+            "2": 6
+          }
+        },
+        {
+          "ordinal": 25,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            7,
+            330,
+            483,
+            101,
+            329,
+            25,
+            36,
+            451,
+            330,
+            282,
+            312,
+            483,
+            171,
+            142,
+            360,
+            344,
+            330,
+            282,
+            312,
+            483,
+            7,
+            5,
+            344,
+            301
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "2": 4,
+            "3": 2,
+            "1": 10
+          }
+        },
+        {
+          "ordinal": 26,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            214,
+            468,
+            286,
+            53,
+            41,
+            196,
+            264,
+            287,
+            287,
+            53,
+            214,
+            309,
+            264,
+            86,
+            0,
+            286,
+            287,
+            53,
+            214,
+            309,
+            264,
+            286,
+            468,
+            196
+          ],
+          "unique": 11,
+          "count_histogram": {
+            "3": 5,
+            "2": 3,
+            "1": 3
+          }
+        },
+        {
+          "ordinal": 27,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            172,
+            270,
+            297,
+            181,
+            294,
+            151,
+            476,
+            161,
+            310,
+            36,
+            297,
+            270,
+            332,
+            294,
+            346,
+            250,
+            294,
+            270,
+            172,
+            332,
+            310,
+            346,
+            36,
+            297
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "2": 5,
+            "3": 3,
+            "1": 5
+          }
+        },
+        {
+          "ordinal": 28,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            344,
+            390,
+            36,
+            220,
+            428,
+            360,
+            328,
+            426,
+            344,
+            36,
+            428,
+            248,
+            236,
+            207,
+            220,
+            390,
+            344,
+            248,
+            160,
+            220,
+            207,
+            328,
+            390,
+            420
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 3,
+            "2": 5,
+            "1": 5
+          }
+        },
+        {
+          "ordinal": 29,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            49,
+            45,
+            126,
+            219,
+            378,
+            105,
+            13,
+            30,
+            49,
+            362,
+            501,
+            45,
+            219,
+            30,
+            325,
+            511,
+            49,
+            362,
+            45,
+            105,
+            182,
+            325,
+            126,
+            30
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 3,
+            "2": 5,
+            "1": 5
+          }
+        },
+        {
+          "ordinal": 30,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            30,
+            382,
+            263,
+            364,
+            19,
+            65,
+            359,
+            377,
+            30,
+            382,
+            45,
+            317,
+            346,
+            19,
+            230,
+            369,
+            382,
+            30,
+            364,
+            346,
+            369,
+            263,
+            19,
+            25
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 3,
+            "2": 4,
+            "1": 7
+          }
+        },
+        {
+          "ordinal": 31,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            47,
+            409,
+            56,
+            332,
+            243,
+            252,
+            335,
+            229,
+            208,
+            47,
+            56,
+            332,
+            235,
+            417,
+            236,
+            418,
+            47,
+            56,
+            332,
+            208,
+            417,
+            409,
+            335,
+            418
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 3,
+            "2": 5,
+            "1": 5
+          }
+        },
+        {
+          "ordinal": 32,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            342,
+            418,
+            150,
+            446,
+            402,
+            364,
+            72,
+            393,
+            417,
+            3,
+            446,
+            418,
+            402,
+            232,
+            427,
+            342,
+            417,
+            342,
+            418,
+            402,
+            3,
+            446,
+            254,
+            427
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 33,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            226,
+            212,
+            312,
+            258,
+            351,
+            54,
+            324,
+            253,
+            212,
+            226,
+            368,
+            204,
+            312,
+            402,
+            324,
+            258,
+            226,
+            212,
+            312,
+            253,
+            402,
+            258,
+            260,
+            210
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 34,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            58,
+            28,
+            469,
+            319,
+            322,
+            275,
+            308,
+            362,
+            28,
+            469,
+            22,
+            483,
+            362,
+            58,
+            51,
+            39,
+            469,
+            58,
+            28,
+            322,
+            319,
+            362,
+            9,
+            22
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "2": 3,
+            "1": 6
+          }
+        },
+        {
+          "ordinal": 35,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            6,
+            479,
+            192,
+            473,
+            47,
+            495,
+            491,
+            187,
+            479,
+            453,
+            258,
+            175,
+            58,
+            491,
+            305,
+            187,
+            479,
+            491,
+            473,
+            187,
+            495,
+            305,
+            469,
+            445
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "1": 9,
+            "3": 3,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 36,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            342,
+            458,
+            87,
+            325,
+            339,
+            367,
+            268,
+            371,
+            367,
+            342,
+            327,
+            87,
+            439,
+            395,
+            339,
+            92,
+            342,
+            367,
+            87,
+            412,
+            339,
+            371,
+            123,
+            101
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "3": 4,
+            "1": 10,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 37,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            167,
+            42,
+            455,
+            239,
+            128,
+            459,
+            472,
+            1,
+            167,
+            42,
+            455,
+            1,
+            10,
+            80,
+            472,
+            71,
+            167,
+            42,
+            455,
+            472,
+            1,
+            80,
+            71,
+            72
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "3": 5,
+            "1": 5,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 38,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            432,
+            459,
+            246,
+            270,
+            281,
+            289,
+            255,
+            391,
+            432,
+            289,
+            377,
+            281,
+            52,
+            11,
+            361,
+            360,
+            432,
+            361,
+            13,
+            289,
+            62,
+            270,
+            302,
+            51
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "3": 2,
+            "1": 12,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 39,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            241,
+            378,
+            325,
+            194,
+            263,
+            298,
+            66,
+            76,
+            241,
+            194,
+            378,
+            155,
+            328,
+            204,
+            399,
+            383,
+            241,
+            194,
+            41,
+            378,
+            399,
+            200,
+            59,
+            328
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 3,
+            "1": 11,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 40,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            189,
+            141,
+            307,
+            215,
+            109,
+            183,
+            76,
+            229,
+            109,
+            356,
+            141,
+            307,
+            382,
+            129,
+            78,
+            346,
+            356,
+            129,
+            307,
+            215,
+            186,
+            229,
+            238,
+            333
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "1": 9,
+            "2": 6,
+            "3": 1
+          }
+        },
+        {
+          "ordinal": 41,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            238,
+            244,
+            207,
+            187,
+            199,
+            37,
+            3,
+            424,
+            207,
+            244,
+            3,
+            8,
+            202,
+            44,
+            171,
+            238,
+            244,
+            202,
+            207,
+            238,
+            468,
+            32,
+            187,
+            8
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 3,
+            "2": 4,
+            "1": 7
+          }
+        },
+        {
+          "ordinal": 42,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            37,
+            127,
+            8,
+            221,
+            400,
+            227,
+            31,
+            121,
+            221,
+            5,
+            37,
+            127,
+            104,
+            121,
+            110,
+            8,
+            5,
+            127,
+            151,
+            221,
+            104,
+            41,
+            212,
+            110
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "2": 6,
+            "3": 2,
+            "1": 6
+          }
+        },
+        {
+          "ordinal": 43,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            401,
+            252,
+            322,
+            251,
+            509,
+            439,
+            335,
+            228,
+            252,
+            401,
+            268,
+            370,
+            251,
+            323,
+            198,
+            322,
+            268,
+            309,
+            252,
+            251,
+            509,
+            278,
+            370,
+            335
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "2": 6,
+            "3": 2,
+            "1": 6
+          }
+        },
+        {
+          "ordinal": 44,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            46,
+            298,
+            73,
+            366,
+            364,
+            113,
+            14,
+            120,
+            298,
+            286,
+            366,
+            364,
+            46,
+            374,
+            8,
+            113,
+            298,
+            8,
+            364,
+            366,
+            407,
+            404,
+            374,
+            46
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 45,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            160,
+            470,
+            496,
+            349,
+            231,
+            236,
+            149,
+            198,
+            160,
+            349,
+            413,
+            211,
+            236,
+            228,
+            223,
+            345,
+            160,
+            211,
+            198,
+            496,
+            231,
+            236,
+            210,
+            470
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 2,
+            "2": 6,
+            "1": 6
+          }
+        },
+        {
+          "ordinal": 46,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            217,
+            207,
+            195,
+            360,
+            414,
+            251,
+            248,
+            222,
+            368,
+            217,
+            251,
+            414,
+            309,
+            197,
+            207,
+            204,
+            217,
+            414,
+            204,
+            134,
+            251,
+            191,
+            487,
+            470
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 3,
+            "2": 2,
+            "1": 11
+          }
+        },
+        {
+          "ordinal": 47,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            169,
+            491,
+            231,
+            164,
+            148,
+            270,
+            278,
+            174,
+            370,
+            169,
+            362,
+            491,
+            164,
+            270,
+            259,
+            316,
+            413,
+            164,
+            169,
+            270,
+            207,
+            393,
+            174,
+            246
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 3,
+            "2": 2,
+            "1": 11
+          }
+        },
+        {
+          "ordinal": 48,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            59,
+            436,
+            455,
+            90,
+            25,
+            409,
+            480,
+            395,
+            59,
+            25,
+            90,
+            242,
+            210,
+            409,
+            419,
+            436,
+            455,
+            25,
+            190,
+            59,
+            179,
+            409,
+            9,
+            479
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "3": 3,
+            "2": 3,
+            "1": 9
+          }
+        },
+        {
+          "ordinal": 49,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            86,
+            64,
+            258,
+            351,
+            114,
+            405,
+            116,
+            85,
+            86,
+            116,
+            405,
+            141,
+            64,
+            201,
+            436,
+            252,
+            86,
+            299,
+            405,
+            64,
+            114,
+            116,
+            85,
+            87
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 4,
+            "1": 8,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 50,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            198,
+            400,
+            33,
+            235,
+            213,
+            393,
+            424,
+            165,
+            400,
+            393,
+            320,
+            424,
+            198,
+            279,
+            312,
+            314,
+            400,
+            424,
+            198,
+            162,
+            393,
+            279,
+            312,
+            165
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 51,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            419,
+            254,
+            247,
+            298,
+            79,
+            192,
+            408,
+            391,
+            286,
+            79,
+            298,
+            93,
+            396,
+            247,
+            419,
+            408,
+            79,
+            272,
+            298,
+            247,
+            408,
+            93,
+            192,
+            396
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "2": 4,
+            "1": 4,
+            "3": 4
+          }
+        },
+        {
+          "ordinal": 52,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            398,
+            491,
+            266,
+            484,
+            454,
+            430,
+            273,
+            507,
+            398,
+            266,
+            465,
+            484,
+            466,
+            286,
+            434,
+            167,
+            266,
+            465,
+            398,
+            286,
+            484,
+            491,
+            270,
+            466
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "3": 3,
+            "2": 4,
+            "1": 7
+          }
+        },
+        {
+          "ordinal": 53,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            409,
+            133,
+            271,
+            241,
+            252,
+            310,
+            305,
+            212,
+            409,
+            15,
+            212,
+            250,
+            310,
+            271,
+            412,
+            45,
+            212,
+            124,
+            271,
+            409,
+            440,
+            412,
+            310,
+            314
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "3": 4,
+            "1": 10,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 54,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            41,
+            235,
+            76,
+            73,
+            57,
+            117,
+            39,
+            105,
+            41,
+            235,
+            57,
+            241,
+            42,
+            353,
+            73,
+            117,
+            41,
+            105,
+            235,
+            353,
+            117,
+            339,
+            73,
+            39
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "3": 4,
+            "1": 4,
+            "2": 4
+          }
+        },
+        {
+          "ordinal": 55,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            338,
+            392,
+            345,
+            337,
+            480,
+            113,
+            81,
+            348,
+            392,
+            337,
+            170,
+            113,
+            345,
+            338,
+            436,
+            435,
+            170,
+            113,
+            392,
+            337,
+            436,
+            330,
+            345,
+            348
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "2": 4,
+            "3": 4,
+            "1": 4
+          }
+        },
+        {
+          "ordinal": 56,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            30,
+            124,
+            252,
+            221,
+            443,
+            98,
+            44,
+            3,
+            262,
+            443,
+            252,
+            30,
+            3,
+            39,
+            44,
+            221,
+            443,
+            30,
+            3,
+            44,
+            39,
+            252,
+            12,
+            153
+          ],
+          "unique": 12,
+          "count_histogram": {
+            "3": 5,
+            "1": 5,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 57,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            339,
+            41,
+            287,
+            3,
+            272,
+            489,
+            303,
+            354,
+            3,
+            339,
+            41,
+            287,
+            261,
+            354,
+            58,
+            436,
+            3,
+            354,
+            436,
+            41,
+            287,
+            339,
+            364,
+            409
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 5,
+            "1": 7,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 58,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            371,
+            358,
+            168,
+            203,
+            159,
+            301,
+            322,
+            284,
+            216,
+            203,
+            469,
+            371,
+            358,
+            247,
+            256,
+            291,
+            371,
+            358,
+            168,
+            203,
+            32,
+            11,
+            141,
+            247
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 3,
+            "2": 2,
+            "1": 11
+          }
+        },
+        {
+          "ordinal": 59,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            58,
+            42,
+            6,
+            19,
+            430,
+            303,
+            13,
+            454,
+            58,
+            430,
+            505,
+            6,
+            228,
+            19,
+            42,
+            13,
+            430,
+            58,
+            428,
+            42,
+            19,
+            425,
+            13,
+            393
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 5,
+            "2": 1,
+            "1": 7
+          }
+        },
+        {
+          "ordinal": 60,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": "infinity",
+          "selected": [
+            228,
+            44,
+            40,
+            220,
+            395,
+            416,
+            19,
+            305,
+            262,
+            40,
+            441,
+            220,
+            228,
+            44,
+            198,
+            30,
+            40,
+            228,
+            441,
+            220,
+            99,
+            44,
+            19,
+            30
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 4,
+            "1": 6,
+            "2": 3
+          }
+        },
+        {
+          "ordinal": 61,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            250,
+            499,
+            128,
+            406,
+            453,
+            395,
+            415,
+            504,
+            499,
+            406,
+            250,
+            9,
+            57,
+            501,
+            452,
+            53,
+            250,
+            406,
+            351,
+            499,
+            357,
+            350,
+            491,
+            498
+          ],
+          "unique": 18,
+          "count_histogram": {
+            "3": 3,
+            "1": 15
+          }
+        },
+        {
+          "ordinal": 62,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            141,
+            94,
+            71,
+            47,
+            191,
+            435,
+            125,
+            61,
+            141,
+            71,
+            94,
+            435,
+            47,
+            397,
+            418,
+            399,
+            141,
+            94,
+            71,
+            435,
+            47,
+            168,
+            24,
+            125
+          ],
+          "unique": 13,
+          "count_histogram": {
+            "3": 5,
+            "1": 7,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 63,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            360,
+            304,
+            348,
+            496,
+            116,
+            465,
+            373,
+            459,
+            484,
+            304,
+            496,
+            459,
+            87,
+            50,
+            465,
+            104,
+            459,
+            496,
+            304,
+            348,
+            484,
+            465,
+            395,
+            401
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "1": 8,
+            "3": 4,
+            "2": 2
+          }
+        },
+        {
+          "ordinal": 64,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            44,
+            28,
+            244,
+            153,
+            32,
+            247,
+            369,
+            171,
+            28,
+            44,
+            305,
+            32,
+            244,
+            273,
+            326,
+            37,
+            28,
+            44,
+            244,
+            32,
+            98,
+            60,
+            25,
+            412
+          ],
+          "unique": 16,
+          "count_histogram": {
+            "3": 4,
+            "1": 12
+          }
+        },
+        {
+          "ordinal": 65,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            425,
+            396,
+            31,
+            353,
+            88,
+            375,
+            354,
+            413,
+            156,
+            425,
+            88,
+            31,
+            447,
+            396,
+            132,
+            56,
+            31,
+            425,
+            396,
+            137,
+            283,
+            311,
+            182,
+            434
+          ],
+          "unique": 17,
+          "count_histogram": {
+            "3": 3,
+            "1": 13,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 66,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            504,
+            489,
+            229,
+            241,
+            358,
+            320,
+            386,
+            488,
+            504,
+            485,
+            489,
+            315,
+            386,
+            488,
+            275,
+            203,
+            489,
+            386,
+            504,
+            488,
+            320,
+            392,
+            89,
+            413
+          ],
+          "unique": 15,
+          "count_histogram": {
+            "3": 4,
+            "1": 10,
+            "2": 1
+          }
+        },
+        {
+          "ordinal": 67,
+          "bits": 12,
+          "rows": 3,
+          "blocks": 48,
+          "clamp": 10.0,
+          "selected": [
+            55,
+            207,
+            508,
+            509,
+            473,
+            3,
+            30,
+            445,
+            509,
+            350,
+            359,
+            207,
+            146,
+            325,
+            508,
+            484,
+            55,
+            207,
+            509,
+            508,
+            350,
+            473,
+            30,
+            20
+          ],
+          "unique": 14,
+          "count_histogram": {
+            "2": 4,
+            "3": 3,
+            "1": 7
+          }
+        }
+      ],
+      "count_histogram": {
+        "1": 581,
+        "2": 215,
+        "3": 207
+      },
+      "union_range": [
+        11,
+        21
+      ],
+      "union_median": 14.0,
+      "median_record": 10
+    },
+    "replay_source_sha256": "a53e527bc54b9708ffd195773b7adea6f9f71190c5d2fee80e54bfd032582085",
+    "prototype_source_sha256": "142f0dd0dbe1114c785c807e483af52ef12cecea5424e7c06fca732730e62c0c",
+    "weight_pool_bytes": 754974720,
+    "weight_floor": {
+      "captured_calls": 68,
+      "mean_unique_experts": 14.75,
+      "bandwidth_gbs": 235,
+      "packed_bytes_per_expert_matrix": 983040,
+      "gu": {
+        "weight_bytes": 28999680.0,
+        "weight_floor_us": 123.40289361702128,
+        "model_first68_us": 158.357735
+      },
+      "down": {
+        "weight_bytes": 14499840.0,
+        "weight_floor_us": 61.70144680851064,
+        "model_first68_us": 112.882265
+      },
+      "scope": "Weights-only streaming floor for the first68 captured routes; excludes books/gains/activations/output, assumes weights cross DRAM once. Not measured physical traffic."
+    },
+    "limitations": [
+      "First 68 verify calls only; exact selected routes, inputs, route weights and clamps.",
+      "Eight rotating synthetic 32-expert weight pools exceed L2; model weight values and physical layout differ.",
+      "Replay includes an input D2D warm copy and final reduction but no routing kernel.",
+      "Isolated hashes cover the last complete case; the focused fixture covers all row/count/format combinations.",
+      "NCU flushes caches and uses no clock override; requested L1 sectors are not physical DRAM traffic."
+    ]
+  },
+  "profiles": {
+    "d3-on-profile": {
+      "receipt": {
+        "name": "d3-on-profile",
+        "command": [
+          "python3",
+          "tools/host_memory_guard.py",
+          "--max-gib",
+          "128",
+          "--high-gib",
+          "128",
+          "--reserve-gib",
+          "2",
+          "--trip-gib",
+          "2",
+          "--psi-full-limit",
+          "40",
+          "--timeout",
+          "900",
+          "--log",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d3-on-profile.memory.jsonl",
+          "--",
+          "taskset",
+          "-c",
+          "5-9,15-19",
+          "/usr/local/cuda/bin/nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--force-overwrite=true",
+          "-o",
+          "scratch/ling31-perf-20261028/d3-on-profile",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--warmup-prefill",
+          "8192",
+          "--gen-tokens",
+          "128",
+          "--csv",
+          "scratch/ling31-perf-20261028/d3-on-profile.csv",
+          "--mtp-draft",
+          "2"
+        ],
+        "controls": {
+          "DS4_GLMVQ_PDL": "0"
+        },
+        "start": 1793188220.278372,
+        "commit": "d60f6231a82169b4b60fbeca0d2f47f5f414b69b",
+        "diff_sha256": "becc8d8e44d595a21e4ac87be8ebfd0f8c895f029d68dd20b1a08e4a04e1a8f3",
+        "binary_sha256": "b5e68c31e5088985ccfbb26bd2a937c922c2aab434ad5fd2a51b647267556ab8",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "status": 0,
+        "end": 1793188311.0326304
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6798.298128,
+          "kernel_union_ms": 6740.099629,
+          "kernels": [
+            [
+              "glmvq_q4p",
+              3058.031,
+              1224,
+              2498.392,
+              140
+            ],
+            [
+              "beam_w_kernel",
+              1002.887,
+              272,
+              3687.085,
+              168
+            ],
+            [
+              "glmvq_kda_local",
+              609.615,
+              126,
+              4838.216,
+              95
+            ],
+            [
+              "beam_w_down_kernel",
+              564.882,
+              136,
+              4153.542,
+              168
+            ],
+            [
+              "glmvq_kda_scan",
+              330.589,
+              126,
+              2623.72,
+              248
+            ],
+            [
+              "glmvq_mma_reduce",
+              236.394,
+              136,
+              1738.188,
+              40
+            ],
+            [
+              "l31_residual_rms",
+              217.805,
+              286,
+              761.558,
+              64
+            ],
+            [
+              "ling31_fattn_pipe_kernel",
+              205.5,
+              27,
+              7611.104,
+              216
+            ],
+            [
+              "glmvq_q4p_prep",
+              165.018,
+              432,
+              381.986,
+              40
+            ],
+            [
+              "nvjet_sm121_tss_mma_192x128x64_1...",
+              53.866,
+              136,
+              396.074,
+              255
+            ],
+            [
+              "l31_swiglu_prepare",
+              46.786,
+              144,
+              324.904,
+              40
+            ],
+            [
+              "Kernel2",
+              29.904,
+              144,
+              207.665,
+              72
+            ],
+            [
+              "beam_w_quant",
+              29.369,
+              136,
+              215.945,
+              35
+            ],
+            [
+              "ling3vl_mrope",
+              26.625,
+              39,
+              682.694,
+              30
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__3...",
+              23.775,
+              27,
+              880.551,
+              255
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__2...",
+              23.511,
+              27,
+              870.782,
+              255
+            ],
+            [
+              "mul_mat_q",
+              23.283,
+              36,
+              646.762,
+              255
+            ],
+            [
+              "ling3vl_router",
+              23.129,
+              136,
+              170.069,
+              72
+            ],
+            [
+              "step37_attn_gate",
+              19.302,
+              18,
+              1072.345,
+              16
+            ],
+            [
+              "glmvq_convert",
+              12.051,
+              172,
+              70.066,
+              16
+            ],
+            [
+              "glmvq_rms",
+              9.139,
+              31,
+              294.813,
+              80
+            ],
+            [
+              "nvjet_sm121_tst_mma_128x208x64_4...",
+              7.06,
+              2,
+              3529.918,
+              255
+            ],
+            [
+              "quantize_mmq_q8_1",
+              7.054,
+              18,
+              391.898,
+              24
+            ],
+            [
+              "ling3vl_expand_k_pe",
+              4.194,
+              27,
+              155.326,
+              22
+            ],
+            [
+              "gvq_concat",
+              2.172,
+              3,
+              723.985,
+              16
+            ],
+            [
+              "glmvq_q4_stream",
+              1.55,
+              1,
+              1549.624,
+              51
+            ],
+            [
+              "fill_f32_kernel",
+              1.481,
+              2,
+              740.476,
+              16
+            ],
+            [
+              "l31_residual_unpack",
+              1.477,
+              2,
+              738.668,
+              70
+            ],
+            [
+              "ling3vl_rms_norm",
+              1.475,
+              21,
+              70.228,
+              18
+            ],
+            [
+              "glmvq_kda_tail",
+              1.3,
+              126,
+              10.319,
+              26
+            ],
+            [
+              "nvjet_sm121_tst_mma_192x128x64_5...",
+              0.687,
+              2,
+              343.454,
+              255
+            ],
+            [
+              "l31_latent_dequant",
+              0.586,
+              27,
+              21.703,
+              40
+            ],
+            [
+              "beam_w_pairs",
+              0.445,
+              136,
+              3.27,
+              16
+            ],
+            [
+              "mul_mat_q_stream_k_fixup",
+              0.382,
+              18,
+              21.241,
+              120
+            ],
+            [
+              "l31_store_latent",
+              0.377,
+              21,
+              17.961,
+              18
+            ],
+            [
+              "glmvq_bf16_dot",
+              0.366,
+              1,
+              366.334,
+              34
+            ],
+            [
+              "glmvq_fp8_restore",
+              0.075,
+              2,
+              37.664,
+              16
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.012,
+              1,
+              11.84,
+              37
+            ],
+            [
+              "glmvq_copy",
+              0.004,
+              2,
+              1.952,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "beam_w_quant",
+              27.933,
+              136
+            ],
+            [
+              "glmvq_rms",
+              27.349,
+              31
+            ],
+            [
+              "fill_f32_kernel",
+              1.09,
+              2
+            ],
+            [
+              "Kernel2",
+              0.568,
+              144
+            ],
+            [
+              "glmvq_q4p",
+              0.345,
+              1224
+            ],
+            [
+              "glmvq_q4p_prep",
+              0.124,
+              432
+            ],
+            [
+              "mul_mat_q",
+              0.115,
+              36
+            ],
+            [
+              "l31_residual_rms",
+              0.081,
+              286
+            ],
+            [
+              "beam_w_kernel",
+              0.077,
+              272
+            ],
+            [
+              "glmvq_convert",
+              0.049,
+              172
+            ],
+            [
+              "l31_swiglu_prepare",
+              0.041,
+              144
+            ],
+            [
+              "beam_w_pairs",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_down_kernel",
+              0.039,
+              136
+            ],
+            [
+              "glmvq_mma_reduce",
+              0.038,
+              136
+            ],
+            [
+              "ling3vl_router",
+              0.038,
+              136
+            ],
+            [
+              "glmvq_kda_tail",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_scan",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_local",
+              0.035,
+              126
+            ],
+            [
+              "ling3vl_mrope",
+              0.011,
+              39
+            ],
+            [
+              "l31_latent_dequant",
+              0.008,
+              27
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6074.156193,
+          "kernel_union_ms": 6003.045638,
+          "kernels": [
+            [
+              "glmvq_q4m",
+              3421.096,
+              40316,
+              84.857,
+              70
+            ],
+            [
+              "glmvq_verify_gu",
+              782.564,
+              4896,
+              159.837,
+              60
+            ],
+            [
+              "glmvq_verify_down",
+              555.627,
+              4896,
+              113.486,
+              57
+            ],
+            [
+              "glmvq_kda",
+              263.611,
+              4599,
+              57.319,
+              56
+            ],
+            [
+              "glmvq_bf16_dot",
+              210.305,
+              10581,
+              19.876,
+              34
+            ],
+            [
+              "glmvq_q4_stream",
+              206.058,
+              230,
+              895.904,
+              51
+            ],
+            [
+              "glmvq_copy",
+              144.884,
+              4204,
+              34.463,
+              16
+            ],
+            [
+              "l31_residual_rms",
+              63.62,
+              10583,
+              6.012,
+              56
+            ],
+            [
+              "l31_fa_kernel",
+              58.258,
+              801,
+              72.731,
+              255
+            ],
+            [
+              "glmvq_fp8_dot",
+              51.068,
+              1225,
+              41.688,
+              37
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              41.345,
+              801,
+              51.617,
+              42
+            ],
+            [
+              "ling3vl_router",
+              35.668,
+              5108,
+              6.983,
+              72
+            ],
+            [
+              "ling3vl_value_project_bf16",
+              31.205,
+              801,
+              38.957,
+              42
+            ],
+            [
+              "l31_verify_route",
+              26.456,
+              4896,
+              5.404,
+              40
+            ],
+            [
+              "glmvq_q4_stream_many",
+              24.296,
+              67,
+              362.624,
+              46
+            ],
+            [
+              "glmvq_rms_warp",
+              17.896,
+              4599,
+              3.891,
+              48
+            ],
+            [
+              "glmvq_decode_gu",
+              16.254,
+              212,
+              76.672,
+              64
+            ],
+            [
+              "glmvq_rms",
+              13.406,
+              1742,
+              7.696,
+              80
+            ],
+            [
+              "glmvq_verify_reduce",
+              10.375,
+              4896,
+              2.119,
+              38
+            ],
+            [
+              "glmvq_decode_down",
+              9.741,
+              212,
+              45.95,
+              48
+            ],
+            [
+              "ling3vl_mrope",
+              4.469,
+              1675,
+              2.668,
+              30
+            ],
+            [
+              "l31_fa_combine",
+              4.285,
+              801,
+              5.35,
+              38
+            ],
+            [
+              "ling3vl_rms_norm",
+              2.3,
+              874,
+              2.632,
+              18
+            ],
+            [
+              "glmvq_q4_small",
+              1.74,
+              86,
+              20.231,
+              40
+            ],
+            [
+              "argmax_kernel",
+              1.624,
+              144,
+              11.278,
+              37
+            ],
+            [
+              "l31_store_latent",
+              1.206,
+              874,
+              1.38,
+              18
+            ],
+            [
+              "argmax_rows_kernel",
+              1.006,
+              72,
+              13.97,
+              38
+            ],
+            [
+              "step37_attn_gate",
+              0.914,
+              801,
+              1.141,
+              16
+            ],
+            [
+              "l31_decode_route",
+              0.43,
+              212,
+              2.03,
+              56
+            ],
+            [
+              "glmvq_decode_reduce",
+              0.327,
+              212,
+              1.543,
+              32
+            ],
+            [
+              "fill_f32_kernel",
+              0.282,
+              361,
+              0.78,
+              16
+            ],
+            [
+              "add_kernel",
+              0.258,
+              217,
+              1.191,
+              16
+            ],
+            [
+              "glmvq_round_rows",
+              0.212,
+              217,
+              0.977,
+              16
+            ],
+            [
+              "glmvq_swiglu",
+              0.168,
+              148,
+              1.137,
+              16
+            ],
+            [
+              "gvq_concat",
+              0.091,
+              73,
+              1.251,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "glmvq_rms",
+              38.446,
+              1742
+            ],
+            [
+              "glmvq_q4m",
+              11.366,
+              40316
+            ],
+            [
+              "glmvq_bf16_dot",
+              3.049,
+              10581
+            ],
+            [
+              "l31_residual_rms",
+              3.038,
+              10583
+            ],
+            [
+              "glmvq_copy",
+              2.022,
+              4204
+            ],
+            [
+              "ling3vl_router",
+              1.448,
+              5108
+            ],
+            [
+              "l31_verify_route",
+              1.433,
+              4896
+            ],
+            [
+              "glmvq_verify_reduce",
+              1.408,
+              4896
+            ],
+            [
+              "glmvq_verify_down",
+              1.388,
+              4896
+            ],
+            [
+              "glmvq_verify_gu",
+              1.383,
+              4896
+            ],
+            [
+              "glmvq_rms_warp",
+              1.353,
+              4599
+            ],
+            [
+              "glmvq_kda",
+              1.317,
+              4599
+            ],
+            [
+              "ling3vl_mrope",
+              0.477,
+              1675
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.363,
+              1225
+            ],
+            [
+              "l31_fa_combine",
+              0.273,
+              801
+            ],
+            [
+              "l31_store_latent",
+              0.253,
+              874
+            ],
+            [
+              "ling3vl_rms_norm",
+              0.249,
+              874
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              0.244,
+              801
+            ],
+            [
+              "l31_fa_kernel",
+              0.234,
+              801
+            ],
+            [
+              "ling3vl_value_project_bf16",
+              0.232,
+              801
+            ]
+          ]
+        }
+      }
+    },
+    "d4-on-profile": {
+      "receipt": {
+        "name": "d4-on-profile",
+        "command": [
+          "python3",
+          "tools/host_memory_guard.py",
+          "--max-gib",
+          "128",
+          "--high-gib",
+          "128",
+          "--reserve-gib",
+          "2",
+          "--trip-gib",
+          "2",
+          "--psi-full-limit",
+          "40",
+          "--timeout",
+          "900",
+          "--log",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d4-on-profile.memory.jsonl",
+          "--",
+          "taskset",
+          "-c",
+          "5-9,15-19",
+          "/usr/local/cuda/bin/nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--force-overwrite=true",
+          "-o",
+          "scratch/ling31-perf-20261028/d4-on-profile",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--warmup-prefill",
+          "8192",
+          "--gen-tokens",
+          "128",
+          "--csv",
+          "scratch/ling31-perf-20261028/d4-on-profile.csv",
+          "--mtp-draft",
+          "2"
+        ],
+        "controls": {
+          "DS4_GLMVQ_PDL": "0"
+        },
+        "start": 1793191209.511132,
+        "commit": "b1b87e151c1dec78e21c977aa2540c88b3c4affa",
+        "diff_sha256": "a18b0a64a6e4e658a5eaa0221553c32b8f4e7bb63fa3b523694e156a9750e407",
+        "binary_sha256": "0cf490e447a9875ea98cee00cfa508bb6cd9d382d79453636b6e8e5d5e568197",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "status": 0,
+        "end": 1793191300.2779164
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6887.768768,
+          "kernel_union_ms": 6831.200807,
+          "kernels": [
+            [
+              "glmvq_q4p",
+              3134.14,
+              1224,
+              2560.572,
+              140
+            ],
+            [
+              "beam_w_kernel",
+              1010.955,
+              272,
+              3716.746,
+              168
+            ],
+            [
+              "glmvq_kda_local",
+              608.99,
+              126,
+              4833.253,
+              95
+            ],
+            [
+              "beam_w_down_kernel",
+              558.617,
+              136,
+              4107.481,
+              168
+            ],
+            [
+              "glmvq_kda_scan",
+              331.493,
+              126,
+              2630.899,
+              248
+            ],
+            [
+              "glmvq_mma_reduce",
+              238.439,
+              136,
+              1753.227,
+              40
+            ],
+            [
+              "l31_residual_rms",
+              218.016,
+              286,
+              762.295,
+              64
+            ],
+            [
+              "ling31_fattn_pipe_kernel",
+              205.305,
+              27,
+              7603.906,
+              216
+            ],
+            [
+              "glmvq_q4p_prep",
+              171.985,
+              432,
+              398.113,
+              40
+            ],
+            [
+              "nvjet_sm121_tss_mma_192x128x64_1...",
+              56.936,
+              136,
+              418.645,
+              255
+            ],
+            [
+              "l31_swiglu_prepare",
+              46.274,
+              144,
+              321.35,
+              40
+            ],
+            [
+              "Kernel2",
+              30.561,
+              144,
+              212.23,
+              72
+            ],
+            [
+              "beam_w_quant",
+              29.871,
+              136,
+              219.639,
+              35
+            ],
+            [
+              "ling3vl_mrope",
+              26.518,
+              39,
+              679.95,
+              30
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__2...",
+              23.57,
+              27,
+              872.955,
+              255
+            ],
+            [
+              "ling3vl_router",
+              23.342,
+              136,
+              171.63,
+              72
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__3...",
+              23.302,
+              27,
+              863.031,
+              255
+            ],
+            [
+              "mul_mat_q",
+              23.033,
+              36,
+              639.793,
+              255
+            ],
+            [
+              "step37_attn_gate",
+              19.6,
+              18,
+              1088.864,
+              16
+            ],
+            [
+              "glmvq_convert",
+              11.861,
+              172,
+              68.962,
+              16
+            ],
+            [
+              "glmvq_rms",
+              9.064,
+              31,
+              292.392,
+              80
+            ],
+            [
+              "nvjet_sm121_tst_mma_128x208x64_4...",
+              7.817,
+              2,
+              3908.366,
+              255
+            ],
+            [
+              "quantize_mmq_q8_1",
+              6.818,
+              18,
+              378.793,
+              24
+            ],
+            [
+              "ling3vl_expand_k_pe",
+              4.265,
+              27,
+              157.947,
+              22
+            ],
+            [
+              "gvq_concat",
+              2.186,
+              3,
+              728.562,
+              16
+            ],
+            [
+              "fill_f32_kernel",
+              1.747,
+              2,
+              873.276,
+              16
+            ],
+            [
+              "ling3vl_rms_norm",
+              1.51,
+              21,
+              71.896,
+              18
+            ],
+            [
+              "l31_residual_unpack",
+              1.405,
+              2,
+              702.748,
+              70
+            ],
+            [
+              "glmvq_kda_tail",
+              1.398,
+              126,
+              11.094,
+              26
+            ],
+            [
+              "glmvq_q4_stream",
+              1.388,
+              1,
+              1388.058,
+              51
+            ],
+            [
+              "nvjet_sm121_tst_mma_192x128x64_5...",
+              0.666,
+              2,
+              333.118,
+              255
+            ],
+            [
+              "l31_latent_dequant",
+              0.614,
+              27,
+              22.723,
+              40
+            ],
+            [
+              "beam_w_pairs",
+              0.436,
+              136,
+              3.209,
+              16
+            ],
+            [
+              "glmvq_bf16_dot",
+              0.369,
+              1,
+              369.183,
+              34
+            ],
+            [
+              "mul_mat_q_stream_k_fixup",
+              0.358,
+              18,
+              19.897,
+              120
+            ],
+            [
+              "l31_store_latent",
+              0.35,
+              21,
+              16.654,
+              18
+            ],
+            [
+              "glmvq_fp8_restore",
+              0.071,
+              2,
+              35.423,
+              16
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.011,
+              1,
+              11.488,
+              37
+            ],
+            [
+              "glmvq_copy",
+              0.003,
+              2,
+              1.504,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "beam_w_quant",
+              28.107,
+              136
+            ],
+            [
+              "glmvq_rms",
+              26.632,
+              31
+            ],
+            [
+              "Kernel2",
+              0.539,
+              144
+            ],
+            [
+              "glmvq_q4p",
+              0.345,
+              1224
+            ],
+            [
+              "glmvq_q4p_prep",
+              0.124,
+              432
+            ],
+            [
+              "mul_mat_q",
+              0.116,
+              36
+            ],
+            [
+              "l31_residual_rms",
+              0.08,
+              286
+            ],
+            [
+              "beam_w_kernel",
+              0.077,
+              272
+            ],
+            [
+              "glmvq_convert",
+              0.049,
+              172
+            ],
+            [
+              "l31_swiglu_prepare",
+              0.041,
+              144
+            ],
+            [
+              "fill_f32_kernel",
+              0.039,
+              2
+            ],
+            [
+              "ling3vl_router",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_down_kernel",
+              0.039,
+              136
+            ],
+            [
+              "glmvq_mma_reduce",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_pairs",
+              0.038,
+              136
+            ],
+            [
+              "glmvq_kda_tail",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_local",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_scan",
+              0.036,
+              126
+            ],
+            [
+              "ling3vl_mrope",
+              0.011,
+              39
+            ],
+            [
+              "l31_latent_dequant",
+              0.008,
+              27
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6037.089872,
+          "kernel_union_ms": 5965.213344,
+          "kernels": [
+            [
+              "glmvq_q4m",
+              3401.405,
+              40316,
+              84.369,
+              70
+            ],
+            [
+              "glmvq_verify_gu",
+              776.015,
+              4896,
+              158.5,
+              64
+            ],
+            [
+              "glmvq_verify_down",
+              542.579,
+              4896,
+              110.821,
+              56
+            ],
+            [
+              "glmvq_kda",
+              264.533,
+              4599,
+              57.52,
+              56
+            ],
+            [
+              "glmvq_bf16_dot",
+              211.941,
+              10581,
+              20.03,
+              34
+            ],
+            [
+              "glmvq_q4_stream",
+              206.459,
+              230,
+              897.648,
+              51
+            ],
+            [
+              "glmvq_copy",
+              144.035,
+              4204,
+              34.261,
+              16
+            ],
+            [
+              "l31_residual_rms",
+              63.572,
+              10583,
+              6.007,
+              56
+            ],
+            [
+              "l31_fa_kernel",
+              58.146,
+              801,
+              72.591,
+              255
+            ],
+            [
+              "glmvq_fp8_dot",
+              51.191,
+              1225,
+              41.788,
+              37
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              38.313,
+              801,
+              47.832,
+              42
+            ],
+            [
+              "ling3vl_router",
+              35.628,
+              5108,
+              6.975,
+              72
+            ],
+            [
+              "ling3vl_value_project_bf16",
+              33.549,
+              801,
+              41.884,
+              42
+            ],
+            [
+              "l31_verify_route",
+              26.445,
+              4896,
+              5.401,
+              40
+            ],
+            [
+              "glmvq_q4_stream_many",
+              24.143,
+              67,
+              360.345,
+              46
+            ],
+            [
+              "glmvq_rms_warp",
+              18.47,
+              4599,
+              4.016,
+              48
+            ],
+            [
+              "glmvq_decode_gu",
+              16.395,
+              212,
+              77.337,
+              64
+            ],
+            [
+              "glmvq_rms",
+              13.104,
+              1742,
+              7.523,
+              80
+            ],
+            [
+              "glmvq_verify_reduce",
+              10.131,
+              4896,
+              2.069,
+              38
+            ],
+            [
+              "glmvq_decode_down",
+              9.847,
+              212,
+              46.448,
+              48
+            ],
+            [
+              "ling3vl_mrope",
+              4.344,
+              1675,
+              2.593,
+              30
+            ],
+            [
+              "l31_fa_combine",
+              4.292,
+              801,
+              5.358,
+              38
+            ],
+            [
+              "ling3vl_rms_norm",
+              2.257,
+              874,
+              2.582,
+              18
+            ],
+            [
+              "glmvq_q4_small",
+              1.799,
+              86,
+              20.919,
+              40
+            ],
+            [
+              "argmax_kernel",
+              1.615,
+              144,
+              11.216,
+              37
+            ],
+            [
+              "l31_store_latent",
+              1.256,
+              874,
+              1.437,
+              18
+            ],
+            [
+              "argmax_rows_kernel",
+              0.974,
+              72,
+              13.528,
+              38
+            ],
+            [
+              "step37_attn_gate",
+              0.921,
+              801,
+              1.15,
+              16
+            ],
+            [
+              "l31_decode_route",
+              0.467,
+              212,
+              2.204,
+              56
+            ],
+            [
+              "glmvq_decode_reduce",
+              0.365,
+              212,
+              1.723,
+              32
+            ],
+            [
+              "fill_f32_kernel",
+              0.281,
+              361,
+              0.779,
+              16
+            ],
+            [
+              "add_kernel",
+              0.264,
+              217,
+              1.216,
+              16
+            ],
+            [
+              "glmvq_round_rows",
+              0.211,
+              217,
+              0.974,
+              16
+            ],
+            [
+              "glmvq_swiglu",
+              0.175,
+              148,
+              1.183,
+              16
+            ],
+            [
+              "gvq_concat",
+              0.088,
+              73,
+              1.211,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "glmvq_rms",
+              39.379,
+              1742
+            ],
+            [
+              "glmvq_q4m",
+              11.351,
+              40316
+            ],
+            [
+              "glmvq_bf16_dot",
+              3.025,
+              10581
+            ],
+            [
+              "l31_residual_rms",
+              3.024,
+              10583
+            ],
+            [
+              "glmvq_copy",
+              1.977,
+              4204
+            ],
+            [
+              "l31_verify_route",
+              1.449,
+              4896
+            ],
+            [
+              "ling3vl_router",
+              1.448,
+              5108
+            ],
+            [
+              "glmvq_verify_reduce",
+              1.404,
+              4896
+            ],
+            [
+              "glmvq_verify_down",
+              1.384,
+              4896
+            ],
+            [
+              "glmvq_verify_gu",
+              1.38,
+              4896
+            ],
+            [
+              "glmvq_rms_warp",
+              1.355,
+              4599
+            ],
+            [
+              "glmvq_kda",
+              1.3,
+              4599
+            ],
+            [
+              "ling3vl_mrope",
+              0.477,
+              1675
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.359,
+              1225
+            ],
+            [
+              "l31_fa_combine",
+              0.26,
+              801
+            ],
+            [
+              "l31_store_latent",
+              0.253,
+              874
+            ],
+            [
+              "ling3vl_rms_norm",
+              0.248,
+              874
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              0.238,
+              801
+            ],
+            [
+              "l31_fa_kernel",
+              0.233,
+              801
+            ],
+            [
+              "step37_attn_gate",
+              0.227,
+              801
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "limitations": [
+    "The assistant fixture is bounded supplementary performance evidence, not broad quality qualification.",
+    "The corpus continuation repeats near its tail; its MTP acceptance does not represent assistant workloads.",
+    "Chunked prefill is unchanged; its variation is not counted as another Prefill gain.",
+    "Final incremental 2K-64K sweeps and the token-level MTP state gate are recorded separately.",
+    "Ordinary assistant paired gains are +0.656%, +1.251%, -0.342%; median gain does not establish a uniform gain or speed equivalence.",
+    "One-row decode and prefill kernels are unchanged; final incremental sweeps qualify their absolute rates."
+  ],
+  "decision": "Adopt D3: every fresh assistant/corpus pair improves with non-overlapping ranges, exact F32 proofs, lower target time and no new allocation; register cost leaves occupancy unchanged.",
+  "target_attribution": {
+    "gu_ms": [
+      782.564,
+      776.015
+    ],
+    "down_ms": [
+      555.627,
+      542.579
+    ],
+    "target_saved_ms": 19.597,
+    "q4m_saved_ms_unattributed": 19.691
+  }
+}

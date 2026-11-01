@@ -1,0 +1,62 @@
+[
+  {
+    "name": "_Z14mm_decode_downILb1EEvPK17glmvq_decode_itemPK5uint4S5_PK13__nv_bfloat16Pfj",
+    "candidate": "_Z14mm_decode_downILb1EEvPK17glmvq_decode_itemPK5uint4S5_PK13__nv_bfloat16Pfj",
+    "same": true,
+    "instructions": 2296
+  },
+  {
+    "name": "_Z12mm_decode_guILb1ELj16EEvPK17glmvq_decode_itemPK5uint4S5_PKfP13__nv_bfloat16j",
+    "candidate": "_Z12mm_decode_guILb1ELj16EEvPK17glmvq_decode_itemPK5uint4S5_PKfP13__nv_bfloat16j",
+    "same": true,
+    "instructions": 3032
+  },
+  {
+    "name": "_Z14mm_decode_downILb0EEvPK17glmvq_decode_itemPK5uint4S5_PK13__nv_bfloat16Pfj",
+    "candidate": "_Z14mm_decode_downILb0EEvPK17glmvq_decode_itemPK5uint4S5_PK13__nv_bfloat16Pfj",
+    "same": true,
+    "instructions": 2720
+  },
+  {
+    "name": "_Z12mm_decode_guILb0ELj32EEvPK17glmvq_decode_itemPK5uint4S5_PKfP13__nv_bfloat16j",
+    "candidate": "_Z12mm_decode_guILb0ELj32EEvPK17glmvq_decode_itemPK5uint4S5_PKfP13__nv_bfloat16j",
+    "same": true,
+    "instructions": 2032
+  },
+  {
+    "name": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load2EEvPKhPKfPfjjjj",
+    "candidate": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load2EEvPKhPKfPfjjjj",
+    "same": true,
+    "instructions": 504
+  },
+  {
+    "name": "_Z19mm_score_mma_kernelPfPKfPKhjjjj",
+    "candidate": "_Z19mm_score_mma_kernelPfPKfPKhjjjj",
+    "same": true,
+    "instructions": 736
+  },
+  {
+    "name": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load1EEvPKhPKfPfjjjj",
+    "candidate": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load1EEvPKhPKfPfjjjj",
+    "same": true,
+    "instructions": 464
+  },
+  {
+    "name": "_Z19mm_score_fp4_kernelPfPKfPKhjjjj",
+    "candidate": "_Z19mm_score_fp4_kernelILb0EEvPfPKfPKhjjjj",
+    "same": true,
+    "instructions": 1696
+  },
+  {
+    "name": "_Z14mm_tail_kernelIfEv12mm_tail_args",
+    "candidate": "_Z14mm_tail_kernelIfEv12mm_tail_args",
+    "same": true,
+    "instructions": 1256
+  },
+  {
+    "name": "_Z14mm_tail_kernelI13__nv_bfloat16Ev12mm_tail_args",
+    "candidate": "_Z14mm_tail_kernelI13__nv_bfloat16Ev12mm_tail_args",
+    "same": true,
+    "instructions": 1256
+  }
+]

@@ -138,28 +138,45 @@ another floor and reuse mode missed them, the same flags restored them.
 
 ## Performance
 
-One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2,190–2,197
-MHz), the [2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-27/README.md):
-three fresh `ds4-bench` processes, 2,048-token steps over the cached prefix,
-128 forced greedy tokens per frontier, `AXK1` snapshots restored between
-frontiers.
+The [October 29 2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-29/README.md)
+measures code `8bb463ed` on one GB10 (`sm_121a`, CUDA 13.4.92, driver
+615.71.10): three fresh `ds4-bench` processes, CPU 9 fixed, 2,048-token
+steps over the cached prefix, 128 forced greedy tokens per frontier,
+`AXK1` snapshots restored between frontiers. Busy SM clocks are
+2,184–2,190 MHz under the 300–2,200 MHz policy.
 
 | Frontier | Prefill tok/s | Decode tok/s |
 |---:|---:|---:|
-| 2K | 581.4 | 15.59 |
-| 8K | 469.6 | 15.44 |
-| 32K | 361.2 | 14.88 |
-| 64K | 272.1 | 14.40 |
-| 2K–64K, median of run means | 370.2 | 14.91 |
+| 2K | 602.4 | 15.95 |
+| 8K | 495.8 | 15.81 |
+| 32K | 378.0 | 15.22 |
+| 64K | 282.6 | 14.71 |
+| 2K–64K, median of run means | 387.4 | 15.25 |
 
-Where a cold 8K prefill's GPU time goes (nsys, PDL off): routed experts on
-`glmvq_mma8_kernel` 30%, the sparse flash tile 23%, q4p projections 14%, index
-scores 5%, the prefill gated norm 4%, BF16 copies for cuBLAS 3.5%, the q split
-2%. Past 2,048 keys each row scores every causal key, so prefill falls with
-the frontier; decode falls 8%.
+Run means span 386.94–388.50 prefill and 15.02–15.29 decode; the remaining
+decode variation, power-cap samples, raw CSVs and per-frontier ranges are
+in the sweep receipt. The [October 27 sweep](benchmarks/axk2-vq-spark-64k-2026-10-27/README.md)
+is historical and was not collected as a matched A/B against this campaign.
+The new sweep establishes absolute rates and repeat ranges.
 
-**Decode round.** An 8K token went from 87 to 66 ms (nsys) before the sweep,
-outputs within the quality bands below: DeepSeek's indexer top-k sorted
+The [October 29 campaign](axk2-optimization-2026-10-29.md) adopts three
+prefill changes (direct BF16 flash output, cooperative key gathers, staged
+key/exponent metadata) and three decode changes (Q8 staging, compact
+expert gate/up loops, cooperative gated-norm loads). Each has fresh-process
+pairs, focused fixtures, unchanged arithmetic and a family-specific fallback.
+The campaign records the extra traffic, instructions or shared/register
+cost where present, including D3's overlapping repeat ranges.
+
+The final cold-8K trace (nsys, PDL off) has 14.992 s prefill wall: routed
+experts 4.796 s, sparse flash 3.128 s, q4p projections 2.248 s, index scores
+0.850 s, gated norm 0.566 s, q split 0.343 s and BF16 copies 0.127 s.
+These raw kernel durations overlap, notably with cuBLAS, and are not
+additive wall time. Past 2,048 keys each row scores every causal key, so
+prefill still falls with the frontier.
+
+**Initial decode round (2026-10-27).** An 8K token went from 87 to 66 ms
+(nsys) before the original sweep, with outputs within the quality bands
+below: DeepSeek's indexer top-k sorted
 4,096-key chunks and merged them (~0.2 ms per layer for one row); a one-block
 radix select (`cuda/axk2_topk.cuh`) takes 11 µs and is exact
 (`make test-axk2-topk`). The W_UK absorption decoded one Q4_K value per thread
@@ -172,6 +189,11 @@ Prefill restores `kv_b` to BF16 once per layer and chunk instead of per
 
 ## Quality
 
+The reference receipts below and serving gates above are from the October
+27 family qualification. The October 29 performance campaign checks focused
+fixtures and bounded 8K output parity; it does not rerun the NLL corpus or
+extend long-context/serving qualification.
+
 - **Reference parity.** The handoff's goldens are RTX PRO 6000 (sm_120) runs
   of its reference over 22 held-out cases (53,142 tokens). The same reference
   arithmetic rerun on this GB10 over the release bytes (`axk2_ref.py` with the
@@ -181,14 +203,14 @@ Prefill restores `kv_b` to BF16 once per layer and chunk instead of per
   the goldens. `tests/axk2_quality` passes over 26,866 positions: NLL
   1.98665 against 1.98767 (−0.0010 ± 0.0012 nats per token), top-1 95.88%
   against the goldens' student (the rerun: 96.69%), 95.87% against the rerun
-  and 68.4% against the FP8 teacher. The build before the decode round below
+  and 68.4% against the FP8 teacher. The build before the initial decode round
   measured +0.00014 ± 0.0012 and 95.89%.
 - **Paths.** Cases up to 2,048 tokens prefill 64 rows and decode the rest; the
   five longer ones (2,938–8,192 tokens) prefill all but 256 rows, so prefill
   and decode both run the sparse selection. Per case the NLL difference stays
   within ±1%, except the finance tail (256 positions): −3.9%, and −13% before
-  the decode round, the engine agreeing with the teacher there more often than
-  both references (82.9% and 82.1% against 80.2%). BF16 index keys
+  the initial decode round, the engine agreeing with the teacher there more
+  often than both references (82.9% and 82.1% against 80.2%). BF16 index keys
   (`DS4_AXK2_INDEX_KEYS=bf16`) left it at −11%, so FP8 key rounding does not
   explain it. Decoded row by row instead, the finance case's 8,129 positions
   sat at −0.13% (its tail −1.9%): the prefill-built cache moves that tail,
@@ -203,26 +225,32 @@ Prefill restores `kv_b` to BF16 once per layer and chunk instead of per
 | `DS4_AXK2_INDEX_KEYS=bf16` | BF16 indexer keys (256 bytes each) instead of FP8, a rounding diagnostic |
 | `DS4_AXK2_TOPK=0` | DeepSeek's indexer top-k kernels (chunk sort and merge tree) instead of the radix select |
 | `DS4_AXK2_GAIN_DOT=0` | decode experts round gain × codeword per weight (the restore's arithmetic) instead of one multiply after the dot |
+| `DS4_AXK2_FLASH_BF16=0` | F32 flash output plus conversion; also bypasses the cooperative/staged BF16 metadata paths |
+| `DS4_AXK2_FLASH_KEYS=0` | serial key/exponent gathering; also bypasses staged metadata |
+| `DS4_AXK2_FLASH_META=0` | cooperative gathers without the metadata prepack |
+| `DS4_AXK2_Q8_STREAM=0` | original Q8 decode staging and eight-warp mapping |
+| `DS4_AXK2_GU_COMPACT=0` | fully expanded expert gate/up decode loop |
+| `DS4_AXK2_NORM_STAGE=0` | original gated-norm weight loads for one to four rows |
 | `DS4_AXK2_TRACE=DIR`, `DS4_AXK2_TRACE_POS` | per-stage rows of one forward |
+
+Set diagnostic switches before starting a fresh process.
 
 ## Limits and next levers
 
-- Decode is plain: the release has no drafter. An 8K token takes ~66 ms
-  against ~46 ms for its ~11.6 GB of weights at 250 GB/s: Q4_K GEMVs run at
-  ~220 GB/s (48% of the token), the routed experts at 180–207 GB/s, the
-  indexer's Q8_0 GEMVs at ~165 GB/s, and ~10 ms go to short kernels (no
-  decode graph yet). Past 64K the indexer grows: every key's 129-byte row is
-  scored per layer and token (2.0 GB per token at 262K) and the one-block
-  top-k takes ~146 µs per layer there.
+- Decode is plain: the release has no drafter. The final 8K/16 trace has
+  65.4 ms wall per token (PDL off), against a weight-only floor of ~49 ms
+  for ~11.6 GB at 235 GB/s. Q4 streams take 32.16 ms/token, expert gate/up
+  12.04 ms, expert down 5.00 ms and Q8 projections 4.54 ms. Past 64K the
+  indexer grows: every key's 129-byte row is scored per layer and token
+  (2.0 GB per token at 262K); the earlier 262K probe measured ~146 µs per
+  layer for one-block top-k.
 - Prefill falls with context because index scores cost 16K FLOP per key and
   row per layer (BF16 MMAs at ~37 TFLOPS); E4M3 query scores or a faster
-  tile are the long-context lever. At 8K the levers by share are the routed
-  experts on `glmvq_mma8_kernel` (30%, ~34% of the E4M3 peak; Beam's and
-  MiniMax's warp-specialized kernels took theirs 1.2–1.6× further), the
-  sparse flash tile (23%, ~35% of the BF16 peak: each row gathers its own
-  2,048 keys), the q4p projections (14%, ~76% of peak) and the elementwise
-  passes around attention (q split, BF16 copies for cuBLAS, the prefill gated
-  norm: ~10% together).
+  tile are the long-context lever. In the final cold-8K trace, routed
+  experts, sparse flash and q4p projections occupy raw durations of about
+  32%, 21% and 15% of prefill wall respectively. Each sparse row still
+  gathers its own 2,048 keys. These measured costs set the next profiling
+  targets; raw kernel percentages can overlap.
 - Partial reuse is implemented (every prefix of a bank is exact) but not
   qualified: `--prefix-reuse auto` resolves to exact. Thinking turns need
   `partial`, because the template drops earlier turns' reasoning from history.

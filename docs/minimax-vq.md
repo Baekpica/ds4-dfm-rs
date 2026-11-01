@@ -109,8 +109,10 @@ combined per head, so every row runs the one-row arithmetic.
 
 **Numerics.** The engine follows the handoff's `tools/minimax_ref.py`, which
 matches transformers 5.20.2 layer by layer: Gemma norms rounded once,
-partial RoPE with float64 cos/sin, BF16 residual stream (stored as
-BF16-rounded F32), F32 router logits.
+partial RoPE with float64 cos/sin, BF16 residual stream (stored as BF16
+during text prefill, otherwise BF16-rounded F32), F32 router logits.
+The [October 27 campaign](minimax-vq-optimization-2026-10-27.md) records
+the storage gate, diagnostic fallback and fresh long-context comparisons.
 
 ## K/V tiers
 
@@ -215,8 +217,8 @@ row's logits therefore equal a decode of the same token bit for bit
 (`DS4_MINIMAX_VERIFY_CHECK=1` re-runs each verified row as a decode and
 reports the difference), and greedy DSpark output equals plain decoding.
 
-DSpark runs on the serial lane (`--mtp-mode on --mtp-draft N`, N ≤ 7,
-greedy only); its cost is one draft pass (about 13 ms: 1.77 GB of Q8_0
+DSpark runs on the serial lane (`--mtp-mode on --mtp-draft N`, N ≤ 7, any
+temperature: [sampled speculation](speculative-sampling.md)); its cost is one draft pass (about 13 ms: 1.77 GB of Q8_0
 layers, the 0.69 GB head and one Markov GEMV per proposal) plus the verify
 forward, whose routed experts grow with every row. Two or three proposals
 are the useful range on GB10.
@@ -239,6 +241,38 @@ shared memory holds two 6,144-wide input rows, and the rest from L1 left
 it latency-bound (21.1 against 24.5 tok/s row by row).
 
 ## Performance
+
+The [October 29 follow-up](minimax-vq-optimization-2026-10-29.md) targets
+the long-context prefill slope. It records three new adopted rounds, fresh
+per-change comparisons, same-host numerical calibration and fixed-token
+Decode checks. Six matched 524K-session sweeps improve mean incremental
+Prefill 1001.85→1020.29 tok/s and the last 2K at 64K 962.45→990.08 tok/s.
+The 8K→64K decline shrinks 8.44%→6.59%. The report retains startup recovery,
+raw variability and the forced-continuation Decode qualification limit.
+
+The [October 27 campaign](minimax-vq-optimization-2026-10-27.md) adopts
+three prefill and three plain-decode rounds. Its fresh
+[2K–64K DSpark sweep](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md)
+at source `84960118` records **1,011.0 prefill / 22.10 decode tok/s**
+(median of three run means). It allocates a 512K SSD-tier session, uses
+2,048-row incremental frontiers and a 2,048-row workspace cap, and generates
+128 tokens per frontier with gated draft 3. Busy clocks are 2,177–2,190 MHz
+under the operator's 300–2200 MHz policy. The receipt retains raw clocks,
+absolute ranges and the gate's per-frontier variability.
+
+The final resident plain-decode cohort instead uses a 128K allocation,
+4,096-row warmup/chunks, 8K followed by a 57,344-token suffix to 64K, MTP
+off, and 1,024 generated tokens. Its retained-build medians are:
+
+| Frontier | Prefill tok/s | Plain decode tok/s |
+|---:|---:|---:|
+| 8K | 1,224.27 | 21.45 |
+| 64K | 1,144.61 | 21.09 |
+
+These protocols are separate; neither table is a cumulative A/B against
+the older rows below.
+
+### Historical frontiers, 2026-10-24
 
 One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2.41-2.59 GHz
 under load on 2026-10-24; limits in [gb10-hardware.md](gb10-hardware.md)),
@@ -398,7 +432,18 @@ carries the `]<]minimax[>[` namespace token,
 dicts nest by key and lists by `<item>`. Top-level values follow the declared
 schema type; nested leaves stay text unless they are JSON scalars. Streams
 hold the namespace token back until the next token shows whether a tool
-block opens. Requests keep their own sampler (the model's defaults are
+block opens. OpenAI Chat streams a recognized call's name and declared string
+arguments incrementally through the common tool/SSE projector; other values
+use the same conversion as the final parser once their parameter closes.
+An unfinished call at the token budget retains `length`. The common tool
+projector verifies already-streamed calls against the final parse; differing
+names, call counts or JSON arguments fail the stream instead of reporting a
+successful partial call. Live and final parsing share Unicode whitespace rules.
+Bare namespace prose and wrapperless invokes remain text, matching the full-wrapper
+recognition used by vLLM, SGLang and TensorRT-LLM. Jinja renders input; it does
+not guarantee that sampled output follows this grammar. See the
+[framework comparison and regressions](benchmarks/minimax-serving-issues-2026-10-27.md).
+Requests keep their own sampler (the model's defaults are
 temperature 1.0, top-p 0.95).
 
 ## Diagnostic switches

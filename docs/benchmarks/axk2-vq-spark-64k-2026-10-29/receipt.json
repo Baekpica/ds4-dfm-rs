@@ -1,0 +1,336 @@
+{
+  "measurement_date": "2026-10-29",
+  "time_zone": "Asia/Seoul",
+  "measured_code_commit": "8bb463ed51ce597f4d1eb8379092bb8e06230bd8",
+  "artifact_revision": "a0c3b02e9b45dc67ef8dd1d48eb48034c93d6607",
+  "release_json_sha256": "3b4da5db6502611afe3ea06d83ef7cb77c2c205a9f3e93c75a2293579735e14c",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+  "binaries_sha256": {
+    "ds4-bench": "5837613a2788a468c98d1c280cc71a2eb96cf77e5be272aae0390260490a291d",
+    "ds4-bench-perf": "4b8db1467df0ddd0944a4b693fd4e36f96d235940adf5ec45aa895e4c63557d6",
+    "ds4_cuda.o": "2a8b134be8455a0be653099555d07ea70679b21751ceb46afdd84595d683146a"
+  },
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "memory_reserve_and_trip_gib": 2,
+  "psi_limit": "record only",
+  "runs": [
+    {
+      "run": 1,
+      "exit": 0,
+      "frontiers": 32,
+      "command": "taskset -c 9 ./ds4-bench --cuda -m /mnt/p31/data/models/A.X-K2-VQ-GGUF --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv scratch/axk2-perf/final-1/plain.csv",
+      "prefill_mean": 388.4971875,
+      "decode_mean": 15.0209375,
+      "min_available_gib": 10.32778549194336,
+      "max_psi_full_avg10": 0.0,
+      "busy_sample_definition": "GPU utilization >= 80 percent, sampled at 1 Hz",
+      "busy_sm_mhz_min_median_max": [
+        2184,
+        2184.0,
+        2190
+      ],
+      "busy_temperature_c_min_max": [
+        47,
+        71
+      ],
+      "clock_cap_samples": [
+        {
+          "timestamp": "2026/10/29 06:46:18.952",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "53.72 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:46:36.965",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.07 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:46:37.965",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.05 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:46:51.974",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "53.74 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:47:03.982",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "52.77 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:47:36.006",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "52.77 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        }
+      ],
+      "observed_bench_cpus": [
+        9
+      ],
+      "busy_cpu9_cppc_delivered_performance_mean": 151.91127437611348,
+      "cppc_nominal_performance": 150,
+      "raw_sha256": {
+        "plain.csv": "fb0ae0db74b69afaf61455732d34f05410cc3cffd7d92b4673a43ad282052ec6",
+        "stdout": "9a191d12dcd354f66756fa6ba17ddbabdd76f5b6ca09db354937b4714e4bff5c",
+        "stderr": "d2d43b6ec86494123c16453b834429afe8ff4051f262d019f4dde58f438bedc8",
+        "memory.jsonl": "fbdda62307f7312893e94fab9d0f9d29d19276bd738f47f280fa3f07965d1985",
+        "host.jsonl": "26794fe85c804e96e159363efab18c6225e20952ac31dd7b80bec3c6cd217ec3",
+        "clocks.csv": "79aa44edda99326a0beb7d297aec12780a29f2b81bb6de92f1c4d26b535e819e"
+      }
+    },
+    {
+      "run": 2,
+      "exit": 0,
+      "frontiers": 32,
+      "command": "taskset -c 9 ./ds4-bench --cuda -m /mnt/p31/data/models/A.X-K2-VQ-GGUF --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv scratch/axk2-perf/final-2/plain.csv",
+      "prefill_mean": 386.9409375,
+      "decode_mean": 15.2909375,
+      "min_available_gib": 10.10821533203125,
+      "max_psi_full_avg10": 0.0,
+      "busy_sample_definition": "GPU utilization >= 80 percent, sampled at 1 Hz",
+      "busy_sm_mhz_min_median_max": [
+        2184,
+        2184.0,
+        2190
+      ],
+      "busy_temperature_c_min_max": [
+        50,
+        72
+      ],
+      "clock_cap_samples": [
+        {
+          "timestamp": "2026/10/29 06:56:31.776",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.27 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:56:33.777",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.59 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:57:02.793",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.64 W",
+          "temperature.gpu": "72",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:57:12.799",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "53.49 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 06:57:16.801",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.37 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        }
+      ],
+      "observed_bench_cpus": [
+        9
+      ],
+      "busy_cpu9_cppc_delivered_performance_mean": 151.93515741088018,
+      "cppc_nominal_performance": 150,
+      "raw_sha256": {
+        "plain.csv": "ae10028a54798f2a9cd696180a4de0a1d1952ba1b915efd2a7c1e4c28f515573",
+        "stdout": "21547caf505f7cbba6bb907ce637bd92d381e10292209228722569454fe46a82",
+        "stderr": "ec31d44e4a4c1af8f8a75a5e52a4d3641c57b37ba533d16a741ab09a0ad4bdb8",
+        "memory.jsonl": "7f17434325df16232982aa487482757c71ab6173bd90d370c797118058e68bbd",
+        "host.jsonl": "7fb040b5dee713aadd40de0be9a3364eef3d8ca5f060ead3be7efd8f313f223a",
+        "clocks.csv": "c62bcc6f708c17849c4cbccd48f08e37493f80bc45549b4dd7adcf29d75d6cc7"
+      }
+    },
+    {
+      "run": 3,
+      "exit": 0,
+      "frontiers": 32,
+      "command": "taskset -c 9 ./ds4-bench --cuda -m /mnt/p31/data/models/A.X-K2-VQ-GGUF --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv scratch/axk2-perf/final-3/plain.csv",
+      "prefill_mean": 387.4278125,
+      "decode_mean": 15.2521875,
+      "min_available_gib": 10.377838134765625,
+      "max_psi_full_avg10": 0.0,
+      "busy_sample_definition": "GPU utilization >= 80 percent, sampled at 1 Hz",
+      "busy_sm_mhz_min_median_max": [
+        2184,
+        2184.0,
+        2190
+      ],
+      "busy_temperature_c_min_max": [
+        51,
+        73
+      ],
+      "clock_cap_samples": [
+        {
+          "timestamp": "2026/10/29 07:07:37.711",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.78 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:08:04.731",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.85 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:08:16.738",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.05 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:08:20.740",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "49.68 W",
+          "temperature.gpu": "66",
+          "utilization.gpu [%]": "87 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:08:33.749",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "55.06 W",
+          "temperature.gpu": "71",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:09:02.767",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "54.26 W",
+          "temperature.gpu": "70",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:09:31.785",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "53.89 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        },
+        {
+          "timestamp": "2026/10/29 07:09:43.794",
+          "clocks.current.sm [MHz]": "2190 MHz",
+          "clocks.current.memory [MHz]": "[N/A]",
+          "power.draw [W]": "53.56 W",
+          "temperature.gpu": "69",
+          "utilization.gpu [%]": "96 %",
+          "clocks_event_reasons.sw_power_cap": "Active",
+          "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+          "clocks_event_reasons.hw_thermal_slowdown": "Not Active"
+        }
+      ],
+      "observed_bench_cpus": [
+        9
+      ],
+      "busy_cpu9_cppc_delivered_performance_mean": 151.92891888735988,
+      "cppc_nominal_performance": 150,
+      "raw_sha256": {
+        "plain.csv": "3ff38074cb262917c29d4afdf7e1d794cf051a20cb250b5011e8907465f05d2d",
+        "stdout": "9d7c2fe7ca0058740805d3caa832903846748afe47e6f1adc2b98520c2315886",
+        "stderr": "958aa384841c9bf719e2736fb4d1281b29501742b395080f1bbfa4ab8eb545e9",
+        "memory.jsonl": "ceb48950115e2f54e0e8818e52bd5d1b7760f0fc9ed824b6008ef29ca58d8c08",
+        "host.jsonl": "2303b637cdb1a19cf2e8fc34d2ec766980e87e572cc2e28430b819754f80c301",
+        "clocks.csv": "44864c2d7c88e7817bd5acddf520032657231bfb22e8c4f336cd5fdf211d9699"
+      }
+    }
+  ]
+}

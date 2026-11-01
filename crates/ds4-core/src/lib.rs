@@ -26,12 +26,14 @@ mod inkling_media;
 mod inkling_mtp;
 mod iquest;
 mod layout;
+mod ling31_mtp;
 mod ling31_vq;
 mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod mimo2_vq;
 pub mod minimax_h3;
 mod minimax_mtp;
 mod minimax_vq;
@@ -40,6 +42,7 @@ mod naive_mtp;
 mod payload;
 mod progress;
 mod qwen35;
+mod sample;
 mod serving;
 mod serving_cuda;
 mod serving_host;
@@ -89,6 +92,7 @@ pub use layout::{
     validate_mtp_layouts, validate_support_layouts, LayoutError, LayoutSpec, TypeClass,
 };
 pub use ling31_vq::Feature as Ling31Feature;
+
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -109,6 +113,7 @@ pub use mimo2::{
     MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
     VISION_END, VISION_START,
 };
+pub use mimo2_vq::Feature as Mimo2VqFeature;
 pub use minimax_vq::media as minimax_media;
 pub use minimax_vq::Feature as MinimaxFeature;
 pub use payload::{
@@ -118,6 +123,7 @@ pub use payload::{
     MAGIC as PAYLOAD_MAGIC, U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
 };
 pub use progress::PrefillCheckpoint;
+pub use sample::Sampler;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, native_ctx_default, open_draft_tokens,
     parse_disk_space, resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView,
@@ -181,11 +187,10 @@ use std::ptr::{self, NonNull};
 
 use ds4_sys::{
     ds4_bridge_bind_plan, ds4_bridge_bind_plan_check, ds4_bridge_bind_slot,
-    ds4_bridge_distributed_options, ds4_bridge_encode_chat_prompt, ds4_bridge_eval,
-    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio,
-    ds4_bridge_inkling_pixels, ds4_bridge_model, ds4_bridge_model_boot_prewarm,
-    ds4_bridge_model_free, ds4_bridge_model_open, ds4_bridge_model_open_distributed,
-    ds4_bridge_model_open_options, ds4_bridge_model_run_distributed_worker,
+    ds4_bridge_distributed_options, ds4_bridge_eval, ds4_bridge_eval_speculative_argmax,
+    ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio, ds4_bridge_inkling_pixels,
+    ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
+    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
     ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
     ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
     ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
@@ -196,9 +201,9 @@ use ds4_sys::{
     ds4_bridge_session_load_payload_range, ds4_bridge_session_load_snapshot,
     ds4_bridge_session_output_head_bench, ds4_bridge_session_payload_bytes,
     ds4_bridge_session_power, ds4_bridge_session_prefill_cap, ds4_bridge_session_rewind,
-    ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
-    ds4_bridge_session_save_layer_payload, ds4_bridge_session_save_payload,
-    ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
+    ds4_bridge_session_sample_excluding, ds4_bridge_session_save_layer_payload,
+    ds4_bridge_session_save_payload, ds4_bridge_session_save_snapshot,
+    ds4_bridge_session_set_power, ds4_bridge_session_set_spec_sampler, ds4_bridge_session_sync,
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
     ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
@@ -1088,6 +1093,42 @@ pub struct Session<'m> {
     _not_send: PhantomData<*const ()>,
 }
 
+type SpecVerifyFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, usize, u32, *const i32, u32, *mut i32);
+
+/// One trial's sampler, stream and draws, lent to native for the trial.
+struct SpecTrial<'r> {
+    sampler: Sampler,
+    rng: &'r mut u64,
+    target: Vec<i32>,
+    drawn: usize,
+}
+
+/// A trial's sample-and-match over its verify rows ([`sample::match_rows`]).
+unsafe extern "C" fn spec_verify(
+    ud: *mut std::ffi::c_void,
+    rows: *const f32,
+    stride: usize,
+    vocab: u32,
+    tokens: *const i32,
+    n: u32,
+    target: *mut i32,
+) {
+    // SAFETY: eval_speculative lends its SpecTrial as `ud` for the trial;
+    // native passes n tokens and targets and n live rows `stride` apart.
+    let (trial, tokens, target) = unsafe {
+        (
+            &mut *ud.cast::<SpecTrial>(),
+            std::slice::from_raw_parts(tokens, n as usize),
+            std::slice::from_raw_parts_mut(target, n as usize),
+        )
+    };
+    let row =
+        |i: usize| unsafe { std::slice::from_raw_parts(rows.add(i * stride), vocab as usize) };
+    trial.drawn = sample::match_rows(row, tokens, &trial.sampler, trial.rng, target);
+    trial.target = target.to_vec();
+}
+
 pub struct SessionSnapshot {
     raw: NonNull<ds4_bridge_snapshot>,
     host: Option<SessionLedger>,
@@ -1233,8 +1274,7 @@ fn pack_sibling_ffi(attach: &SiblingAttach) -> Result<FfiSupport> {
 //   ds4_bridge_model_boot_prewarm (device graph/weight warm)
 // MOVED (host catalog, no FFI):
 //   model_id / routed_quant_bits
-// MOVE later (production already left):
-//   ds4_bridge_model_run_distributed_worker -> assemble_worker (oracle FFI)
+//   distributed worker -> ds4_dist::assemble_worker
 /// The bind plan for an artifact, resolved and validated: every family goes
 /// from the shape alone except V4.1, whose source-layer conditionals, engram
 /// layers and tower expert form come from the `deepseek4.*` metadata wire
@@ -1316,6 +1356,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.variant == Variant::Mimo26FlashVq {
+        let g = mimo2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1368,6 +1414,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => MinimaxFeature::Draft,
         };
         TensorInventory::open_minimax(Path::new(path), feature)
+    } else if identified.shape.variant == Variant::Mimo26FlashVq {
+        let feature = match parts {
+            ProbeParts::Trunk => Mimo2VqFeature::Trunk,
+            ProbeParts::WithMtp => Mimo2VqFeature::Mtp,
+        };
+        TensorInventory::open_mimo2_vq(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }
@@ -1385,7 +1437,7 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             message: e.to_string(),
         })?;
     }
-    if identified.shape.family == ModelFamily::Mimo2 {
+    if identified.shape.variant == Variant::Mimo26Flash {
         Mimo2Plan::validate_inventory(&inventory).map_err(|e| Error {
             code: 1,
             message: e.to_string(),
@@ -1672,10 +1724,26 @@ impl Model {
                 message: "MiMo requires one full CUDA model without a DSpark sidecar".into(),
             });
         }
+        if identified.shape.variant == Variant::Mimo26FlashVq && tuning.vision_path.is_some() {
+            return Err(Error {
+                code: 1,
+                message: "MiMo VQ maps its release's own vision and audio parts".into(),
+            });
+        }
         if dflash {
+            let root = std::path::PathBuf::from(path);
             let path = std::path::Path::new(mtp_path.unwrap());
             if identified.shape.family == ModelFamily::BeamVq {
                 beam_vq::dflash2::inspect(path).map_err(|message| Error { code: 1, message })?;
+            } else if identified.shape.variant == Variant::Mimo26FlashVq {
+                // Only the release's own DFlash part, hashed with the release.
+                let part = mimo2_vq::drafter_path(&root);
+                if part.and_then(|p| p.canonicalize().ok()) != path.canonicalize().ok() {
+                    return Err(Error {
+                        code: 1,
+                        message: "MiMo VQ DFlash must be the release's dflash part".into(),
+                    });
+                }
             } else {
                 crate::mimo2::inspect_dflash(path).map_err(|error| Error {
                     code: 1,
@@ -1703,6 +1771,11 @@ impl Model {
             TensorInventory::open_minimax(
                 Path::new(path),
                 minimax_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else if identified.shape.variant == Variant::Mimo26FlashVq {
+            TensorInventory::open_mimo2_vq(
+                Path::new(path),
+                mimo2_vq::feature(tuning.mtp_draft_tokens, dflash),
             )
         } else {
             TensorInventory::open(std::path::Path::new(path))
@@ -1951,6 +2024,14 @@ impl Model {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
         }
+        // MiMo VQ maps its release's vision part; native opens the audio part
+        // beside it. Both are hashed here first.
+        if identified.shape.variant == Variant::Mimo26FlashVq {
+            let (vision, audio) = mimo2_vq::media_paths(Path::new(path));
+            tuning.vision_path = vision
+                .filter(|_| audio.is_some())
+                .map(|p| p.to_string_lossy().into_owned());
+        }
         let vision_path = tuning
             .vision_path
             .as_deref()
@@ -2007,6 +2088,11 @@ impl Model {
             directional_steering_ffn: tuning.steering_ffn,
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
+        // Every native draw (serial, banks, verify rows) is the Rust sampler.
+        static HOST_SAMPLER: std::sync::Once = std::sync::Once::new();
+        HOST_SAMPLER.call_once(|| unsafe {
+            ds4_sys::ds4_bridge_set_host_sampler(Some(sample::host_draw));
+        });
         let mut raw = ptr::null_mut();
         let rc = unsafe {
             match ffi_distributed.as_mut() {
@@ -2320,22 +2406,6 @@ impl Model {
         Some(GraphFitQuote::from_bridge(raw))
     }
 
-    pub fn run_distributed_worker(&self, ctx_size: i32) -> Result<i32> {
-        let mut err = [0u8; 512];
-        let rc = unsafe {
-            ds4_bridge_model_run_distributed_worker(
-                self.raw.as_ptr(),
-                ctx_size,
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
-        };
-        if rc != 0 {
-            return Err(fail(rc, &err));
-        }
-        Ok(rc)
-    }
-
     pub fn token_eos(&self) -> i32 {
         self.vocab.engine_eos()
     }
@@ -2386,24 +2456,24 @@ impl Model {
         prompt: &[u8],
         think_mode: i32,
     ) -> Result<TokenBuffer> {
+        let mode = match think_mode {
+            0 => ChatThinkMode::None,
+            1 => ChatThinkMode::Low,
+            2 => ChatThinkMode::High,
+            3 => ChatThinkMode::Max,
+            _ => {
+                return Err(Error {
+                    code: 1,
+                    message: "invalid thinking mode".into(),
+                })
+            }
+        };
         if self.chat_template.is_some() || self.family != ModelFamily::DeepSeek4 {
             let text = |bytes| {
                 std::str::from_utf8(bytes).map_err(|e| Error {
                     code: 1,
                     message: format!("chat template input is not UTF-8: {e}"),
                 })
-            };
-            let mode = match think_mode {
-                0 => ChatThinkMode::None,
-                1 => ChatThinkMode::Low,
-                2 => ChatThinkMode::High,
-                3 => ChatThinkMode::Max,
-                _ => {
-                    return Err(Error {
-                        code: 1,
-                        message: "invalid thinking mode".into(),
-                    })
-                }
             };
             let mut messages = Vec::new();
             if let Some(system) = system.filter(|s| !s.is_empty()) {
@@ -2412,40 +2482,12 @@ impl Model {
             messages.push(serde_json::json!({"role":"user", "content":text(prompt)?}));
             return self.encode_messages(&messages, mode);
         }
-        let c_system = match system {
-            Some(s) => Some(CString::new(s).map_err(|_| Error {
+        self.vocab
+            .encode_deepseek_prompt(system, prompt, mode)
+            .map_err(|e| Error {
                 code: 1,
-                message: "system contains NUL".into(),
-            })?),
-            None => None,
-        };
-        let c_prompt = CString::new(prompt).map_err(|_| Error {
-            code: 1,
-            message: "prompt contains NUL".into(),
-        })?;
-        // BPE merges only shrink and specials add a bounded prefix.
-        let cap = prompt.len() + system.map_or(0, <[u8]>::len) + 256;
-        let mut out = vec![0i32; cap];
-        let mut n_out = 0i32;
-        let mut err = [0u8; 256];
-        let rc = unsafe {
-            ds4_bridge_encode_chat_prompt(
-                self.raw.as_ptr(),
-                c_system.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
-                c_prompt.as_ptr(),
-                think_mode,
-                out.as_mut_ptr(),
-                cap as i32,
-                &mut n_out,
-                err.as_mut_ptr() as *mut c_char,
-                err.len(),
-            )
-        };
-        if rc != 0 {
-            return Err(fail(rc, &err));
-        }
-        out.truncate(n_out.max(0) as usize);
-        Ok(TokenBuffer::from_tokens(out))
+                message: format!("DeepSeek prompt encode failed: {e}"),
+            })
     }
 
     pub fn tokenize_text(&self, text: &str) -> Result<TokenBuffer> {
@@ -2530,8 +2572,21 @@ impl Session<'_> {
     }
 
     pub fn last_plan(&self, tokens: &[i32]) -> SyncPlan {
-        self.host
-            .plan_sync(tokens, self.host.planned_exaone_rewind_span())
+        let mut plan = self
+            .host
+            .plan_sync(tokens, self.host.planned_exaone_rewind_span());
+
+        // MiMo resumes inside its SWA ring: only native knows the newest row
+        // written and a restored snapshot's floor.
+        if self.host.family == ModelFamily::Mimo2 && self.host.valid && plan.rebuild && !plan.err {
+            let n = tokens.len() as i32;
+            let keep = unsafe {
+                ds4_sys::ds4_bridge_mimo2_sync_keep(self.raw.as_ptr(), tokens.as_ptr(), n)
+            };
+            plan.start = keep.max(0);
+            plan.rebuild = plan.start == 0;
+        }
+        plan
     }
 
     fn check_sync(&self, tokens: &TokenBuffer) -> Result<SyncPlan> {
@@ -3249,38 +3304,111 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// [`Self::eval_speculative`] with argmax targets and no host cut.
     pub fn eval_speculative_argmax(
         &mut self,
         first: i32,
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
+        let mut all = |prefix: &[i32]| prefix.len();
+        self.eval_speculative(first, max_tokens, eos, Sampler::GREEDY, &mut 0, &mut all)
+    }
+
+    /// Commit `first` and the drafts its family's trial accepts, one step.
+    /// Every family shares the rule: the target draws each verify row with
+    /// `sampler` (sample-and-match, TensorRT-LLM's and llama.cpp's default;
+    /// argmax at temperature 0) and a draft is kept while it equals the draw,
+    /// ending after `eos`. `limit(prefix)` then cuts the prefix before commit
+    /// where the host's own policy says the plain loop must decide (a forced
+    /// token, a stop token). Every draw is spent from `rng`; an uncut step
+    /// hands its last kept row's draw to the next ordinary [`Self::sample`]
+    /// of that row with the same sampler ([`sample::pending_token`]), so a
+    /// stream keeps plain sampling's distribution.
+    pub fn eval_speculative(
+        &mut self,
+        first: i32,
+        max_tokens: i32,
+        eos: i32,
+        sampler: Sampler,
+        rng: &mut u64,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
+    ) -> Result<Vec<i32>> {
+        self.host.pending_draw = None;
+        let raw = self.raw.as_ptr();
+        let sampling = sampler.temperature > 0.0;
+        let mut trial = SpecTrial {
+            sampler,
+            rng,
+            target: Vec::new(),
+            drawn: 0,
+        };
+        let verify = sampling.then_some(spec_verify as SpecVerifyFn);
+        let ud = (&mut trial as *mut SpecTrial).cast();
+        // SAFETY: `trial` outlives the call; the clear below drops native's
+        // borrow before it goes away.
+        unsafe { ds4_bridge_session_set_spec_sampler(raw, verify, ud) };
+        let mut cut = false;
+        let accepted = {
+            let mut cutting = |prefix: &[i32]| {
+                let keep = limit(prefix);
+                cut |= keep < prefix.len();
+                keep
+            };
+            self.eval_family_spec(first, max_tokens, eos, &mut cutting)
+        };
+        unsafe { ds4_bridge_session_set_spec_sampler(raw, None, std::ptr::null_mut()) };
+        let accepted = accepted?;
+        // Every verify draw is spent. An uncut step hands its last kept row's
+        // draw to the next plain sample there.
+        let pending =
+            sample::pending_token(&trial.target, trial.drawn, accepted.len(), cut, sampling);
+        self.host.pending_draw = pending.map(|token| sample::PendingDraw {
+            pos: self.pos(),
+            generation: self.native_generation(),
+            token,
+            sampler,
+            rng: *trial.rng,
+        });
+        Ok(accepted)
+    }
+
+    fn eval_family_spec(
+        &mut self,
+        first: i32,
+        max_tokens: i32,
+        eos: i32,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
+    ) -> Result<Vec<i32>> {
         if matches!(self.host.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
-            return self.eval_glm_argmax(first, max_tokens, eos);
+            return self.eval_glm_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Inkling {
-            return self.eval_inkling_argmax(first, max_tokens, eos);
+            return self.eval_inkling_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Step37 {
-            return self.eval_step37_argmax(first, max_tokens, eos);
+            return self.eval_step37_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Dots3Note {
-            return self.eval_dots3_argmax(first, max_tokens, eos);
+            return self.eval_dots3_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Mimo2 {
-            return self.eval_mimo2_argmax(first, max_tokens, eos);
+            return self.eval_mimo2_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::IQuestQ1 {
-            return self.eval_iquest_argmax(first, max_tokens, eos);
+            return self.eval_iquest_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::NaiveN05 {
-            return self.eval_naive_argmax(first, max_tokens, eos);
+            return self.eval_naive_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::BeamVq {
-            return self.eval_beam_argmax(first, max_tokens, eos);
+            return self.eval_beam_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::MinimaxVq {
-            return self.eval_minimax_argmax(first, max_tokens, eos);
+            return self.eval_minimax_argmax(first, max_tokens, eos, limit);
+        }
+        if self.host.family == ModelFamily::Ling31Vq {
+            return self.eval_ling31_argmax(first, max_tokens, eos, limit);
         }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
@@ -3449,6 +3577,9 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// One draw from the committed row's logits ([`sample::draw`]): the
+    /// same sampler a speculative trial verifies with. A speculative step's
+    /// handed-on draw for this row is that draw. -1 without logits.
     pub fn sample(
         &mut self,
         temperature: f32,
@@ -3457,9 +3588,27 @@ impl Session<'_> {
         min_p: f32,
         rng: &mut u64,
     ) -> i32 {
-        unsafe {
-            ds4_bridge_session_sample(self.raw.as_ptr(), temperature, top_k, top_p, min_p, rng)
+        let sampler = Sampler {
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+        };
+        if let Some(pending) = self.host.pending_draw.take() {
+            if pending.here(self.pos(), self.native_generation(), &sampler, *rng) {
+                return pending.token;
+            }
         }
+        let raw = self.raw.as_ptr();
+        sample::with_row(self.shape.n_vocab as usize, |row| {
+            // SAFETY: native copies at most `row.len()` floats into the row.
+            let n =
+                unsafe { ds4_bridge_session_copy_logits(raw, row.as_mut_ptr(), row.len() as i32) };
+            if n <= 0 {
+                return -1;
+            }
+            sample::draw(&row[..n as usize], &sampler, rng, [-1, -1])
+        })
     }
 
     pub fn sample_excluding(
@@ -4063,6 +4212,7 @@ mod tests {
         static GLM_TRIAL_CALLS: Cell<u32> = const { Cell::new(0) };
         static GLM_FIRST: Cell<i32> = const { Cell::new(0) };
         static GLM_KEEP: Cell<i32> = const { Cell::new(0) };
+        static MIMO2_KEEP: Cell<i32> = const { Cell::new(0) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4224,6 +4374,49 @@ mod tests {
     }
 
     #[no_mangle]
+    extern "C" fn ds4_bridge_session_set_spec_sampler(
+        _s: *mut ds4_bridge_session,
+        _verify: Option<
+            unsafe extern "C" fn(
+                *mut std::ffi::c_void,
+                *const f32,
+                usize,
+                u32,
+                *const i32,
+                u32,
+                *mut i32,
+            ),
+        >,
+        _ud: *mut std::ffi::c_void,
+    ) -> i32 {
+        0
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_ling31_trial(
+        _s: *mut ds4_bridge_session,
+        _first: i32,
+        _max: i32,
+        _tokens: *mut i32,
+        _target: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        0
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_ling31_commit(
+        _s: *mut ds4_bridge_session,
+        _keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
     extern "C" fn ds4_bridge_eval_speculative_argmax(
         _s: *mut ds4_bridge_session,
         _first: i32,
@@ -4355,6 +4548,33 @@ mod tests {
         errlen: usize,
     ) -> i32 {
         ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_mimo2_sync_keep(
+        _s: *mut ds4_bridge_session,
+        _tokens: *const i32,
+        _n_tokens: i32,
+    ) -> i32 {
+        MIMO2_KEEP.with(Cell::get)
+    }
+
+    #[test]
+    fn mimo2_plan_takes_native_keep() {
+        // Native counts its SWA ring from the newest row written, which an
+        // earlier, longer branch may have set; the live length cannot.
+        let mut session = audit_session(ModelFamily::Mimo2);
+        let live: Vec<i32> = (0..2_000).collect();
+        session.host.replace_checkpoint(&live);
+        for keep in [0, 1_989] {
+            MIMO2_KEEP.with(|k| k.set(keep));
+            let plan = session.last_plan(&live[..1_990]);
+            assert_eq!((plan.start, plan.rebuild), (keep, keep == 0));
+        }
+
+        // An extension keeps the live rows without asking.
+        MIMO2_KEEP.with(|k| k.set(-1));
+        assert_eq!(session.last_plan(&[&live[..], &[7]].concat()).start, 2_000);
     }
 
     #[no_mangle]
@@ -4541,7 +4761,9 @@ mod tests {
                 _not_send: PhantomData,
             });
             session.host.replace_checkpoint(&[1, 2, 3]);
-            assert!(session.eval_step37_argmax(first, 4, 99).is_err());
+            assert!(session
+                .eval_step37_argmax(first, 4, 99, &mut |p| p.len())
+                .is_err());
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
             assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
@@ -4566,7 +4788,9 @@ mod tests {
         let prefix = [1, 2, 3];
         session.host.replace_checkpoint(&prefix);
         session.host.mtp_draft_valid = true;
-        assert!(session.eval_iquest_argmax(4, 4, 0).is_err());
+        assert!(session
+            .eval_iquest_argmax(4, 4, 0, &mut |p| p.len())
+            .is_err());
         assert_eq!(session.generation(), session.native_generation());
 
         if failure == IQuestFailure::Reject {
@@ -4685,7 +4909,9 @@ mod tests {
                 _not_send: PhantomData,
             });
             session.host.replace_checkpoint(&[1, 2, 3]);
-            assert!(session.eval_dots3_argmax(first, 4, 99).is_err());
+            assert!(session
+                .eval_dots3_argmax(first, 4, 99, &mut |p| p.len())
+                .is_err());
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
             assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });

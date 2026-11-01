@@ -8,6 +8,62 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Removes the built-in coding agent (`ds4-agent`, `ds4-agent-c`, the
+  `ds4-web` crate and their parity oracles). ds4 is a serving engine:
+  agents and tool frameworks connect over HTTP and own their tool loop.
+- DeepSeek V4 CLI and bench prompts encode on the host; the native bridge
+  drops twelve entries the Rust host no longer calls (tokenizer, stop/EOS,
+  C sampler, session position, model id, distributed worker).
+
+## v0.1.5 — 2026-11-01
+
+[Release ledger](docs/releases/v0.1.5.md).
+
+- Adds [MiMo-V2.6-Flash VQ](docs/mimo2-vq.md) (RL and UNCENSORED): GVQ1
+  experts, FP8 full-layer KV, embedded MTP or DFlash, native 1M on the
+  serial lane; MTP context fill from the target ring and E4M3 long prefill.
+- Adds [Ling-3.1-flash-1019 VQ](docs/ling31-flash-vq.md) with 1M YaRN
+  serving, plus Ling-3.1 prefill and MTP decode work.
+- MiniMax-M3.1 VQ prefill and decode work; tool arguments stream and tool
+  projections are validated (issues #116/#117).
+- CI runs four Makefile groups (`ci-lint`, `ci-rust`, `ci-parity`,
+  `ci-model-free`) as parallel jobs and holds only checks that cover every
+  family; one family's model-free checks are its `gate-<family>` target.
+  Fixes the agent shell-job test that read a job's exit before its watcher
+  reported it.
+- Host behavior has one Rust implementation ([CONTRIBUTING](CONTRIBUTING.md)).
+  The C host executables and C host logic Rust owns are deprecated: they
+  build only on request, print a notice, and receive no features or fixes.
+- Sampling follows vLLM/SGLang. Values a request omits come from new
+  `--temp`/`--top-p`/`--top-k`/`--min-p` flags, then the model's
+  `generation_config.json` (else GGUF `general.sampling.*`), then OpenAI's;
+  `max_new_tokens` there sets the default `max_tokens`. The old fallback was
+  top-p 1.0 with min-p 0.05 whatever the model recommended. A request
+  without a seed gets a fresh one (it reused one fixed stream, so a looping
+  answer looped again on every retry); `--seed` seeds that sequence.
+- Every position samples with the request's values. Removed: the fixed
+  thinking sampler for families outside a list, argmax inside DeepSeek tool
+  syntax, and the agent-turn reasoning cap that closed thinking after
+  64-512 tokens with a forced `</think>` (a C-server Solar workaround, no
+  model's official behavior). `tool_choice` "required" and MiMo's chosen
+  XML head stay forced.
+- One sampler: native draws (bank lanes, verify rows, `sample_excluding`)
+  call back into Rust `sample::draw`. The C sampler and the `-c` oracle
+  executables are deprecated; parity cases for the removed policy are gone.
+
+- MiMo's serial lane resumes a prompt that leaves the live tokens at their
+  common prefix instead of prefilling from zero. Agent clients re-render the
+  last answer, so every turn missed: a Hermes tool turn re-prefilled 13-26K
+  tokens (cached_tokens 0 even for an identical resend). It re-runs the
+  drafters' 1,024-row window below the prefix while the SWA ring still holds
+  it; greedy text matches a cold prefill.
+- Drafts verify against the request's own sampler in every drafting family
+  ([sampled speculation](docs/speculative-sampling.md)): sampled, thinking
+  and tool-result requests speculate on the serial and bank lanes instead of
+  decoding one token at a time. A forced position ends a draft prefix before
+  commit; MiMo keeps the request's sampler while it thinks. Sampling moves to
+  Rust and sorts only the head of the distribution for top-p: MiMo VQ decodes
+  a sampled code answer at 32.7 tok/s with two drafts, from 18.4.
 - Adds [A.X-K2 VQ](docs/axk2-vq.md) (SK Telecom A.X K2 with 9/10-bit GVQ1
   experts): MLA with the DSA sparse indexer over FP8 latent and key rows,
   gated RMSNorm, the native 262,144-token context in one bank, Hermes tool

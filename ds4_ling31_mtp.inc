@@ -20,7 +20,7 @@ static bool l31_mtp_kv(ds4_ling31_graph *g, const ds4_model *m, const ds4_weight
         l31_norm(g, m, g->heads, g->cur, l->attn_norm, n, L31_EMBD) &&
         l31_mm(g, m, g->kv_raw, l->attn_kv_a_mqa, g->heads, n, DS4_GVQ_BF16) &&
         ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, n, 1u, L31_KV_ROW,
-            L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, 1.0f) &&
+            L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, g->rope_attn) &&
         ds4_gpu_l31_latent_norm(g->kv_norm, g->kv_raw, g->kv_norm_w[LING31_MTP], n, DS4_RMS_EPS) &&
         ds4_gpu_l31_store_latent(g->latent[LING31_MTP], g->k_pe[LING31_MTP], g->kv_norm,
             g->kv_raw, n, pos, g->ctx_cap, g->latent_mode);
