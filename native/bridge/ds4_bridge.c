@@ -183,6 +183,8 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->shape) ds4_host_shape_install(opt->shape);
     if (opt->vocab) ds4_host_vocab_install(opt->vocab);
     if (opt->bind) ds4_host_bind_map_install(opt->bind);
+    if (opt->ple) ds4_host_ple_install(opt->ple);
+    if (opt->mem) ds4_host_mem_policy_install(opt->mem);
     /* Sibling maps index the sibling's own tensor dir; only meaningful
      * when the matching path rides the same open. */
     if (opt->mtp_bind && opt->mtp_path && opt->mtp_path[0])
@@ -190,6 +192,7 @@ static int model_open_impl(ds4_bridge_model **out,
     if (opt->dspark_bind && opt->dspark_path && opt->dspark_path[0])
         ds4_host_dspark_bind_map_install(opt->dspark_bind);
     rc = ds4_engine_open(&engine, &eopt);
+    ds4_host_ple_clear();
     ds4_host_dspark_bind_map_clear();
     ds4_host_mtp_bind_map_clear();
     ds4_host_bind_map_clear();
@@ -884,7 +887,6 @@ void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp) {
     ds4_engine_set_decode_sampling(&face);
 }
 
-void ds4_bridge_set_mem_budget_mb(int mb) { ds4_set_mem_budget_mb(mb); }
 
 int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd) {
     if (!m || !m->engine) return 0;

@@ -447,4 +447,67 @@ static inline int ds4_host_bind_lookup(
     return 2;
 }
 
+/* Host-validated Qwen SSD-PLE sidecar.  Rust parses the manifest and checks
+ * its format, the official layout and the scale file; native rechecks only
+ * what keeps reads inside the files.  Borrowed for one ds4_engine_open.
+ * Names are relative to root. */
+#define DS4_HOST_PLE_NGRAM 3
+#define DS4_HOST_PLE_HEADS 16
+#define DS4_HOST_PLE_PARTS 128
+#define DS4_HOST_PLE_FILES 4
+
+typedef struct {
+    uint64_t row_start;
+    uint64_t rows;
+    uint64_t offset;          /* page-aligned byte offset in its file */
+    uint32_t file;
+    uint32_t reserved;
+} ds4_host_ple_part;
+
+typedef struct {
+    const char *name;
+    uint64_t bytes;
+} ds4_host_ple_file;
+
+typedef struct ds4_host_ple {
+    const char *root;
+    uint32_t version;         /* 1 BF16 rows, 2 FP8 E4M3FN rows */
+    uint32_t row_stride;
+    uint64_t usable_rows;
+    uint64_t padded_rows;
+    uint32_t vocab;
+    uint32_t eos;
+    uint64_t multipliers[DS4_HOST_PLE_NGRAM];
+    uint64_t head_vocab[DS4_HOST_PLE_HEADS];
+    uint64_t head_offset[DS4_HOST_PLE_HEADS];
+    uint32_t scale_bits;      /* V2: bits the host read from the scale file */
+    uint32_t workers;
+    uint64_t cache_bytes;
+    ds4_host_ple_part parts[DS4_HOST_PLE_PARTS];
+    ds4_host_ple_file files[DS4_HOST_PLE_FILES];
+} ds4_host_ple;
+
+void ds4_host_ple_install(const ds4_host_ple *p);
+void ds4_host_ple_clear(void);
+
+/* Host memory policy values.  Rust resolves them (flags, then
+ * DS4_MEM_FLOOR_GB, DS4_SESSION_GRAPH_*, DS4_BATCH_FIT_* and DS4_MEMGOV*)
+ * and passes them at open; native keeps the live allocation checks.
+ * Copied at install; the C hosts never install it and read the env. */
+#define DS4_HOST_GOV_CONSUMERS 5
+
+typedef struct ds4_host_mem_policy {
+    uint64_t floor_bytes;
+    uint64_t budget_bytes;            /* --mem-budget-mb; 0 = no L1 gate */
+    uint64_t session_graph_headroom;
+    uint64_t batch_fit_headroom;      /* pinned or static, when not derived */
+    uint64_t batch_fit_burst;         /* derived: floor + burst */
+    uint32_t batch_fit_derived;
+    uint32_t session_graph_fit;       /* 0 = gate off (fail open) */
+    uint8_t gov_mode[DS4_HOST_GOV_CONSUMERS]; /* ds4_gov_consumer order: 0 off, 1 observe, 2 enforce */
+    uint8_t reserved[3];
+} ds4_host_mem_policy;
+
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p);
+
 #endif

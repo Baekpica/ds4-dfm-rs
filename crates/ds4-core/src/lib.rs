@@ -33,6 +33,7 @@ mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
+mod mem_policy;
 mod mimo2;
 mod mimo2_vq;
 pub mod minimax_h3;
@@ -41,6 +42,7 @@ mod minimax_vq;
 mod naive;
 mod naive_mtp;
 mod payload;
+mod ple;
 mod progress;
 mod qwen35;
 mod sample;
@@ -166,8 +168,8 @@ pub use v41::{
     V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
 };
 pub use v41_run::{
-    set_mem_budget_mb, v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass,
-    V41KvDisk, V41KvHit, V41RunOptions, V41Sampling,
+    v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass, V41KvDisk, V41KvHit,
+    V41RunOptions, V41Sampling,
 };
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,
@@ -241,6 +243,11 @@ pub enum ModelOpenOption {
     SteeringAttn(f32),
     SteeringFfn(f32),
     Vision(String),
+    /// `--mem-floor-gb`; absent: `DS4_MEM_FLOOR_GB`, else 4.
+    MemFloorGb(u64),
+    /// `--mem-budget-mb`: the L1 load gate refuses a planned resident above
+    /// 85% of it.
+    MemBudgetMb(u64),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -285,6 +292,8 @@ struct OpenTuning {
     steering_attn: f32,
     steering_ffn: f32,
     vision_path: Option<String>,
+    mem_floor_gb: Option<u64>,
+    mem_budget_mb: Option<u64>,
 }
 
 impl Default for OpenTuning {
@@ -305,6 +314,8 @@ impl Default for OpenTuning {
             steering_attn: 0.0,
             steering_ffn: 0.0,
             vision_path: None,
+            mem_floor_gb: None,
+            mem_budget_mb: None,
         }
     }
 }
@@ -429,6 +440,8 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
             ModelOpenOption::SsdStreamingCold => tuning.ssd_streaming_cold = true,
             ModelOpenOption::SsdCacheAuto => tuning.ssd_cache_auto = true,
             ModelOpenOption::ServingBudget(req) => tuning.serving_budget = Some(req.clone()),
+            ModelOpenOption::MemFloorGb(gb) => tuning.mem_floor_gb = Some(*gb),
+            ModelOpenOption::MemBudgetMb(mb) => tuning.mem_budget_mb = Some(*mb),
             ModelOpenOption::SsdCacheExperts(count) if *count > 0 => {
                 tuning.ssd_streaming_cache_experts = *count;
             }
@@ -2053,6 +2066,16 @@ impl Model {
             Some(s) => (s.path.as_ptr(), s.map.as_c()),
             None => (ptr::null(), ptr::null()),
         };
+        // Qwen SSD-PLE: validated here, before the weight map; native opens
+        // it on graph backends only.
+        let mut ple = (identified.shape.family == ModelFamily::Qwen4Exp && backend != Backend::Cpu)
+            .then(|| ple::resolve(Path::new(path)))
+            .transpose()?;
+        let mem_policy = mem_policy::resolve(
+            identified.shape.family,
+            tuning.mem_floor_gb,
+            tuning.mem_budget_mb,
+        );
         let opt = ds4_bridge_model_open_options {
             model_path: c_path.as_ptr(),
             vision_path: vision_path
@@ -2089,6 +2112,8 @@ impl Model {
                 .unwrap_or(ptr::null()),
             directional_steering_attn: tuning.steering_attn,
             directional_steering_ffn: tuning.steering_ffn,
+            ple: ple.as_mut().map_or(ptr::null(), |sidecar| sidecar.ffi()),
+            mem: &mem_policy,
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
         // Every native draw (serial, banks, verify rows) is the Rust sampler.

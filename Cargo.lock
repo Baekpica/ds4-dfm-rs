@@ -342,6 +342,7 @@ dependencies = [
  "libloading 0.8.9",
  "regex",
  "rustfft",
+ "serde",
  "serde_json",
  "sha2",
  "unicode-normalization",

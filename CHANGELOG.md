@@ -17,6 +17,13 @@ for exact provenance. Historical entries retain their original scope.
 - A held instance lock (`DS4_LOCK_FILE`, default `/tmp/ds4.lock`) is an
   error from `ds4`, `ds4-bench` and `ds4-server`. Native model open used to
   call `exit(2)` inside the FFI call, ending the host without an error.
+- The Rust hosts parse and validate the Qwen SSD-PLE manifest before the
+  weight map and pass the sidecar to native, which keeps the page cache. A
+  missing or bad sidecar now fails at once instead of after the map.
+- Memory policy values (`--mem-floor-gb`, `--mem-budget-mb`, fit headrooms
+  and switch, governor modes) reach native as open options instead of
+  environment variables. An L1 budget refusal fails the model open (exit
+  1) instead of `_exit(137)`.
 
 ## v0.1.5 — 2026-11-01
 

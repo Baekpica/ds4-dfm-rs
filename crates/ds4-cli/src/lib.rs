@@ -1638,10 +1638,10 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     if let Some(path) = args.vision.as_deref() {
         mtp_opts.push(ds4_core::ModelOpenOption::Vision(path.to_string()));
     }
-    // --mem-budget-mb (unit Z): the engine's L1 load gate reads the budget
-    // at open (core_util.c:238-256); arm it before the model open.
-    if let Some(mb) = args.mem_budget_mb {
-        ds4_core::set_mem_budget_mb(mb);
+    // --mem-budget-mb (unit Z): the engine's L1 load gate at open
+    // (core_util.c:238-256); a non-positive value leaves it off.
+    if let Some(mb) = args.mem_budget_mb.and_then(|mb| u64::try_from(mb).ok()) {
+        mtp_opts.push(ds4_core::ModelOpenOption::MemBudgetMb(mb));
     }
     let model = match native_dist.as_ref() {
         Some(config) => ds4_core::Model::open_distributed_options(

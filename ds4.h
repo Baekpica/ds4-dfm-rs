@@ -1650,6 +1650,6 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
  * model open before any GPU buffer is bound. */
 void ds4_set_mem_budget_mb(int mb);
 uint64_t ds4_runtime_mem_budget_bytes(void);
-void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes);
+bool ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes);
 
 #endif

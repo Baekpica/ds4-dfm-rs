@@ -2734,6 +2734,18 @@ void ds4_host_bind_map_install(const ds4_host_bind_map *m) {
     g_host_bind_map = m;
 }
 
+/* Rust hosts pass the Qwen SSD-PLE sidecar they parsed and validated; the
+ * C hosts keep reading DS4_QWEN_PLE_* and the manifest. */
+static const ds4_host_ple *g_host_ple;
+
+void ds4_host_ple_install(const ds4_host_ple *p) {
+    g_host_ple = p;
+}
+
+void ds4_host_ple_clear(void) {
+    g_host_ple = NULL;
+}
+
 void ds4_host_bind_map_clear(void) {
     g_host_bind_map = NULL;
 }
@@ -10783,11 +10795,33 @@ uint64_t ds4_runtime_mem_budget_bytes(void) {
     return g_mem_budget_bytes;
 }
 
+/* Rust hosts pass the memory policy values at open (budget included);
+ * the C hosts keep their env reads and ds4_set_mem_budget_mb. */
+static ds4_host_mem_policy g_host_mem;
+static bool g_host_mem_set;
+
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) {
+    g_host_mem_set = p != NULL;
+    if (!p) return;
+    g_host_mem = *p;
+    g_mem_budget_bytes = p->budget_bytes;
+}
+
+/* DS4_SESSION_GRAPH_FIT=0 turns the session-graph fit gate off: the
+ * allocation fails open. */
+static bool ds4_session_graph_fit_off(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_fit == 0;
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    return fit && fit[0] == '0' && fit[1] == '\0';
+}
+
 #define DS4_L1_GATE_FRAC 0.85   /* core_util.c:10 */
 #define DS4_GIB (1024.0 * 1024.0 * 1024.0)   /* core_internal.h:91 */
 
-void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
-    if (g_mem_budget_bytes == 0) return;
+/* Returns false on refusal; the engine fails its open instead of the
+ * reference's _exit(137), which ended the Rust host inside the FFI call. */
+bool ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
+    if (g_mem_budget_bytes == 0) return true;
     const uint64_t planned = resident_model_bytes + kv_and_scratch_bytes;
     const uint64_t limit = (uint64_t)((double)g_mem_budget_bytes * DS4_L1_GATE_FRAC);
     if (planned > limit) {
@@ -10798,11 +10832,12 @@ void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_b
                 (double)kv_and_scratch_bytes / DS4_GIB,
                 DS4_L1_GATE_FRAC * 100.0, (double)g_mem_budget_bytes / DS4_GIB);
         fflush(stderr);
-        _exit(137);
+        return false;
     }
     fprintf(stderr,
             "ds4: L1 budget gate: planned resident %.2f GiB within %.2f GiB budget\n",
             (double)planned / DS4_GIB, (double)g_mem_budget_bytes / DS4_GIB);
+    return true;
 }
 
 #ifndef DS4_NO_GPU
@@ -18504,6 +18539,7 @@ static uint64_t metal_graph_alloc_bytes_estimate(
  * Backend-neutral (env + arithmetic only) and called unconditionally from
  * the server's serial quote path, so it must stay OUTSIDE the GPU guard. */
 uint64_t ds4_session_graph_headroom_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_headroom;
     uint64_t headroom = 1024ull << 20;
     const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
     if (he && he[0]) {
@@ -18578,8 +18614,7 @@ static bool metal_graph_session_fit_check(
         bool                     loud,
         ds4_session_graph_fit_quote *q) {   /* memgov D4-1: optional quote out */
     if (q) memset(q, 0, sizeof(*q));
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -37756,14 +37791,10 @@ static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
     return opening_rows;
 }
 
-static bool qwen4exp_engine_open_ple(ds4_engine *engine,
-                                     const char *model_path) {
-#ifdef __APPLE__
-    (void)engine;
-    (void)model_path;
-    return false;
-#else
-    if (!engine || !model_path || !model_path[0]) return false;
+#ifndef __APPLE__
+/* C hosts: sidecar and cache policy from DS4_QWEN_PLE_* and the manifest. */
+static ds4_ple_store *qwen4exp_open_ple_env(const char *model_path,
+                                            char *error, size_t error_size) {
     const char *slash = strrchr(model_path, '/');
     const bool filesystem_root = slash == model_path;
     const size_t root_len = filesystem_root ? 1u
@@ -37792,13 +37823,28 @@ static bool qwen4exp_engine_open_ple(ds4_engine *engine,
      * without changing their published BF16 metadata or their compute path. */
     const char *ple_dir = getenv("DS4_QWEN_PLE_DIR");
     const bool override_ple = ple_dir && ple_dir[0];
-    char error[512] = {0};
-    engine->qwen_ple_store = ds4_ple_store_open(
+    ds4_ple_store *store = ds4_ple_store_open(
         override_ple ? ple_dir : root,
         override_ple ? "ple-manifest.json" : "ple/ple-manifest.json",
         (size_t)cache_mb << 20,
-        workers, true, error, sizeof(error));
+        workers, true, error, error_size);
     free(root);
+    return store;
+}
+#endif
+
+static bool qwen4exp_engine_open_ple(ds4_engine *engine,
+                                     const char *model_path) {
+#ifdef __APPLE__
+    (void)engine;
+    (void)model_path;
+    return false;
+#else
+    if (!engine || !model_path || !model_path[0]) return false;
+    char error[512] = {0};
+    engine->qwen_ple_store = g_host_ple
+        ? ds4_ple_store_open_host(g_host_ple, true, error, sizeof(error))
+        : qwen4exp_open_ple_env(model_path, error, sizeof(error));
     if (!engine->qwen_ple_store) {
         fprintf(stderr, "ds4: cannot open Qwen SSD-PLE sidecars: %s\n",
                 error[0] ? error : "unknown error");
@@ -60156,23 +60202,29 @@ static uint64_t ds4_batch_slabs_bank_bytes(const ds4_gpu_graph *g, bool mtp, boo
  * derivation disclosed once per boot on its own line. */
 static uint64_t ds4_mem_floor_bytes(void);
 static uint64_t ds4_batch_fit_headroom_bytes(int ctx_size) {
-    const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
     (void)ctx_size;
-    if (he && he[0]) {
-        const long hv = atol(he);
-        if (hv >= 0) return (uint64_t)hv << 20;
+    uint64_t burst;
+    if (g_host_mem_set) {
+        if (!g_host_mem.batch_fit_derived) return g_host_mem.batch_fit_headroom;
+        burst = g_host_mem.batch_fit_burst;
+    } else {
+        const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
+        if (he && he[0]) {
+            const long hv = atol(he);
+            if (hv >= 0) return (uint64_t)hv << 20;
+        }
+        { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
+          if (de && de[0] == '0' && de[1] == '\0')
+              return 6144ull << 20; }      /* kill switch: the V7 static */
+        /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
+         * (cuBLASLt and MMQ kernel images the driver loads on first use). */
+        burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
+        { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
+          if (be && be[0]) {
+              const long bv = atol(be);
+              if (bv >= 0) burst = (uint64_t)bv << 20;
+          } }
     }
-    { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
-      if (de && de[0] == '0' && de[1] == '\0')
-          return 6144ull << 20; }      /* kill switch: the V7 static */
-    /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
-     * (cuBLASLt and MMQ kernel images the driver loads on first use). */
-    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
-    { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
-      if (be && be[0]) {
-          const long bv = atol(be);
-          if (bv >= 0) burst = (uint64_t)bv << 20;
-      } }
     const uint64_t floor = ds4_mem_floor_bytes();
     const uint64_t headroom = floor + burst;
     static int disclosed;              /* boot-path call sites only */
@@ -60349,6 +60401,7 @@ static bool ds4_batch_fit_kv_plan_enabled(void) {
  * serves as the A/B kill switch at 0).  Distinct from the fit headroom
  * above: headroom is a boot PLANNING margin, the floor is a LIVE line. */
 static uint64_t ds4_mem_floor_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.floor_bytes;
     static uint64_t floor_b = UINT64_MAX;
     if (floor_b == UINT64_MAX) {
         uint64_t f = 4ull << 30;
@@ -60478,6 +60531,13 @@ void ds4_gov_modes_init(void) {
         DS4_GOV_MODE_ENFORCE,   /* SERIAL_SESSION   (D2-4)  */
         DS4_GOV_MODE_ENFORCE,   /* STATIC_BATCH     (D2-5)  */
     };
+    if (g_host_mem_set) {
+        for (int c = 0; c < DS4_GOVC__COUNT; c++) {
+            g_gov_mode[c] = g_host_mem.gov_mode[c];
+        }
+        g_gov_modes_ready = 1;
+        return;
+    }
     int gdef = -1;
     const char *g = getenv("DS4_MEMGOV");
     if (g && g[0]) {
@@ -73812,6 +73872,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
 #endif
         int model_map_ok = 0;
+        bool budget_ok = true; /* --mem-budget-mb L1 gate */
         if (opt->ssd_streaming) {
             ds4_model_map_span_vec spans;
             if (!glm53_stream_spans(&e->weights, &spans)) {
@@ -73877,8 +73938,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     load_end,
                     spans.len,
                     (double)span_bytes / 1073741824.0);
-            ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
-            model_map_ok = ds4_gpu_set_model_map_spans(e->model.map,
+            budget_ok = ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_spans(e->model.map,
                                                         e->model.size,
                                                         offsets,
                                                         sizes,
@@ -73908,16 +73969,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                         resident += spans.v[i].end - spans.v[i].off;
                     }
                     free(spans.v);
-                    ds4_l1_budget_gate(resident, 0);
+                    budget_ok = ds4_l1_budget_gate(resident, 0);
                 }
             } else {
-                ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
+                budget_ok = ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
             }
-            model_map_ok = ds4_gpu_set_model_map_range(e->model.map,
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_range(e->model.map,
                                                        e->model.size,
                                                        e->model.tensor_data_pos,
                                                        e->model.size - e->model.tensor_data_pos,
                                                        e->model.max_tensor_bytes);
+        }
+        if (!budget_ok) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
         }
         if (!model_map_ok) {
             fprintf(stderr,
@@ -74623,8 +74689,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
                                           uint32_t ctx_size,
                                           uint32_t prefill_cap,
                                           bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
 
     const ds4_context_memory plan =
         solar_graph_context_memory_estimate(backend, ctx_size);
@@ -74644,12 +74709,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long v = atol(he);
-        if (v >= 0) headroom = (uint64_t)v << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74676,8 +74736,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
                                            uint32_t ctx_size,
                                            uint32_t prefill_cap,
                                            bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
     if (backend != DS4_BACKEND_CUDA || ctx_size > DS4_ROPE_ORIG_CTX) {
         return false;
     }
@@ -74700,12 +74759,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long value = atol(he);
-        if (value >= 0) headroom = (uint64_t)value << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74741,8 +74795,7 @@ static bool glm53_graph_session_fit_check(
     if (q) memset(q, 0, sizeof(*q));
     const uint64_t plan = glm53_session_bytes(ctx_size, rows, window, mtp);
     if (backend != DS4_BACKEND_CUDA || plan == 0u) return false;
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74782,8 +74835,7 @@ static bool qwen4exp_graph_session_fit_check(ds4_backend backend,
                                               bool loud,
                                               ds4_session_graph_fit_quote *q) {
     if (q) memset(q, 0, sizeof(*q));
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74860,9 +74912,8 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = iquest_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; } return true;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74887,9 +74938,8 @@ static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling31_memory(ctx, cap).total_bytes + ling31_mtp_bytes(ctx, ling31_session_drafts(e));
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74915,9 +74965,8 @@ static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = beam_memory(ctx, cap).total_bytes + (beam_drafting(e) ? beam_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74938,9 +74987,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = axk2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74959,9 +75007,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 // The serial graph's chunk, halved like a bank's until it fits beside the
 // session headroom.
 static uint32_t axk2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if (e->backend != DS4_BACKEND_CUDA || (fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (e->backend != DS4_BACKEND_CUDA || ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         return cap;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74974,9 +75021,8 @@ static bool minimax_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = minimax_memory(ctx, cap).total_bytes + (minimax_drafting(e) ? minimax_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74997,9 +75043,8 @@ static bool naive_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = naive_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75020,9 +75065,8 @@ static bool mimo2_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = mimo2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75045,9 +75089,8 @@ static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = step37_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75085,9 +75128,8 @@ static bool ling3vl_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling3vl_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75116,9 +75158,8 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     if (e->backend != DS4_BACKEND_CUDA || !need) {
         return false;
     }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) {
             q->fits = 1;
             q->fail_open = 1;

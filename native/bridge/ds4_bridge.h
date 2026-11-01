@@ -121,6 +121,8 @@ typedef struct {
     const char *directional_steering_file; /* optional; borrowed */
     float directional_steering_attn;
     float directional_steering_ffn;
+    const ds4_host_ple *ple;   /* optional Qwen SSD-PLE sidecar; borrowed */
+    const ds4_host_mem_policy *mem; /* optional memory policy; copied */
 } ds4_bridge_model_open_options;
 
 typedef struct {
@@ -357,10 +359,6 @@ typedef struct {
     ds4_bridge_v41_greedy_fn greedy_fn; void *greedy_ud;
 } ds4_bridge_v41_sampling;
 void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp);
-/* --mem-budget-mb (unit Z): the engine's process memory red line and its
- * L1 pre-flight load gate (core_util.c:198-256); call before opening the
- * model.  mb <= 0 leaves the budget unset (no-op gate). */
-void ds4_bridge_set_mem_budget_mb(int mb);
 /* The V4.1 zchain sidecar mount (unit Z).  The engine mounts ② / ③ per
  * state (v41_state_plugins, core_v41_state.c:77-87 -> v41_amp_load,
  * core_v41_amp.c:227-270); the Rust reader (crates/ds4-core/src/zchain.rs,

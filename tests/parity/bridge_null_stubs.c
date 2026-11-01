@@ -62,6 +62,9 @@ void ds4_host_shape_clear(void) {}
 void ds4_host_vocab_install(const ds4_host_vocab *v) { (void)v; }
 void ds4_host_vocab_clear(void) {}
 void ds4_host_bind_map_install(const ds4_host_bind_map *m) { (void)m; }
+void ds4_host_ple_install(const ds4_host_ple *p) { (void)p; }
+void ds4_host_ple_clear(void) {}
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) { (void)p; }
 void ds4_host_bind_map_clear(void) {}
 void ds4_host_mtp_bind_map_install(const ds4_host_bind_map *m) { (void)m; }
 void ds4_host_mtp_bind_map_clear(void) {}
@@ -666,7 +669,6 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
                                  void *ud) {
     (void)cb; (void)ud;
 }
-void ds4_set_mem_budget_mb(int mb) { (void)mb; }
 int ds4_v41_engram_count(void *engine) { (void)engine; return 0; }
 ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
                                 ds4_v41_wait_fn wait, void *wait_ud,

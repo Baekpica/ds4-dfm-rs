@@ -431,6 +431,8 @@ pub struct ds4_bridge_model_open_options {
     pub directional_steering_file: *const c_char,
     pub directional_steering_attn: c_float,
     pub directional_steering_ffn: c_float,
+    pub ple: *const ds4_host_ple,
+    pub mem: *const ds4_host_mem_policy,
 }
 
 #[repr(C)]
@@ -544,6 +546,64 @@ pub struct ds4_host_bind_look {
     pub required: u32,
     pub found: u32,
     pub index: u32,
+}
+
+/// Host memory policy values (`native/bridge/ds4_host_load.h`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ds4_host_mem_policy {
+    pub floor_bytes: u64,
+    pub budget_bytes: u64,
+    pub session_graph_headroom: u64,
+    pub batch_fit_headroom: u64,
+    pub batch_fit_burst: u64,
+    pub batch_fit_derived: u32,
+    pub session_graph_fit: u32,
+    pub gov_mode: [u8; 5],
+    pub reserved: [u8; 3],
+}
+
+pub const DS4_HOST_PLE_NGRAM: usize = 3;
+pub const DS4_HOST_PLE_HEADS: usize = 16;
+pub const DS4_HOST_PLE_PARTS: usize = 128;
+pub const DS4_HOST_PLE_FILES: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ds4_host_ple_part {
+    pub row_start: u64,
+    pub rows: u64,
+    pub offset: u64,
+    pub file: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_host_ple_file {
+    pub name: *const c_char,
+    pub bytes: u64,
+}
+
+/// Host-validated Qwen SSD-PLE sidecar (`native/bridge/ds4_host_load.h`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_host_ple {
+    pub root: *const c_char,
+    pub version: u32,
+    pub row_stride: u32,
+    pub usable_rows: u64,
+    pub padded_rows: u64,
+    pub vocab: u32,
+    pub eos: u32,
+    pub multipliers: [u64; DS4_HOST_PLE_NGRAM],
+    pub head_vocab: [u64; DS4_HOST_PLE_HEADS],
+    pub head_offset: [u64; DS4_HOST_PLE_HEADS],
+    pub scale_bits: u32,
+    pub workers: u32,
+    pub cache_bytes: u64,
+    pub parts: [ds4_host_ple_part; DS4_HOST_PLE_PARTS],
+    pub files: [ds4_host_ple_file; DS4_HOST_PLE_FILES],
 }
 
 #[repr(C)]
@@ -985,9 +1045,6 @@ extern "C" {
      * ds4_engine_set_decode_sampling, core_v41_api.c:10-13).  NULL resets to
      * the all-zero face = bare argmax. */
     pub fn ds4_bridge_v41_set_sampling(sp: *const ds4_bridge_v41_sampling);
-    /* --mem-budget-mb (unit Z): the engine's budget global + L1 load gate
-     * (core_util.c:198-256); call before opening the model. */
-    pub fn ds4_bridge_set_mem_budget_mb(mb: c_int);
     /* The V4.1 zchain sidecar mount (unit Z): the device side the Rust
      * reader (zchain.rs, P2/P3) drives, 1:1 with v41_amp_load's per-state
      * writes (core_v41_amp.c:227-270).  All return 1 on success, 0 on

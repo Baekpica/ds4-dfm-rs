@@ -44,6 +44,7 @@ required-features = ["h3-gates"]
 
 [dependencies]
 ds4-sys = { path = "../ds4-sys" }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = { version = "0.11", default-features = false }
 regex = "1"

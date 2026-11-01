@@ -63,7 +63,7 @@ freeze or permission to bind native internals.
 | Function | Meaning |
 |---|---|
 | `ds4_bridge_bind_plan_check` | host inventory + required-name table; 0 if native can consume it |
-| `ds4_bridge_model_open` | mmap-backed `ds4_engine_open`; optional `opt->plan` is checked first; optional `opt->tensors` replaces `parse_tensors` (owned name copies); optional `opt->shape` applies the pinned C literal + DeepSeek compress table and skips `config_validate_model`; optional `opt->vocab` applies host token/merge/specials and skips `vocab_load`; optional `opt->bind` is the host name→tensor-dir index so `model_find_tensor` skips the C name walk and the main-model `weights_validate_layout` |
+| `ds4_bridge_model_open` | mmap-backed `ds4_engine_open`; optional `opt->plan` is checked first; optional `opt->tensors` replaces `parse_tensors` (owned name copies); optional `opt->shape` applies the pinned C literal + DeepSeek compress table and skips `config_validate_model`; optional `opt->vocab` applies host token/merge/specials and skips `vocab_load`; optional `opt->bind` is the host name→tensor-dir index so `model_find_tensor` skips the C name walk and the main-model `weights_validate_layout`; optional `opt->ple` is the Qwen SSD-PLE sidecar Rust validated (native rechecks read bounds); optional `opt->mem` carries the memory policy values (floor, L1 budget, fit headrooms and switch, governor modes) that C hosts read from the environment |
 | `ds4_bridge_model_boot_prewarm` | idempotent `ds4_engine_boot_prewarm`; server calls it after batch placement and before listen/accept |
 | `ds4_bridge_model_free` | `ds4_engine_close` |
 | `ds4_bridge_drafter_shared` | read-only DSpark IPC import result; zero for NULL, absent or failed imports |
@@ -164,7 +164,7 @@ Open options stay a small C struct of scalars, `const char *`
 paths, and optional borrowed plan/tensor-dir/shape/vocab/bind pointers
 (model path, backend enum, thread count, defer-prewarm, then the
 optional `mtp_path` / `dspark_path` / `mtp_bind` / `dspark_bind`
-sibling fields appended at the end). Do
+sibling fields, then `ple` and `mem`, appended at the end). Do
 not pass `ds4_engine_options` by value into Rust — that struct will
 keep growing on the C side and is not the ABI.
 

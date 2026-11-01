@@ -1,4 +1,5 @@
 #include "ds4_ple.h"
+#include "native/bridge/ds4_host_load.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1122,6 +1123,8 @@ static bool manifest_validate_layout(ds4_ple_store *store,
     return true;
 }
 
+static void store_build_decode_table(ds4_ple_store *store);
+
 static bool store_load_scale(ds4_ple_store *store, const char *root,
                              char *error, size_t error_size) {
     if (store->layout.format_version != 2u) {
@@ -1141,7 +1144,11 @@ static bool store_load_scale(ds4_ple_store *store, const char *root,
     if (!valid) {
         return ple_error(error, error_size, "PLE FP8 scale file does not match the manifest");
     }
+    store_build_decode_table(store);
+    return true;
+}
 
+static void store_build_decode_table(ds4_ple_store *store) {
     uint32_t scale_word = (uint32_t)store->scale_bits << 16;
     float scale = 0.0f;
     memcpy(&scale, &scale_word, sizeof(scale));
@@ -1166,7 +1173,6 @@ static bool store_load_scale(ds4_ple_store *store, const char *root,
         word += 0x7fffu + ((word >> 16) & 1u);
         store->decode_table[code] = (uint16_t)(word >> 16);
     }
-    return true;
 }
 
 static bool store_open_files(ds4_ple_store *store, const char *root,
@@ -1547,21 +1553,12 @@ static void store_destroy(ds4_ple_store *store) {
     free(store);
 }
 
-ds4_ple_store *ds4_ple_store_open(
-        const char *artifact_root,
-        const char *manifest_relative_path,
-        size_t cache_bytes,
-        uint32_t worker_count,
-        bool prefer_direct_io,
-        char *error,
-        size_t error_size) {
-    if (error && error_size) error[0] = 0;
-    if (!artifact_root || !artifact_root[0] ||
-        !path_is_safe_relative(manifest_relative_path)) {
-        ple_error(error, error_size,
-                  "PLE artifact root or manifest path is invalid");
-        return NULL;
-    }
+/* Checks the cache and worker policy and allocates an empty store. */
+static ds4_ple_store *store_begin(size_t cache_bytes,
+                                  uint32_t worker_count,
+                                  size_t *slots_out,
+                                  char *error,
+                                  size_t error_size) {
     if (worker_count == 0 || worker_count > 64u) {
         ple_error(error, error_size,
                   "PLE worker count must be in 1..64");
@@ -1577,6 +1574,7 @@ ds4_ple_store *ds4_ple_store_open(
                   "PLE cache must contain 4..UINT32_MAX pages");
         return NULL;
     }
+    *slots_out = slots;
 
     ds4_ple_store *store = calloc(1, sizeof(*store));
     if (!store) {
@@ -1590,6 +1588,32 @@ ds4_ple_store *ds4_ple_store_open(
     store->opened_ns = ple_now_ns();
     for (uint32_t i = 0; i < DS4_PLE_N_PHYSICAL_FILES; i++)
         store->physical[i].fd = -1;
+    return store;
+}
+
+static ds4_ple_store *store_start(ds4_ple_store *store, size_t slots,
+                                  uint32_t worker_count, char *error,
+                                  size_t error_size);
+
+ds4_ple_store *ds4_ple_store_open(
+        const char *artifact_root,
+        const char *manifest_relative_path,
+        size_t cache_bytes,
+        uint32_t worker_count,
+        bool prefer_direct_io,
+        char *error,
+        size_t error_size) {
+    if (error && error_size) error[0] = 0;
+    if (!artifact_root || !artifact_root[0] ||
+        !path_is_safe_relative(manifest_relative_path)) {
+        ple_error(error, error_size,
+                  "PLE artifact root or manifest path is invalid");
+        return NULL;
+    }
+    size_t slots = 0;
+    ds4_ple_store *store = store_begin(cache_bytes, worker_count, &slots,
+                                       error, error_size);
+    if (!store) return NULL;
 
     char *manifest_path =
         path_join(artifact_root, manifest_relative_path);
@@ -1630,7 +1654,14 @@ ds4_ple_store *ds4_ple_store_open(
         store_destroy(store);
         return NULL;
     }
+    return store_start(store, slots, worker_count, error, error_size);
+}
 
+/* Allocates the bounded cache and starts the I/O workers; destroys the
+ * store on failure. */
+static ds4_ple_store *store_start(ds4_ple_store *store, size_t slots,
+                                  uint32_t worker_count, char *error,
+                                  size_t error_size) {
     store->layout.cache_slots = (uint32_t)slots;
     store->layout.cache_bytes =
         slots * DS4_PLE_PAGE_BYTES;
@@ -1691,6 +1722,111 @@ ds4_ple_store *ds4_ple_store_open(
         store->workers_started++;
     }
     return store;
+}
+
+/* Rust parsed the manifest and checked the official layout and the scale
+ * file.  Recheck what keeps every read inside its file, then share the
+ * manifest path's file open, cache and workers. */
+ds4_ple_store *ds4_ple_store_open_host(
+        const ds4_host_ple *host,
+        bool prefer_direct_io,
+        char *error,
+        size_t error_size) {
+    if (error && error_size) error[0] = 0;
+    if (!host || !host->root || !host->root[0]) {
+        ple_error(error, error_size, "PLE host descriptor has no root");
+        return NULL;
+    }
+    const bool fp8 = host->version == 2u;
+    if ((!fp8 && host->version != 1u) ||
+        host->row_stride != (fp8 ? DS4_PLE_FP8_ROW_BYTES : DS4_PLE_ROW_BYTES)) {
+        ple_error(error, error_size, "PLE host descriptor has an unknown format");
+        return NULL;
+    }
+    size_t slots = 0;
+    ds4_ple_store *store = store_begin(host->cache_bytes, host->workers,
+                                       &slots, error, error_size);
+    if (!store) return NULL;
+
+    ds4_ple_layout *layout = &store->layout;
+    layout->format_version = host->version;
+    layout->alignment_bytes = DS4_PLE_PAGE_BYTES;
+    layout->row_stride_bytes = host->row_stride;
+    layout->embedding_row_dimension = DS4_PLE_ROW_DIM;
+    layout->logical_part_count = DS4_PLE_N_LOGICAL_PARTS;
+    layout->physical_file_count = DS4_PLE_N_PHYSICAL_FILES;
+    layout->usable_vocabulary_rows = host->usable_rows;
+    layout->padded_vocabulary_rows = host->padded_rows;
+    ds4_ple_hash_config *hash = &store->hash_config;
+    hash->unigram_vocab_size = host->vocab;
+    hash->eos_token_id = host->eos;
+    memcpy(hash->layer_multipliers, host->multipliers, sizeof(hash->layer_multipliers));
+    memcpy(hash->head_vocab_sizes, host->head_vocab, sizeof(hash->head_vocab_sizes));
+    memcpy(hash->head_offsets, host->head_offset, sizeof(hash->head_offsets));
+    if (!ds4_ple_hash_config_validate(hash, error, error_size)) {
+        store_destroy(store);
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < DS4_PLE_N_PHYSICAL_FILES; i++) {
+        const ds4_host_ple_file *src = &host->files[i];
+        ds4_ple_physical_file *file = &store->physical[i];
+        if (!path_is_safe_relative(src->name) ||
+            strlen(src->name) >= DS4_PLE_PATH_CAP || src->bytes == 0 ||
+            src->bytes % DS4_PLE_PAGE_BYTES != 0) {
+            ple_error(error, error_size, "PLE host file %u is invalid", i);
+            store_destroy(store);
+            return NULL;
+        }
+        file->index = i;
+        file->file_bytes = src->bytes;
+        strcpy(file->path, src->name);
+        layout->total_file_bytes += src->bytes;
+    }
+
+    /* Rows run contiguously from 0; each part lies inside its file. */
+    uint64_t cursor = 0;
+    for (uint32_t i = 0; i < DS4_PLE_N_LOGICAL_PARTS; i++) {
+        const ds4_host_ple_part *src = &host->parts[i];
+        ds4_ple_logical_part *part = &store->logical[i];
+        const bool inside = src->file < DS4_PLE_N_PHYSICAL_FILES && src->rows > 0 &&
+            src->rows <= UINT64_MAX - cursor &&
+            src->rows <= UINT64_MAX / host->row_stride &&
+            src->offset % DS4_PLE_PAGE_BYTES == 0 &&
+            src->offset <= host->files[src->file].bytes &&
+            src->rows * host->row_stride <= host->files[src->file].bytes - src->offset;
+        if (src->row_start != cursor || !inside) {
+            ple_error(error, error_size, "PLE host part %u is out of bounds", i);
+            store_destroy(store);
+            return NULL;
+        }
+        part->logical_part = i;
+        part->row_stride_bytes = host->row_stride;
+        part->physical_file_index = src->file;
+        part->global_row_start = src->row_start;
+        part->rows = src->rows;
+        part->file_offset = src->offset;
+        part->payload_bytes = src->rows * host->row_stride;
+        strcpy(part->physical_file, host->files[src->file].name);
+        cursor += src->rows;
+    }
+    if (cursor != host->padded_rows || host->usable_rows > cursor ||
+        cursor > UINT64_MAX / host->row_stride) {
+        ple_error(error, error_size, "PLE host rows do not cover the vocabulary");
+        store_destroy(store);
+        return NULL;
+    }
+    layout->total_payload_bytes = cursor * host->row_stride;
+
+    if (fp8) {
+        store->scale_bits = (uint16_t)host->scale_bits;
+        store_build_decode_table(store);
+    }
+    if (!store_open_files(store, host->root, prefer_direct_io, error, error_size)) {
+        store_destroy(store);
+        return NULL;
+    }
+    return store_start(store, slots, host->workers, error, error_size);
 }
 
 void ds4_ple_store_close(ds4_ple_store *store) {

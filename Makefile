@@ -728,7 +728,7 @@ ds4-bench-rs: ds4-bench
 ds4-server-rs: ds4-server
 	cp -f ds4-server $@
 
-ds4_ple.o: ds4_ple.c ds4_ple.h
+ds4_ple.o: ds4_ple.c ds4_ple.h native/bridge/ds4_host_load.h
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_ple.c
 
 ds4_cli.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
@@ -2460,7 +2460,7 @@ test-qwen4exp-ple: tests/test_qwen4exp_ple
 		{ echo "set DS4_QWEN4EXP_ROOT to the SSD-PLE artifact root" >&2; exit 2; }
 	./tests/test_qwen4exp_ple "$(DS4_QWEN4EXP_ROOT)"
 
-tests/libds4ple_test.so: ds4_ple.c ds4_ple.h
+tests/libds4ple_test.so: ds4_ple.c ds4_ple.h native/bridge/ds4_host_load.h
 	$(CC) $(CFLAGS) -fPIC -shared -I. -o $@ ds4_ple.c $(LDLIBS)
 
 .PHONY: test-ple-formats
