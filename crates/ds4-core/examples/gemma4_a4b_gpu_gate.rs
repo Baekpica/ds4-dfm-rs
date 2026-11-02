@@ -323,6 +323,7 @@ extern "C" {
     ) -> i32;
     fn gm4_gpu_layer_timing(l: *mut c_void, on: i32) -> i32;
     fn gm4_gpu_span(span: i32) -> i32;
+    fn gm4_gpu_stream(span: i32) -> i32;
     fn gm4_gpu_layer_sections(
         l: *mut c_void,
         ms: *mut f64,
@@ -453,6 +454,13 @@ fn run() -> Result<(), String> {
                     .and_then(|v| v.parse().ok())
                     .ok_or("--span needs a number")?;
                 unsafe { gm4_gpu_span(span) };
+            }
+            "--stream" => {
+                let span: i32 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--stream needs a number")?;
+                unsafe { gm4_gpu_stream(span) };
             }
             "--skip-gather" => gather = false,
             "--skip-prefill" => prefill = false,
@@ -2199,6 +2207,58 @@ fn model_gate(
         );
         println!("    SPLIT mean device wait {:.2} ms", l_wait / SAMPLES as f64);
     }
+
+    // The v3 cross-row stream against the per-row block walk, at the same
+    // position and interleaved for the same reason. The stream is a pipeline
+    // change only - each row still starts at its own round 0 with the same
+    // lane map, accumulation order, reduction tree and gain - so the logits
+    // must be identical; only then does the time mean anything. Runs when
+    // --stream N (or GM4_STREAM=N) asked for a span; the block walk stays the
+    // default until the measurement says otherwise.
+    let stream_span = call_stream(-1);
+    if stream_span > 0 {
+        let mut blocked = vec![0f32; vocab];
+        let mut streamed = vec![0f32; vocab];
+        call_model_set_graph(&model, false)?;
+        call_stream(0);
+        call_model_step(device, &model, current, at, &mut blocked)?;
+        call_stream(stream_span);
+        call_model_step(device, &model, current, at, &mut streamed)?;
+        let (srel, smax, _sscale) = compare(&blocked, &streamed);
+        println!(
+            "    STREAM {stream_span} rows/warp vs the block walk at pos {at}: relL2 {srel:.3e} maxabs {smax:.3e}"
+        );
+        if srel > 1e-7 || smax > 1e-6 {
+            println!("  FAIL the streamed matvec is not the block walk's arithmetic");
+            *failed = true;
+        }
+        let mut st_ms = Vec::with_capacity(SAMPLES);
+        let mut bl_ms = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            call_stream(stream_span);
+            let started = Instant::now();
+            call_model_step(device, &model, current, at, &mut streamed)?;
+            st_ms.push(started.elapsed().as_secs_f64() * 1e3);
+            call_stream(0);
+            let started = Instant::now();
+            call_model_step(device, &model, current, at, &mut blocked)?;
+            bl_ms.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+        println!(
+            "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, v3 stream {stream_span} rows/warp: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+            min(&st_ms),
+            1000.0 / min(&st_ms),
+            mean(&st_ms),
+            1000.0 / mean(&st_ms)
+        );
+        println!(
+            "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, v3 block walk: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+            min(&bl_ms),
+            1000.0 / min(&bl_ms),
+            mean(&bl_ms),
+            1000.0 / mean(&bl_ms)
+        );
+    }
     call_model_set_graph(&model, default_on)?;
     Ok(())
 }
@@ -2927,6 +2987,11 @@ fn call_model_set_graph(model: &DeviceModel, on: bool) -> Result<(), String> {
 /// Force the eight-launch expert path (legacy) or the persistent walk.
 fn call_expert_legacy(device: &Residency, legacy: bool) {
     unsafe { gm4_gpu_expert_legacy(device.0, i32::from(legacy)) };
+}
+/// Rows per warp for the v3 cross-row stream; 0 turns it off, negative only
+/// reads the current value. Returns the previous span.
+fn call_stream(span: i32) -> i32 {
+    unsafe { gm4_gpu_stream(span) }
 }
 
 fn call_model_step(

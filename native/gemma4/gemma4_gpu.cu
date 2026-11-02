@@ -264,6 +264,118 @@ __global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32
     }
 }
 
+/* One round of v3_rounds at a slot the caller picks, with the activation
+ * already advanced to that round's first index. The body is v3_rounds' (:158-
+ * :194) verbatim - same funnel shifts, same lane->index map (a, sh), same
+ * codeword loads, same accumulation order - with `g` becoming `lane` because
+ * xg is offset by the caller. The stream kernel below is its only user; the
+ * block kernel keeps v3_rounds so its codegen does not move. */
+template <int DIM, int EXT>
+__device__ __forceinline__ void v3_round_one(const v3blk &cur, uint32_t k, uint32_t a, uint32_t sh,
+                                             const float *xg, const __half *cb, int dim, float &acc) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t f = k * 12u;
+    const uint32_t lo_r = ((f & 31u) > 32u - 12u) ? ((f + 31u - lane) >> 5) : (f >> 5);
+    const uint32_t hi_r = (((f + 1u) & 31u) > 32u - 12u) ? ((f + 32u - lane) >> 5) : ((f + 1u) >> 5);
+    const uint32_t lo = __shfl_sync(0xffffffffu, v3_sel3(lo_r, cur.w0, cur.w1, cur.w2), (int) (f + a));
+    const uint32_t hi = __shfl_sync(0xffffffffu, v3_sel3(hi_r, cur.w0, cur.w1, cur.w2), (int) (f + a + 1u));
+    uint32_t v = __funnelshift_r(lo, hi, sh) & 0xFFFu;
+    if (EXT) {
+        const uint32_t exw = __shfl_sync(0xffffffffu, cur.ex, (int) k);
+        v |= ((exw >> lane) & 1u) << 12;
+    }
+    if (DIM == 4) {
+        const float4 xv = *(const float4 *) (xg + lane * 4u);
+        const uint2 c = __ldg((const uint2 *) cb + v);
+        const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+        const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+        acc += f0.x * xv.x + f0.y * xv.y + f1.x * xv.z + f1.y * xv.w;
+    } else if (DIM == 8) {
+        const float4 x0 = *(const float4 *) (xg + lane * 8u);
+        const float4 x1 = *(const float4 *) (xg + lane * 8u + 4u);
+        const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
+        const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
+        const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+        const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+        const float2 f2 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+        const float2 f3 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+        acc += f0.x * x0.x + f0.y * x0.y + f1.x * x0.z + f1.y * x0.w
+             + f2.x * x1.x + f2.y * x1.y + f3.x * x1.z + f3.y * x1.w;
+    } else {
+        const __half *cw = cb + (size_t) v * (size_t) dim;
+        for (int d = 0; d < dim; d++) acc += __half2float(cw[d]) * xg[lane * (size_t) dim + d];
+    }
+}
+
+/* The reference's cross-row stream, on this container's v3 payload. Source
+ * read first-hand: /data/ds4-dfm-rs/cuda/ds41_vq_persist.cuh:46-56 (why the
+ * disease is the row head: a row's last block cannot hide the next row's
+ * first-block latency, so every row stalls once) and :86-116 (v41_vq_stream:
+ * one warp walks a span of consecutive rows as ONE bitstream, its 8-round
+ * blocks cut by the span-global round, a row that runs out of rounds reducing
+ * and finishing inside the block while the remaining rounds go to the next
+ * row). A span here is a single stream because rows of a v3 payload are
+ * contiguous - stream_off + r*mrow, mrow = R*48 bytes - the same property the
+ * reference relies on.
+ *
+ * Arithmetic: a row still starts at its own round 0 with acc = 0, accumulates
+ * the same rounds in the same order with the same lane map, reduces with the
+ * same tree and applies the same gain, so the value is bit-identical to
+ * v3blk_row_dot and the gate's bands cannot move. Only the pipeline changes.
+ *
+ * One warp per span; rl and a per-row-block activation are not covered and
+ * the caller keeps the block kernel for those. */
+template <int DIM>
+__global__ void gemv_v3stream_kernel(const uint8_t *p, const Layout L, const float *x, float *y,
+                                     uint32_t span) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const uint32_t r0 = warp * span;
+    if (r0 >= (uint32_t) L.nrows) return;
+    const uint32_t rows = (uint32_t) L.nrows;
+    const uint32_t n = rows - r0 < span ? rows - r0 : span;
+    const uint32_t R = (uint32_t) (L.nidx_row >> 5);
+    const uint32_t G = n * R;
+    const uint32_t a = (lane * 12u) >> 5, sh = (lane * 12u) & 31u;
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const __half *gr = (const __half *) (p + L.gain_off);
+    const uint32_t *base = (const uint32_t *) (p + L.stream_off + (size_t) r0 * L.mrow);
+    float acc = 0.0f;
+    uint32_t kin = 0, row = 0;
+    v3blk cur = v3_blk_load(base, (G < 8u ? G : 8u) * 12u, NULL, 0);
+    for (uint32_t g0 = 0; g0 < G; g0 += 8u) {
+        v3blk nxt;
+        if (g0 + 8u < G) {
+            const uint32_t left = G - g0 - 8u;
+            nxt = v3_blk_load(base + (size_t) (g0 + 8u) * 12u, (left < 8u ? left : 8u) * 12u, NULL, 0);
+        } else {
+            nxt.w0 = nxt.w1 = nxt.w2 = nxt.ex = 0u;
+        }
+        const uint32_t rem = G - g0;
+        const uint32_t rounds = rem < 8u ? rem : 8u;
+        #pragma unroll
+        for (uint32_t k = 0; k < 8u; k++) {
+            if (k >= rounds) break;
+            v3_round_one<DIM, 0>(cur, k, a, sh,
+                                 x + (size_t) kin * 32u * (size_t) (DIM > 0 ? DIM : L.dim),
+                                 cb, L.dim, acc);
+            if (++kin == R) {
+                float v = acc;
+                for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+                v = __shfl_sync(0xffffffffu, v, 0) * __half2float(gr[r0 + row]);
+                if (lane == 0) {
+                    if (L.first) y[r0 + row] = v;
+                    else y[r0 + row] += v;
+                }
+                acc = 0.0f;
+                kin = 0;
+                row++;
+            }
+        }
+        cur = nxt;
+    }
+}
+
 /* dim-4 fast path: one 8-byte codebook load and one half2 pair of conversions
  * per index, unrolled to hide L1 gather latency. This is the kernel the tools
  * select for nc below 4096 (v3_blk_ok requires nbit >= 12), which is the
@@ -1562,6 +1674,13 @@ int upload(gm4_gpu *g, Tensor *t, const gm4_spec *spec, gm4_account *acct, char 
  * same spirit as the engine's DS41_VQ_NO_PERSIST. */
 int g_span = 4;
 
+/* The v3 stream kernel's knobs: 0 leaves every v3 payload on the block
+ * kernel, N walks N consecutive rows per warp. Diagnostic, the same spirit as
+ * g_span; the gate turns it on and the bands are the check that the two
+ * walks agree to the bit. */
+int g_stream = 0;
+int g_stream_span = 8;
+
 int launch_payload(const Payload &p, const uint32_t *rl, const float *x, float *y, int threads) {
     const int blocks = (p.l.nrows * 32 + threads - 1) / threads;
     if (p.variant == 4) {
@@ -1573,6 +1692,16 @@ int launch_payload(const Payload &p, const uint32_t *rl, const float *x, float *
         const int sb = (warps * 32 + threads - 1) / threads;
         if (p.l.dim == 8) gemv_rowspan_kernel<8><<<sb, threads>>>(p.dev, p.l, rl, x, y, span);
         else gemv_rowspan_kernel<4><<<sb, threads>>>(p.dev, p.l, rl, x, y, span);
+    } else if (p.variant == 3 && g_stream > 0 && rl == NULL && p.l.xrows <= 0 && p.l.prow == 0
+               && (p.l.dim == 8 || p.l.dim == 4)) {
+        /* Consecutive rows only: a gather list or a per-block activation
+         * breaks the span's single bitstream, and a 13th-bit plane is a
+         * second array this kernel does not read. */
+        const int span = g_stream_span > 0 ? g_stream_span : 8;
+        const int warps = (p.l.nrows + span - 1) / span;
+        const int sb = (warps * 32 + threads - 1) / threads;
+        if (p.l.dim == 8) gemv_v3stream_kernel<8><<<sb, threads>>>(p.dev, p.l, x, y, span);
+        else gemv_v3stream_kernel<4><<<sb, threads>>>(p.dev, p.l, x, y, span);
     } else if (p.variant == 3) {
         if (p.l.dim == 8) gemv_v3blk_kernel<8, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
         else if (p.l.dim == 4) gemv_v3blk_kernel<4, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
@@ -1789,6 +1918,22 @@ void gm4_gpu_account_of(const gm4_gpu *g, gm4_account *out) { *out = g->acct; }
 int gm4_gpu_span(int span) {
     const int prev = g_span;
     if (span > 0) g_span = span;
+    return prev;
+}
+
+/* Turn the v3 cross-row stream on with `span` rows per warp, or off with 0,
+ * returning the previous span (0 = off). A negative `span` only reads the
+ * current value. Diagnostic, like gm4_gpu_span: it changes the pipeline over a
+ * span of rows, never any row's arithmetic, so the gate can require the same
+ * bands with it on. */
+int gm4_gpu_stream(int span) {
+    const int prev = g_stream ? g_stream_span : 0;
+    if (span > 0) {
+        g_stream = 1;
+        g_stream_span = span;
+    } else if (span == 0) {
+        g_stream = 0;
+    }
     return prev;
 }
 

@@ -232,6 +232,14 @@ int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n);
  * never a row's arithmetic. */
 int gm4_gpu_span(int span);
 
+/* Rows per warp in the v3 cross-row stream, and its switch: a positive `span`
+ * turns the stream on, 0 turns it off. Returns the previous span (0 = off).
+ * Diagnostic, like gm4_gpu_span: the stream changes the pipeline over a span
+ * of consecutive rows - the reference engine's mechanism at /data/ds4-dfm-rs/
+ * cuda/ds41_vq_persist.cuh:46-56 and :86-116 - never a row's arithmetic, so
+ * the gate's layer bands are the check that the two walks agree to the bit. */
+int gm4_gpu_stream(int span);
+
 /* Force the eight-launch expert path (legacy = 1) or the persistent walk
  * (legacy = 0); returns the previous value. Diagnostic only: both paths run
  * the same row arithmetic, so the A/B changes the launches, never a value.
