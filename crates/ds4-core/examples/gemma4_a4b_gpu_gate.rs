@@ -37,8 +37,8 @@ use std::time::Instant;
 
 use ds4_core::f16_to_f32;
 use ds4_core::gemma4_a4b::{
-    bf16_round, decode, gelu, normalize_heads, rms_norm, rope, softmax, top_k, Entry, Family,
-    LayerType, Matrix, Model, Role, Tensor, Tokenizer,
+    bf16_round, decode, gelu, normalize_heads, rms_norm, rope, softmax, top_k, Config, Entry,
+    Family, LayerType, Matrix, Model, Role, Tensor, Tokenizer,
 };
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
@@ -98,6 +98,8 @@ struct LayerSpec {
     router_scale: *const f32,
     per_expert_scale: *const f32,
     rope_inv: *const f32,
+    kvq_k: *mut c_void,
+    kvq_v: *mut c_void,
 }
 
 /// Mirrors `gm4_model_spec`, field for field.
@@ -275,6 +277,88 @@ extern "C" {
     fn gm4_gpu_kv_free(kv: *mut c_void);
     fn gm4_gpu_kv_bytes(kv: *const c_void) -> usize;
     fn gm4_gpu_kv_reset(g: *mut c_void, kv: *mut c_void, err: *mut c_char, errlen: usize) -> i32;
+    fn gm4_gpu_kv_dump(
+        g: *mut c_void,
+        kv: *mut c_void,
+        positions: i32,
+        k: *mut f32,
+        v: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_vq_decode(
+        path: *const c_char,
+        out: *mut *mut f32,
+        rows: *mut i32,
+        cols: *mut i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_vq_free(p: *mut f32);
+    fn gm4_gpu_cb_open(
+        path: *const c_char,
+        out: *mut *mut c_void,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_cb_free(cb: *mut c_void);
+    fn gm4_gpu_cb_geometry(
+        cb: *const c_void,
+        nc: *mut i32,
+        dim: *mut i32,
+        stages: *mut i32,
+        cols: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_vq_encode(
+        cb: *mut c_void,
+        x: *const f32,
+        nrows: i32,
+        cols: i32,
+        idx: *mut u16,
+        rec: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_vqkv_open(
+        g: *mut c_void,
+        path: *const c_char,
+        cap: i32,
+        window: i32,
+        out: *mut *mut c_void,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_vqkv_free(kv: *mut c_void);
+    fn gm4_gpu_vqkv_encode_host(
+        g: *mut c_void,
+        kv: *mut c_void,
+        x: *const f32,
+        nrows: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_vqkv_geometry(
+        kv: *const c_void,
+        rows: *mut i32,
+        cols: *mut i32,
+        dim: *mut i32,
+        nc: *mut i32,
+        stages: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_attention_vq(
+        g: *mut c_void,
+        k: *mut c_void,
+        v: *mut c_void,
+        q: *const f32,
+        heads: i32,
+        head_dim: i32,
+        pos: i32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
     fn gm4_gpu_kv_put(
         g: *mut c_void,
         kv: *mut c_void,
@@ -363,6 +447,44 @@ extern "C" {
         errlen: usize,
     ) -> i32;
     fn gm4_gpu_expert_legacy(g: *mut c_void, legacy: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_model_prefill(
+        g: *mut c_void,
+        m: *mut c_void,
+        tokens: *const i32,
+        n: i32,
+        pos0: i32,
+        logits: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_prefill_probe(
+        m: *mut c_void,
+        which: i32,
+        out: *mut f32,
+        floats: usize,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_model_prefill_bytes(m: *const c_void) -> usize;
+    fn gm4_gpu_layer_list(
+        l: *mut c_void,
+        which: i32,
+        out: *mut c_void,
+        n: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_prefill_list(
+        m: *mut c_void,
+        which: i32,
+        out: *mut i32,
+        n: i32,
+        count: *mut i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_prefill_cfg(bn: i32, cb: i32) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -392,6 +514,36 @@ fn usage() -> &'static str {
   --tokenizer PATH   tokenizer.json for the whole-model step (step 9d); without
                      it the model gate is skipped, since the gate is the
                      greedy continuation of a prompt
+  --capture DIR      write a vq-kv/1 calibration capture of the caches to DIR
+                     (needs --tokenizer and --capture-text) and exit
+  --capture-text P   the text the capture runs over
+  --capture-tokens N tokens to capture, 64..1024 (default 512)
+  --vq-decode C R    decode the DQVQ container C on the device and compare it
+                     with R, the toolkit's f32 dump of the same container
+                     (vq-kv dump), bit for bit; needs no model
+  --vq-encode X C R  encode the capture matrix X (f32, rows of C's width) with
+                     container C's codebooks and compare the reconstruction
+                     with R, the toolkit's decode of C; needs no model
+  --vq-attn CAP DIR  attention read from the VQ containers in DIR over the
+                     capture in CAP: the device output against a f64
+                     reference over the decoded rows, and the codec's cost
+                     against the f16 cache over the same positions
+  --vq-layers N,...  layers for --vq-attn (default: every layer in CAP's
+                     index.json)
+  --vq-tail N        queries to compare at the end of the capture (default 32)
+  --vq-row-encode    fill --vq-attn's caches with the runtime's per-row encoder
+                     instead of the container's own stream (gates the encoder
+                     and the bit packing against the toolkit's bytes)
+  --model-vq S F     run the model's KV caches as VQ containers (sliding
+                     layers from S, full layers from F) and gate the prompt's
+                     logits and the greedy continuation against the f16 caches
+  --block-layers N   build only the first N layers and compare the block against
+                     the step token by token (needs --dir and --tokenizer); the
+                     bisect that finds the first layer whose block path is
+                     wrong without any CPU oracle
+  --block-tokens N   tokens for --block-layers (default 1)
+  --block-stages     with --block-layers 1, compare the block's scratch buffers
+                     against the step's own probes stage by stage
   --help             this text"
 }
 
@@ -424,6 +576,21 @@ fn run() -> Result<(), String> {
     let mut ring = true;
     let mut chain = true;
     let mut tokenizer: Option<PathBuf> = None;
+    let mut capture: Option<PathBuf> = None;
+    let mut capture_text: Option<PathBuf> = None;
+    let mut capture_tokens = 512usize;
+    let mut vq_decode: Option<(PathBuf, PathBuf)> = None;
+    let mut vq_encode: Option<(PathBuf, PathBuf, PathBuf)> = None;
+    let mut vq_time: Option<(PathBuf, PathBuf, usize, usize)> = None;
+    let mut vq_attn: Option<(PathBuf, PathBuf)> = None;
+    let mut vq_layers: Option<Vec<usize>> = None;
+    let mut vq_tail = 32usize;
+    let mut vq_row_encode = false;
+    let mut model_vq: Option<(PathBuf, PathBuf)> = None;
+    let mut block_layers: Option<usize> = None;
+    let mut block_tokens = 1usize;
+    let mut block_stages = false;
+    let mut block_text: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -471,12 +638,124 @@ fn run() -> Result<(), String> {
             "--skip-ring" => ring = false,
             "--skip-layer" => chain = false,
             "--tokenizer" => tokenizer = Some(args.next().ok_or("--tokenizer needs a path")?.into()),
+            "--capture" => capture = Some(args.next().ok_or("--capture needs a directory")?.into()),
+            "--capture-text" => {
+                capture_text = Some(args.next().ok_or("--capture-text needs a path")?.into())
+            }
+            "--capture-tokens" => {
+                capture_tokens = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--capture-tokens needs a number")?
+            }
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
             }
+            "--vq-decode" => {
+                let container = args.next().ok_or("--vq-decode needs a container")?;
+                let reference = args
+                    .next()
+                    .ok_or("--vq-decode needs the toolkit's f32 dump")?;
+                vq_decode = Some((container.into(), reference.into()));
+            }
+            "--vq-encode" => {
+                let capture = args.next().ok_or("--vq-encode needs a capture matrix")?;
+                let container = args.next().ok_or("--vq-encode needs a container")?;
+                let reference = args
+                    .next()
+                    .ok_or("--vq-encode needs the toolkit's f32 dump")?;
+                vq_encode = Some((capture.into(), container.into(), reference.into()));
+            }
+            "--vq-time" => {
+                let capture = args.next().ok_or("--vq-time needs a capture matrix")?;
+                let container = args.next().ok_or("--vq-time needs a container")?;
+                let rows = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--vq-time needs a row count")?;
+                let iters = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--vq-time needs an iteration count")?;
+                vq_time = Some((capture.into(), container.into(), rows, iters));
+            }
+            "--vq-attn" => {
+                let capture = args.next().ok_or("--vq-attn needs the capture directory")?;
+                let containers = args.next().ok_or("--vq-attn needs the container directory")?;
+                vq_attn = Some((capture.into(), containers.into()));
+            }
+            "--vq-layers" => {
+                let list = args.next().ok_or("--vq-layers needs a list")?;
+                let mut out = Vec::new();
+                for part in list.split(',').filter(|p| !p.is_empty()) {
+                    out.push(part.parse().map_err(|_| "bad --vq-layers entry")?);
+                }
+                vq_layers = Some(out);
+            }
+            "--vq-tail" => {
+                vq_tail = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--vq-tail needs a number")?
+            }
+            "--vq-row-encode" => vq_row_encode = true,
+            "--model-vq" => {
+                let sliding = args.next().ok_or("--model-vq needs the sliding container directory")?;
+                let full = args.next().ok_or("--model-vq needs the full container directory")?;
+                model_vq = Some((sliding.into(), full.into()));
+            }
+            "--block-layers" => {
+                block_layers = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .ok_or("--block-layers needs a number")?,
+                )
+            }
+            "--block-tokens" => {
+                block_tokens = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--block-tokens needs a number")?
+            }
+            "--block-stages" => block_stages = true,
+            "--block-text" => {
+                let path = args.next().ok_or("--block-text needs a path")?;
+                block_text = Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| format!("--block-text {path}: {e}"))?,
+                )
+            }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    // The container reader needs no release: it is a self-contained parse and
+    // decode, and the gate that proves it runs before anything is uploaded.
+    if let Some((container, reference)) = vq_decode {
+        return vq_decode_gate(&container, &reference);
+    }
+    if let Some((capture, container, reference)) = vq_encode {
+        return vq_encode_gate(&capture, &container, &reference);
+    }
+    if let Some((capture, container, rows, iters)) = vq_time {
+        return vq_time_gate(&capture, &container, rows, iters);
+    }
+    if let Some((capture, containers)) = vq_attn {
+        let mut err = [0i8; 512];
+        let ptr = unsafe { gm4_gpu_open(std::ptr::null(), 0, err.as_mut_ptr(), err.len()) };
+        if ptr.is_null() {
+            return Err(format!("device context: {}", message(&err)));
+        }
+        let device = Residency(ptr);
+        return vq_attention_gate(
+            &device,
+            &capture,
+            &containers,
+            vq_layers.as_deref(),
+            vq_tail,
+            timing.max(3),
+            vq_row_encode,
+        );
     }
     let dir: PathBuf = dir
         .ok_or_else(|| format!("--dir is required\n\n{}", usage()))?
@@ -686,8 +965,60 @@ fn run() -> Result<(), String> {
     if head {
         head_gate(&device, &family, &root, &encoded, &mut failed)?;
     }
+    // The block bisect: a truncated model, the block against the step, one
+    // layer at a time, so the first wrong layer names itself.
+    if let Some(layers) = block_layers {
+        let tok_path = tokenizer
+            .as_ref()
+            .ok_or("--block-layers needs --tokenizer")?;
+        return block_bisect(
+            &device,
+            &family,
+            &root,
+            &encoded,
+            tok_path,
+            layers,
+            block_tokens,
+            block_stages,
+            block_text.clone(),
+        );
+    }
+    // The capture is a separate errand: it writes the caches the toolkit's KV
+    // encoder calibrates on and stops, so a calibration run does not pay for
+    // every gate before it.
+    if let Some(dir) = &capture {
+        let tok_path = tokenizer
+            .as_ref()
+            .ok_or("--capture needs --tokenizer (the capture is a tokenized text)")?;
+        let text = capture_text
+            .as_ref()
+            .ok_or("--capture needs --capture-text (the text to run over)")?;
+        capture_gate(
+            &device,
+            &family,
+            &root,
+            &encoded,
+            tok_path,
+            text,
+            capture_tokens,
+            dir,
+        )?;
+        return Ok(());
+    }
     match &tokenizer {
-        Some(path) => model_gate(&device, &family, &root, &encoded, path, &mut failed)?,
+        Some(path) => match &model_vq {
+            Some((sliding, full)) => vq_model_gate(
+                &device,
+                &family,
+                &root,
+                &encoded,
+                path,
+                sliding,
+                full,
+                &mut failed,
+            )?,
+            None => model_gate(&device, &family, &root, &encoded, path, timing, &mut failed)?,
+        },
         None => println!("MODEL skipped: --tokenizer was not given (step 9d)"),
     }
     if failed {
@@ -928,7 +1259,7 @@ fn prefill_gate(
 
     // Two prompt sizes: a short one where the f64 reference is cheap, and one
     // long enough to fill the tile's 128 tokens with a partial second block.
-    for &ntok in &[8usize, 64] {
+    for &ntok in &[1usize, 8, 64] {
         let xt = transposed_probe(entry.cols, ntok);
         let xt16: Vec<f32> = xt.iter().map(|&v| round_f16(v)).collect();
         let reference = f64_prefill(&matrix, &xt16, ntok, 0, entry.rows);
@@ -1751,6 +2082,8 @@ fn layer_gate(
             router_scale: router_scale.as_ptr(),
             per_expert_scale: per_expert_scale.as_ptr(),
             rope_inv: rope_inv.as_ptr(),
+            kvq_k: std::ptr::null_mut(),
+            kvq_v: std::ptr::null_mut(),
         };
         let chain = call_layer_new(device, &lspec)?;
         let kv = call_kv_new(device, kv_heads, head_dim, window, cap)?;
@@ -1892,6 +2225,7 @@ fn model_gate(
     root: &Path,
     encoded: &[&Entry],
     tokenizer_path: &Path,
+    timing: usize,
     failed: &mut bool,
 ) -> Result<(), String> {
     const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
@@ -1922,7 +2256,7 @@ fn model_gate(
     let mut chains = Vec::with_capacity(config.layers);
     let mut caches = Vec::with_capacity(config.layers);
     for layer in 0..config.layers {
-        let (chain, cache) = build_chain(device, family, root, encoded, layer)?;
+        let (chain, cache) = build_chain(device, family, root, encoded, layer, None)?;
         chains.push(chain);
         caches.push(cache);
     }
@@ -2260,6 +2594,213 @@ fn model_gate(
         );
     }
     call_model_set_graph(&model, default_on)?;
+    block_gate(
+        device,
+        &model,
+        &caches,
+        &prompt,
+        &logits_cpu,
+        &ids_cpu,
+        &tok,
+        &family.config,
+        timing,
+        failed,
+    )?;
+    Ok(())
+}
+
+/// Step 9e: the prompt as one block per layer, which is the TTFT gap the step
+/// walk leaves. Three comparisons, each with its own meaning:
+///
+///  - the block against the token-by-token device walk over the same prompt.
+///    Both read the same artifact; the block's dense projections run the tiled
+///    tensor-core kernel, which rounds the activation to f16, so this number is
+///    that one arithmetic difference and nothing else. It is printed with its
+///    band rather than assumed;
+///  - the block against the CPU forward, the same oracle step 9d uses;
+///  - the block in chunks of 8 against the one-shot block. Chunking changes the
+///    grouping of the expert work items and the size of every launch, but each
+///    token's row dot, norm, softmax and reduce are the same arithmetic in the
+///    same order, so the two must agree to the bit. That is the property a
+///    prompt longer than the block size relies on: the ring layers keep their
+///    window and the full layers their prefix, and the second block reads the
+///    first block's keys.
+///
+/// The greedy continuation then runs from the block's own logits and is
+/// compared with the CPU's, which is the step-9d gate applied at the prefill's
+/// end instead of a step's.
+#[allow(clippy::too_many_arguments)]
+fn block_gate(
+    device: &Residency,
+    model: &DeviceModel,
+    caches: &[Cache],
+    prompt: &[u32],
+    cpu_logits: &[f32],
+    cpu_ids: &[u32],
+    tok: &Tokenizer,
+    config: &Config,
+    timing: usize,
+    failed: &mut bool,
+) -> Result<(), String> {
+    let vocab = config.vocab;
+    let n = prompt.len();
+    let reset = |device: &Residency| -> Result<(), String> {
+        for cache in caches {
+            call_kv_reset(device, cache)?;
+        }
+        Ok(())
+    };
+    let mut logits = vec![0f32; vocab];
+
+    // The bisect the block's failing logits (relL2 7.24e-1) start from: a
+    // one-token block against one step, then a two-token block against two.
+    // n = 1 failing is a wiring error inside the block's single-token path;
+    // n = 1 passing and n = 2 failing is the multi-token path (the KV write,
+    // the row grouping or the reduce). Both use the same f16 caches a step
+    // uses, so nothing here depends on the VQ path.
+    for n in [1usize, 2usize] {
+        if prompt.len() < n {
+            continue;
+        }
+        reset(device)?;
+        let mut want = vec![0f32; vocab];
+        for (pos, &token) in prompt[..n].iter().enumerate() {
+            call_model_step(device, model, token, pos, &mut want)?;
+        }
+        reset(device)?;
+        let mut got = vec![0f32; vocab];
+        call_model_prefill(device, model, &prompt[..n], 0, &mut got)?;
+        let (rel, max, _scale) = compare(&want, &got);
+        let top_want = argmax(&want);
+        let top_got = argmax(&got);
+        println!(
+            "  BISECT block n={n}: vs {n} step(s) relL2 {rel:.3e} maxabs {max:.3e}, top-1 {top_want} vs {top_got}"
+        );
+    }
+
+    // The walk: one submission per token, the path the block replaces.
+    reset(device)?;
+    let started = Instant::now();
+    for (pos, &token) in prompt.iter().enumerate() {
+        call_model_step(device, model, token, pos, &mut logits)?;
+    }
+    let walk_ms = started.elapsed().as_secs_f64() * 1e3;
+    let walk = logits.clone();
+
+    // The block: one submission per layer.
+    reset(device)?;
+    let started = Instant::now();
+    call_model_prefill(device, model, prompt, 0, &mut logits)?;
+    let block_ms = started.elapsed().as_secs_f64() * 1e3;
+    let (submit, wait) = call_model_split(model);
+    let block = logits.clone();
+
+    let (rel_walk, max_walk, _sw) = compare(&walk, &block);
+    let (rel_cpu, max_cpu, scale_cpu) = compare(cpu_logits, &block);
+    println!(
+        "  PREFILL {n} tokens: walk {walk_ms:.1} ms ({:.2} ms/token), block {block_ms:.1} ms ({:.2} ms/token), {:.2}x",
+        walk_ms / n as f64,
+        block_ms / n as f64,
+        walk_ms / block_ms
+    );
+    println!("    PREFILL block vs the step walk: relL2 {rel_walk:.3e} maxabs {max_walk:.3e}");
+    println!(
+        "    PREFILL block vs the CPU forward: relL2 {rel_cpu:.3e} maxabs {max_cpu:.3e} scale {scale_cpu:.3e}"
+    );
+    println!(
+        "    SPLIT block host submit {:.2} ms, device wait {:.2} ms; scratch {:.1} MiB",
+        submit,
+        wait,
+        call_model_prefill_bytes(model) as f64 / (1024.0 * 1024.0)
+    );
+
+    let top_cpu = argmax(cpu_logits);
+    let top_block = argmax(&block);
+    println!(
+        "    TOP-1 cpu {top_cpu} ({:?}) block {top_block} ({:?})",
+        tok.token(top_cpu as u32),
+        tok.token(top_block as u32)
+    );
+    if top_cpu != top_block {
+        println!("  FAIL the block's top-1 is not the forward's");
+        *failed = true;
+    }
+
+    // The greedy continuation from the block's logits.
+    let mut ids_gpu = vec![top_block as u32];
+    let mut current = top_block as u32;
+    while !tok.is_eos(current) && ids_gpu.len() < cpu_ids.len() {
+        let pos = n + ids_gpu.len() - 1;
+        call_model_step(device, model, current, pos, &mut logits)?;
+        current = argmax(&logits) as u32;
+        ids_gpu.push(current);
+    }
+    println!(
+        "    GREEDY from the block {:?} ids {ids_gpu:?}",
+        tok.decode(&ids_gpu)
+    );
+    if ids_gpu != cpu_ids {
+        println!("  FAIL the continuation from the block is not the forward's");
+        *failed = true;
+    }
+
+    // The chunked block: 8 tokens at a time, the same prompt. Every position is
+    // still written once in ascending order, so the second chunk reads the
+    // first's keys and the logits must be the one-shot block's to the bit.
+    const CHUNK: usize = 8;
+    reset(device)?;
+    let started = Instant::now();
+    let mut at = 0usize;
+    let mut chunked = vec![0f32; vocab];
+    while at < n {
+        let take = CHUNK.min(n - at);
+        call_model_prefill(device, model, &prompt[at..at + take], at, &mut chunked)?;
+        at += take;
+    }
+    let chunk_ms = started.elapsed().as_secs_f64() * 1e3;
+    let (crel, cmax, _cs) = compare(&block, &chunked);
+    println!(
+        "    PREFILL chunks of {CHUNK}: {chunk_ms:.1} ms vs the one-shot block, relL2 {crel:.3e} maxabs {cmax:.3e}"
+    );
+    if crel > 1e-7 || cmax > 1e-6 {
+        println!("  FAIL the chunked block is not the one-shot block's arithmetic");
+        *failed = true;
+    }
+
+    // The tile sweep: the six combinations the tools' prefill gate measures,
+    // interleaved with the default so the card's drift hits both. The token
+    // tile changes the MMA's shape, never the K accumulation order, so every
+    // tile must give the same logits.
+    if timing > 0 {
+        const TILES: [(i32, i32); 6] = [(64, 0), (128, 0), (256, 0), (64, 1), (128, 1), (256, 1)];
+        let mut best = (String::from("128/0"), f64::INFINITY);
+        for (bn, cb) in TILES {
+            call_prefill_cfg(bn, cb);
+            reset(device)?;
+            let started = Instant::now();
+            call_model_prefill(device, model, prompt, 0, &mut logits)?;
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            let (trel, tmax, _ts) = compare(&block, &logits);
+            println!(
+                "    PREFILL tile {bn}/{cb}: {ms:.1} ms ({:.2} ms/token) relL2 {trel:.3e} maxabs {tmax:.3e}",
+                ms / n as f64
+            );
+            if trel > 1e-7 || tmax > 1e-6 {
+                println!("  FAIL tile {bn}/{cb} is not the default tile's arithmetic");
+                *failed = true;
+            }
+            if ms < best.1 {
+                best = (format!("{bn}/{cb}"), ms);
+            }
+        }
+        call_prefill_cfg(128, 0);
+        println!(
+            "    PREFILL fastest tile {} at {:.1} ms ({:.2} ms/token); the default stays 128/0 until a longer prompt says otherwise",
+            best.0,
+            best.1,
+            best.1 / n as f64
+        );
+    }
     Ok(())
 }
 
@@ -2765,6 +3306,32 @@ fn call_kv_reset(device: &Residency, kv: &Cache) -> Result<(), String> {
     Ok(())
 }
 
+/// The whole cache as f32, position-major, for a calibration capture.
+fn call_kv_dump(
+    device: &Residency,
+    kv: &Cache,
+    positions: usize,
+    k: &mut [f32],
+    v: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_kv_dump(
+            device.0,
+            kv.0,
+            positions as i32,
+            k.as_mut_ptr(),
+            v.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("kv_dump of {positions}: {}", message(&err)));
+    }
+    Ok(())
+}
+
 fn call_kv_put(
     device: &Residency,
     kv: &Cache,
@@ -2886,6 +3453,46 @@ fn call_layer_forward(
         return Err(format!("layer_forward at {pos}: {}", message(&err)));
     }
     Ok(())
+}
+
+fn call_prefill_probe(model: &DeviceModel, which: i32, n: usize) -> Result<Vec<f32>, String> {
+    let mut out = vec![0f32; n];
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_prefill_probe(
+            model.0,
+            which,
+            out.as_mut_ptr(),
+            n,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("prefill_probe {which}: {}", message(&err)));
+    }
+    Ok(out)
+}
+
+fn call_prefill_list(model: &DeviceModel, which: i32, n: usize) -> Result<Vec<i32>, String> {
+    let mut out = vec![0i32; n * if which == 2 { 3 } else { 1 }];
+    let mut count = 0i32;
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_prefill_list(
+            model.0,
+            which,
+            out.as_mut_ptr(),
+            n as i32,
+            &mut count,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("prefill_list {which}: {}", message(&err)));
+    }
+    Ok(out)
 }
 
 fn call_layer_probe(chain: &Chain, which: i32, n: usize) -> Result<Vec<f32>, String> {
@@ -3019,6 +3626,485 @@ fn call_model_step(
     Ok(())
 }
 
+/// A block of tokens at `pos0`, the prefill: one submission per layer.
+fn call_model_prefill(
+    device: &Residency,
+    model: &DeviceModel,
+    tokens: &[u32],
+    pos0: usize,
+    logits: &mut [f32],
+) -> Result<(), String> {
+    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_model_prefill(
+            device.0,
+            model.0,
+            ids.as_ptr(),
+            ids.len() as i32,
+            pos0 as i32,
+            logits.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "model_prefill {} tokens at {pos0}: {}",
+            ids.len(),
+            message(&err)
+        ));
+    }
+    Ok(())
+}
+
+fn call_model_prefill_bytes(model: &DeviceModel) -> usize {
+    unsafe { gm4_gpu_model_prefill_bytes(model.0) }
+}
+
+/// The block path's dense tile and codebook placement; returns the previous
+/// tile.
+fn call_prefill_cfg(bn: i32, cb: i32) -> i32 {
+    unsafe { gm4_gpu_prefill_cfg(bn, cb) }
+}
+/// Writes a `vq-kv/1` capture of this model's cache: the toolkit's calibration
+/// input, one directory of `layerNNN.{k,v,q}.f32` files plus `index.json`
+/// (crates/vq-kv are the reader; the format is VQ_tools/docs/kv.md's).
+///
+/// It walks the prompt layer by layer, because the queries the attention-error
+/// harness needs are the post-rope ones and those are the layer's own buffer,
+/// not something a whole-model step hands out. Each layer's cache is then read
+/// back whole, which is the same array the runtime would encode, so the
+/// reconstruction the toolkit reports is measured on the bytes a VQ cache would
+/// actually replace. The last position is cross-checked against the
+/// single-position reader: a slot map that is off by one shows up here before
+/// it shows up as a quality number.
+fn capture_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    tokenizer_path: &Path,
+    text_path: &Path,
+    tokens_wanted: usize,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let config = &family.config;
+    let hidden = config.hidden;
+    let tok = Tokenizer::open(tokenizer_path).map_err(|e| e.to_string())?;
+    let text =
+        std::fs::read_to_string(text_path).map_err(|e| format!("{}: {e}", text_path.display()))?;
+    let all = tok.encode(&text);
+    let n = all.len().min(tokens_wanted);
+    if n < 64 {
+        return Err(format!(
+            "{} tokenizes to {n} tokens; a capture needs at least 64 to learn a codebook",
+            text_path.display()
+        ));
+    }
+    let ids = &all[..n];
+    println!(
+        "CAPTURE {n} tokens of {}; first {:?}",
+        text_path.display(),
+        tok.decode(&ids[..n.min(32)])
+    );
+
+    let embed = Matrix::open(root, &family.layout.embed).map_err(|e| e.to_string())?;
+    let scale = bf16_round((hidden as f32).sqrt());
+    let mut acts: Vec<Vec<f32>> = Vec::with_capacity(n);
+    for &id in ids {
+        let mut row = embed.row(id as usize).map_err(|e| e.to_string())?;
+        for value in row.iter_mut() {
+            *value *= scale;
+        }
+        acts.push(row);
+    }
+
+    std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
+    // One directory per cache shape. The toolkit refuses a capture that mixes
+    // shapes ("layer 0 is 8 heads x 256 dim, layer 5 is 2 x 512"), which this
+    // model has by construction: 25 sliding layers at 8 x 256 and 5 full ones
+    // at 2 x 512. The split is not a convenience - a codebook is learned per
+    // container shape, so the two were never one encode.
+    let mut shapes: Vec<(&'static str, Vec<String>)> = Vec::new();
+    for layer in 0..config.layers {
+        let (chain, cache) = build_chain(device, family, root, encoded, layer, None)?;
+        let spec = &family.layout.layers[layer];
+        let kind = spec.kind;
+        let shape = match kind {
+            LayerType::Sliding => "sliding",
+            LayerType::Full => "full",
+        };
+        let head_dim = config.head_dim_of(kind);
+        let kv_heads = config.kv_heads_of(kind);
+        let per = kv_heads * head_dim;
+        let qn = config.heads * head_dim;
+
+        let mut next: Vec<Vec<f32>> = Vec::with_capacity(n);
+        let mut qs: Vec<f32> = Vec::with_capacity(n * qn);
+        for (pos, act) in acts.iter().enumerate() {
+            let mut out = vec![0f32; hidden];
+            call_layer_forward(device, &chain, &cache, act, pos, &mut out)?;
+            qs.extend_from_slice(&call_layer_probe(&chain, 3, qn)?);
+            next.push(out);
+        }
+
+        let mut kb = vec![0f32; n * per];
+        let mut vb = vec![0f32; n * per];
+        call_kv_dump(device, &cache, n, &mut kb, &mut vb)?;
+        let mut k_last = vec![0f32; per];
+        let mut v_last = vec![0f32; per];
+        call_kv_get(device, &cache, n - 1, &mut k_last, &mut v_last)?;
+        let at = (n - 1) * per;
+        let mut drift = 0f64;
+        for i in 0..per {
+            drift = drift.max(f64::from((kb[at + i] - k_last[i]).abs()));
+            drift = drift.max(f64::from((vb[at + i] - v_last[i]).abs()));
+        }
+        if drift != 0.0 {
+            return Err(format!("layer {layer}: the bulk dump and kv_get disagree by {drift:.3e}"));
+        }
+
+        let k_name = format!("layer{layer:03}.k.f32");
+        let v_name = format!("layer{layer:03}.v.f32");
+        let q_name = format!("layer{layer:03}.q.f32");
+        let dir = out_dir.join(shape);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        write_f32(&dir.join(&k_name), &kb)?;
+        write_f32(&dir.join(&v_name), &vb)?;
+        write_f32(&dir.join(&q_name), &qs)?;
+        let group = config.heads / kv_heads;
+        let mut q_to_kv = Vec::with_capacity(config.heads);
+        for h in 0..config.heads {
+            q_to_kv.push(h / group);
+        }
+        let entry = format!(
+            "    {{\"layer\": {layer}, \"n_tokens\": {n}, \"kv_heads\": {kv_heads}, \
+             \"head_dim\": {head_dim}, \"k\": \"{k_name}\", \"v\": \"{v_name}\", \
+             \"q\": \"{q_name}\", \"q_heads\": {}, \"q_to_kv\": {q_to_kv:?}}}",
+            config.heads
+        );
+        match shapes.iter_mut().find(|(name, _)| *name == shape) {
+            Some((_, list)) => list.push(entry),
+            None => shapes.push((shape, vec![entry])),
+        }
+        acts = next;
+    }
+    for (shape, entries) in &shapes {
+        let index = format!(
+            "{{\n  \"schema\": \"vq-kv/1\",\n  \"causal\": true,\n  \
+             \"source\": \"ds4-gemma4 gemma4_a4b_gpu_gate capture, {} tokens of {}, {} layers\",\n  \
+             \"layers\": [\n{}\n  ]\n}}\n",
+            n,
+            text_path.display(),
+            entries.len(),
+            entries.join(",\n")
+        );
+        std::fs::write(out_dir.join(shape).join("index.json"), index)
+            .map_err(|e| e.to_string())?;
+        println!(
+            "CAPTURE {shape}: {} layers, {} tokens, {:?}",
+            entries.len(),
+            n,
+            out_dir.join(shape)
+        );
+    }
+    Ok(())
+}
+
+/// A matrix of f32, little endian, which is what the capture wants.
+fn write_f32(path: &Path, values: &[f32]) -> Result<(), String> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The DQVQ reader against the toolkit's own dump. A KV container is lossless
+/// over its index stream, so both sides run the reference's unpack arithmetic
+/// on the same bytes and the bar is bit equality: any difference is a parse
+/// error, not a rounding one. The toolkit writes the reference with
+/// `vq-kv dump <container> <out.f32>`.
+fn vq_decode_gate(container: &Path, reference: &Path) -> Result<(), String> {
+    let (rows, cols, got) = decode_container(container)?;
+    let n = got.len();
+    let want_bytes =
+        std::fs::read(reference).map_err(|e| format!("{}: {e}", reference.display()))?;
+    if want_bytes.len() != n * 4 {
+        return Err(format!(
+            "{}: {} bytes, the device decoded {rows}x{cols} f32 = {} bytes",
+            reference.display(),
+            want_bytes.len(),
+            n * 4
+        ));
+    }
+    let want: Vec<f32> = want_bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    let mut differ = 0usize;
+    let mut first: Option<(usize, f32, f32)> = None;
+    let mut max_abs = 0f64;
+    let mut se = 0f64;
+    let mut sn = 0f64;
+    for i in 0..n {
+        let (a, b) = (got[i], want[i]);
+        if a.to_bits() != b.to_bits() {
+            differ += 1;
+            if first.is_none() {
+                first = Some((i, a, b));
+            }
+        }
+        let d = f64::from(a) - f64::from(b);
+        max_abs = max_abs.max(d.abs());
+        se += d * d;
+        sn += f64::from(b) * f64::from(b);
+    }
+    let rel = if sn > 0.0 { (se / sn).sqrt() } else { 0.0 };
+    println!(
+        "VQ DECODE {}: {} x {}, {} floats, {} differ bitwise, relL2 {:.3e}, max abs {:.3e}",
+        container.display(),
+        rows,
+        cols,
+        n,
+        differ,
+        rel,
+        max_abs
+    );
+    if let Some((i, a, b)) = first {
+        let (r, c) = (i / cols as usize, i % cols as usize);
+        println!("first difference at [{r}][{c}]: device {a:e}, toolkit {b:e}");
+    }
+    if differ == 0 {
+        println!("PASS vq-decode: bit-identical to {}", reference.display());
+        Ok(())
+    } else {
+        Err(format!(
+            "vq-decode differs in {differ} of {n} values against {}",
+            reference.display()
+        ))
+    }
+}
+
+/// The encoder against the toolkit's own encode of the same rows. Both sides
+/// select codewords from the same codebooks with the reference's rule
+/// (c2 - 2*(v . C), first minimum), so the bar is the reconstruction: with the
+/// same indices the two f32 matrices are bit-identical. A difference is an
+/// index the device moved, and the run reports how many values moved and by
+/// how much, against the toolkit's decode of its own container.
+fn vq_encode_gate(capture: &Path, container: &Path, reference: &Path) -> Result<(), String> {
+    let path = CString::new(container.to_string_lossy().as_ref())
+        .map_err(|_| format!("{}: path holds a NUL", container.display()))?;
+    let mut cb: *mut c_void = std::ptr::null_mut();
+    let mut err = [0i8; 512];
+    let rc = unsafe { gm4_gpu_cb_open(path.as_ptr(), &mut cb, err.as_mut_ptr(), err.len()) };
+    if rc != 0 {
+        return Err(format!("cb_open {}: {}", container.display(), message(&err)));
+    }
+    let guard = Cb(cb);
+    let (mut nc, mut dim, mut stages, mut cols) = (0i32, 0i32, 0i32, 0i32);
+    unsafe { gm4_gpu_cb_geometry(guard.0, &mut nc, &mut dim, &mut stages, &mut cols) };
+
+    let bytes = std::fs::read(capture).map_err(|e| format!("{}: {e}", capture.display()))?;
+    let row_bytes = cols as usize * 4;
+    if row_bytes == 0 || bytes.len() % row_bytes != 0 {
+        return Err(format!(
+            "{}: {} bytes is not rows of {cols} f32",
+            capture.display(),
+            bytes.len()
+        ));
+    }
+    let rows = bytes.len() / row_bytes;
+    let x: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    let mut idx = vec![0u16; stages as usize * rows * (cols as usize / dim as usize)];
+    let mut rec = vec![0f32; x.len()];
+    let started = Instant::now();
+    let rc = unsafe {
+        gm4_gpu_vq_encode(
+            guard.0,
+            x.as_ptr(),
+            rows as i32,
+            cols,
+            idx.as_mut_ptr(),
+            rec.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    let encode_ms = started.elapsed().as_secs_f64() * 1e3;
+    if rc != 0 {
+        return Err(format!("vq_encode {}: {}", container.display(), message(&err)));
+    }
+
+    let want_bytes =
+        std::fs::read(reference).map_err(|e| format!("{}: {e}", reference.display()))?;
+    if want_bytes.len() != rec.len() * 4 {
+        return Err(format!(
+            "{}: {} bytes, the device encoded {rows}x{cols} = {} bytes",
+            reference.display(),
+            want_bytes.len(),
+            rec.len() * 4
+        ));
+    }
+    let want: Vec<f32> = want_bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    let mut differ = 0usize;
+    let mut max_abs = 0f64;
+    let mut se = 0f64;
+    let mut sn = 0f64;
+    let mut codec_se = 0f64;
+    for i in 0..rec.len() {
+        let (a, b) = (rec[i], want[i]);
+        if a.to_bits() != b.to_bits() {
+            differ += 1;
+        }
+        let d = f64::from(a) - f64::from(b);
+        max_abs = max_abs.max(d.abs());
+        se += d * d;
+        sn += f64::from(b) * f64::from(b);
+        let c = f64::from(a) - f64::from(x[i]);
+        codec_se += c * c;
+    }
+    let mut xn = 0f64;
+    for v in &x {
+        xn += f64::from(*v) * f64::from(*v);
+    }
+    println!(
+        "VQ ENCODE {}: {} x {}, nc {} dim {}, {} stages, {} ms, {} values differ bitwise, \
+         relL2 {:.3e}, max abs {:.3e}",
+        container.display(),
+        rows,
+        cols,
+        nc,
+        dim,
+        stages,
+        encode_ms,
+        differ,
+        if sn > 0.0 { (se / sn).sqrt() } else { 0.0 },
+        max_abs
+    );
+    println!(
+        "  the device's own codec error against the capture: {:.4} % (the toolkit's container: {:.4} %)",
+        (codec_se / xn).sqrt() * 100.0,
+        codec_rel_l2(reference, capture).unwrap_or(f64::NAN) * 100.0
+    );
+    if differ == 0 {
+        println!("PASS vq-encode: bit-identical to {}", reference.display());
+    }
+    Ok(())
+}
+
+/// The toolkit's reconstruction error, printed by `vq-kv encode` from its own
+/// decode of the container it wrote. Recomputing it here keeps the comparison
+/// on one source: the container's decode is the f32 file the gate compares to.
+fn codec_rel_l2(reference: &Path, capture: &Path) -> Result<f64, String> {
+    let want = std::fs::read(reference).map_err(|e| format!("{}: {e}", reference.display()))?;
+    let src = std::fs::read(capture).map_err(|e| format!("{}: {e}", capture.display()))?;
+    if want.len() != src.len() {
+        return Err("the reference and the capture differ in length".into());
+    }
+    let (mut se, mut sn) = (0f64, 0f64);
+    for (a, b) in want.chunks_exact(4).zip(src.chunks_exact(4)) {
+        let y = f64::from(f32::from_le_bytes([a[0], a[1], a[2], a[3]]));
+        let x = f64::from(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        se += (y - x) * (y - x);
+        sn += x * x;
+    }
+    Ok((se / sn).sqrt())
+}
+
+/// The codebook handle, released on every path out of the gate.
+struct Cb(*mut c_void);
+impl Drop for Cb {
+    fn drop(&mut self) {
+        unsafe { gm4_gpu_cb_free(self.0) };
+    }
+}
+
+/// The encoder's cost at the shape a decode step pays: `rows` rows of the
+/// capture, `iters` times. A decode step encodes one token's K and one V per
+/// layer, so `rows 1` is the number that decides whether the VQ KV is viable.
+fn vq_time_gate(capture: &Path, container: &Path, rows: usize, iters: usize) -> Result<(), String> {
+    let path = CString::new(container.to_string_lossy().as_ref())
+        .map_err(|_| format!("{}: path holds a NUL", container.display()))?;
+    let mut cb: *mut c_void = std::ptr::null_mut();
+    let mut err = [0i8; 512];
+    let rc = unsafe { gm4_gpu_cb_open(path.as_ptr(), &mut cb, err.as_mut_ptr(), err.len()) };
+    if rc != 0 {
+        return Err(format!("cb_open {}: {}", container.display(), message(&err)));
+    }
+    let guard = Cb(cb);
+    let (mut nc, mut dim, mut stages, mut cols) = (0i32, 0i32, 0i32, 0i32);
+    unsafe { gm4_gpu_cb_geometry(guard.0, &mut nc, &mut dim, &mut stages, &mut cols) };
+
+    let bytes = std::fs::read(capture).map_err(|e| format!("{}: {e}", capture.display()))?;
+    let x: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let have = x.len() / cols as usize;
+    if rows == 0 || rows > have {
+        return Err(format!(
+            "{} holds {have} rows of {cols}; asked for {rows}",
+            capture.display()
+        ));
+    }
+    let x = &x[..rows * cols as usize];
+    let mut idx = vec![0u16; stages as usize * x.len() / dim as usize];
+    let mut rec = vec![0f32; x.len()];
+    let mut times = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let started = Instant::now();
+        let rc = unsafe {
+            gm4_gpu_vq_encode(
+                guard.0,
+                x.as_ptr(),
+                rows as i32,
+                cols,
+                idx.as_mut_ptr(),
+                rec.as_mut_ptr(),
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(format!("vq_encode: {}", message(&err)));
+        }
+        times.push(started.elapsed().as_secs_f64() * 1e3);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let best = times[0];
+    let median = times[times.len() / 2];
+    let mut se = 0f64;
+    let mut sn = 0f64;
+    for i in 0..x.len() {
+        let d = f64::from(rec[i]) - f64::from(x[i]);
+        se += d * d;
+        sn += f64::from(x[i]) * f64::from(x[i]);
+    }
+    println!(
+        "VQ TIME {}: {} row(s) x {cols}, nc {nc} dim {dim}, {stages} stages, best {best:.3} ms, \
+         median {median:.3} ms, {} bytes of indices",
+        container.display(),
+        rows,
+        idx.len() * 2
+    );
+    println!(
+        "  codec error against these rows: {:.4} %",
+        (se / sn).sqrt() * 100.0
+    );
+    Ok(())
+}
+
 /// One layer's chain and cache, built from the release's own layout: the small
 /// vectors are uploaded by `gm4_gpu_layer_new`, so nothing here outlives the
 /// call. The cache is sized the way the CPU session sizes its own
@@ -3030,6 +4116,7 @@ fn build_chain(
     root: &Path,
     encoded: &[&Entry],
     layer: usize,
+    vq: Option<(&VqKv, &VqKv)>,
 ) -> Result<(Chain, Cache), String> {
     let config = &family.config;
     let spec = &family.layout.layers[layer];
@@ -3125,6 +4212,8 @@ fn build_chain(
         router_scale: router_scale.as_ptr(),
         per_expert_scale: per_expert_scale.as_ptr(),
         rope_inv: rope_inv.as_ptr(),
+        kvq_k: vq.map_or(std::ptr::null_mut(), |(k, _)| k.0),
+        kvq_v: vq.map_or(std::ptr::null_mut(), |(_, v)| v.0),
     };
     let chain = call_layer_new(device, &lspec)?;
     let kv = call_kv_new(device, kv_heads, head_dim, window, cap)?;
@@ -3576,4 +4665,943 @@ fn compare_f64(values: &[f32], reference: &[f64]) -> (f64, f64, f64) {
         0.0
     };
     (rel, max_abs, 0.0)
+}
+
+/// Decode a container on the device: rows, columns and row-major f32. This is
+/// the one reader the gates share, so the decode a comparison uses and the
+/// decode the reader gate proved cannot drift.
+fn decode_container(container: &Path) -> Result<(usize, usize, Vec<f32>), String> {
+    let path = CString::new(container.to_string_lossy().as_ref())
+        .map_err(|_| format!("{}: path holds a NUL", container.display()))?;
+    let mut out: *mut f32 = std::ptr::null_mut();
+    let mut rows = 0i32;
+    let mut cols = 0i32;
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_vq_decode(
+            path.as_ptr(),
+            &mut out,
+            &mut rows,
+            &mut cols,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("vq_decode {}: {}", container.display(), message(&err)));
+    }
+    let n = rows as usize * cols as usize;
+    let got = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
+    unsafe { gm4_gpu_vq_free(out) };
+    Ok((rows as usize, cols as usize, got))
+}
+
+/// A container held as a read-only VQ cache, released on every path out.
+struct VqKv(*mut c_void);
+impl Drop for VqKv {
+    fn drop(&mut self) {
+        unsafe { gm4_gpu_vqkv_free(self.0) };
+    }
+}
+
+/// Causal attention over f64, the model's own arithmetic (scaling 1.0, no
+/// mask beyond causality), for the queries from `first_query` on. Keys from 0
+/// are visible; a query's keys are 0..=t. q is [tokens][heads][head_dim],
+/// k and v [tokens][kv_heads * head_dim].
+#[allow(clippy::too_many_arguments)]
+fn f64_attention_vq(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_tokens: usize,
+    heads: usize,
+    head_dim: usize,
+    kv_heads: usize,
+    first_query: usize,
+    q_to_kv: &[usize],
+) -> Vec<f64> {
+    let row = kv_heads * head_dim;
+    let qn = heads * head_dim;
+    let group = heads / kv_heads;
+    let mut out = vec![0f64; (n_tokens - first_query) * qn];
+    let mut scores = vec![0f64; n_tokens];
+    let mut probs = vec![0f64; n_tokens];
+    for t in first_query..n_tokens {
+        for h in 0..heads {
+            let kv = q_to_kv.get(h).copied().unwrap_or(h / group);
+            let qo = t * qn + h * head_dim;
+            let mut mx = f64::NEG_INFINITY;
+            for s in 0..=t {
+                let ko = s * row + kv * head_dim;
+                let mut acc = 0f64;
+                for d in 0..head_dim {
+                    acc += f64::from(q[qo + d]) * f64::from(k[ko + d]);
+                }
+                scores[s] = acc;
+                if acc > mx {
+                    mx = acc;
+                }
+            }
+            let mut sum = 0f64;
+            for s in 0..=t {
+                let e = (scores[s] - mx).exp();
+                probs[s] = e;
+                sum += e;
+            }
+            if sum > 0.0 {
+                for p in probs[..=t].iter_mut() {
+                    *p /= sum;
+                }
+            }
+            let oo = (t - first_query) * qn + h * head_dim;
+            for d in 0..head_dim {
+                let mut acc = 0f64;
+                for s in 0..=t {
+                    acc += probs[s] * f64::from(v[s * row + kv * head_dim + d]);
+                }
+                out[oo + d] = acc;
+            }
+        }
+    }
+    out
+}
+
+/// relL2 and maxabs of a f32 vector against an f64 reference, over the same
+/// length.
+fn rel_l2_f32_f64(values: &[f32], reference: &[f64]) -> (f64, f64) {
+    let (mut se, mut sn, mut max_abs) = (0f64, 0f64, 0f64);
+    for (&v, &r) in values.iter().zip(reference) {
+        let d = f64::from(v) - r;
+        se += d * d;
+        sn += r * r;
+        max_abs = max_abs.max(d.abs());
+    }
+    (if sn > 0.0 { (se / sn).sqrt() } else { 0.0 }, max_abs)
+}
+
+/// relL2 and maxabs of one f32 vector against another.
+fn rel_l2_f32(a: &[f32], b: &[f32]) -> (f64, f64) {
+    let (mut se, mut sn, mut max_abs) = (0f64, 0f64, 0f64);
+    for (&x, &y) in a.iter().zip(b) {
+        let d = f64::from(x) - f64::from(y);
+        se += d * d;
+        sn += f64::from(y) * f64::from(y);
+        max_abs = max_abs.max(d.abs());
+    }
+    (if sn > 0.0 { (se / sn).sqrt() } else { 0.0 }, max_abs)
+}
+
+/// relL2 and maxabs of one f64 vector against another.
+fn rel_l2_f64(a: &[f64], b: &[f64]) -> (f64, f64) {    let (mut se, mut sn, mut max_abs) = (0f64, 0f64, 0f64);
+    for (&x, &y) in a.iter().zip(b) {
+        let d = x - y;
+        se += d * d;
+        sn += y * y;
+        max_abs = max_abs.max(d.abs());
+    }
+    (if sn > 0.0 { (se / sn).sqrt() } else { 0.0 }, max_abs)
+}
+
+/// Step 3 of the KV unit: attention reads the VQ rows.
+///
+/// For every captured layer the device re-walks the queries against the two
+/// containers (K and V) and the output is compared with a f64 reference over
+/// the decoded rows - the two must agree to f32 round-off, which is the
+/// kernel's gate. The same reference over the *captured* rows is the codec's
+/// cost at the model's own arithmetic (scaling 1.0): that number is reported
+/// per layer and is not a tolerance.
+fn vq_attention_gate(
+    device: &Residency,
+    capture_dir: &Path,
+    container_dir: &Path,
+    wanted: Option<&[usize]>,
+    tail: usize,
+    iters: usize,
+    row_encode: bool,
+) -> Result<(), String> {
+    let index_path = capture_dir.join("index.json");
+    let text = std::fs::read_to_string(&index_path)
+        .map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let index: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let entries = index["layers"]
+        .as_array()
+        .ok_or_else(|| format!("{}: no layers array", index_path.display()))?
+        .clone();
+    if entries.is_empty() {
+        return Err(format!("{}: the capture has no layers", index_path.display()));
+    }
+
+    let read_f32 = |name: &str| -> Result<Vec<f32>, String> {
+        let path = capture_dir.join(name);
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
+    };
+
+    let mut failed = false;
+    let mut layers_done = 0usize;
+    let mut worst_codec = 0f64;
+    for entry in &entries {
+        let layer = entry["layer"]
+            .as_u64()
+            .ok_or("a capture layer has no number")? as usize;
+        if let Some(list) = wanted {
+            if !list.contains(&layer) {
+                continue;
+            }
+        }
+        let n_tokens = entry["n_tokens"].as_u64().ok_or("no n_tokens")? as usize;
+        let kv_heads = entry["kv_heads"].as_u64().ok_or("no kv_heads")? as usize;
+        let head_dim = entry["head_dim"].as_u64().ok_or("no head_dim")? as usize;
+        let q_heads = entry["q_heads"].as_u64().ok_or("no q_heads")? as usize;
+        let q_to_kv: Vec<usize> = entry["q_to_kv"]
+            .as_array()
+            .ok_or("no q_to_kv")?
+            .iter()
+            .map(|v| v.as_u64().unwrap_or(0) as usize)
+            .collect();
+        let name = |key: &str| -> Result<String, String> {
+            entry[key]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("layer {layer}: no {key} file"))
+        };
+        let k_src = read_f32(&name("k")?)?;
+        let v_src = read_f32(&name("v")?)?;
+        let q_all = read_f32(&name("q")?)?;
+        let per = kv_heads * head_dim;
+        let qn = q_heads * head_dim;
+        if k_src.len() != n_tokens * per
+            || v_src.len() != n_tokens * per
+            || q_all.len() != n_tokens * qn
+        {
+            return Err(format!(
+                "layer {layer}: the capture's files are not {n_tokens} rows of {per} (K/V) and {qn} (q)"
+            ));
+        }
+
+        let k_path = container_dir.join(format!("l{layer:03}.k.bin"));
+        let v_path = container_dir.join(format!("l{layer:03}.v.bin"));
+        let (krows, kcols, k_dec) = decode_container(&k_path)?;
+        let (vrows, vcols, v_dec) = decode_container(&v_path)?;
+        if krows != n_tokens || vrows != n_tokens || kcols != per || vcols != per {
+            return Err(format!(
+                "layer {layer}: K is {krows}x{kcols} and V {vrows}x{vcols}, the capture is {n_tokens}x{per}"
+            ));
+        }
+
+        let open = |path: &Path| -> Result<VqKv, String> {
+            let cpath = CString::new(path.to_string_lossy().as_ref())
+                .map_err(|_| format!("{}: path holds a NUL", path.display()))?;
+            let mut kv: *mut c_void = std::ptr::null_mut();
+            let mut err = [0i8; 512];
+            let rc = unsafe {
+                gm4_gpu_vqkv_open(
+                    device.0,
+                    cpath.as_ptr(),
+                    0,
+                    0,
+                    &mut kv,
+                    err.as_mut_ptr(),
+                    err.len(),
+                )
+            };
+            if rc != 0 {
+                return Err(format!("vqkv_open {}: {}", path.display(), message(&err)));
+            }
+            Ok(VqKv(kv))
+        };
+        let kq = open(&k_path)?;
+        let vq = open(&v_path)?;
+        let (mut rows, mut cols, mut dim, mut nc, mut stages) = (0, 0, 0, 0, 0);
+        unsafe {
+            gm4_gpu_vqkv_geometry(kq.0, &mut rows, &mut cols, &mut dim, &mut nc, &mut stages);
+        }
+        let (rows, cols, dim, nc, stages) = (
+            rows as usize,
+            cols as usize,
+            dim as usize,
+            nc as usize,
+            stages as usize,
+        );
+        if rows != n_tokens || cols != per || dim != 8 {
+            return Err(format!(
+                "layer {layer}: the cache is {rows}x{cols} dim {dim}, expected {n_tokens}x{per} dim 8"
+            ));
+        }
+
+        if row_encode {
+            // The runtime's own write: every row assigned against the
+            // container's codebook and packed into the stream. If this agrees
+            // with the container's decode - which the f64 reference below is
+            // built from - then the encoder and the bit packing are the
+            // toolkit's, byte for byte.
+            for (label, cache, src) in [("K", &kq, &k_src), ("V", &vq, &v_src)] {
+                let mut err = [0i8; 512];
+                let rc = unsafe {
+                    gm4_gpu_vqkv_encode_host(
+                        device.0,
+                        cache.0,
+                        src.as_ptr(),
+                        n_tokens as i32,
+                        err.as_mut_ptr(),
+                        err.len(),
+                    )
+                };
+                if rc != 0 {
+                    return Err(format!(
+                        "layer {layer} {label} row encode: {}",
+                        message(&err)
+                    ));
+                }
+            }
+            println!("  ROW ENCODE: both caches filled by the runtime's per-row encoder");
+        }
+
+        // Device attention, one query at a time - the runtime's call - over
+        // the whole capture, and the tail kept for the f64 comparison.
+        let first = n_tokens.saturating_sub(tail);
+        let mut got = vec![0f32; (n_tokens - first) * qn];
+        let mut tmp = vec![0f32; qn];
+        let started = Instant::now();
+        for p in 0..n_tokens {
+            let mut err = [0i8; 512];
+            let rc = unsafe {
+                gm4_gpu_attention_vq(
+                    device.0,
+                    kq.0,
+                    vq.0,
+                    q_all[p * qn..(p + 1) * qn].as_ptr(),
+                    q_heads as i32,
+                    head_dim as i32,
+                    p as i32,
+                    tmp.as_mut_ptr(),
+                    err.as_mut_ptr(),
+                    err.len(),
+                )
+            };
+            if rc != 0 {
+                return Err(format!(
+                    "layer {layer} position {p}: {}",
+                    message(&err)
+                ));
+            }
+            if p >= first {
+                let at = (p - first) * qn;
+                got[at..at + qn].copy_from_slice(&tmp);
+            }
+        }
+        let pass_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        let ref_dec = f64_attention_vq(
+            &q_all,
+            &k_dec,
+            &v_dec,
+            n_tokens,
+            q_heads,
+            head_dim,
+            kv_heads,
+            first,
+            &q_to_kv,
+        );
+        let ref_src = f64_attention_vq(
+            &q_all,
+            &k_src,
+            &v_src,
+            n_tokens,
+            q_heads,
+            head_dim,
+            kv_heads,
+            first,
+            &q_to_kv,
+        );
+        let (kernel_rel, kernel_max) = rel_l2_f32_f64(&got, &ref_dec);
+        let (codec_rel, codec_max) = rel_l2_f64(&ref_dec, &ref_src);
+        worst_codec = worst_codec.max(codec_rel);
+
+        println!(
+            "VQ ATTN layer {layer}: {n_tokens} tokens, {q_heads} q / {kv_heads} kv x {head_dim}, \
+             nc {nc} dim {dim} {stages} stages, {pass_ms:.1} ms for the pass"
+        );
+        println!(
+            "  device against f64 over the decoded rows: relL2 {kernel_rel:.3e}, max abs {kernel_max:.3e}"
+        );
+        println!(
+            "  the codec at the model's arithmetic: {:.4} %, max abs {codec_max:.3e} (the f16 cache is the reference)",
+            codec_rel * 100.0
+        );
+        let payload = stages * (per / dim) * ((nc as f64).log2().ceil() as usize) / 8;
+        println!(
+            "  stream: {payload} B per token across K and V (f16 cache: {} B)",
+            per * 2 * 2
+        );
+        if kernel_rel > 1e-4 {
+            println!("  FAIL the kernel is past 1e-4 against its own decode");
+            failed = true;
+        }
+
+        // The per-token cost at the last position, against the f16 cache's
+        // own attention: the same query, the same schedule.
+        let pos = n_tokens - 1;
+        let mut best_vq = f64::INFINITY;
+        for _ in 0..iters {
+            let started = Instant::now();
+            let mut err = [0i8; 512];
+            let rc = unsafe {
+                gm4_gpu_attention_vq(
+                    device.0,
+                    kq.0,
+                    vq.0,
+                    q_all[pos * qn..(pos + 1) * qn].as_ptr(),
+                    q_heads as i32,
+                    head_dim as i32,
+                    pos as i32,
+                    tmp.as_mut_ptr(),
+                    err.as_mut_ptr(),
+                    err.len(),
+                )
+            };
+            if rc != 0 {
+                return Err(format!("layer {layer} timed query: {}", message(&err)));
+            }
+            best_vq = best_vq.min(started.elapsed().as_secs_f64() * 1e3);
+        }
+        let f16_cache = call_kv_new(device, kv_heads, head_dim, 0, n_tokens)?;
+        for p in 0..n_tokens {
+            call_kv_put(
+                device,
+                &f16_cache,
+                p,
+                &k_src[p * per..(p + 1) * per],
+                &v_src[p * per..(p + 1) * per],
+            )?;
+        }
+        let mut best_f16 = f64::INFINITY;
+        let mut out_f16 = vec![0f32; qn];
+        for _ in 0..iters {
+            let started = Instant::now();
+            call_attention_ring(
+                device,
+                &f16_cache,
+                &q_all[pos * qn..(pos + 1) * qn],
+                q_heads,
+                pos,
+                &mut out_f16,
+            )?;
+            best_f16 = best_f16.min(started.elapsed().as_secs_f64() * 1e3);
+        }
+        let (f16_own, f16_own_max) = rel_l2_f32_f64(&out_f16, &ref_dec[ref_dec.len() - qn..]);
+        let (vq_own, vq_own_max) = rel_l2_f32_f64(&tmp, &ref_dec[ref_dec.len() - qn..]);
+        let (vq_f16, vq_f16_max) = rel_l2_f32(&tmp, &out_f16);
+        println!(
+            "  last query ({pos}): VQ {best_vq:.3} ms, f16 {best_f16:.3} ms; device VQ against device f16 {:.4} %, max abs {vq_f16_max:.3e}",
+            vq_f16 * 100.0
+        );
+        println!(
+            "  last query against its own f64 decode: f16 cache {f16_own:.3e} / {f16_own_max:.3e}, \
+             VQ cache {vq_own:.3e} / {vq_own_max:.3e}; the codec on this query {:.4} %",
+            rel_l2_f64(&ref_dec[ref_dec.len() - qn..], &ref_src[ref_src.len() - qn..]).0 * 100.0
+        );
+        layers_done += 1;
+    }
+    if layers_done == 0 {
+        return Err("--vq-attn: no captured layer matched --vq-layers".into());
+    }
+    println!(
+        "VQ ATTN {layers_done} layers, worst codec error at the model's arithmetic {:.4} %",
+        worst_codec * 100.0
+    );
+    if failed {
+        Err("the VQ attention is past its kernel gate".into())
+    } else {
+        println!("PASS vq-attn: every layer reads the VQ rows and matches its own decode");
+        Ok(())
+    }
+}
+
+/// Open one container as a cache, with the same checks every VQ gate uses.
+fn open_vq(device: &Residency, path: &Path, cap: i32, window: i32) -> Result<VqKv, String> {
+    let cpath = CString::new(path.to_string_lossy().as_ref())
+        .map_err(|_| format!("{}: path holds a NUL", path.display()))?;
+    let mut kv: *mut c_void = std::ptr::null_mut();
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_vqkv_open(
+            device.0,
+            cpath.as_ptr(),
+            cap,
+            window,
+            &mut kv,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("vqkv_open {}: {}", path.display(), message(&err)));
+    }
+    Ok(VqKv(kv))
+}
+
+/// Every layer's K and V container, opened at the capacity the session will
+/// use: the sliding window for a ring layer, the 4096-position bound for a
+/// full one - the same sizes the f16 caches take (forward.rs:194-225).
+fn open_layer_caches(
+    device: &Residency,
+    family: &Family,
+    sliding_dir: &Path,
+    full_dir: &Path,
+) -> Result<Vec<(VqKv, VqKv)>, String> {
+    let config = &family.config;
+    let mut out = Vec::with_capacity(config.layers);
+    let (mut payload, mut codebooks) = (0usize, 0usize);
+    for layer in 0..config.layers {
+        let spec = &family.layout.layers[layer];
+        let kind = spec.kind;
+        let head_dim = config.head_dim_of(kind);
+        let kv_heads = config.kv_heads_of(kind);
+        let per = kv_heads * head_dim;
+        let (dir, cap, window) = match kind {
+            LayerType::Sliding => (
+                sliding_dir,
+                config.sliding_window as i32,
+                config.sliding_window as i32,
+            ),
+            LayerType::Full => (full_dir, 4096i32, 0i32),
+        };
+        let k = open_vq(device, &dir.join(format!("l{layer:03}.k.bin")), cap, window)?;
+        let v = open_vq(device, &dir.join(format!("l{layer:03}.v.bin")), cap, window)?;
+        for (side, kv) in [("k", &k), ("v", &v)] {
+            let (mut rows, mut cols, mut dim, mut nc, mut stages) = (0, 0, 0, 0, 0);
+            unsafe {
+                gm4_gpu_vqkv_geometry(kv.0, &mut rows, &mut cols, &mut dim, &mut nc, &mut stages)
+            };
+            if rows != cap || cols as usize != per {
+                return Err(format!(
+                    "layer {layer}.{side}: the cache is {rows}x{cols}, the layer is {cap}x{per}"
+                ));
+            }
+            payload += (rows as usize) * (cols as usize / dim as usize) * (stages as usize) * 12 / 8;
+            codebooks += (nc as usize) * (dim as usize) * 2 * (stages as usize);
+        }
+        out.push((k, v));
+    }
+    let mib = |b: usize| b as f64 / (1024.0 * 1024.0);
+    println!(
+        "VQ MODEL caches: {} lanes, stream {:.1} MiB, codebooks {:.1} MiB, {:.1} MiB total",
+        out.len() * 2,
+        mib(payload),
+        mib(codebooks),
+        mib(payload + codebooks)
+    );
+    Ok(out)
+}
+
+/// A model handle and the chains and caches it points into. The model frees
+/// only its own buffers, so the three live together here in drop order.
+struct BuiltModel {
+    model: DeviceModel,
+    _chains: Vec<Chain>,
+    _caches: Vec<Cache>,
+}
+
+fn build_device_model(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    vq: Option<&[(VqKv, VqKv)]>,
+) -> Result<BuiltModel, String> {
+    let config = &family.config;
+    let embed_entry = &family.layout.embed;
+    let embed = encoded
+        .iter()
+        .position(|e| e.name == embed_entry.name)
+        .ok_or_else(|| format!("{}: not an encoded entry", embed_entry.name))?
+        as i32;
+    let final_norm = decode(root, &family.layout.final_norm)
+        .map_err(|e| e.to_string())?
+        .data;
+    let mut chains = Vec::with_capacity(config.layers);
+    let mut caches = Vec::with_capacity(config.layers);
+    for layer in 0..config.layers {
+        let pair = vq.map(|v| (&v[layer].0, &v[layer].1));
+        let (chain, cache) = build_chain(device, family, root, encoded, layer, pair)?;
+        chains.push(chain);
+        caches.push(cache);
+    }
+    let layer_ptrs: Vec<*mut c_void> = chains.iter().map(|c| c.0).collect();
+    let kv_ptrs: Vec<*mut c_void> = caches.iter().map(|c| c.0).collect();
+    let spec = ModelSpec {
+        layers: layer_ptrs.as_ptr(),
+        kv: kv_ptrs.as_ptr(),
+        n: config.layers as i32,
+        embed,
+        head: embed,
+        final_norm: final_norm.as_ptr(),
+        hidden: config.hidden as i32,
+        vocab: config.vocab as i32,
+        threads: 256,
+        eps: config.rms_eps,
+        embed_scale: bf16_round((config.hidden as f32).sqrt()),
+        softcap: config.logit_softcap,
+    };
+    let model = call_model_new(device, &spec)?;
+    Ok(BuiltModel {
+        model,
+        _chains: chains,
+        _caches: caches,
+    })
+}
+
+/// The prompt's end-of-prompt logits, the greedy continuation and the step
+/// times. The greedy loop starts from the prompt's top-1, which is the token
+/// the prompt itself predicts.
+fn run_prompt(
+    device: &Residency,
+    model: &DeviceModel,
+    tok: &Tokenizer,
+    prompt: &[u32],
+    vocab: usize,
+    steps_wanted: usize,
+) -> Result<(Vec<f32>, Vec<u32>, f64, f64), String> {
+    let mut logits = vec![0f32; vocab];
+    let (mut best, mut total) = (f64::INFINITY, 0f64);
+    for (pos, &token) in prompt.iter().enumerate() {
+        let started = Instant::now();
+        call_model_step(device, model, token, pos, &mut logits)?;
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        best = best.min(ms);
+        total += ms;
+    }
+    let prompt_logits = logits.clone();
+    let mut current = argmax(&logits) as u32;
+    let mut ids = vec![current];
+    let mut steps = 0usize;
+    while !tok.is_eos(current) && ids.len() < steps_wanted {
+        let pos = prompt.len() + steps;
+        call_model_step(device, model, current, pos, &mut logits)?;
+        steps += 1;
+        current = argmax(&logits) as u32;
+        ids.push(current);
+    }
+    Ok((prompt_logits, ids, best, total / prompt.len() as f64))
+}
+
+/// Step 4 of the KV unit: the model with VQ caches, against the model with f16
+/// caches, on the recorded prompt.
+///
+/// The two runs are separate builds of the same 30 chains, so the device is
+/// never holding two full models. The f16 run is the reference: the same
+/// prompt, the same weights, its own caches. The gate compares the prompt's
+/// last logits, the top-1 and the greedy continuation; the timing is reported
+/// beside them, and the encode path is the per-row call (the batched call,
+/// KV-3b, is the performance fix this run exposes).
+fn vq_model_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    tokenizer_path: &Path,
+    sliding_dir: &Path,
+    full_dir: &Path,
+    failed: &mut bool,
+) -> Result<(), String> {
+    const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
+    const STEPS: usize = 6;
+    let config = &family.config;
+    let vocab = config.vocab;
+    let tok = Tokenizer::open(tokenizer_path).map_err(|e| e.to_string())?;
+    let prompt = tok
+        .chat_prompt(&[("user".into(), QUESTION.into())], false)
+        .map_err(|e| e.to_string())?;
+    println!("  PROMPT {} tokens: {:?}", prompt.len(), tok.decode(&prompt));
+
+    let (logits_f16, ids_f16, best_f16, mean_f16) = {
+        let built = build_device_model(device, family, root, encoded, None)?;
+        let mut acct = Account::default();
+        unsafe { gm4_gpu_account_of(device.0, &mut acct) };
+        println!(
+            "  F16 model: free {:.1} MiB after the caches",
+            acct.device_free_after as f64 / (1024.0 * 1024.0)
+        );
+        run_prompt(device, &built.model, &tok, &prompt, vocab, STEPS)?
+    };
+    let top_f16 = argmax(&logits_f16);
+    println!(
+        "  F16  top-1 {top_f16} ({:?}), greedy {:?}, best {best_f16:.2} ms ({:.1} tok/s), mean {mean_f16:.2} ms",
+        tok.token(top_f16 as u32),
+        tok.decode(&ids_f16),
+        1000.0 / best_f16
+    );
+
+    let vq = open_layer_caches(device, family, sliding_dir, full_dir)?;
+    let (logits_vq, ids_vq, best_vq, mean_vq) = {
+        let built = build_device_model(device, family, root, encoded, Some(&vq))?;
+        let mut acct = Account::default();
+        unsafe { gm4_gpu_account_of(device.0, &mut acct) };
+        println!(
+            "  VQ model: free {:.1} MiB after the caches",
+            acct.device_free_after as f64 / (1024.0 * 1024.0)
+        );
+        run_prompt(device, &built.model, &tok, &prompt, vocab, STEPS)?
+    };
+    let top_vq = argmax(&logits_vq);
+    println!(
+        "  VQ   top-1 {top_vq} ({:?}), greedy {:?}, best {best_vq:.2} ms ({:.1} tok/s), mean {mean_vq:.2} ms",
+        tok.token(top_vq as u32),
+        tok.decode(&ids_vq),
+        1000.0 / best_vq
+    );
+
+    let (rel, max, scale) = compare(&logits_f16, &logits_vq);
+    println!(
+        "  LOGITS VQ against f16: relL2 {rel:.3e}, max abs {max:.3e}, scale {scale:.3e}, top-1 {} vs {}",
+        top_f16, top_vq
+    );
+    if top_f16 != top_vq {
+        println!("  MEASURED NEGATIVE the VQ cache moves the prompt's top-1");
+        *failed = true;
+    }
+    if ids_f16 != ids_vq {
+        println!(
+            "  MEASURED NEGATIVE the greedy continuation moves: f16 {:?}, VQ {:?}",
+            tok.decode(&ids_f16),
+            tok.decode(&ids_vq)
+        );
+        *failed = true;
+    }
+    // The read the cache costs at a full window, from the geometry: the f16
+    // cache reads 2 bytes per value, the VQ cache 12 bits per 8 values plus
+    // the codeword traffic, which is L1-resident.
+    let sliding = 25usize;
+    let pos = config.sliding_window;
+    let f16_bytes = sliding * pos * config.kv_heads_of(LayerType::Sliding) * config.head_dim * 2 * 2;
+    let vq_bytes = sliding * pos * config.kv_heads_of(LayerType::Sliding) * config.head_dim / 8 * 12 / 8 * 2;
+    println!(
+        "  READ at a {pos}-position window: f16 {:.1} MiB per token, VQ stream {:.1} MiB ({:.1}x)",
+        f16_bytes as f64 / (1024.0 * 1024.0),
+        vq_bytes as f64 / (1024.0 * 1024.0),
+        f16_bytes as f64 / vq_bytes as f64
+    );
+    if ids_f16 == ids_vq && top_f16 == top_vq {
+        println!("PASS vq-model: the VQ cache keeps the prompt's logits' top-1 and the greedy continuation");
+    }
+    Ok(())
+}
+
+/// The block bisect: a model of the first `layers` layers, the block against
+/// the step on the same tokens. No CPU oracle, so it isolates the block path
+/// itself: the first layer count to fail names where the wiring breaks, and
+/// n = 1 separates a single-token error from a multi-token one.
+fn block_bisect(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    tokenizer_path: &Path,
+    layers: usize,
+    tokens_wanted: usize,
+    stages: bool,
+    text: Option<String>,
+) -> Result<(), String> {
+    const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
+    let question = text.unwrap_or_else(|| QUESTION.to_string());
+    let config = &family.config;
+    if layers == 0 || layers > config.layers {
+        return Err(format!(
+            "--block-layers {layers} is outside 1..{}",
+            config.layers
+        ));
+    }
+    let tok = Tokenizer::open(tokenizer_path).map_err(|e| e.to_string())?;
+    let prompt = tok
+        .chat_prompt(&[("user".into(), question.clone())], false)
+        .map_err(|e| e.to_string())?;
+    let n = tokens_wanted.min(prompt.len());
+    if n == 0 {
+        return Err("--block-tokens is zero".into());
+    }
+    let embed_entry = &family.layout.embed;
+    let embed = encoded
+        .iter()
+        .position(|e| e.name == embed_entry.name)
+        .ok_or_else(|| format!("{}: not an encoded entry", embed_entry.name))?
+        as i32;
+    let final_norm = decode(root, &family.layout.final_norm)
+        .map_err(|e| e.to_string())?
+        .data;
+
+    let mut chains = Vec::with_capacity(layers);
+    let mut caches = Vec::with_capacity(layers);
+    for layer in 0..layers {
+        let (chain, cache) = build_chain(device, family, root, encoded, layer, None)?;
+        chains.push(chain);
+        caches.push(cache);
+    }
+    let layer_ptrs: Vec<*mut c_void> = chains.iter().map(|c| c.0).collect();
+    let kv_ptrs: Vec<*mut c_void> = caches.iter().map(|c| c.0).collect();
+    let spec = ModelSpec {
+        layers: layer_ptrs.as_ptr(),
+        kv: kv_ptrs.as_ptr(),
+        n: layers as i32,
+        embed,
+        head: embed,
+        final_norm: final_norm.as_ptr(),
+        hidden: config.hidden as i32,
+        vocab: config.vocab as i32,
+        threads: 256,
+        eps: config.rms_eps,
+        embed_scale: bf16_round((config.hidden as f32).sqrt()),
+        softcap: config.logit_softcap,
+    };
+    let model = call_model_new(device, &spec)?;
+    let reset = |device: &Residency| -> Result<(), String> {
+        for cache in &caches {
+            call_kv_reset(device, cache)?;
+        }
+        Ok(())
+    };
+
+    let vocab = config.vocab;
+    let mut want = vec![0f32; vocab];
+    reset(device)?;
+    let t0 = std::time::Instant::now();
+    for (pos, &token) in prompt[..n].iter().enumerate() {
+        call_model_step(device, &model, token, pos, &mut want)?;
+    }
+    let step_ms = t0.elapsed().as_secs_f64() * 1e3;
+    reset(device)?;
+    let mut got = vec![0f32; vocab];
+    let t1 = std::time::Instant::now();
+    call_model_prefill(device, &model, &prompt[..n], 0, &mut got)?;
+    let block_ms = t1.elapsed().as_secs_f64() * 1e3;
+    let (submit, wait) = call_model_split(&model);
+    println!(
+        "BLOCK TIME {layers} layer(s), {n} token(s): walk {step_ms:.1} ms, block {block_ms:.1} ms (host submit {submit:.1}, sync+logits {wait:.1})"
+    );
+    {
+        // The last layer's routing at the last token, both paths: a block that
+        // picks different experts is not a wiring error, it is the discrete
+        // step a near-tie takes, and it is what makes a logits band the wrong
+        // instrument past the first few layers.
+        let tp = config.top_k;
+        let bp = call_prefill_list(&model, 3, n * tp)?;
+        let mut sp = vec![0i32; tp];
+        let mut err = [0i8; 512];
+        let rc = unsafe {
+            gm4_gpu_layer_list(
+                chains[layers - 1].0,
+                0,
+                sp.as_mut_ptr() as *mut std::ffi::c_void,
+                tp as i32,
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        if rc == 0 {
+            let b = &bp[(n - 1) * tp..n * tp];
+            let same = b.iter().zip(sp.iter()).filter(|(x, y)| x == y).count();
+            println!(
+                "  PICKED layer {}, token {}: block {b:?} step {sp:?} ({same}/{tp} in the same slot)",
+                layers - 1,
+                n - 1
+            );
+        }
+    }
+    let (rel, max, scale) = compare(&want, &got);
+    println!(
+        "BLOCK BISECT {layers} layer(s), {n} token(s): block vs step relL2 {rel:.3e} maxabs {max:.3e} scale {scale:.3e}, top-1 {} vs {}",
+        argmax(&want),
+        argmax(&got)
+    );
+    if rel > 1e-4 || max > 1e-2 {
+        println!("FAIL the block is past its band at {layers} layer(s)");
+        if stages {
+            let config0 = &family.config;
+            let kind = family.layout.layers[0].kind;
+            let hd = config0.head_dim_of(kind);
+            let kvh = config0.kv_heads_of(kind);
+            let checks: [(i32, i32, &str, usize); 15] = [
+                (3, 3, "qb", config0.heads * hd),
+                (5, 5, "kb", kvh * hd),
+                (7, 7, "vb", kvh * hd),
+                (8, 8, "attn", config0.heads * hd),
+                (9, 9, "attn2", config0.hidden),
+                (15, 15, "dense", config0.hidden),
+                (16, 16, "r", config0.hidden),
+                (17, 17, "scores", config0.experts),
+                (1, 26, "hb", config0.hidden),
+                (1, 27, "xs32", config0.hidden),
+                (18, 18, "moe", config0.hidden),
+                (19, 19, "moe2", config0.hidden),
+                (20, 20, "comb", config0.hidden),
+                (21, 21, "comb2", config0.hidden),
+                (22, 22, "outd", config0.hidden),
+            ];
+            for (which, bwhich, name, len) in checks {
+                let step = call_layer_probe(&chains[0], which, len)?;
+                let block = call_prefill_probe(&model, bwhich, len)?;
+                let (r, m, _s) = compare(&step, &block);
+                let rms = |v: &[f32]| {
+                    (v.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>()
+                        / v.len().max(1) as f64)
+                        .sqrt()
+                };
+                println!(
+                    "  STAGE {name:<7} block vs step relL2 {r:.3e} maxabs {m:.3e} rms step {:.3e} block {:.3e}",
+                    rms(&step),
+                    rms(&block)
+                );
+            }
+            // The expert buffers hold the same values in a different order: the
+            // step keeps the router's slots, the block the expert-sorted work
+            // items. dst names the slot each pair's down projection writes, so
+            // gu and act are pair-major in the block and slot-major in the step,
+            // while d is already slot-major on both sides.
+            let pairs = n * config0.top_k;
+            let dst = call_prefill_list(&model, 1, pairs)?;
+            let expert_checks: [(i32, &str, usize, bool); 3] = [
+                (23, "gu", pairs * 2 * config0.moe_ff, true),
+                (24, "act", pairs * config0.moe_ff, true),
+                (25, "d", pairs * config0.hidden, false),
+            ];
+            for (which, name, len, pair_major) in expert_checks {
+                let step = call_layer_probe(&chains[0], which, len)?;
+                let block = call_prefill_probe(&model, which, len)?;
+                let width = len / pairs;
+                let (mut sum, mut norm, mut max, mut worst, mut at) =
+                    (0f64, 0f64, 0f32, 0f32, (0usize, 0usize));
+                for pair in 0..pairs {
+                    let slot = dst[pair] as usize;
+                    for j in 0..width {
+                        let a = step[slot * width + j];
+                        let b =
+                            block[if pair_major { pair * width + j } else { slot * width + j }];
+                        sum += f64::from(b - a) * f64::from(b - a);
+                        norm += f64::from(a) * f64::from(a);
+                        max = max.max((b - a).abs());
+                        let rel = (b - a).abs() / a.abs().max(b.abs()).max(1e-12);
+                        if rel > worst {
+                            worst = rel;
+                            at = (pair, j);
+                        }
+                    }
+                }
+                println!(
+                    "  STAGE {name:<7} mapped relL2 {:.3e} maxabs {:.3e} worst rel {:.3e} at pair {} row {}",
+                    (sum / norm.max(1e-30)).sqrt(),
+                    max,
+                    worst,
+                    at.0,
+                    at.1
+                );
+            }
+        }
+        return Err("the block path is wrong at this depth".into());
+    }
+    println!("PASS block bisect: {layers} layer(s), {n} token(s)");
+    Ok(())
 }

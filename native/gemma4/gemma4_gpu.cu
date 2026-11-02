@@ -689,11 +689,12 @@ __global__ void embed_row_kernel(const uint8_t *p, const Layout L, const int32_t
     const int nidx_row = L.cols / L.dim;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= nidx_row) return;
-    const uint32_t row = (uint32_t) tokd[0];
+    const int t = blockIdx.y; /* the block's token: a prefill reads n rows */
+    const uint32_t row = (uint32_t) tokd[t];
     const __half *cb = (const __half *) (p + L.cb_off);
     const uint32_t idx = rd_idx_fmt(p + L.stream_off, L, row, i);
     const float gain = __half2float(((const __half *) (p + L.gain_off))[row]);
-    float *o = out + (size_t) i * (size_t) DIM;
+    float *o = out + ((size_t) t * (size_t) nidx_row + (size_t) i) * (size_t) DIM;
     float w[8];
     if (DIM == 4) {
         const uint2 c = __ldg((const uint2 *) cb + idx);
@@ -1269,6 +1270,399 @@ __global__ void kv_put_kernel(__half *k, __half *v, const float *ksrc, const flo
     v[at] = __float2half_rn(vsrc[i]);
 }
 
+/* ---- the block of tokens: the prefill's kernels -------------------------
+ *
+ * A decode step carries one token, so every launch above is shaped for one
+ * row of activations. A prefill carries a block of them at consecutive
+ * positions, and the same work is then two different problems:
+ *
+ *  - the dense projections are a matrix times a matrix. The container still
+ *    never becomes a weight matrix, so the shape that pays is the tiled
+ *    tensor-core kernel already in this file (`gemm_tiled_kernel`), whose
+ *    token tile is the reason the tools' prefill exists at all. The block
+ *    path feeds it a transposed activation block, one launch per projection.
+ *  - the routed experts are not: a 128-token block picks 8 of 128 experts per
+ *    token, so each expert owns ~8 tokens and its 2*ff rows are read once for
+ *    all of them. That is the reference engine's work item - `(expert, token
+ *    segment, count)` at /data/ds4-dfm-rs/cuda/ds41_vq_prefill_fused.cuh:38-
+ *    54, :86-116 - and the reason the fused shape exists at all (one expert
+ *    is 35.4M weights there; dequantised for 8 tokens it is arithmetic
+ *    intensity 8). The row walk below is this file's v3 walk, so the token
+ *    segment only changes how many activations one decoded row is dotted
+ *    against.
+ *
+ * The elementwise arithmetic needs no new kernel: rmsnorm, gelu, the residual
+ * and the router's scale already take rows and widths. Attention, rotary, the
+ * cache write, the router's selection and the reduce do need one launch for
+ * the block instead of one per token, which is what the kernels in this
+ * section are.
+ */
+
+/* Rows one warp walks per block in the expert item passes. Two: enough to
+ * keep the row's bitstream in L1 between the two, few enough that the block
+ * count still fills the card (a 128-token block's gate/up pass is ~1400 rows
+ * over ~150 items). Diagnostic, like the other shape knobs: it changes how
+ * much work one block holds, never a row's arithmetic. */
+#define GM4_MOE_ROWS_PER_WARP 2
+
+/* x is [rows][cols], xT is [cols][rows]: the layout the tiled prefill reads
+ * (its B-tile is one 64-column window per thread, which is why the tools
+ * transposed once at the boundary). A 32x32 tile through shared, so both the
+ * read and the write are coalesced. */
+__global__ void transpose_kernel(const float *x, float *xT, int rows, int cols) {
+    __shared__ float tile[32][33];
+    const int c = blockIdx.x * 32 + threadIdx.x;
+    const int r = blockIdx.y * 32 + threadIdx.y;
+    if (c < cols && r < rows) tile[threadIdx.y][threadIdx.x] = x[(size_t) r * cols + c];
+    __syncthreads();
+    const int ct = blockIdx.y * 32 + threadIdx.x; /* transposed col = row */
+    const int rt = blockIdx.x * 32 + threadIdx.y; /* transposed row = col */
+    if (ct < rows && rt < cols) xT[(size_t) rt * rows + ct] = tile[threadIdx.x][threadIdx.y];
+}
+
+/* Rotary for every token of the block, each at its own position: the same
+ * table and the same pair rule as rope_kernel, with the angle from pos0 + t
+ * instead of a device slot (a block's positions are the host's true ones; the
+ * reference's prefill also runs direct dispatch for that reason,
+ * ds4_ds41_forward.inc:1237-1240). */
+__global__ void rope_rows_kernel(float *x, int heads, int head_dim, int pos0, const float *inv) {
+    const int h = blockIdx.x;
+    const int t = blockIdx.y;
+    const int d = threadIdx.x;
+    const int half = head_dim / 2;
+    if (d >= half) return;
+    const float w = inv[d];
+    if (w == 0.0f) return;
+    float *base = x + ((size_t) t * (size_t) heads + (size_t) h) * (size_t) head_dim;
+    const float angle = (float) (pos0 + t) * w;
+    float s, c;
+    sincosf(angle, &s, &c);
+    const float a = base[d], b = base[d + half];
+    base[d] = a * c - b * s;
+    base[d + half] = b * c + a * s;
+}
+
+/* The block's cache writes: one row per position, the same kv_slot rule and
+ * the same f16 rounding as kv_put_kernel. */
+__global__ void kv_put_rows_kernel(__half *k, __half *v, const float *ksrc, const float *vsrc,
+                                   int per, int pos0, int cap, int ring) {
+    const int t = blockIdx.y;
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    if (i >= per) return;
+    const int pos = pos0 + t;
+    const int slot = ring ? (pos % cap) : pos;
+    const size_t at = (size_t) slot * (size_t) per + (size_t) i;
+    k[at] = __float2half_rn(ksrc[(size_t) t * (size_t) per + (size_t) i]);
+    v[at] = __float2half_rn(vsrc[(size_t) t * (size_t) per + (size_t) i]);
+}
+
+/* One block per (query head, query token), over the window that token may
+ * see. The arithmetic is attn_split_kernel's with one run - the fp32 score
+ * pass in ascending position order, the max, the sum of the exponentials,
+ * then the value pass in the same order - so the prefill and a decode over
+ * the same history differ only by the split rescale the decode's runs add.
+ * The scores of one query fit in the launch's dynamic shared memory: the
+ * widest window here is the context bound. */
+__global__ void attn_rows_kernel(const float *q, const __half *k, const __half *v, float *out,
+                                 int heads, int kv_heads, int head_dim, int pos0, int window,
+                                 int kv_cap, int kv_ring) {
+    extern __shared__ float red[];
+    float *sc = red + 32;
+    const int h = blockIdx.x;
+    const int t = blockIdx.y;
+    const int group = heads / kv_heads;
+    const int kv_head = h / group;
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int nwarps = blockDim.x >> 5;
+    const size_t kv_stride = (size_t) kv_heads * (size_t) head_dim;
+    const float *qh = q + ((size_t) t * (size_t) heads + (size_t) h) * (size_t) head_dim;
+    const int positions = pos0 + t + 1;
+    const int nwin = window > 0 && positions > window ? window : positions;
+    const int first = positions - nwin;
+
+    for (int p = warp; p < nwin; p += nwarps) {
+        const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
+        const __half *kp = k + ks * kv_stride + (size_t) kv_head * head_dim;
+        float acc = 0.0f;
+        for (int d = lane * 2; d < head_dim; d += 64) {
+            const float2 qq = *(const float2 *) (qh + d);
+            const float2 kk = __half22float2(*(const __half2 *) (kp + d));
+            acc += qq.x * kk.x + qq.y * kk.y;
+        }
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) sc[p] = acc; /* scaling is 1.0 */
+    }
+    __syncthreads();
+
+    float mx = -INFINITY;
+    for (int i = threadIdx.x; i < nwin; i += blockDim.x) mx = fmaxf(mx, sc[i]);
+    mx = block_max(mx, red);
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < nwin; i += blockDim.x) {
+        const float e = expf(sc[i] - mx);
+        sc[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+
+    float *o = out + ((size_t) t * (size_t) heads + (size_t) h) * (size_t) head_dim;
+    for (int d = threadIdx.x * 2; d < head_dim; d += blockDim.x * 2) {
+        float2 acc = make_float2(0.0f, 0.0f);
+        for (int i = 0; i < nwin; i++) {
+            const size_t ks = kv_slot(first + i, kv_cap, kv_ring);
+            const float pr = sc[i];
+            const float2 vv = __half22float2(
+                *(const __half2 *) (v + ks * kv_stride + (size_t) kv_head * head_dim + d));
+            acc.x = fmaf(pr, vv.x, acc.x);
+            acc.y = fmaf(pr, vv.y, acc.y);
+        }
+        o[d] = acc.x / sum;
+        o[d + 1] = acc.y / sum;
+    }
+}
+
+/* The routed mixture's reduce for a block: row t sums its own k experts, the
+ * same add order moe_reduce_kernel makes for one token. */
+__global__ void moe_reduce_tok_kernel(const float *d, const float *w, float *out, int k, int n) {
+    const int t = blockIdx.y;
+    const float *dt = d + (size_t) t * (size_t) k * (size_t) n;
+    const float *wt = w + (size_t) t * (size_t) k;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n; j += gridDim.x * blockDim.x) {
+        float acc = 0.0f;
+        for (int i = 0; i < k; i++) acc += wt[i] * dt[(size_t) i * n + j];
+        out[(size_t) t * n + j] = acc;
+    }
+}
+
+/* The expert pass's activations, gathered into the work items' order: pair p
+ * (a (token, slot) routed to this expert) reads the token's activation row.
+ * The reference's vqp_gather32_kernel, ds41_vq_prefill_fused.cuh:34-40. */
+__global__ void moe_gather_kernel(float *xs, const float *x, const int32_t *perm, int cols) {
+    const int p = blockIdx.y;
+    const float *src = x + (size_t) perm[p] * (size_t) cols;
+    float *dst = xs + (size_t) p * (size_t) cols;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < cols; i += gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+
+/* One row decoded once and dotted against the item's activations: the block
+ * walk of v3blk_row_dot, round for round and with the same funnel shifts and
+ * lane map, with the codeword loaded once per round and the accumulation
+ * repeated per activation. `zero` clears the accumulators; the value stays
+ * WARP-LOCAL.
+ *
+ * The reduce and the gain are the caller's, one per payload, and that is the
+ * decode path's own order: stage 0 is one launch that assigns, stage 1 another
+ * that accumulates (the pair `rows_dev` makes on L->egu), and the reference
+ * reduces at the end of v41_vq_row_dotN, once per matrix
+ * (/data/ds4-dfm-rs/cuda/ds41_vq_prefill_fused.cuh:76-80). Reducing here and
+ * then calling again for the second stage is wrong by construction: the second
+ * call would start its shuffle tree from the first stage's already-reduced
+ * value, so every lane carries it and the tree adds it 32 times (measured: the
+ * block's gu was 33*a + b against the step's a + b). */
+template <int DIM, int NT>
+__device__ __forceinline__ void v3blk_row_dotN(const uint8_t *p, const Layout &L, size_t r,
+                                               const float *xs, int xstride, int ntok, float *acc,
+                                               int zero) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const uint32_t *row = (const uint32_t *) (p + L.stream_off + (size_t) r * L.mrow);
+    const uint32_t R = (uint32_t) (L.nidx_row >> 5);
+    const uint32_t nblk = (R + 7u) >> 3;
+    const uint32_t a = (lane * 12u) >> 5, sh = (lane * 12u) & 31u;
+    if (zero)
+        #pragma unroll
+        for (int t = 0; t < NT; t++) acc[t] = 0.0f;
+
+    v3blk cur = v3_blk_load(row, R >= 8u ? 96u : R * 12u, NULL, 0);
+    for (uint32_t b = 0; b < nblk; b++) {
+        v3blk nxt;
+        if (b + 1u < nblk) {
+            const uint32_t nrem = R - (b + 1u) * 8u, nr = nrem < 8u ? nrem : 8u;
+            nxt = v3_blk_load(row + (size_t) (b + 1u) * 96u, nr * 12u, NULL, 0);
+        } else {
+            nxt.w0 = nxt.w1 = nxt.w2 = nxt.ex = 0u;
+        }
+        const uint32_t rem = R - b * 8u;
+        const uint32_t rounds = rem < 8u ? rem : 8u;
+        /* The activation a block reads is the one its own 256 indices name:
+         * v3_rounds advances the pointer by b*256*dim for exactly this reason
+         * (:189-191), and the index map restarts at zero every block. */
+        const float *xb0 = xs + (size_t) b * 256u * (size_t) DIM;
+        #pragma unroll
+        for (uint32_t k = 0; k < 8u; k++) {
+            if (k >= rounds) break;
+            const uint32_t f = k * 12u;
+            const uint32_t lo_r = ((f & 31u) > 32u - 12u) ? ((f + 31u - lane) >> 5) : (f >> 5);
+            const uint32_t hi_r = (((f + 1u) & 31u) > 32u - 12u) ? ((f + 32u - lane) >> 5) : ((f + 1u) >> 5);
+            const uint32_t lo = __shfl_sync(0xffffffffu, v3_sel3(lo_r, cur.w0, cur.w1, cur.w2), (int) (f + a));
+            const uint32_t hi = __shfl_sync(0xffffffffu, v3_sel3(hi_r, cur.w0, cur.w1, cur.w2), (int) (f + a + 1u));
+            const uint32_t v = __funnelshift_r(lo, hi, sh) & 0xFFFu;
+            const size_t g = (size_t) (k * 32u + lane);
+            if (DIM == 4) {
+                const uint2 c = __ldg((const uint2 *) cb + v);
+                const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+                const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+                for (int t = 0; t < ntok; t++) {
+                    const float4 xv = *(const float4 *) (xb0 + (size_t) t * xstride + g * 4u);
+                    acc[t] += f0.x * xv.x + f0.y * xv.y + f1.x * xv.z + f1.y * xv.w;
+                }
+            } else {
+                const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
+                const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
+                const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+                const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+                const float2 f2 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+                const float2 f3 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+                for (int t = 0; t < ntok; t++) {
+                    const float *xb = xb0 + (size_t) t * xstride + g * (size_t) DIM;
+                    const float4 x0 = *(const float4 *) xb;
+                    const float4 x1 = *(const float4 *) (xb + 4u);
+                    acc[t] += f0.x * x0.x + f0.y * x0.y + f1.x * x0.z + f1.y * x0.w
+                            + f2.x * x1.x + f2.y * x1.y + f3.x * x1.z + f3.y * x1.w;
+                }
+            }
+        }
+        cur = nxt;
+    }
+}
+
+/* One row's warp-local partials into lane 0's value, scaled by that payload's
+ * row gain: the reduce v3blk_row_dot ends with (:250-254), lifted out so the
+ * caller can apply it once per stage. */
+__device__ __forceinline__ float moe_row_reduce(float partial, const __half *gr, size_t r) {
+    float v = partial;
+    for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+    return __shfl_sync(0xffffffffu, v, 0) * __half2float(gr[r]);
+}
+
+/* The same for the short row: span_row_dot's 32-index groups and three-byte
+ * index read, repeated per activation of the item. A down row is 88 indices,
+ * which the block walk cannot take (88 % 32 != 0), so this is the walk the
+ * expert down stack uses on the decode path too. Like its block twin the value
+ * stays warp-local; the caller reduces and scales it once per payload. */
+template <int DIM, int NT>
+__device__ __forceinline__ void span_row_dotN(const uint8_t *p, const Layout &L, size_t r,
+                                              const float *xs, int xstride, int ntok, float *acc,
+                                              int zero) {
+    const int lane = threadIdx.x & 31;
+    const int nidx_row = L.cols / L.dim;
+    const int groups = (nidx_row + 31) / 32;
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const uint32_t mb = L.nbit > 12 ? 12u : (uint32_t) L.nbit;
+    const uint32_t imsk = (1u << mb) - 1u;
+    const uint8_t *row = p + L.stream_off + r * (size_t) L.mrow;
+    if (zero)
+        #pragma unroll
+        for (int t = 0; t < NT; t++) acc[t] = 0.0f;
+    for (int g = 0; g < groups; g++) {
+        const int i = g * 32 + lane;
+        if (i >= nidx_row) break;
+        const uint32_t bit = (uint32_t) i * mb;
+        const uint8_t *q = row + (bit >> 3);
+        const uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
+        const uint32_t v = (w >> (bit & 7)) & imsk;
+        if (DIM == 4) {
+            const uint2 c = __ldg((const uint2 *) cb + v);
+            const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+            const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+            for (int t = 0; t < ntok; t++) {
+                const float4 xv = *(const float4 *) (xs + (size_t) t * xstride + (size_t) i * 4u);
+                acc[t] += f0.x * xv.x + f0.y * xv.y + f1.x * xv.z + f1.y * xv.w;
+            }
+        } else {
+            const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
+            const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
+            const float2 f0 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+            const float2 f1 = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+            const float2 f2 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+            const float2 f3 = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+            for (int t = 0; t < ntok; t++) {
+                const float *xb = xs + (size_t) t * xstride + (size_t) i * (size_t) DIM;
+                const float4 x0 = *(const float4 *) xb;
+                const float4 x1 = *(const float4 *) (xb + 4u);
+                acc[t] += f0.x * x0.x + f0.y * x0.y + f1.x * x0.z + f1.y * x0.w
+                        + f2.x * x1.x + f2.y * x1.y + f3.x * x1.z + f3.y * x1.w;
+            }
+        }
+    }
+}
+
+/* The work items of one block, the reference's shape: one block per (row
+ * span, item), a warp per row, the item's token segment dotted against the
+ * row it decoded. `items` is a device array of (expert, first pair, count)
+ * triples built on the host from the router's picks, the same host-side
+ * grouping the reference makes into `vqp_item` (ds41_vq_prefill_fused.cuh:214-
+ * 225); the pairs themselves are the permuted (token, slot) list, so the
+ * activation of pair p is xs + p * xstride.
+ *
+ * gate and up are one pass because this container puts them inside the
+ * expert's 2*ff rows: row j is the gate and row ff + j the up, so a single
+ * launch covers both and the SwiGLU is a separate elementwise pass over the
+ * compact block (gelu_mul_blocks_kernel, already row-agnostic). The reference
+ * splits the two into two launches for register pressure
+ * (ds41_vq_prefill_fused.cuh:88-93); here one row dot's accumulators are NT
+ * floats either way, so one launch is enough. */
+template <int DIM, int NT>
+__global__ void moe_gu_items_kernel(const Payload a, const Payload b, const int32_t *items,
+                                    const float *xs, int xstride, float *gu, int ff, int stride) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warps = (uint32_t) (blockDim.x >> 5);
+    const int it = blockIdx.y;
+    const int32_t e = items[it * 3 + 0];
+    const int32_t p0 = items[it * 3 + 1];
+    const int32_t nt = items[it * 3 + 2];
+    const int rows = 2 * ff;
+    const uint32_t per = warps * GM4_MOE_ROWS_PER_WARP;
+    /* One row per warp per iteration, striding by the warp count - the
+     * reference's `r = r0 + i * 32` (ds41_vq_prefill_fused.cuh:110-112).
+     * Striding by the block's whole row span instead leaves the block's second
+     * half unassigned (measured: rows 4..7 of every 8 came out zero). */
+    for (uint32_t i = 0; i < GM4_MOE_ROWS_PER_WARP; i++) {
+        const uint32_t j = (uint32_t) (blockIdx.x * (int) per) + (threadIdx.x >> 5) + i * warps;
+        if (j >= (uint32_t) rows) break;
+        const size_t r = (size_t) e * (size_t) stride + (size_t) j;
+        float pa[NT], pb[NT];
+        v3blk_row_dotN<DIM, NT>(a.dev, a.l, r, xs + (size_t) p0 * xstride, xstride, nt, pa, 1);
+        v3blk_row_dotN<DIM, NT>(b.dev, b.l, r, xs + (size_t) p0 * xstride, xstride, nt, pb, 1);
+        const __half *gra = (const __half *) (a.dev + a.l.gain_off);
+        const __half *grb = (const __half *) (b.dev + b.l.gain_off);
+        for (int t = 0; t < nt; t++) {
+            const float v = moe_row_reduce(pa[t], gra, r) + moe_row_reduce(pb[t], grb, r);
+            if (lane == 0) gu[(size_t) (p0 + t) * (size_t) (2 * ff) + j] = v;
+        }
+    }
+}
+
+/* The down stack: the same items, the short row walk, and the output written
+ * at the pair's own slot so the reduce can be the per-token k-sum. */
+template <int DIM, int NT>
+__global__ void moe_dn_items_kernel(const Payload a, const Payload b, const int32_t *items,
+                                    const int32_t *dst, const float *act, float *d, int hidden,
+                                    int ff) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warps = (uint32_t) (blockDim.x >> 5);
+    const int it = blockIdx.y;
+    const int32_t e = items[it * 3 + 0];
+    const int32_t p0 = items[it * 3 + 1];
+    const int32_t nt = items[it * 3 + 2];
+    const uint32_t per = warps * GM4_MOE_ROWS_PER_WARP;
+    for (uint32_t i = 0; i < GM4_MOE_ROWS_PER_WARP; i++) {
+        const uint32_t j = (uint32_t) (blockIdx.x * (int) per) + (threadIdx.x >> 5) + i * warps;
+        if (j >= (uint32_t) hidden) break;
+        const size_t r = (size_t) e * (size_t) hidden + (size_t) j;
+        float pa[NT], pb[NT];
+        span_row_dotN<DIM, NT>(a.dev, a.l, r, act + (size_t) p0 * (size_t) ff, ff, nt, pa, 1);
+        span_row_dotN<DIM, NT>(b.dev, b.l, r, act + (size_t) p0 * (size_t) ff, ff, nt, pb, 1);
+        const __half *gra = (const __half *) (a.dev + a.l.gain_off);
+        const __half *grb = (const __half *) (b.dev + b.l.gain_off);
+        for (int t = 0; t < nt; t++) {
+            const float v = moe_row_reduce(pa[t], gra, r) + moe_row_reduce(pb[t], grb, r);
+            if (lane == 0) d[(size_t) dst[p0 + t] * (size_t) hidden + j] = v;
+        }
+    }
+}
+
 /* The layer chain's row lists, built on the device from the router's picks so
  * the selection never travels to the host. Entry (e, r) is
  * picked[e] * stride + r: the CPU's own formula for an expert's slice
@@ -1307,14 +1701,23 @@ __global__ void mul_kernel(const float *x, const float *w, float *out, size_t n)
     out[i] = x[i] * w[i];
 }
 
+/* out = x * w, the router's per-dimension scale. The same product for a block
+ * of rows, where `w` stays one row wide: the scale is per dimension, not per
+ * token (mul_kernel's `w[i]` would read past a single row on the second
+ * token). */
+__global__ void mul_rows_kernel(const float *x, const float *w, float *out, int width, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = x[i] * w[i % (size_t) width];
+}
+
 /* The selection: the k highest probabilities, highest first, ties to the
  * lower index (the order `torch.topk` returns for an exact tie, which the CPU
  * forward reproduces at forward.rs:80-88), renormalised over the picked set
  * and scaled per expert. One block; the selection itself runs on one thread,
  * which is 128 comparisons per slot and keeps the tie rule explicit. */
-__global__ void router_topk_kernel(const float *scores, const float *per_expert_scale, int experts,
-                                   int k, float *probs, int *indices, float *weights) {
-    extern __shared__ float red[];
+__device__ void router_select(const float *scores, const float *per_expert_scale, int experts,
+                              int k, float *probs, int *indices, float *weights, float *red) {
     const int t = threadIdx.x;
     float mx = -INFINITY;
     for (int i = t; i < experts; i += blockDim.x) mx = fmaxf(mx, scores[i]);
@@ -1376,6 +1779,26 @@ __global__ void router_topk_kernel(const float *scores, const float *per_expert_
         weights[j] = probs[expert] / picked
                    * (per_expert_scale ? per_expert_scale[expert] : 1.0f);
     }
+}
+
+/* One token's selection: the step path and the host entry point. */
+__global__ void router_topk_kernel(const float *scores, const float *per_expert_scale, int experts,
+                                   int k, float *probs, int *indices, float *weights) {
+    extern __shared__ float red[];
+    router_select(scores, per_expert_scale, experts, k, probs, indices, weights, red);
+}
+
+/* The block's: one warp per token, the same body with this row's pointers, so
+ * a token's picks cannot differ between a prefill and a decode. The shared
+ * scratch is the warp's own 32 floats plus room for the k picks. */
+__global__ void router_topk_rows_kernel(const float *scores, const float *per_expert_scale,
+                                        int experts, int k, float *probs, int *indices,
+                                        float *weights) {
+    extern __shared__ float red[];
+    const int t = blockIdx.x;
+    router_select(scores + (size_t) t * experts, per_expert_scale, experts, k,
+                  probs + (size_t) t * experts, indices + (size_t) t * k,
+                  weights + (size_t) t * k, red);
 }
 
 /* Largest dynamic shared-memory window the device accepts; the shared-codebook
@@ -1784,6 +2207,9 @@ struct gm4_layer {
     int *picked;
     uint32_t *rl1, *rl2;
     int32_t *posd; /* this chain's step position, read by rope, the cache write and attention */
+    /* The VQ cache pair when this layer runs the KV unit's path; NULL is the
+     * f16 cache the caller passes at every forward. */
+    gm4_vqkv *kq, *vq;
     /* Opt-in section timing: nine boundaries of the chain, recorded on stream
      * 0 only when gm4_gpu_layer_timing has turned them on. A record costs a
      * few hundred nanoseconds and never stalls the stream, so the spans are
@@ -1818,7 +2244,10 @@ static inline void mark(gm4_layer *L, int i) {
 extern "C" {
 
 gm4_gpu *gm4_gpu_open(const gm4_spec *specs, int n, char *err, size_t errlen) {
-    if (!specs || n <= 0) {
+    /* n == 0 is a context with no artifact: the self-contained VQ gates (the
+     * container reader, the encoder, the VQ attention) need the device's
+     * scratch and nothing else. A negative count is still a caller bug. */
+    if (n < 0 || (n > 0 && !specs)) {
         snprintf(err, errlen, "no containers to open");
         return NULL;
     }
@@ -1869,13 +2298,13 @@ gm4_gpu *gm4_gpu_open(const gm4_spec *specs, int n, char *err, size_t errlen) {
     }
     g->xcap = xcap;
     g->ycap = ycap;
-    e = cudaMalloc((void **) &g->xbuf, xcap * sizeof(float));
+    e = xcap ? cudaMalloc((void **) &g->xbuf, xcap * sizeof(float)) : cudaSuccess;
     if (e != cudaSuccess) {
         snprintf(err, errlen, "workspace x cudaMalloc failed: %s", cudaGetErrorString(e));
         gm4_gpu_close(g);
         return NULL;
     }
-    e = cudaMalloc((void **) &g->ybuf, ycap * sizeof(float));
+    e = ycap ? cudaMalloc((void **) &g->ybuf, ycap * sizeof(float)) : cudaSuccess;
     if (e != cudaSuccess) {
         snprintf(err, errlen, "workspace y cudaMalloc failed: %s", cudaGetErrorString(e));
         gm4_gpu_close(g);
@@ -2503,8 +2932,8 @@ static int expert_block_dev(gm4_layer *L, gm4_gpu *g, char *err, size_t errlen) 
  * can be replayed with a different token; the stages are summed raw and the
  * scale is applied once, which is `add_row_values` followed by the forward's
  * multiply (crates/ds4-core/src/vq.rs:714-726, forward.rs:319-322). */
-static int embed_row_dev(gm4_gpu *g, int tensor, const int32_t *tokd, float scale, float *yd,
-                         char *err, size_t errlen) {
+static int embed_row_dev(gm4_gpu *g, int tensor, const int32_t *tokd, int ntok, float scale,
+                         float *yd, char *err, size_t errlen) {
     if (tensor < 0 || tensor >= g->nt) {
         snprintf(err, errlen, "tensor %d is not in the residency", tensor);
         return -1;
@@ -2514,15 +2943,15 @@ static int embed_row_dev(gm4_gpu *g, int tensor, const int32_t *tokd, float scal
     const int dim = t->pays[0].l.dim;
     const int nidx = cols / dim;
     const unsigned threads = 128;
-    const unsigned blocks = (unsigned) ((nidx + (int) threads - 1) / (int) threads);
+    const dim3 grid((unsigned) ((nidx + (int) threads - 1) / (int) threads), (unsigned) ntok);
     for (int p = 0; p < t->npay; p++) {
         const Payload &one = t->pays[p];
         const int first = p == 0;
         const int last = p == t->npay - 1;
         if (dim == 8)
-            embed_row_kernel<8><<<blocks, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
+            embed_row_kernel<8><<<grid, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
         else if (dim == 4)
-            embed_row_kernel<4><<<blocks, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
+            embed_row_kernel<4><<<grid, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
         else {
             snprintf(err, errlen, "the table has dim %d, which the row kernel does not read", dim);
             return -1;
@@ -2567,6 +2996,17 @@ static int mul_dev(const float *xd, const float *wd, float *od, size_t n, char *
     mul_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(xd, wd, od, n);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "chain mul launch", e);
+    return 0;
+}
+
+/* The one-row scale applied to a block: the router's per-dimension weight on
+ * every token's vector. */
+static int mul_rows_dev(const float *xd, const float *wd, float *od, int width, size_t n, char *err,
+                        size_t errlen) {
+    const unsigned threads = 256;
+    mul_rows_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(xd, wd, od, width, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block mul launch", e);
     return 0;
 }
 
@@ -3017,6 +3457,1219 @@ int gm4_gpu_kv_get(gm4_gpu *g, gm4_kv *kv, int pos, float *k, float *v, char *er
     return 0;
 }
 
+/* A whole cache as f32, in the position-major layout a capture wants: the
+ * first `positions` positions, `k` and `v` each [positions][kv_heads *
+ * head_dim]. A ring is read through its slot mapping, so an unwrapped ring and
+ * an appending cache are the same walk; `positions` past what the ring holds
+ * is refused rather than aliased. This is the writer a calibration capture
+ * needs (VQ_tools' vq-kv/1, crates/vq-kv/src/capture.rs:1-38) and it is not on
+ * any inference path. */
+int gm4_gpu_kv_dump(gm4_gpu *g, gm4_kv *kv, int positions, float *k, float *v, char *err,
+                    size_t errlen) {
+    if (!g || !kv || !k || !v) {
+        snprintf(err, errlen, "kv_dump needs a cache and two outputs");
+        return -1;
+    }
+    if (positions < 0 || positions > kv->cap) {
+        snprintf(err, errlen, "kv_dump of %d positions outside the cache's %d", positions, kv->cap);
+        return -1;
+    }
+    const size_t per = (size_t) kv->per;
+    const size_t at = 2 * per * sizeof(__half);
+    __half *host = (__half *) malloc(at);
+    if (!host) {
+        snprintf(err, errlen, "out of host memory for the kv dump");
+        return -1;
+    }
+    for (int p = 0; p < positions; p++) {
+        const size_t slot = kv->ring ? (size_t) (p % kv->cap) : (size_t) p;
+        cudaError_t e = cudaMemcpy(host, kv->keys + slot * per, per * sizeof(__half),
+                                   cudaMemcpyDeviceToHost);
+        if (e == cudaSuccess)
+            e = cudaMemcpy(host + per, kv->values + slot * per, per * sizeof(__half),
+                           cudaMemcpyDeviceToHost);
+        if (e != cudaSuccess) {
+            free(host);
+            return fail(err, errlen, "kv dump readback", e);
+        }
+        for (size_t i = 0; i < per; i++) {
+            k[(size_t) p * per + i] = __half2float(host[i]);
+            v[(size_t) p * per + i] = __half2float(host[per + i]);
+        }
+    }
+    free(host);
+    return 0;
+}
+
+/* ---- the toolkit's VQ KV container --------------------------------------
+ *
+ * The second payload format, the one vq-kv writes for a captured cache. An
+ * RQVQ container (the 32-byte header the weights arrive in) wraps one DQVQ
+ * payload per residual stage per codebook group:
+ *
+ *   [u32 'DQVQ'][u16 dim][u16 nc][u32 rows][u32 cols]
+ *   [codebook nc*dim f16][g_r rows f16][index stream]
+ *
+ * Sources read first-hand: c/vendor/vq_qc.h:241-266 writes the payload and
+ * :274-296 reads it back; c/vendor/vq_qc_bytes.h:14-22 is the byte account;
+ * crates/vq-format/src/lib.rs:316-453 is the toolkit's own reader, whose
+ * DQVQ branch this mirrors. Two differences from the weight payload's DQV3
+ * are load-bearing: the header is 16 bytes, not 24, and the index stream is
+ * one bit stream over the whole matrix (`bit = i*nbit`, row r =
+ * (i*dim)/cols), not a row-major stream restarting at every row. Above 8
+ * bits it is packed little-endian across a three-byte window with a guard
+ * byte at the end; at exactly 8 bits it is one byte per index.
+ *
+ * This reader materialises f32 and exists to gate the parse against the
+ * toolkit's own dump. A cache that lives in this form is read in the
+ * attention, not through here (see the encoder and the VQ attention).
+ */
+constexpr int DQVQ_HEADER = 16;
+
+struct KvLayout {
+    int dim, nc, rows, cols, nbit;
+    int row0; /* first row of this payload in the tensor, for a group */
+    unsigned mask;
+    size_t cb_off, gain_off, stream_off, nidx, nidx_row;
+};
+
+/* One DQVQ payload. `per` is the payload's own byte count, as the container
+ * header splits the file into equal payloads. */
+int kv_parse_payload(const uint8_t *pay, size_t per, char *err, size_t len, KvLayout *out) {
+    if (per < (size_t) DQVQ_HEADER || memcmp(pay, "DQVQ", 4) != 0) {
+        snprintf(err, len, "payload is not DQVQ");
+        return -1;
+    }
+    const int dim = u16le(pay, 4);
+    const int nc = u16le(pay, 6);
+    const int rows = (int) u32le(pay, 8);
+    const int cols = (int) u32le(pay, 12);
+    if (dim <= 0 || nc < 2 || rows <= 0 || cols <= 0 || cols % dim != 0) {
+        snprintf(err, len, "DQVQ header %dx%d/%dx%d is inconsistent", dim, nc, rows, cols);
+        return -1;
+    }
+    KvLayout L;
+    memset(&L, 0, sizeof L);
+    L.dim = dim;
+    L.nc = nc;
+    L.rows = rows;
+    L.cols = cols;
+    L.nbit = index_bits(nc);
+    L.mask = (1u << L.nbit) - 1u;
+    L.nidx_row = (size_t) cols / (size_t) dim;
+    L.nidx = (size_t) rows * L.nidx_row;
+    L.cb_off = DQVQ_HEADER;
+    L.gain_off = L.cb_off + (size_t) nc * (size_t) dim * 2;
+    L.stream_off = L.gain_off + (size_t) rows * 2;
+    /* vq_qc_bytes.h:14-19: bytes at 8 bits, otherwise a bit stream plus the
+     * guard byte the three-byte window reads past its last index. */
+    const size_t idx = L.nbit == 8 ? L.nidx : (L.nidx * (size_t) L.nbit + 7) / 8 + 1;
+    if (L.stream_off + idx > per) {
+        snprintf(err, len, "payload needs %zu bytes, the container gives %zu",
+                 L.stream_off + idx, per);
+        return -1;
+    }
+    *out = L;
+    return 0;
+}
+
+/* An f16 from a byte address that need not be two-byte aligned: the toolkit's
+ * DQVQ payloads are packed back to back, so the second stage of a container
+ * starts at an odd offset (c/vendor/vq_qc.h:241-266 aligns nothing). The
+ * reference reads them through memcpy; this is the same pair of byte loads,
+ * and `__ushort_as_half` is exact for every bit pattern, NaN included. */
+__device__ __forceinline__ float f16_at(const uint8_t *base, size_t i) {
+    const uint8_t *q = base + i * 2;
+    return __half2float(__ushort_as_half((unsigned short) ((unsigned short) q[0] |
+                                                           (unsigned short) ((unsigned) q[1] << 8))));
+}
+
+/* The reference's unpack (c/vendor/vq_qc.h:274-296) as a kernel: one thread
+ * per index, `C[v] * g[row]` written at that index's segment. `first` assigns
+ * where the reference resolves the first stage through a zeroed tensor; the
+ * arithmetic is the same f32 product and the same stage order, without the
+ * `0 + x` that would turn a negative zero positive. */
+__global__ void kv_decode_kernel(const uint8_t *p, KvLayout L, float *out, int first) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= L.nidx) return;
+    const size_t r = i / L.nidx_row;
+    const size_t j = i - r * L.nidx_row;
+    const uint8_t *st = p + L.stream_off;
+    uint32_t v;
+    if (L.nbit == 8) {
+        v = st[i];
+    } else {
+        const size_t bit = i * (size_t) L.nbit;
+        const uint8_t *q = st + (bit >> 3);
+        const uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
+        v = (w >> (bit & 7)) & L.mask;
+    }
+    const uint8_t *cb = p + L.cb_off;
+    const uint8_t *gr = p + L.gain_off;
+    const float gain = f16_at(gr, r);
+    const uint8_t *cw = cb + (size_t) v * (size_t) L.dim * 2;
+    float *o = out + (size_t) (L.row0 + (int) r) * (size_t) L.cols + j * (size_t) L.dim;
+    for (int d = 0; d < L.dim; d++) {
+        const float x = f16_at(cw, (size_t) d) * gain;
+        if (first) o[d] = x;
+        else o[d] += x;
+    }
+}
+
+/* An RQVQ container opened for reading: the mapped bytes and the header's
+ * geometry, validated once. The decoder and the encoder both start here, so
+ * the file checks cannot drift apart. */
+struct VqFile {
+    const uint8_t *file;
+    size_t size;
+    int dim, nc, stages, groups, rows, cols;
+    size_t per; /* bytes per payload */
+};
+
+int vq_open_file(const char *path, char *err, size_t len, VqFile *out) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        snprintf(err, len, "open %s failed", path);
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < CONTAINER_HEADER + DQVQ_HEADER) {
+        snprintf(err, len, "%s is too small to be an RQVQ container", path);
+        close(fd);
+        return -1;
+    }
+    const size_t size = (size_t) st.st_size;
+    const uint8_t *file = (const uint8_t *) mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd); /* the mapping outlives the descriptor */
+    if (file == MAP_FAILED) {
+        snprintf(err, len, "mmap %s failed", path);
+        return -1;
+    }
+    int bad = 0;
+    if (memcmp(file, "RQVQ", 4) != 0) {
+        snprintf(err, len, "%s: not an RQVQ container", path);
+        bad = 1;
+    }
+    const int dim = u16le(file, 4);
+    const int nc = u16le(file, 6);
+    const int stages = u16le(file, 8);
+    const int groups = u16le(file, 10) == 0 ? 1 : u16le(file, 10);
+    const uint32_t rows = u32le(file, 12);
+    const uint32_t cols = u32le(file, 16);
+    const uint32_t format = u32le(file, 20);
+    const uint64_t payload = u64le(file, 24);
+    if (!bad && format != 0) {
+        snprintf(err, len, "%s: codebook format %#x is not f16", path, format);
+        bad = 1;
+    }
+    if (!bad && (dim <= 0 || nc <= 0 || stages <= 0 || groups <= 0 || rows == 0 || cols == 0 ||
+                 rows % (uint32_t) groups != 0)) {
+        snprintf(err, len, "%s: header states an inconsistent geometry", path);
+        bad = 1;
+    }
+    const int npay = stages * groups;
+    if (!bad && (payload % (uint64_t) npay != 0 || CONTAINER_HEADER + payload != size)) {
+        snprintf(err, len, "%s: payload count does not describe the file", path);
+        bad = 1;
+    }
+    if (bad) {
+        munmap((void *) file, size);
+        return -1;
+    }
+    out->file = file;
+    out->size = size;
+    out->dim = dim;
+    out->nc = nc;
+    out->stages = stages;
+    out->groups = groups;
+    out->rows = (int) rows;
+    out->cols = (int) cols;
+    out->per = (size_t) (payload / (uint64_t) npay);
+    return 0;
+}
+
+void vq_close_file(VqFile *f) {
+    if (!f) return;
+    if (f->file) munmap((void *) f->file, f->size);
+    f->file = NULL;
+}
+
+/* Decode a whole RQVQ container of DQVQ stages into row-major f32 on the
+ * host, the same walk as vq_format's Container::decode: stage 0 assigns, each
+ * later stage adds into the same rows. The f32 codebook format word 0 is the
+ * only one the toolkit's KV encoder writes. */
+int gm4_gpu_vq_decode(const char *path, float **out, int *rows, int *cols, char *err,
+                      size_t errlen) {
+    if (!path || !out || !rows || !cols) {
+        snprintf(err, errlen, "vq_decode needs a path and three outputs");
+        return -1;
+    }
+    VqFile vf;
+    if (vq_open_file(path, err, errlen, &vf) != 0) return -1;
+    const int group_rows = vf.rows / vf.groups;
+    const size_t n = (size_t) vf.rows * (size_t) vf.cols;
+    uint8_t *dev = NULL;
+    float *host = NULL, *dout = NULL;
+    int rc = -1;
+    do {
+        cudaError_t e = cudaMalloc((void **) &dev, vf.size);
+        if (e == cudaSuccess) e = cudaMemcpy(dev, vf.file, vf.size, cudaMemcpyHostToDevice);
+        if (e == cudaSuccess) e = cudaMalloc((void **) &dout, n * sizeof(float));
+        if (e == cudaSuccess) e = cudaMemset(dout, 0, n * sizeof(float));
+        if (e != cudaSuccess) {
+            fail(err, errlen, "vq container upload", e);
+            break;
+        }
+        int bad = 0;
+        for (int s = 0; s < vf.stages && !bad; s++) {
+            for (int g = 0; g < vf.groups && !bad; g++) {
+                /* The header is parsed on the host mapping and the kernel
+                 * reads the device copy at the same offset: a cudaMalloc
+                 * pointer is not readable from the CPU. */
+                const uint8_t *hpay = vf.file + CONTAINER_HEADER + (size_t) (s * vf.groups + g) * vf.per;
+                const uint8_t *dpay = dev + CONTAINER_HEADER + (size_t) (s * vf.groups + g) * vf.per;
+                KvLayout L;
+                char why[192];
+                if (kv_parse_payload(hpay, vf.per, why, sizeof why, &L) != 0) {
+                    snprintf(err, errlen, "%s stage %d group %d: %s", path, s, g, why);
+                    bad = 1;
+                    break;
+                }
+                if (L.dim != vf.dim || L.nc != vf.nc || L.rows != group_rows || L.cols != vf.cols) {
+                    snprintf(err, errlen, "%s stage %d group %d is %dx%d/%dx%d, the container "
+                             "%dx%d/%dx%d", path, s, g, L.dim, L.nc, L.rows, L.cols, vf.dim,
+                             vf.nc, group_rows, vf.cols);
+                    bad = 1;
+                    break;
+                }
+                L.row0 = g * group_rows;
+                const unsigned threads = 256;
+                const unsigned blocks = (unsigned) ((L.nidx + threads - 1) / threads);
+                kv_decode_kernel<<<blocks, threads>>>(dpay, L, dout, s == 0 ? 1 : 0);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    fail(err, errlen, "kv decode launch", e);
+                    bad = 1;
+                }
+            }
+        }
+        if (bad) break;
+        e = cudaDeviceSynchronize();
+        if (e != cudaSuccess) {
+            fail(err, errlen, "kv decode sync", e);
+            break;
+        }
+        host = (float *) malloc(n * sizeof(float));
+        if (!host) {
+            snprintf(err, errlen, "out of host memory for %zu floats", n);
+            break;
+        }
+        e = cudaMemcpy(host, dout, n * sizeof(float), cudaMemcpyDeviceToHost);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "kv decode download", e);
+            break;
+        }
+        *out = host;
+        *rows = vf.rows;
+        *cols = vf.cols;
+        rc = 0;
+    } while (0);
+    if (rc != 0 && host) free(host);
+    if (dout) cudaFree(dout);
+    if (dev) cudaFree(dev);
+    vq_close_file(&vf);
+    return rc;
+}
+
+void gm4_gpu_vq_free(float *p) { free(p); }
+
+/* ---- the VQ encoder: the toolkit's nearest-codeword assignment ----------
+ *
+ * vq_assign_q (c/vendor/vq_qc.h:70-96) scores every codeword z by
+ * c2[z] - 2*(v . C[z]) and takes the first minimum, c2 = |C[z]|^2 and the dot
+ * both accumulated in double and rounded to f32 once. The kernel here scores
+ * in single precision: the score is the only deviation, and the gate counts
+ * the indices it moves. The gain is the payload's per-row f16; the toolkit's
+ * KV encoder leaves it at 1.0 (vq_qc.h:236 takes that branch when X is NULL,
+ * which is the only supported KV path), so a container that carries anything
+ * else is refused at open rather than encoded without its row scaling.
+ *
+ * The runtime encodes against a calibration codebook, never one learned per
+ * block: the toolkit's k-means needs the whole capture (minutes per layer,
+ * measured 2026-11-02), which a step cannot pay. That is the KV unit's named
+ * deviation, and the end-to-end gate measures what it costs.
+ */
+__device__ __forceinline__ float f16_at(const uint8_t *base, size_t i);
+
+#define VQ_WARPS 32
+#define VQ_THREADS (VQ_WARPS * 32)
+
+/* One warp per segment. The stage's codebook and its c2 sit in shared memory,
+ * so a segment's 4096 codewords cost shared-memory reads, not L2 traffic, and
+ * the 80 KiB load is amortised over a block's 32 segments. A decode step has
+ * only `cols/dim` segments to fill, which is the whole grid it needs.
+ * `idx` is [nrows][cols/dim], u16. */
+__global__ void vq_assign_kernel(const uint8_t *cb, const float *c2, int nc, int dim,
+                                 const float *x, int cols, size_t nseg, uint16_t *idx, float *rec) {
+    extern __shared__ __align__(16) uint8_t smem[];
+    const int nbytes = nc * dim * 2;
+    float *sc2 = (float *) (smem + nbytes);
+    const uint4 *src = (const uint4 *) cb;
+    uint4 *dst = (uint4 *) smem;
+    const int nq = nbytes / 16;
+    for (int i = threadIdx.x; i < nq; i += blockDim.x) dst[i] = src[i];
+    for (int i = threadIdx.x; i < nc; i += blockDim.x) sc2[i] = c2[i];
+    __syncthreads();
+
+    const size_t seg = (size_t) blockIdx.x * VQ_WARPS + (threadIdx.x >> 5);
+    if (seg >= nseg) return;
+    const int lane = threadIdx.x & 31;
+    const int nidx_row = cols / dim;
+    const size_t row = seg / (size_t) nidx_row;
+    const int s = (int) (seg % (size_t) nidx_row);
+    const int lim = dim < 8 ? dim : 8;
+    const float *xs = x + row * (size_t) cols + (size_t) s * dim;
+    float xv[8];
+    for (int d = 0; d < lim; d++) xv[d] = xs[d];
+    float best = 3.4e38f;
+    int bi = 0;
+    if (lim == 8) {
+        /* dim 8 is one 16-byte codeword: two half2 pairs per uint4. The
+         * accumulate order is the scalar loop's (d = 0..7, one f32 fma each),
+         * so the codebook read is the only thing that changed. */
+        for (int c = lane; c < nc; c += 32) {
+            const uint4 w = *(const uint4 *) (smem + (size_t) c * 16);
+            const float2 f0 = __half22float2(*(const __half2 *) &w.x);
+            const float2 f1 = __half22float2(*(const __half2 *) &w.y);
+            const float2 f2 = __half22float2(*(const __half2 *) &w.z);
+            const float2 f3 = __half22float2(*(const __half2 *) &w.w);
+            float dot = 0.0f;
+            dot = fmaf(xv[0], f0.x, dot);
+            dot = fmaf(xv[1], f0.y, dot);
+            dot = fmaf(xv[2], f1.x, dot);
+            dot = fmaf(xv[3], f1.y, dot);
+            dot = fmaf(xv[4], f2.x, dot);
+            dot = fmaf(xv[5], f2.y, dot);
+            dot = fmaf(xv[6], f3.x, dot);
+            dot = fmaf(xv[7], f3.y, dot);
+            const float v = sc2[c] - 2.0f * dot;
+            if (v < best) {
+                best = v;
+                bi = c;
+            }
+        }
+    } else {
+        for (int c = lane; c < nc; c += 32) {
+            const uint8_t *cw = smem + (size_t) c * dim * 2;
+            float dot = 0.0f;
+            for (int d = 0; d < lim; d++) dot = fmaf(xv[d], f16_at(cw, d), dot);
+            const float v = sc2[c] - 2.0f * dot;
+            if (v < best) {
+                best = v;
+                bi = c;
+            }
+        }
+    }
+    /* The first minimum of the reference's argmin: a merge that keeps the
+     * lower codeword on an equal score reproduces it across the lanes. */
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        const float ov = __shfl_down_sync(0xffffffffu, best, off);
+        const int oi = __shfl_down_sync(0xffffffffu, bi, off);
+        if (ov < best || (ov == best && oi < bi)) {
+            best = ov;
+            bi = oi;
+        }
+    }
+    if (lane == 0) {
+        idx[seg] = (uint16_t) bi;
+        if (rec) {
+            const uint8_t *cw = smem + (size_t) bi * dim * 2;
+            float *o = rec + row * (size_t) cols + (size_t) s * dim;
+            for (int d = 0; d < dim; d++) o[d] = f16_at(cw, d);
+        }
+    }
+}
+
+struct CbStage {
+    uint8_t *cb; /* device: nc*dim f16 */
+    float *c2;   /* device: nc, the f32 of the reference's double sum */
+};
+
+struct gm4_cb {
+    int dim, nc, stages, rows, cols;
+    CbStage *st;
+};
+
+/* Open a calibration container and keep its codebooks resident. This is the
+ * codebook set a runtime encode needs: one per stage, the same one the
+ * capture was encoded with. */
+int gm4_gpu_cb_open(const char *path, gm4_cb **out, char *err, size_t errlen) {
+    if (!path || !out) {
+        snprintf(err, errlen, "cb_open needs a container path");
+        return -1;
+    }
+    VqFile vf;
+    if (vq_open_file(path, err, errlen, &vf) != 0) return -1;
+    char why[192] = {0};
+    if (vf.groups != 1) {
+        snprintf(err, errlen, "%s holds %d codebook groups; a VQ KV container holds one per stage",
+                 path, vf.groups);
+        vq_close_file(&vf);
+        return -1;
+    }
+    if (vf.dim > 8 || (vf.nc * vf.dim * 2) % 16 != 0) {
+        snprintf(err, errlen, "%s: dim %d is outside the encoder's 1..8 or the codebook is not "
+                 "16-byte aligned", path, vf.dim);
+        vq_close_file(&vf);
+        return -1;
+    }
+    gm4_cb *cb = (gm4_cb *) calloc(1, sizeof *cb);
+    if (!cb) {
+        snprintf(err, errlen, "out of host memory for the codebook set");
+        vq_close_file(&vf);
+        return -1;
+    }
+    cb->dim = vf.dim;
+    cb->nc = vf.nc;
+    cb->stages = vf.stages;
+    cb->rows = vf.rows;
+    cb->cols = vf.cols;
+    cb->st = (CbStage *) calloc((size_t) vf.stages, sizeof *cb->st);
+    int rc = cb->st ? 0 : -1;
+    if (rc != 0) snprintf(err, errlen, "out of host memory for %d stages", vf.stages);
+
+    const size_t smem = (size_t) vf.nc * vf.dim * 2 + (size_t) vf.nc * sizeof(float);
+    if (rc == 0) {
+        int max_shared = 0;
+        cudaError_t e = cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                                               0);
+        if (e == cudaSuccess) {
+            e = cudaFuncSetAttribute((const void *) vq_assign_kernel,
+                                     cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
+        }
+        if (e != cudaSuccess || (size_t) max_shared < smem) {
+            snprintf(err, errlen, "%s: a %d x %d codebook needs %.1f KiB of shared memory, the "
+                     "device offers %.1f KiB", path, vf.nc, vf.dim, smem / 1024.0,
+                     max_shared / 1024.0);
+            rc = -1;
+        }
+    }
+    for (int s = 0; s < vf.stages && rc == 0; s++) {
+        const uint8_t *pay = vf.file + CONTAINER_HEADER + (size_t) s * vf.per;
+        KvLayout L;
+        if (kv_parse_payload(pay, vf.per, why, sizeof why, &L) != 0) {
+            snprintf(err, errlen, "%s stage %d: %s", path, s, why);
+            rc = -1;
+            break;
+        }
+        if (L.dim != vf.dim || L.nc != vf.nc || L.rows != vf.rows || L.cols != vf.cols) {
+            snprintf(err, errlen, "%s stage %d disagrees with the container header", path, s);
+            rc = -1;
+            break;
+        }
+        /* The payload's gains are per row and the runtime has none for a new
+         * row, so only a unit-gain container can be encoded against. */
+        for (int r = 0; r < L.rows; r++) {
+            const uint16_t h = (uint16_t) (pay[L.gain_off + (size_t) r * 2] |
+                                           ((uint16_t) pay[L.gain_off + (size_t) r * 2 + 1] << 8));
+            if (h != 0x3c00u) {
+                snprintf(err, errlen, "%s stage %d row %d carries gain 0x%04x, not 1.0; the "
+                         "runtime encoder has no gain to apply", path, s, r, h);
+                rc = -1;
+                break;
+            }
+        }
+        if (rc != 0) break;
+        const size_t nb = (size_t) vf.nc * vf.dim * 2;
+        float *c2h = (float *) malloc((size_t) vf.nc * sizeof(float));
+        cudaError_t e = cudaMalloc((void **) &cb->st[s].cb, nb);
+        if (e == cudaSuccess) e = cudaMemcpy(cb->st[s].cb, pay + L.cb_off, nb, cudaMemcpyHostToDevice);
+        if (e == cudaSuccess) e = cudaMalloc((void **) &cb->st[s].c2, (size_t) vf.nc * sizeof(float));
+        if (e != cudaSuccess || !c2h) {
+            free(c2h);
+            if (e == cudaSuccess) snprintf(err, errlen, "out of host memory for c2");
+            else fail(err, errlen, "codebook upload", e);
+            rc = -1;
+            break;
+        }
+        /* c2 exactly as vq_assign_q computes it: a double sum per codeword,
+         * rounded once (c/vendor/vq_qc.h:75-77). */
+        for (int c = 0; c < vf.nc; c++) {
+            double acc = 0.0;
+            for (int d = 0; d < vf.dim; d++) {
+                const uint8_t *p = pay + L.cb_off + ((size_t) c * vf.dim + d) * 2;
+                const float v = __half2float(__ushort_as_half((unsigned short) (p[0] |
+                                                      ((unsigned) p[1] << 8))));
+                acc += (double) v * (double) v;
+            }
+            c2h[c] = (float) acc;
+        }
+        e = cudaMemcpy(cb->st[s].c2, c2h, (size_t) vf.nc * sizeof(float), cudaMemcpyHostToDevice);
+        free(c2h);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "c2 upload", e);
+            rc = -1;
+        }
+    }
+    vq_close_file(&vf);
+    if (rc != 0) {
+        gm4_gpu_cb_free(cb);
+        return -1;
+    }
+    *out = cb;
+    return 0;
+}
+
+void gm4_gpu_cb_free(gm4_cb *cb) {
+    if (!cb) return;
+    for (int s = 0; s < cb->stages; s++) {
+        if (cb->st) {
+            if (cb->st[s].cb) cudaFree(cb->st[s].cb);
+            if (cb->st[s].c2) cudaFree(cb->st[s].c2);
+        }
+    }
+    free(cb->st);
+    free(cb);
+}
+
+int gm4_gpu_cb_geometry(const gm4_cb *cb, int *nc, int *dim, int *stages, int *cols) {
+    if (!cb) return -1;
+    if (nc) *nc = cb->nc;
+    if (dim) *dim = cb->dim;
+    if (stages) *stages = cb->stages;
+    if (cols) *cols = cb->cols;
+    return 0;
+}
+
+/* y += x */
+__global__ void vq_add_kernel(float *y, const float *x, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] += x[i];
+}
+
+/* resid = x - y */
+__global__ void vq_sub_kernel(float *dst, const float *x, const float *y, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = x[i] - y[i];
+}
+
+/* Encode `nrows` rows of `cols` f32 against the container's codebooks, the
+ * reference's residual chain: stage 0 assigns the row, each later stage
+ * assigns what the earlier ones left over. `idx` is [stages][nrows][cols/dim]
+ * u16; `rec` (optional) is the f32 reconstruction the stages add up to. */
+int gm4_gpu_vq_encode(gm4_cb *cb, const float *x, int nrows, int cols, uint16_t *idx, float *rec,
+                      char *err, size_t errlen) {
+    if (!cb || !x || !idx || nrows <= 0 || cols != cb->cols) {
+        snprintf(err, errlen, "vq_encode needs a codebook set, %d-column rows and an index output",
+                 cb ? cb->cols : 0);
+        return -1;
+    }
+    const size_t n = (size_t) nrows * (size_t) cols;
+    const size_t nq = (size_t) cb->nc * (size_t) cb->dim;
+    float *xd = NULL, *resid = NULL, *recd = NULL, *part = NULL;
+    uint16_t *idxd = NULL;
+    int rc = -1;
+    do {
+        cudaError_t e = cudaMalloc((void **) &xd, n * sizeof(float));
+        if (e == cudaSuccess) e = cudaMemcpy(xd, x, n * sizeof(float), cudaMemcpyHostToDevice);
+        if (e == cudaSuccess) e = cudaMalloc((void **) &resid, n * sizeof(float));
+        if (e == cudaSuccess) e = cudaMalloc((void **) &recd, n * sizeof(float));
+        if (e == cudaSuccess) e = cudaMemset(recd, 0, n * sizeof(float));
+        if (e == cudaSuccess) e = cudaMalloc((void **) &part, n * sizeof(float));
+        if (e == cudaSuccess)
+            e = cudaMalloc((void **) &idxd, (size_t) cb->stages * n / (size_t) cb->dim * 2);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "vq encode buffers", e);
+            break;
+        }
+        const size_t smem = nq * 2 + (size_t) cb->nc * sizeof(float);
+        const size_t nseg = (size_t) nrows * (size_t) (cols / cb->dim);
+        const unsigned blocks = (unsigned) ((nseg + VQ_WARPS - 1) / VQ_WARPS);
+        for (int s = 0; s < cb->stages; s++) {
+            const float *in = s == 0 ? xd : resid;
+            uint16_t *idxs = idxd + (size_t) s * n / (size_t) cb->dim;
+            vq_assign_kernel<<<blocks, VQ_THREADS, smem>>>(cb->st[s].cb, cb->st[s].c2, cb->nc,
+                                                           cb->dim, in, cols, nseg, idxs, part);
+            e = cudaGetLastError();
+            if (e == cudaSuccess) e = cudaDeviceSynchronize();
+            if (e != cudaSuccess) {
+                fail(err, errlen, "vq assign launch", e);
+                break;
+            }
+            const unsigned t = 256;
+            const unsigned b = (unsigned) ((n + t - 1) / t);
+            vq_add_kernel<<<b, t>>>(recd, part, n); /* recd += part */
+            if (s + 1 < cb->stages) {
+                vq_sub_kernel<<<b, t>>>(resid, xd, recd, n);
+                e = cudaGetLastError();
+                if (e == cudaSuccess) e = cudaDeviceSynchronize();
+                if (e != cudaSuccess) {
+                    fail(err, errlen, "vq residual", e);
+                    break;
+                }
+            }
+        }
+        if (e != cudaSuccess) break;
+        e = cudaMemcpy(idx, idxd, (size_t) cb->stages * n / (size_t) cb->dim * 2,
+                       cudaMemcpyDeviceToHost);
+        if (e == cudaSuccess && rec) e = cudaMemcpy(rec, recd, n * sizeof(float), cudaMemcpyDeviceToHost);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "vq encode readback", e);
+            break;
+        }
+        rc = 0;
+    } while (0);
+    if (xd) cudaFree(xd);
+    if (resid) cudaFree(resid);
+    if (recd) cudaFree(recd);
+    if (part) cudaFree(part);
+    if (idxd) cudaFree(idxd);
+    return rc;
+}
+
+/* ---- attention over a VQ cache -----------------------------------------
+ *
+ * The cache is the container's own bytes: one codebook and one index stream
+ * per residual stage, resident. Three facts of the payload decide the kernel,
+ * all read from the toolkit first-hand (c/vendor/vq_qc.h:241-296,
+ * crates/vq-format/src/lib.rs:316-453, c/kv_encode.c):
+ *
+ *  - the stream is one bit stream over the whole matrix, index i at bit
+ *    i*nbit, packed little-endian across a three-byte window with one guard
+ *    byte (kv_parse_payload above), so the row of slot r starts at bit
+ *    r*nidx_row*nbit;
+ *  - a row's value is its stages' codewords summed, C0[idx0] + C1[idx1], the
+ *    sum kv_decode_kernel writes and gm4_gpu_vq_encode reproduces bit for
+ *    bit;
+ *  - the per-row gain is 1.0 on this path by construction: the toolkit's KV
+ *    encoder takes the X == NULL branch (vq_qc.h:236) and the encoder here
+ *    refuses any other container.
+ *
+ * So the score pass reads an index per 8-wide segment and dots that
+ * codeword with q's segment; the value pass reads the same two codewords per
+ * dimension pair. This is the decode fused into the attention: no row and no
+ * matrix is materialised, which is the format's whole point.
+ */
+#define VQ_STAGES 8
+
+struct VqKvDev {
+    const uint8_t *cb[VQ_STAGES];
+    const uint8_t *stream[VQ_STAGES];
+    int stages, dim, nbit, nidx_row, rows;
+    unsigned mask;
+};
+
+/* Index j of row r, in the reference's three-byte window. */
+__device__ __forceinline__ unsigned vq_index(const uint8_t *st, int nbit, unsigned mask, size_t r,
+                                             int j, int nidx_row) {
+    const size_t i = r * (size_t) nidx_row + (size_t) j;
+    if (nbit == 8) return st[i];
+    const size_t bit = i * (size_t) nbit;
+    const uint8_t *q = st + (bit >> 3);
+    const unsigned w = (unsigned) q[0] | ((unsigned) q[1] << 8) | ((unsigned) q[2] << 16);
+    return (w >> (bit & 7)) & mask;
+}
+
+/* attn_split_kernel's shape and softmax, over rows read from the index
+ * streams. The run schedule, the max-rescale combine and the fp32 softmax are
+ * the f16 kernel's, so the two paths differ only in where a key or value
+ * comes from - which is what makes their difference the codec's. */
+__global__ void attn_vq_split_kernel(const float *q, VqKvDev K, VqKvDev V, float *scores,
+                                     float *part, float *pm, float *pl, int heads, int kv_heads,
+                                     int head_dim, const int32_t *posd, int window, int splits,
+                                     int chunk, int kv_cap, int kv_ring) {
+    extern __shared__ float red[];
+    const int block = blockIdx.x;
+    const int h = block / splits;
+    const int s = block - h * splits;
+    const int group = heads / kv_heads;
+    const int kv_head = h / group;
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int nwarps = blockDim.x >> 5;
+    const float *qh = q + (size_t) h * (size_t) head_dim;
+    float *sc = scores + (size_t) block * (size_t) chunk;
+    float *outp = part + (size_t) block * (size_t) head_dim;
+    const int positions = posd[0] + 1;
+    const int nwin = window > 0 && positions > window ? window : positions;
+    const int first = positions - nwin;
+    const int lo = s * chunk;
+    const int hi = lo + chunk < nwin ? lo + chunk : nwin;
+    const int n = hi > lo ? hi - lo : 0;
+    const int dim = K.dim;
+    const int nseg = head_dim / dim;
+    const int seg0 = kv_head * nseg;
+
+    /* The score pass: a warp takes every nwarps-th position of the run, the
+     * run's segments are spread over the lanes, and each lane dots one
+     * segment's codewords per stage against q. dim 8 is one 16-byte
+     * codeword, read as vq_assign_kernel reads it. */
+    for (int p = lo + warp; p < hi; p += nwarps) {
+        const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
+        float acc = 0.0f;
+        for (int t = lane; t < nseg; t += 32) {
+            const float *qs = qh + (size_t) t * (size_t) dim;
+            for (int st = 0; st < K.stages; st++) {
+                const unsigned v =
+                    vq_index(K.stream[st], K.nbit, K.mask, ks, seg0 + t, K.nidx_row);
+                const uint8_t *cw = K.cb[st] + (size_t) v * (size_t) dim * 2;
+                if (dim == 8) {
+                    const uint4 w = *(const uint4 *) cw;
+                    const float2 f0 = __half22float2(*(const __half2 *) &w.x);
+                    const float2 f1 = __half22float2(*(const __half2 *) &w.y);
+                    const float2 f2 = __half22float2(*(const __half2 *) &w.z);
+                    const float2 f3 = __half22float2(*(const __half2 *) &w.w);
+                    acc = fmaf(qs[0], f0.x, acc);
+                    acc = fmaf(qs[1], f0.y, acc);
+                    acc = fmaf(qs[2], f1.x, acc);
+                    acc = fmaf(qs[3], f1.y, acc);
+                    acc = fmaf(qs[4], f2.x, acc);
+                    acc = fmaf(qs[5], f2.y, acc);
+                    acc = fmaf(qs[6], f3.x, acc);
+                    acc = fmaf(qs[7], f3.y, acc);
+                } else {
+                    for (int d = 0; d < dim; d++) acc = fmaf(qs[d], f16_at(cw, (size_t) d), acc);
+                }
+            }
+        }
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) sc[p - lo] = acc; /* scaling is 1.0 (modeling_gemma4.py:846) */
+    }
+    __syncthreads();
+
+    float mx = -INFINITY;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) mx = fmaxf(mx, sc[i]);
+    mx = block_max(mx, red);
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float e = expf(sc[i] - mx);
+        sc[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+
+    /* The value pass: a thread owns one dimension pair, which lies inside one
+     * segment, and walks the run in position order. The pair's two codewords
+     * are f16, so a dim-8 container reads one half2 per stage. */
+    const int base = kv_head * head_dim;
+    for (int d = threadIdx.x * 2; d < head_dim; d += blockDim.x * 2) {
+        const int col = base + d;
+        const int j = col / dim;
+        const int off = col % dim;
+        float2 acc = make_float2(0.0f, 0.0f);
+        for (int i = 0; i < n; i++) {
+            const size_t ks = kv_slot(first + lo + i, kv_cap, kv_ring);
+            const float pr = sc[i];
+            float x = 0.0f, y = 0.0f;
+            for (int st = 0; st < V.stages; st++) {
+                const unsigned v = vq_index(V.stream[st], V.nbit, V.mask, ks, j, V.nidx_row);
+                const uint8_t *cw = V.cb[st] + (size_t) v * (size_t) dim * 2;
+                if (dim == 8) {
+                    const float2 f = __half22float2(*(const __half2 *) (cw + (size_t) off * 2));
+                    x += f.x;
+                    y += f.y;
+                } else {
+                    x += f16_at(cw, (size_t) off);
+                    y += f16_at(cw, (size_t) (off + 1));
+                }
+            }
+            acc.x = fmaf(pr, x, acc.x);
+            acc.y = fmaf(pr, y, acc.y);
+        }
+        outp[d] = acc.x;
+        outp[d + 1] = acc.y;
+    }
+    if (threadIdx.x == 0) {
+        pm[block] = n ? mx : -INFINITY;
+        pl[block] = n ? sum : 0.0f;
+    }
+}
+
+struct gm4_vqkv {
+    int dim, nc, stages, rows, cols, nbit, nidx_row, window;
+    uint8_t *cb[VQ_STAGES];
+    float *c2[VQ_STAGES];
+    uint8_t *stream[VQ_STAGES];
+    /* The encoder's scratch, one row's worth: a stage's reconstruction, the
+     * running sum of the stages, the residual the next stage assigns, and the
+     * indices before they are packed. */
+    float *part, *recd, *resid;
+    uint16_t *idx;
+};
+
+/* Pack one row's indices into the stream at `row`: the payload's layout, a
+ * single bit stream little-endian across the same three-byte window the
+ * reader uses. One thread, so the byte-level read-modify-write cannot race;
+ * a row is nidx_row indices (256 at the KV geometry) and the per-call cost
+ * is a few microseconds. */
+__global__ void vq_pack_kernel(uint8_t *stream, const uint16_t *idx, int nbit, size_t row,
+                               int nidx_row) {
+    const size_t base = row * (size_t) nidx_row * (size_t) nbit;
+    const unsigned mask = (1u << nbit) - 1u;
+    for (int j = 0; j < nidx_row; j++) {
+        const size_t bit = base + (size_t) j * (size_t) nbit;
+        uint8_t *q = stream + (bit >> 3);
+        const unsigned sh = (unsigned) (bit & 7);
+        uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
+        w &= ~(mask << sh);
+        w |= ((uint32_t) idx[j] & mask) << sh;
+        q[0] = (uint8_t) (w & 0xffu);
+        q[1] = (uint8_t) ((w >> 8) & 0xffu);
+        q[2] = (uint8_t) ((w >> 16) & 0xffu);
+    }
+}
+
+/* Open a container as a cache. `cap` defaults to the container's rows and
+ * `window` 0 means an appending cache; a positive window makes it a ring of
+ * `cap` slots. The container's stream is copied into the first rows and the
+ * rest stays zero until something writes them (the runtime encoder, KV-3b),
+ * so a calibration capture and a live ring share one shape. */
+int gm4_gpu_vqkv_open(gm4_gpu *g, const char *path, int cap, int window, gm4_vqkv **out,
+                      char *err, size_t errlen) {
+    (void) g;
+    if (!path || !out) {
+        snprintf(err, errlen, "vqkv_open needs a container path");
+        return -1;
+    }
+    if (cap < 0 || window < 0) {
+        snprintf(err, errlen, "vqkv_open needs a non-negative capacity and window");
+        return -1;
+    }
+    VqFile vf;
+    if (vq_open_file(path, err, errlen, &vf) != 0) return -1;
+    char why[192] = {0};
+    if (vf.groups != 1) {
+        snprintf(err, errlen, "%s holds %d codebook groups; a KV container holds one per stage",
+                 path, vf.groups);
+        vq_close_file(&vf);
+        return -1;
+    }
+    if (vf.dim < 1 || vf.dim > 8 || vf.stages > VQ_STAGES) {
+        snprintf(err, errlen, "%s: dim %d or %d stages is outside the reader's 1..8 / %d", path,
+                 vf.dim, vf.stages, VQ_STAGES);
+        vq_close_file(&vf);
+        return -1;
+    }
+    gm4_vqkv *kv = (gm4_vqkv *) calloc(1, sizeof *kv);
+    int rc = kv ? 0 : -1;
+    if (rc != 0) snprintf(err, errlen, "out of host memory for the VQ cache");
+    if (rc == 0) {
+        kv->dim = vf.dim;
+        kv->nc = vf.nc;
+        kv->stages = vf.stages;
+        kv->cols = vf.cols;
+        kv->rows = cap > 0 ? cap : vf.rows;
+        kv->window = window;
+        kv->nbit = index_bits(vf.nc);
+        kv->nidx_row = vf.cols / vf.dim;
+    }
+    for (int s = 0; s < vf.stages && rc == 0; s++) {
+        const uint8_t *pay = vf.file + CONTAINER_HEADER + (size_t) s * vf.per;
+        KvLayout L;
+        if (kv_parse_payload(pay, vf.per, why, sizeof why, &L) != 0) {
+            snprintf(err, errlen, "%s stage %d: %s", path, s, why);
+            rc = -1;
+            break;
+        }
+        if (L.dim != vf.dim || L.nc != vf.nc || L.rows != vf.rows || L.cols != vf.cols) {
+            snprintf(err, errlen, "%s stage %d disagrees with the container header", path, s);
+            rc = -1;
+            break;
+        }
+        for (int r = 0; r < L.rows; r++) {
+            const uint16_t h = (uint16_t) (pay[L.gain_off + (size_t) r * 2] |
+                                           ((uint16_t) pay[L.gain_off + (size_t) r * 2 + 1] << 8));
+            if (h != 0x3c00u) {
+                snprintf(err, errlen, "%s stage %d row %d carries gain 0x%04x, not 1.0; the "
+                         "attention reads the stream without a gain", path, s, r, h);
+                rc = -1;
+                break;
+            }
+        }
+        if (rc != 0) break;
+        const size_t ncb = (size_t) vf.nc * (size_t) vf.dim * 2;
+        /* The stream needs a guard: the three-byte window reads past the last
+         * index, exactly as the payload carries one (vq_qc_bytes.h:14-19). */
+        const size_t nst = (size_t) vf.rows * (size_t) kv->nidx_row * (size_t) kv->nbit / 8 + 3;
+        cudaError_t e = cudaMalloc((void **) &kv->cb[s], ncb);
+        if (e == cudaSuccess)
+            e = cudaMemcpy(kv->cb[s], pay + L.cb_off, ncb, cudaMemcpyHostToDevice);
+        if (e == cudaSuccess) e = cudaMalloc((void **) &kv->stream[s], nst);
+        if (e == cudaSuccess) e = cudaMemset(kv->stream[s], 0, nst);
+        if (e == cudaSuccess) {
+            const size_t used = (size_t) vf.rows * (size_t) kv->nidx_row * (size_t) kv->nbit / 8;
+            e = cudaMemcpy(kv->stream[s], pay + L.stream_off, used, cudaMemcpyHostToDevice);
+        }
+        if (e != cudaSuccess) {
+            fail(err, errlen, "VQ cache upload", e);
+            rc = -1;
+            break;
+        }
+        /* c2 exactly as vq_assign_q computes it: a double sum per codeword,
+         * rounded once (c/vendor/vq_qc.h:75-77). The encoder needs it; the
+         * attention does not. */
+        float *c2h = (float *) malloc((size_t) vf.nc * sizeof(float));
+        e = c2h ? cudaMalloc((void **) &kv->c2[s], (size_t) vf.nc * sizeof(float)) : cudaErrorMemoryAllocation;
+        if (e != cudaSuccess) {
+            free(c2h);
+            fail(err, errlen, "VQ cache c2 allocation", e);
+            rc = -1;
+            break;
+        }
+        for (int c = 0; c < vf.nc; c++) {
+            double acc = 0.0;
+            for (int d = 0; d < vf.dim; d++) {
+                const uint8_t *p = pay + L.cb_off + ((size_t) c * vf.dim + d) * 2;
+                const float x = __half2float(__ushort_as_half((unsigned short) (p[0] |
+                                                  ((unsigned) p[1] << 8))));
+                acc += (double) x * (double) x;
+            }
+            c2h[c] = (float) acc;
+        }
+        e = cudaMemcpy(kv->c2[s], c2h, (size_t) vf.nc * sizeof(float), cudaMemcpyHostToDevice);
+        free(c2h);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "VQ cache c2 upload", e);
+            rc = -1;
+        }
+    }
+    if (rc == 0) {
+        const size_t smem = (size_t) vf.nc * vf.dim * 2 + (size_t) vf.nc * sizeof(float);
+        int max_shared = 0;
+        cudaError_t e =
+            cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0);
+        if (e == cudaSuccess)
+            e = cudaFuncSetAttribute((const void *) vq_assign_kernel,
+                                     cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem);
+        if (e != cudaSuccess || (size_t) max_shared < smem) {
+            snprintf(err, errlen, "%s: the encoder needs %.1f KiB of shared memory, the device "
+                     "offers %.1f KiB", path, smem / 1024.0, max_shared / 1024.0);
+            rc = -1;
+        }
+    }
+    if (rc == 0) {
+        cudaError_t e = cudaMalloc((void **) &kv->part, (size_t) kv->cols * sizeof(float));
+        if (e == cudaSuccess) e = cudaMalloc((void **) &kv->recd, (size_t) kv->cols * sizeof(float));
+        if (e == cudaSuccess) e = cudaMalloc((void **) &kv->resid, (size_t) kv->cols * sizeof(float));
+        if (e == cudaSuccess) e = cudaMalloc((void **) &kv->idx, (size_t) kv->nidx_row * 2);
+        if (e != cudaSuccess) {
+            fail(err, errlen, "VQ cache encoder scratch", e);
+            rc = -1;
+        }
+    }
+    vq_close_file(&vf);
+    if (rc != 0) {
+        gm4_gpu_vqkv_free(kv);
+        return -1;
+    }
+    *out = kv;
+    return 0;
+}
+
+void gm4_gpu_vqkv_free(gm4_vqkv *kv) {
+    if (!kv) return;
+    for (int s = 0; s < VQ_STAGES; s++) {
+        if (kv->cb[s]) cudaFree(kv->cb[s]);
+        if (kv->c2[s]) cudaFree(kv->c2[s]);
+        if (kv->stream[s]) cudaFree(kv->stream[s]);
+    }
+    if (kv->part) cudaFree(kv->part);
+    if (kv->recd) cudaFree(kv->recd);
+    if (kv->resid) cudaFree(kv->resid);
+    if (kv->idx) cudaFree(kv->idx);
+    free(kv);
+}
+
+/* Encode one position's row against the calibration codebooks, on the device,
+ * and pack it into the cache at its slot. This is the runtime half of the
+ * codec: the reference's assignment (c/vendor/vq_qc.h:70-96, c2 - 2*(v.C),
+ * first minimum) then the residual through the stages, the same chain
+ * gm4_gpu_vq_encode runs. `xd` is [cols] f32 on the device - the layer's own
+ * normed, roped key or value - so the step never round-trips to the host.
+ *
+ * The toolkit learns a codebook from the whole capture (minutes per layer,
+ * measured 2026-11-02), which a generation cannot pay; this encodes against
+ * the calibration container's codebook instead, and that is the KV unit's
+ * named deviation. */
+int gm4_gpu_vqkv_encode_row(gm4_gpu *g, gm4_vqkv *kv, int pos, const float *xd, char *err,
+                            size_t errlen) {
+    (void) g;
+    if (!kv || !xd) {
+        snprintf(err, errlen, "vqkv_encode_row needs a cache and a device row");
+        return -1;
+    }
+    if (pos < 0 || (!kv->window && pos >= kv->rows)) {
+        snprintf(err, errlen, "vqkv_encode_row position %d outside the %s cache's %d rows", pos,
+                 kv->window ? "ring" : "appending", kv->rows);
+        return -1;
+    }
+    const size_t slot = kv->window ? (size_t) (pos % kv->rows) : (size_t) pos;
+    /* The warp-per-segment kernel, not a per-row variant: an A/B against a
+     * block-per-segment shape on this card measured 17.44 and 17.58 ms per
+     * token, the same within drift. The cost is the scan itself - 256
+     * segments x 4096 codewords x 16 B is 16.8 MB of codeword reads per row
+     * per stage - and the card has one layer's worth of rows, never thirty:
+     * the layers are sequential, so no cross-layer batch exists to launch. */
+    const size_t smem = (size_t) kv->nc * kv->dim * 2 + (size_t) kv->nc * sizeof(float);
+    const unsigned blocks = (unsigned) ((kv->nidx_row + VQ_WARPS - 1) / VQ_WARPS);
+    cudaError_t e = cudaMemset(kv->recd, 0, (size_t) kv->cols * sizeof(float));
+    if (e != cudaSuccess) return fail(err, errlen, "vq row accumulator clear", e);
+    for (int s = 0; s < kv->stages; s++) {
+        const float *in = s == 0 ? xd : kv->resid;
+        vq_assign_kernel<<<blocks, VQ_THREADS, smem>>>(kv->cb[s], kv->c2[s], kv->nc, kv->dim, in,
+                                                       kv->cols, (size_t) kv->nidx_row, kv->idx,
+                                                       kv->part);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "vq row assign launch", e);
+        vq_pack_kernel<<<1, 1>>>(kv->stream[s], kv->idx, kv->nbit, slot, kv->nidx_row);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "vq row pack launch", e);
+        if (s + 1 < kv->stages) {
+            const unsigned t = 256;
+            const unsigned b = (unsigned) ((kv->cols + t - 1) / t);
+            vq_add_kernel<<<b, t>>>(kv->recd, kv->part, (size_t) kv->cols);
+            vq_sub_kernel<<<b, t>>>(kv->resid, xd, kv->recd, (size_t) kv->cols);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return fail(err, errlen, "vq row residual launch", e);
+        }
+    }
+    return 0;
+}
+
+int gm4_gpu_vqkv_encode_host(gm4_gpu *g, gm4_vqkv *kv, const float *x, int nrows, char *err,
+                             size_t errlen) {
+    if (!kv || !x || nrows <= 0 || nrows > kv->rows) {
+        snprintf(err, errlen, "vqkv_encode_host needs %d rows and the cache holds %d", nrows,
+                 kv ? kv->rows : 0);
+        return -1;
+    }
+    const size_t n = (size_t) nrows * (size_t) kv->cols;
+    float *xd = NULL;
+    cudaError_t e = cudaMalloc((void **) &xd, n * sizeof(float));
+    if (e == cudaSuccess) e = cudaMemcpy(xd, x, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) {
+        if (xd) cudaFree(xd);
+        return fail(err, errlen, "vq host rows upload", e);
+    }
+    int rc = 0;
+    for (int r = 0; r < nrows && rc == 0; r++)
+        rc = gm4_gpu_vqkv_encode_row(g, kv, r, xd + (size_t) r * (size_t) kv->cols, err, errlen);
+    e = cudaDeviceSynchronize();
+    if (rc == 0 && e != cudaSuccess) rc = fail(err, errlen, "vq host rows sync", e);
+    cudaFree(xd);
+    return rc;
+}
+
+int gm4_gpu_vqkv_geometry(const gm4_vqkv *kv, int *rows, int *cols, int *dim, int *nc,
+                          int *stages) {
+    if (!kv) return -1;
+    if (rows) *rows = kv->rows;
+    if (cols) *cols = kv->cols;
+    if (dim) *dim = kv->dim;
+    if (nc) *nc = kv->nc;
+    if (stages) *stages = kv->stages;
+    return 0;
+}
+
+/* The chain's shape: q, the position and the output are already on the
+ * device, so nothing here waits. The public entry point below is this plus
+ * the two copies a single call needs. */
+static int attention_vq_dev(gm4_gpu *g, gm4_vqkv *k, gm4_vqkv *v, const float *qd, int heads,
+                            int head_dim, const int32_t *posd, float *outd, char *err,
+                            size_t errlen) {
+    if (!g || !k || !v || !qd || !outd || heads <= 0 || head_dim <= 0) {
+        snprintf(err, errlen, "vq attention needs two caches, a query and a query width");
+        return -1;
+    }
+    if (k->rows != v->rows || k->cols != v->cols || k->dim != v->dim || k->stages != v->stages
+        || k->nbit != v->nbit) {
+        snprintf(err, errlen, "vq attention: K is %dx%d dim %d/%d stages and V is %dx%d dim %d/%d",
+                 k->rows, k->cols, k->dim, k->stages, v->rows, v->cols, v->dim, v->stages);
+        return -1;
+    }
+    if (k->cols % head_dim) {
+        snprintf(err, errlen, "vq attention: %d columns do not divide into a %d-wide head",
+                 k->cols, head_dim);
+        return -1;
+    }
+    const int kv_heads = k->cols / head_dim;
+    if (heads % kv_heads) {
+        snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads, kv_heads);
+        return -1;
+    }
+    if (head_dim % 2 || k->dim % 2) {
+        snprintf(err, errlen, "vq attention needs an even head width and segment width");
+        return -1;
+    }
+
+    /* The grid is sized for the widest window the cache can hold, as
+     * attention_ring does, so a captured step's schedule does not depend on
+     * the position it replays at. */
+    const int bound = k->window > 0 ? k->window : k->rows;
+    const int ring = k->window > 0 ? 1 : 0;
+    const int splits = attn_splits(heads, bound);
+    const int blocks = heads * splits;
+    const int chunk = (bound + splits - 1) / splits;
+    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) blocks * (size_t) chunk, err, errlen)
+        != 0)
+        return -1;
+    if (ensure_float(&g->apart, &g->apartcap, (size_t) blocks * (size_t) head_dim, err, errlen)
+        != 0)
+        return -1;
+    if (ensure_float(&g->apm, &g->apmcap, (size_t) blocks, err, errlen) != 0) return -1;
+    if (ensure_float(&g->apl, &g->aplcap, (size_t) blocks, err, errlen) != 0) return -1;
+
+    VqKvDev K;
+    memset(&K, 0, sizeof K);
+    for (int s = 0; s < k->stages; s++) {
+        K.cb[s] = k->cb[s];
+        K.stream[s] = k->stream[s];
+    }
+    K.stages = k->stages;
+    K.dim = k->dim;
+    K.nbit = k->nbit;
+    K.nidx_row = k->nidx_row;
+    K.rows = k->rows;
+    K.mask = (1u << k->nbit) - 1u;
+    VqKvDev V = K;
+    for (int s = 0; s < v->stages; s++) {
+        V.cb[s] = v->cb[s];
+        V.stream[s] = v->stream[s];
+    }
+
+    attn_vq_split_kernel<<<(unsigned) blocks, 256, 32 * sizeof(float)>>>(
+        qd, K, V, g->ascores, g->apart, g->apm, g->apl, heads, kv_heads, head_dim, posd, bound,
+        splits, chunk, k->rows, ring);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "vq attention split launch", e);
+    attn_combine_kernel<<<(unsigned) heads, 256>>>(g->apart, g->apm, g->apl, outd, heads,
+                                                   head_dim, splits);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "vq attention combine launch", e);
+    return 0;
+}
+
+int gm4_gpu_attention_vq(gm4_gpu *g, gm4_vqkv *k, gm4_vqkv *v, const float *q, int heads,
+                         int head_dim, int pos, float *out, char *err, size_t errlen) {
+    if (!g || !q || !out || pos < 0) {
+        snprintf(err, errlen, "vq attention needs a query and a non-negative position");
+        return -1;
+    }
+    const size_t qn = (size_t) heads * (size_t) head_dim;
+    if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
+    if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->aq, q, qn * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "vq attention upload", e);
+    if (stage_pos(g, pos, err, errlen) != 0) return -1;
+    if (attention_vq_dev(g, k, v, g->aq, heads, head_dim, g->posone, g->aout, err, errlen) != 0)
+        return -1;
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "vq attention sync", e);
+    e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "vq attention download", e);
+    return 0;
+}
+
 /* One query token against a cache: the last `cap` positions of a ring, every
  * position of an appending cache up to `pos`. The window is the cache's own
  * capacity, which is what the CPU passes as config.sliding_window
@@ -3138,6 +4791,13 @@ int gm4_gpu_layer_new(gm4_gpu *g, const gm4_layer_spec *spec, gm4_layer **out, c
     L->threads = spec->threads > 0 ? spec->threads : 256;
     L->eps = spec->eps;
     L->scalar = spec->layer_scalar;
+    L->kq = spec->kvq_k;
+    L->vq = spec->kvq_v;
+    if ((L->kq && !L->vq) || (!L->kq && L->vq)) {
+        gm4_gpu_layer_free(L);
+        snprintf(err, errlen, "layer_new needs both VQ caches or neither");
+        return -1;
+    }
     L->arena_floats = narena;
 
     cudaError_t e = cudaMalloc((void **) &L->small, nsmall * sizeof(float));
@@ -3336,11 +4996,23 @@ static int layer_forward_dev(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *
     if (rmsnorm_dev(L->va, NULL, L->vb, L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
         return -1;
 
-    /* The cache takes this position first: the query sees its own key. */
-    if (kv_put_dev(kv, pos, posd, L->kb, L->vb, err, errlen) != 0) return -1;
-    mark(L, 2);
-    if (attention_ring_dev(g, kv, L->qb, L->heads, pos, posd, reserve, L->attn, err, errlen) != 0)
-        return -1;
+    /* The cache takes this position first: the query sees its own key. On the
+     * VQ path the key and value are encoded against the layer's calibration
+     * codebooks and the attention reads the containers; the f16 cache is not
+     * touched. */
+    if (L->kq) {
+        if (gm4_gpu_vqkv_encode_row(g, L->kq, pos, L->kb, err, errlen) != 0) return -1;
+        if (gm4_gpu_vqkv_encode_row(g, L->vq, pos, L->vb, err, errlen) != 0) return -1;
+        mark(L, 2);
+        if (attention_vq_dev(g, L->kq, L->vq, L->qb, L->heads, L->head_dim, posd, L->attn, err,
+                             errlen) != 0)
+            return -1;
+    } else {
+        if (kv_put_dev(kv, pos, posd, L->kb, L->vb, err, errlen) != 0) return -1;
+        mark(L, 2);
+        if (attention_ring_dev(g, kv, L->qb, L->heads, pos, posd, reserve, L->attn, err, errlen) != 0)
+            return -1;
+    }
     mark(L, 3);
     /* The output projection is the last thing the CPU's attention does
      * (`layer.o.matvec(&out)`, forward.rs:462), so it is part of this step. */
@@ -3583,6 +5255,9 @@ struct gm4_model {
      * return, `wait` is everything after it, the sync and the readback. One
      * wall number hides which half the next change has to move. */
     double t_submit, t_wait;
+    /* The block path's scratch, grown on first use to the requested block
+     * length (pre_scratch). A step never touches it. */
+    struct gm4_pre *pre;
 };
 
 static double now_sec(void) {
@@ -3590,6 +5265,8 @@ static double now_sec(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
 }
+
+static void pre_free(struct gm4_pre *P);
 
 void gm4_gpu_model_free(gm4_model *m) {
     if (!m) return;
@@ -3601,6 +5278,7 @@ void gm4_gpu_model_free(gm4_model *m) {
     if (m->act[1]) cudaFree(m->act[1]);
     if (m->fnorm) cudaFree(m->fnorm);
     if (m->logits) cudaFree(m->logits);
+    if (m->pre) pre_free(m->pre);
     free(m->layers);
     free(m->kv);
     free(m);
@@ -3742,7 +5420,7 @@ size_t gm4_gpu_model_bytes(const gm4_model *m) {
  * capture's bucket bound. Everything it reads about the step itself (the
  * token, the position) is already in the device slots. */
 static int model_body(gm4_gpu *g, gm4_model *m, int cap, char *err, size_t errlen) {
-    if (embed_row_dev(g, m->embed, m->slots, m->embed_scale, m->act[0], err, errlen) != 0)
+    if (embed_row_dev(g, m->embed, m->slots, 1, m->embed_scale, m->act[0], err, errlen) != 0)
         return -1;
     int cur = 0;
     for (int i = 0; i < m->n; i++) {
@@ -3835,6 +5513,552 @@ static int model_graph(gm4_gpu *g, gm4_model *m, int bucket, int cap, char *err,
     return 1;
 }
 
+/* ---- the block of tokens, driven ----------------------------------------
+ *
+ * One layer over a block of n tokens at pos0..pos0+n-1. Everything below is
+ * the single-token chain's order (layer_forward_dev) with the block's kernels
+ * substituted: the dense projections become one tiled gemm each (a transposed
+ * activation block in, the container's rows out), attention becomes one
+ * launch over (head, token), and the routed experts become the work-item
+ * passes above. Nothing leaves the device between the first layer and the
+ * last but the router's picks, which are grouped on the host into the item
+ * list - the reference's own split (it builds vqp_item on the host from the
+ * permutation and the offsets, ds41_vq_prefill_fused.cuh:214-225).
+ *
+ * Buffer sizes are the maximum over the 30 layers, so one scratch serves the
+ * whole chain. The scratch is a separate arena from the layer's, because a
+ * prefill walks the layers one at a time and a per-layer copy would be 30
+ * times the memory for the same bytes.
+ */
+struct gm4_pre {
+    int cap;    /* tokens the scratch holds */
+    float *arena;
+    size_t floats;
+    float *xs[2], *hb, *q, *k, *v, *att, *o, *nrm;
+    float *dg, *du, *dact, *dd, *dense;
+    float *r, *rs, *scores, *probs, *wsel;
+    float *xs32, *gu, *act, *ddn;
+    float *moe, *moe2, *comb, *comb2;
+    float *xT;
+    int *picked;
+    int32_t *items, *perm, *dst;
+    int32_t *tokd; /* the block's tokens, so the embedding launch reads them */
+    size_t listcap; /* pairs the MoE lists hold */
+};
+
+static float *pre_cut(gm4_pre *P, size_t n) {
+    float *p = P->arena + P->floats;
+    P->floats += n;
+    return p;
+}
+
+/* The widest geometry over the chain: q and its attention output are the full
+ * layer's heads * head_dim, the cache rows the full layer's kv heads *
+ * head_dim, and the feed-forward widths split by layer type. */
+static void model_widths(const gm4_model *m, int *nh, int *nq, int *nk, int *ndff, int *moeff,
+                         int *nexp, int *topk) {
+    *nh = m->hidden;
+    *nq = 0;
+    *nk = 0;
+    *ndff = 0;
+    *moeff = 0;
+    *nexp = 0;
+    *topk = 0;
+    for (int i = 0; i < m->n; i++) {
+        const gm4_layer *L = m->layers[i];
+        if (L->heads * L->head_dim > *nq) *nq = L->heads * L->head_dim;
+        if (L->kv_heads * L->head_dim > *nk) *nk = L->kv_heads * L->head_dim;
+        if (L->dense_ff > *ndff) *ndff = L->dense_ff;
+        if (L->moe_ff > *moeff) *moeff = L->moe_ff;
+        if (L->experts > *nexp) *nexp = L->experts;
+        if (L->top_k > *topk) *topk = L->top_k;
+    }
+}
+
+static void pre_free(gm4_pre *P) {
+    if (!P) return;
+    if (P->arena) cudaFree(P->arena);
+    if (P->items) cudaFree(P->items);
+    if (P->perm) cudaFree(P->perm);
+    if (P->dst) cudaFree(P->dst);
+    if (P->picked) cudaFree(P->picked);
+    if (P->tokd) cudaFree(P->tokd);
+    free(P);
+}
+
+/* Cut the scratch for n tokens. Allocated once per chunk length and reused by
+ * every shorter block, so a session's VRAM does not grow with the prompt. */
+static int pre_scratch(gm4_model *m, int n, char *err, size_t errlen) {
+    gm4_pre *P = m->pre;
+    if (P && P->cap >= n) return 0;
+    int nh, nq, nk, ndff, moeff, nexp, topk;
+    model_widths(m, &nh, &nq, &nk, &ndff, &moeff, &nexp, &topk);
+    if (!nh || !nq || !nk || !ndff || !moeff || !nexp || !topk) {
+        snprintf(err, errlen, "the chain has no geometry to size a prefill scratch from");
+        return -1;
+    }
+    /* Per token: the two activation blocks, the normed copy, q and its
+     * attention output, the cache rows, the output projection, the dense
+     * feed-forward's three widths, its projection, the router's two vectors
+     * and its scores, the mixture's two, and the close's four. The MoE
+     * lists are per pair (token, slot), not per token. */
+    const size_t per_tok = (size_t) 2 * nh + nh + (size_t) nq + 2 * (size_t) nk + (size_t) nq
+                         + nh + nh + 3 * (size_t) ndff + (size_t) nh + nh + nh + nh
+                         + 2 * (size_t) nexp + (size_t) topk + 4 * nh + 3 * nh;
+    const size_t pairs = (size_t) n * (size_t) topk;
+    const size_t per_pair = (size_t) nh + 2 * (size_t) moeff + (size_t) moeff + (size_t) nh;
+    const size_t floats = (size_t) n * per_tok + pairs * per_pair
+                        + (size_t) n * (size_t) (nq > nh ? (nq > ndff ? nq : ndff) : (nh > ndff ? nh : ndff));
+    gm4_pre *next = (gm4_pre *) calloc(1, sizeof *next);
+    if (!next) {
+        snprintf(err, errlen, "prefill scratch handle allocation failed");
+        return -1;
+    }
+    next->cap = n;
+    cudaError_t e = cudaMalloc((void **) &next->arena, floats * sizeof(float));
+    if (e != cudaSuccess) {
+        snprintf(err, errlen, "prefill scratch cudaMalloc of %.1f MiB failed: %s",
+                 (double) floats * sizeof(float) / (1024.0 * 1024.0), cudaGetErrorString(e));
+        free(next);
+        return -1;
+    }
+    next->floats = 0;
+    next->xs[0] = pre_cut(next, (size_t) n * nh);
+    next->xs[1] = pre_cut(next, (size_t) n * nh);
+    next->hb = pre_cut(next, (size_t) n * nh);
+    next->q = pre_cut(next, (size_t) n * nq);
+    next->k = pre_cut(next, (size_t) n * nk);
+    next->v = pre_cut(next, (size_t) n * nk);
+    next->att = pre_cut(next, (size_t) n * nq);
+    next->o = pre_cut(next, (size_t) n * nh);
+    next->nrm = pre_cut(next, (size_t) n * nh);
+    next->dg = pre_cut(next, (size_t) n * ndff);
+    next->du = pre_cut(next, (size_t) n * ndff);
+    next->dact = pre_cut(next, (size_t) n * ndff);
+    next->dd = pre_cut(next, (size_t) n * nh);
+    next->dense = pre_cut(next, (size_t) n * nh);
+    next->r = pre_cut(next, (size_t) n * nh);
+    next->rs = pre_cut(next, (size_t) n * nh);
+    next->scores = pre_cut(next, (size_t) n * nexp);
+    next->probs = pre_cut(next, (size_t) n * nexp);
+    next->wsel = pre_cut(next, (size_t) n * topk);
+    next->moe = pre_cut(next, (size_t) n * nh);
+    next->moe2 = pre_cut(next, (size_t) n * nh);
+    next->comb = pre_cut(next, (size_t) n * nh);
+    next->comb2 = pre_cut(next, (size_t) n * nh);
+    next->xs32 = pre_cut(next, pairs * (size_t) nh);
+    next->gu = pre_cut(next, pairs * 2 * (size_t) moeff);
+    next->act = pre_cut(next, pairs * (size_t) moeff);
+    next->ddn = pre_cut(next, pairs * (size_t) nh);
+    next->xT = pre_cut(next, (size_t) n * (size_t) (nq > nh ? (nq > ndff ? nq : ndff) : (nh > ndff ? nh : ndff)));
+    if (next->floats > floats) {
+        snprintf(err, errlen, "prefill scratch cuts %zu floats past its %zu", next->floats, floats);
+        cudaFree(next->arena);
+        free(next);
+        return -1;
+    }
+    if (cudaMalloc((void **) &next->picked, pairs * sizeof(int)) != cudaSuccess
+        || cudaMalloc((void **) &next->items, pairs * 3 * sizeof(int32_t)) != cudaSuccess
+        || cudaMalloc((void **) &next->perm, pairs * sizeof(int32_t)) != cudaSuccess
+        || cudaMalloc((void **) &next->dst, pairs * sizeof(int32_t)) != cudaSuccess
+        || cudaMalloc((void **) &next->tokd, (size_t) n * sizeof(int32_t)) != cudaSuccess) {
+        (void) cudaGetLastError();
+        snprintf(err, errlen, "prefill list allocation of %zu pairs failed", pairs);
+        pre_free(next);
+        return -1;
+    }
+    next->listcap = pairs;
+    /* A larger block replaces the old scratch. A growth happens between
+     * prefills, never inside one, and the sync keeps a still-queued launch
+     * from reading a freed arena. */
+    if (P) {
+        (void) cudaDeviceSynchronize();
+        pre_free(P);
+    }
+    m->pre = next;
+    return 0;
+}
+
+/* The tile and codebook placement the block path asks the tiled kernel for.
+ * Diagnostic, like gm4_gpu_span: the gate sweeps the six the tools measured
+ * (PREFILL_TILES) and the default is the one the gate found best there. Two
+ * globals rather than one packed value because they are independently read. */
+static int g_pf_bn = 128, g_pf_cb = 0;
+
+/* 0 or 1 = the block path's token tile and codebook placement; returns the
+ * previous tile. */
+int gm4_gpu_prefill_cfg(int bn, int cb) {
+    const int prev = g_pf_bn;
+    if (bn > 0) g_pf_bn = bn;
+    if (cb >= 0) g_pf_cb = cb;
+    return prev;
+}
+
+/* x [rows][cols] -> xT [cols][rows], the layout the tiled kernel's B-tile
+ * reads. */
+static int transpose_dev(const float *xd, float *xtd, int rows, int cols, char *err,
+                         size_t errlen) {
+    const dim3 grid((unsigned) ((cols + 31) / 32), (unsigned) ((rows + 31) / 32));
+    const dim3 block(32, 32);
+    transpose_kernel<<<grid, block>>>(xd, xtd, rows, cols);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block transpose launch", e);
+    return 0;
+}
+
+/* One projection for a block of tokens, every payload over the same
+ * transposed activation block. The output is the container's full row layout
+ * y[token][row] and is cleared first: the tiled kernel accumulates, which is
+ * how the container's two stages sum there, in the same order the decode
+ * path's two launches make them. */
+static int prefill_dev(gm4_gpu *g, int tensor, const float *xTd, int ntok, float *yd, char *err,
+                       size_t errlen) {
+    if (tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    const Layout &L = t->pays[0].l;
+    /* Diagnostic: force the f32-accumulating prefill (gemm_prefill_kernel, no
+     * f16 activation tile) so a gate can separate the tile's precision from a
+     * wiring error. The tile is the tools' kernel and rounds its activation
+     * tile to f16 (:848-856), which the tools' own prefill gate accounts for by
+     * comparing against a reference over f16-rounded activations. */
+    static const int legacy = getenv("GM4_PF_LEGACY") ? 1 : 0;
+    const int tiled = !legacy && pre_ok(L, 64) ? 1 : 0;
+    if (tiled) {
+        char why[256];
+        if (!gm4_gpu_prefill_ready(g, tensor, g_pf_bn, g_pf_cb, why, sizeof why)) {
+            snprintf(err, errlen, "block projection: %s", why);
+            return -1;
+        }
+    }
+    cudaError_t e = cudaMemsetAsync(yd, 0, (size_t) L.rows * (size_t) ntok * sizeof(float),
+                                    cudaStreamPerThread);
+    if (e != cudaSuccess) return fail(err, errlen, "block projection clear", e);
+    for (int p = 0; p < t->npay; p++) {
+        const Payload &one = t->pays[p];
+        if (one.l.rows != L.rows || one.l.cols != L.cols) {
+            snprintf(err, errlen, "payload %d disagrees with payload 0", p);
+            return -1;
+        }
+        Layout slice = one.l;
+        slice.row0 = 0;
+        slice.nrows = L.rows;
+        const int rc = tiled ? pre_launch_cfg(one.dev, slice, xTd, ntok, yd, g_pf_bn, g_pf_cb)
+                             : pre_legacy(one.dev, slice, xTd, ntok, yd);
+        if (rc != 0) {
+            snprintf(err, errlen, "block projection launch failed for payload %d", p);
+            return -1;
+        }
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "block projection launch", e);
+    }
+    return 0;
+}
+
+/* Rotary for the block, every token at its own position. */
+static int rope_rows_dev(float *xd, int n, int heads, int head_dim, int pos0, const float *invd,
+                         char *err, size_t errlen) {
+    const dim3 grid((unsigned) heads, (unsigned) n);
+    rope_rows_kernel<<<grid, (unsigned) (head_dim / 2)>>>(xd, heads, head_dim, pos0, invd);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block rope launch", e);
+    return 0;
+}
+
+static int kv_put_rows_dev(gm4_kv *kv, int n, int pos0, const float *kd, const float *vd, char *err,
+                           size_t errlen) {
+    if (pos0 < 0 || (!kv->ring && pos0 + n > kv->cap)) {
+        snprintf(err, errlen, "block cache write %d..%d outside the %s cache's %d positions", pos0,
+                 pos0 + n - 1, kv->ring ? "ring" : "appending", kv->cap);
+        return -1;
+    }
+    const int block = 128;
+    const dim3 grid((unsigned) ((kv->per + block - 1) / block), (unsigned) n);
+    kv_put_rows_kernel<<<grid, block>>>(kv->keys, kv->values, kd, vd, kv->per, pos0, kv->cap,
+                                        kv->ring);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block cache write launch", e);
+    return 0;
+}
+
+/* The block's attention: one block per (head, query), the window each query's
+ * own position allows. The widest window over the block sizes the launch's
+ * shared scores, the same array attn_split_kernel keeps per run. */
+static int attn_rows_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int n, int pos0, int heads,
+                         float *outd, char *err, size_t errlen) {
+    if (heads % kv->kv_heads) {
+        snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads,
+                 kv->kv_heads);
+        return -1;
+    }
+    const int window = kv->ring ? kv->cap : 0;
+    int widest = pos0 + n;
+    if (window > 0 && widest > window) widest = window;
+    const size_t smem = (32 + (size_t) widest) * sizeof(float);
+    if (smem > smem_max()) {
+        snprintf(err, errlen, "block attention needs %zu bytes of shared scores, the device allows %zu",
+                 smem, smem_max());
+        return -1;
+    }
+    const dim3 grid((unsigned) heads, (unsigned) n);
+    attn_rows_kernel<<<grid, 256, smem>>>(qd, kv->keys, kv->values, outd, heads, kv->kv_heads,
+                                          kv->head_dim, pos0, window, kv->cap, kv->ring);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block attention launch", e);
+    return 0;
+}
+
+/* The block's router selection: one warp per token, the single-token body. */
+static int router_rows_dev(gm4_gpu *g, const float *scoresd, const float *pesd, int experts,
+                           int k, int n, float *probsd, int *pickedd, float *wseld, char *err,
+                           size_t errlen) {
+    if (k > experts || k > 32) {
+        snprintf(err, errlen, "block selection needs k <= 32 and k <= %d experts, got %d", experts, k);
+        return -1;
+    }
+    const size_t smem = (size_t) (k > 32 ? k : 32) * sizeof(float);
+    router_topk_rows_kernel<<<(unsigned) n, 32, smem>>>(scoresd, pesd, experts, k, probsd, pickedd,
+                                                       wseld);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block router launch", e);
+    return 0;
+}
+
+/* Whether the expert geometry is the one the item passes implement. Checked,
+ * never assumed: the two walks below are the block and span walks at dim 8
+ * and this container's two payloads, and anything else is a refusal with the
+ * reason, not a quiet slow path. */
+static int moe_items_ready(gm4_gpu *g, const gm4_layer *L, char *err, size_t errlen) {
+    const Tensor *gu = &g->ts[L->egu];
+    const Tensor *dn = &g->ts[L->edn];
+    const char *why = NULL;
+    if (gu->npay != 2 || dn->npay != 2) why = "the expert stacks are not two payloads";
+    else if (gu->pays[0].variant != 3 || gu->pays[1].variant != 3) why = "gate/up is not the block geometry";
+    else if (dn->pays[0].variant != 4 || dn->pays[1].variant != 4) why = "down is not the span geometry";
+    else if (gu->pays[0].l.dim != 8 || dn->pays[0].l.dim != 8) why = "the expert stacks are not dim 8";
+    else if (gu->pays[0].l.prow || dn->pays[0].l.prow) why = "an expert payload carries a 13th-bit plane";
+    if (why) {
+        snprintf(err, errlen, "the block path needs this artifact's expert geometry: %s", why);
+        return 0;
+    }
+    return 1;
+}
+
+#define GM4_MOE_THREADS 128
+#define GM4_MOE_NT 8
+
+/* The gathered activation rows of the pairs, the gate/up item pass, the SwiGLU
+ * over the compact block, the down item pass, and the per-token reduce. */
+static int moe_block_dev(gm4_gpu *g, const gm4_layer *L, const gm4_pre *P, int npairs,
+                         int nitems, int k, int n, char *err, size_t errlen) {
+    const Tensor *gu = &g->ts[L->egu];
+    const Tensor *dn = &g->ts[L->edn];
+    const int ff = L->moe_ff;
+    const int nh = L->hidden;
+    const int cols = nh;
+
+    const dim3 ggrid((unsigned) ((cols + 255) / 256), (unsigned) npairs);
+    moe_gather_kernel<<<ggrid, 256>>>(P->xs32, P->hb, P->perm, cols);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block expert gather launch", e);
+
+    const unsigned warps = GM4_MOE_THREADS / 32;
+    const unsigned span = warps * GM4_MOE_ROWS_PER_WARP;
+    const dim3 gu_grid((unsigned) ((2 * ff + (int) span - 1) / (int) span), (unsigned) nitems);
+    moe_gu_items_kernel<8, GM4_MOE_NT><<<gu_grid, GM4_MOE_THREADS>>>(
+        gu->pays[0], gu->pays[1], P->items, P->xs32, cols, P->gu, ff, 2 * ff);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block expert gate/up launch", e);
+
+    if (gelu_blocks_dev(P->gu, P->act, ff, npairs, err, errlen) != 0) return -1;
+
+    const dim3 dn_grid((unsigned) ((nh + (int) span - 1) / (int) span), (unsigned) nitems);
+    moe_dn_items_kernel<8, GM4_MOE_NT><<<dn_grid, GM4_MOE_THREADS>>>(
+        dn->pays[0], dn->pays[1], P->items, P->dst, P->act, P->ddn, nh, ff);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block expert down launch", e);
+
+    const dim3 rgrid((unsigned) ((nh + 255) / 256), (unsigned) n);
+    moe_reduce_tok_kernel<<<rgrid, 256>>>(P->ddn, P->wsel, P->moe, k, nh);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "block expert reduce launch", e);
+    return 0;
+}
+
+/* The router's picks grouped into work items on the host: counts per expert,
+ * the prefix offsets, the pairs in expert order (and, per pair, the slot the
+ * down projection writes), then one (expert, first pair, count) triple per
+ * segment of GM4_MOE_NT tokens. The reference builds the same three arrays the
+ * same way (ds41_vq_prefill_fused.cuh:214-225); the pairs are the only thing
+ * that has to leave the device, which is why this is the block path's one
+ * host round trip per layer. */
+static int moe_items_build(gm4_pre *P, int n, int k, int experts, int *nitems, char *err,
+                           size_t errlen) {
+    const size_t npairs = (size_t) n * (size_t) k;
+    if (npairs > P->listcap) {
+        snprintf(err, errlen, "%zu pairs exceed the scratch's %zu", npairs, P->listcap);
+        return -1;
+    }
+    int *picks = (int *) malloc(npairs * sizeof(int));
+    int *cnt = (int *) calloc((size_t) experts + 1, sizeof(int));
+    int *off = (int *) malloc(((size_t) experts + 1) * sizeof(int));
+    int32_t *perm = (int32_t *) malloc(npairs * sizeof(int32_t));
+    int32_t *dst = (int32_t *) malloc(npairs * sizeof(int32_t));
+    int32_t *items = (int32_t *) malloc(npairs * 3 * sizeof(int32_t));
+    if (!picks || !cnt || !off || !perm || !dst || !items) {
+        snprintf(err, errlen, "block item grouping: host allocation failed");
+        free(picks);
+        free(cnt);
+        free(off);
+        free(perm);
+        free(dst);
+        free(items);
+        return -1;
+    }
+    cudaError_t e = cudaMemcpy(picks, P->picked, npairs * sizeof(int), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) {
+        fail(err, errlen, "block item grouping: picks readback", e);
+        free(picks);
+        free(cnt);
+        free(off);
+        free(perm);
+        free(dst);
+        free(items);
+        return -1;
+    }
+    for (size_t i = 0; i < npairs; i++)
+        if (picks[i] >= 0 && picks[i] < experts) cnt[picks[i]]++;
+    off[0] = 0;
+    for (int x = 0; x < experts; x++) off[x + 1] = off[x] + cnt[x];
+    int *cursor = (int *) malloc(((size_t) experts + 1) * sizeof(int));
+    if (!cursor) {
+        snprintf(err, errlen, "block item grouping: host allocation failed");
+        free(picks);
+        free(cnt);
+        free(off);
+        free(perm);
+        free(dst);
+        free(items);
+        return -1;
+    }
+    memcpy(cursor, off, ((size_t) experts + 1) * sizeof(int));
+    for (int t = 0; t < n; t++) {
+        for (int j = 0; j < k; j++) {
+            const int x = picks[(size_t) t * k + j];
+            if (x < 0 || x >= experts) continue;
+            const int at = cursor[x]++;
+            perm[at] = t;
+            dst[at] = t * k + j;
+        }
+    }
+    int ni = 0;
+    for (int x = 0; x < experts; x++) {
+        for (int t0 = 0; t0 < cnt[x]; t0 += GM4_MOE_NT) {
+            const int nt = cnt[x] - t0 < GM4_MOE_NT ? cnt[x] - t0 : GM4_MOE_NT;
+            items[ni * 3 + 0] = x;
+            items[ni * 3 + 1] = off[x] + t0;
+            items[ni * 3 + 2] = nt;
+            ni++;
+        }
+    }
+    e = cudaMemcpyAsync(P->perm, perm, npairs * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        cudaStreamPerThread);
+    if (e == cudaSuccess)
+        e = cudaMemcpyAsync(P->dst, dst, npairs * sizeof(int32_t), cudaMemcpyHostToDevice,
+                            cudaStreamPerThread);
+    if (e == cudaSuccess)
+        e = cudaMemcpyAsync(P->items, items, (size_t) ni * 3 * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, cudaStreamPerThread);
+    free(picks);
+    free(cnt);
+    free(off);
+    free(cursor);
+    free(perm);
+    free(dst);
+    free(items);
+    if (e != cudaSuccess) {
+        fail(err, errlen, "block item upload", e);
+        return -1;
+    }
+    *nitems = ni;
+    return 0;
+}
+
+/* One layer over a block of n tokens. The order is layer_forward_dev's, from
+ * the input norm to the output scalar; `xin` must be the scratch's first
+ * activation block and the result lands in `outd`. */
+static int layer_prefill_dev(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, gm4_pre *P, int n, int pos0,
+                             float *outd, char *err, size_t errlen) {
+    const int nh = L->hidden;
+    const int nhq = L->heads * L->head_dim;
+    const int nk = L->kv_heads * L->head_dim;
+    float *x0 = P->xs[0], *x1 = P->xs[1];
+
+    if (rmsnorm_dev(x0, L->in_norm, P->hb, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (transpose_dev(P->hb, P->xT, n, nh, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->q, P->xT, n, P->q, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->k, P->xT, n, P->k, err, errlen) != 0) return -1;
+    if (L->v >= 0) {
+        if (prefill_dev(g, L->v, P->xT, n, P->v, err, errlen) != 0) return -1;
+    } else {
+        cudaError_t e = cudaMemcpyAsync(P->v, P->k, (size_t) n * (size_t) nk * sizeof(float),
+                                        cudaMemcpyDeviceToDevice, cudaStreamPerThread);
+        if (e != cudaSuccess) return fail(err, errlen, "block k to v copy", e);
+    }
+
+    /* The per-head norms, then rotary; v_norm has no weight. In place: each
+     * thread reads its own element and the row's inverse comes from a
+     * reduction that has already completed. */
+    if (rmsnorm_dev(P->q, L->q_norm, P->q, n * L->heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+    if (rope_rows_dev(P->q, n, L->heads, L->head_dim, pos0, L->rope_inv, err, errlen) != 0)
+        return -1;
+    if (rmsnorm_dev(P->k, L->k_norm, P->k, n * L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+    if (rope_rows_dev(P->k, n, L->kv_heads, L->head_dim, pos0, L->rope_inv, err, errlen) != 0)
+        return -1;
+    if (rmsnorm_dev(P->v, NULL, P->v, n * L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+    if (kv_put_rows_dev(kv, n, pos0, P->k, P->v, err, errlen) != 0) return -1;
+    if (attn_rows_dev(g, kv, P->q, n, pos0, L->heads, P->att, err, errlen) != 0) return -1;
+
+    if (transpose_dev(P->att, P->xT, n, nhq, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->o, P->xT, n, P->o, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(P->o, L->post_attn, P->nrm, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(x0, P->nrm, x1, (size_t) n * nh, 1.0f, err, errlen) != 0) return -1;
+
+    if (rmsnorm_dev(x1, L->pre_ffn, P->hb, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (transpose_dev(P->hb, P->xT, n, nh, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->dg_t, P->xT, n, P->dg, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->du_t, P->xT, n, P->du, err, errlen) != 0) return -1;
+    if (gelu_mul_dev(P->dg, P->du, P->dact, (size_t) n * L->dense_ff, err, errlen) != 0) return -1;
+    if (transpose_dev(P->dact, P->xT, n, L->dense_ff, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->dd_t, P->xT, n, P->dd, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(P->dd, L->post_ffn1, P->dense, n, nh, L->eps, err, errlen) != 0) return -1;
+
+    if (rmsnorm_dev(x1, NULL, P->r, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (mul_rows_dev(P->r, L->router_scale, P->rs, nh, (size_t) n * nh, err, errlen) != 0)
+        return -1;
+    if (transpose_dev(P->rs, P->xT, n, nh, err, errlen) != 0) return -1;
+    if (prefill_dev(g, L->rt, P->xT, n, P->scores, err, errlen) != 0) return -1;
+    if (router_rows_dev(g, P->scores, L->pes, L->experts, L->top_k, n, P->probs, P->picked,
+                        P->wsel, err, errlen) != 0)
+        return -1;
+    if (rmsnorm_dev(x1, L->pre_ffn2, P->hb, n, nh, L->eps, err, errlen) != 0) return -1;
+    int nitems = 0;
+    if (moe_items_build(P, n, L->top_k, L->experts, &nitems, err, errlen) != 0) return -1;
+    if (moe_block_dev(g, L, P, n * L->top_k, nitems, L->top_k, n, err, errlen) != 0) return -1;
+
+    if (rmsnorm_dev(P->moe, L->post_ffn2, P->moe2, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(P->dense, P->moe2, P->comb, (size_t) n * nh, 1.0f, err, errlen) != 0)
+        return -1;
+    if (rmsnorm_dev(P->comb, L->post_ffn, P->comb2, n, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(x1, P->comb2, outd, (size_t) n * nh, L->scalar, err, errlen) != 0) return -1;
+    return 0;
+}
+
 int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logits, char *err,
                        size_t errlen) {
     if (!g || !m || !logits) {
@@ -3878,6 +6102,201 @@ int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logi
     if (e != cudaSuccess) return fail(err, errlen, "model logits download", e);
     m->t_wait = now_sec() - t1;
     return 0;
+}
+
+/* How many tokens one prefill call takes at most: the scratch is sized for the
+ * block it is asked for, and this is the bound the block path refuses past. */
+#define GM4_PREFILL_MAX 1024
+
+/* A block of n tokens at pos0..pos0+n-1, in one submission per layer: the
+ * prefill the engine's sync() walks token by token today. The result is the
+ * logits at the block's last position - a prompt's next-token distribution is
+ * the last token's, and a full-vocabulary head over every token of the block
+ * would be 262144 rows of output nothing reads.
+ *
+ * The caches take every position, so a prompt longer than one block is simply
+ * several blocks: the ring layers keep their window and the appending layers
+ * their prefix, and the second block reads the first block's keys. That is why
+ * the reference's window-preserving chunk slice
+ * (ds4_ds41_forward.inc:1222-1231) is not needed here - it exists for its
+ * bounded replay, where a block that does not recompute a window would leave
+ * the next block's first queries short of one. */
+int gm4_gpu_model_prefill(gm4_gpu *g, gm4_model *m, const int32_t *tokens, int n, int pos0,
+                          float *logits, char *err, size_t errlen) {
+    if (!g || !m || !tokens || !logits) {
+        snprintf(err, errlen, "prefill needs a model, tokens and room for the logits");
+        return -1;
+    }
+    if (n <= 0 || n > GM4_PREFILL_MAX) {
+        snprintf(err, errlen, "prefill block %d is outside 1..%d", n, GM4_PREFILL_MAX);
+        return -1;
+    }
+    if (pos0 < 0 || pos0 + n > m->ctx) {
+        snprintf(err, errlen, "prefill positions %d..%d are outside the model's %d", pos0,
+                 pos0 + n - 1, m->ctx);
+        return -1;
+    }
+    for (int i = 0; i < n; i++)
+        if (tokens[i] < 0 || tokens[i] >= m->vocab) {
+            snprintf(err, errlen, "token %d at index %d is outside the vocabulary of %d",
+                     (int) tokens[i], i, m->vocab);
+            return -1;
+        }
+    /* Every layer's expert geometry has to be the one the item passes
+     * implement, and it is checked before the first launch rather than after
+     * the first layer has already written its caches. */
+    for (int i = 0; i < m->n; i++)
+        if (!moe_items_ready(g, m->layers[i], err, errlen)) return -1;
+
+    const double t0 = now_sec();
+    if (pre_scratch(m, n, err, errlen) != 0) return -1;
+    gm4_pre *P = m->pre;
+    cudaError_t e = cudaMemcpyAsync(P->tokd, tokens, (size_t) n * sizeof(int32_t),
+                                    cudaMemcpyHostToDevice, cudaStreamPerThread);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill token upload", e);
+    if (embed_row_dev(g, m->embed, P->tokd, n, m->embed_scale, P->xs[0], err, errlen) != 0)
+        return -1;
+    for (int i = 0; i < m->n; i++) {
+        if (layer_prefill_dev(g, m->layers[i], m->kv[i], P, n, pos0, P->xs[1], err, errlen) != 0)
+            return -1;
+        /* The next layer reads the same block: one device copy, no round
+         * trip through an arena the layers would each have to own. */
+        e = cudaMemcpyAsync(P->xs[0], P->xs[1], (size_t) n * (size_t) m->hidden * sizeof(float),
+                            cudaMemcpyDeviceToDevice, cudaStreamPerThread);
+        if (e != cudaSuccess) return fail(err, errlen, "prefill activation swap", e);
+    }
+    if (rmsnorm_dev(P->xs[0], m->fnorm, P->xs[0], n, m->hidden, m->eps, err, errlen) != 0)
+        return -1;
+    /* The head over the block's last token only. */
+    if (matvec_dev(g, m->head, P->xs[0] + (size_t) (n - 1) * (size_t) m->hidden, m->logits,
+                   m->threads, err, errlen) != 0)
+        return -1;
+    const unsigned threads = 256;
+    softcap_kernel<<<(unsigned) ((m->vocab + (int) threads - 1) / (int) threads), threads>>>(
+        m->logits, (size_t) m->vocab, m->softcap);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "prefill softcap launch", e);
+
+    m->t_submit = now_sec() - t0;
+    const double t1 = now_sec();
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "prefill sync", e);
+    e = cudaMemcpy(logits, m->logits, (size_t) m->vocab * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill logits download", e);
+    m->t_wait = now_sec() - t1;
+    return 0;
+}
+
+/* One scratch buffer back on the host, for the bisect that names the first
+ * wrong stage of the block path. Only the single-use buffers are exposed; the
+ * others hold a later stage's value by the time the call returns. */
+int gm4_gpu_prefill_probe(gm4_model *m, int which, float *out, size_t floats, char *err,
+                          size_t errlen) {
+    if (!m || !m->pre || !out) {
+        snprintf(err, errlen, "prefill_probe needs a model with a block scratch");
+        return -1;
+    }
+    gm4_pre *P = m->pre;
+    const float *src = NULL;
+    switch (which) {
+        case 3: src = P->q; break;
+        case 5: src = P->k; break;
+        case 7: src = P->v; break;
+        case 8: src = P->att; break;
+        case 9: src = P->o; break;
+        case 15: src = P->dense; break;
+        case 16: src = P->r; break;
+        case 17: src = P->scores; break;
+        case 18: src = P->moe; break;
+        case 19: src = P->moe2; break;
+        case 20: src = P->comb; break;
+        case 21: src = P->comb2; break;
+        case 22: src = P->xs[1]; break;
+        case 23: src = P->gu; break;
+        case 24: src = P->act; break;
+        case 25: src = P->ddn; break;
+        case 26: src = P->hb; break;    /* the block's pre-FFN2 normed rows */
+        case 27: src = P->xs32; break;  /* the expert pass's gathered activations */
+        default:
+            snprintf(err, errlen, "prefill_probe has no stage %d", which);
+            return -1;
+    }
+    cudaError_t e = cudaMemcpy(out, src, floats * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill probe download", e);
+    return 0;
+}
+
+/* The block's expert lists, read back for a gate that needs the mapping (the
+ * step orders its expert rows by slot, the block by expert). Same single-use
+ * rule as the probe: the lists are rebuilt every layer, so this is only valid
+ * between the layer's item build and its first expert launch. */
+int gm4_gpu_prefill_list(gm4_model *m, int which, int32_t *out, int n, int *count, char *err,
+                         size_t errlen) {
+    if (!m || !m->pre || !out || n <= 0) {
+        snprintf(err, errlen, "prefill_list needs a model with a block scratch and room");
+        return -1;
+    }
+    gm4_pre *P = m->pre;
+    const void *src = NULL;
+    size_t bytes = 0;
+    if (which == 0) {
+        src = P->perm;
+        bytes = (size_t) n * sizeof(int32_t);
+    } else if (which == 1) {
+        src = P->dst;
+        bytes = (size_t) n * sizeof(int32_t);
+    } else if (which == 2) {
+        src = P->items;
+        bytes = (size_t) n * 3 * sizeof(int32_t);
+        if (count) *count = n;
+    } else if (which == 3) {
+        src = P->picked;   /* the block's router selection, slot order, last layer */
+        bytes = (size_t) n * sizeof(int32_t);
+    } else {
+        snprintf(err, errlen, "prefill_list has no list %d", which);
+        return -1;
+    }
+    if (bytes > (size_t) P->listcap * 3 * sizeof(int32_t)) {
+        snprintf(err, errlen, "prefill_list %d of %zu bytes exceeds the scratch's lists", which,
+                 bytes);
+        return -1;
+    }
+    cudaError_t e = cudaMemcpy(out, src, bytes, cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill list download", e);
+    return 0;
+}
+
+/* This layer's router output, read back for a gate that compares a block's
+ * routing against the step's. Same single-use rule as the probe. */
+int gm4_gpu_layer_list(gm4_layer *L, int which, void *out, int n, char *err, size_t errlen) {
+    if (!L || !out || n <= 0 || n > L->top_k) {
+        snprintf(err, errlen, "layer_list needs a layer, room and n <= top_k");
+        return -1;
+    }
+    const void *src = NULL;
+    size_t bytes = 0;
+    if (which == 0) {
+        src = L->picked;
+        bytes = (size_t) n * sizeof(int);
+    } else if (which == 1) {
+        src = L->wsel;
+        bytes = (size_t) n * sizeof(float);
+    } else {
+        snprintf(err, errlen, "layer_list has no list %d", which);
+        return -1;
+    }
+    cudaError_t e = cudaMemcpy(out, src, bytes, cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "layer list download", e);
+    return 0;
+}
+
+/* The block path's device footprint: one scratch for the whole chain, grown to
+ * the longest block a session asked for. */
+size_t gm4_gpu_model_prefill_bytes(const gm4_model *m) {
+    if (!m || !m->pre) return 0;
+    return m->pre->floats * sizeof(float)
+         + m->pre->listcap * 3 * sizeof(float) + m->pre->listcap * 3 * sizeof(int32_t)
+         + (size_t) m->pre->cap * sizeof(int32_t);
 }
 
 /* How the steps ran: captures taken, and whether the graphs are off. */

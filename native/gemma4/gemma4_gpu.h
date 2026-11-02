@@ -164,6 +164,88 @@ int gm4_gpu_kv_put(gm4_gpu *g, gm4_kv *kv, int pos, const float *k, const float 
 /* Read a position's slot back as f32, for checking the slot walk. */
 int gm4_gpu_kv_get(gm4_gpu *g, gm4_kv *kv, int pos, float *k, float *v, char *err, size_t errlen);
 
+/* Read the first `positions` positions of a cache back as f32, `k` and `v`
+ * each [positions][kv_heads * head_dim] in position order through the slot
+ * map. This is the writer a calibration capture needs (the toolkit's vq-kv/1
+ * format) and it is not on any inference path. */
+int gm4_gpu_kv_dump(gm4_gpu *g, gm4_kv *kv, int positions, float *k, float *v, char *err,
+                    size_t errlen);
+
+/* ---- the toolkit's VQ KV container --------------------------------------
+ *
+ * Decode a whole RQVQ container of DQVQ stages into row-major f32 on the
+ * host: the same walk as the toolkit's Container::decode, stage 0 assigning
+ * and each later stage adding. This is the reader a calibration codebook and
+ * the KV gate use; a cache that lives in this form is read in the attention,
+ * never through a decoded matrix. The returned buffer is released with
+ * gm4_gpu_vq_free. */
+int gm4_gpu_vq_decode(const char *path, float **out, int *rows, int *cols, char *err,
+                      size_t errlen);
+void gm4_gpu_vq_free(float *p);
+
+/* ---- the VQ encoder ------------------------------------------------------
+ *
+ * A calibration container's codebooks, resident: one f16 codebook per residual
+ * stage, as the toolkit's `vq-kv` wrote them. `gm4_gpu_cb_open` refuses a
+ * container whose per-row gains are not 1.0, because a new row has no gain for
+ * the runtime to apply (the toolkit's KV path leaves every gain at 1.0,
+ * c/vendor/vq_qc.h:236 with X == NULL).
+ *
+ * `gm4_gpu_vq_encode` runs the reference's residual chain against them: each
+ * stage assigns every `dim`-wide segment of a row its nearest codeword
+ * (c2 - 2*(v . C[z]), first minimum), and the next stage sees what the
+ * previous ones left. `idx` is [stages][nrows][cols/dim] u16; `rec` is the
+ * f32 reconstruction the stages add up to and may be NULL. */
+typedef struct gm4_cb gm4_cb;
+int gm4_gpu_cb_open(const char *path, gm4_cb **out, char *err, size_t errlen);
+void gm4_gpu_cb_free(gm4_cb *cb);
+int gm4_gpu_cb_geometry(const gm4_cb *cb, int *nc, int *dim, int *stages, int *cols);
+int gm4_gpu_vq_encode(gm4_cb *cb, const float *x, int nrows, int cols, uint16_t *idx, float *rec,
+                      char *err, size_t errlen);
+
+/* ---- a container read as a cache, for attention -------------------------
+ *
+ * A container opened as a cache keeps its per-stage codebooks and its packed
+ * index stream on the device, so attention reads the index and the codeword
+ * and never a decoded matrix - the format's point. The stream is the
+ * toolkit's own layout, one bit stream over the whole matrix with a
+ * three-byte guard read (kv_parse_payload above), so the bytes read here are
+ * the bytes vq-kv wrote.
+ *
+ * `cap` is the number of rows the cache holds (0 takes the container's own);
+ * `window` is the sliding window, and a positive window makes the cache a
+ * ring of `cap` slots (position p lives at p % cap, the rule of
+ * forward.rs:248-254 and of gm4_kv). Zero means an appending cache, which is
+ * how a capture of `cap` positions is read. */
+typedef struct gm4_vqkv gm4_vqkv;
+int gm4_gpu_vqkv_open(gm4_gpu *g, const char *path, int cap, int window, gm4_vqkv **out,
+                      char *err, size_t errlen);
+void gm4_gpu_vqkv_free(gm4_vqkv *kv);
+int gm4_gpu_vqkv_geometry(const gm4_vqkv *kv, int *rows, int *cols, int *dim, int *nc, int *stages);
+
+/* One query token's attention over a VQ cache, the same call and schedule as
+ * gm4_gpu_attention_ring (`pos` is the query's own position, so the cache
+ * must hold it). K and V are separate containers; their geometry must agree.
+ * The arithmetic is attn_split_kernel's, with each key and value read as
+ * C0[idx0] + C1[idx1] - the sum gm4_gpu_vq_encode reproduces bit for bit -
+ * and the container's per-row gain is 1.0 by construction (the encoder
+ * refuses any other). */
+int gm4_gpu_attention_vq(gm4_gpu *g, gm4_vqkv *k, gm4_vqkv *v, const float *q, int heads,
+                         int head_dim, int pos, float *out, char *err, size_t errlen);
+
+/* Encode one position's row against the calibration codebooks, on the device,
+ * and pack it into the cache at its slot (`pos % cap` for a ring). `xd` is
+ * [cols] f32 on the device, which is the layer's already normed and roped key
+ * or value. This is the runtime's only write to a VQ cache. */
+int gm4_gpu_vqkv_encode_row(gm4_gpu *g, gm4_vqkv *kv, int pos, const float *xd, char *err,
+                            size_t errlen);
+
+/* Encode `nrows` host rows into the cache, row r at position r. This is the
+ * gate's capture-shaped call: it is the same per-row path the layer takes, so
+ * a stream written here and one written by a step are the same bytes. */
+int gm4_gpu_vqkv_encode_host(gm4_gpu *g, gm4_vqkv *kv, const float *x, int nrows, char *err,
+                             size_t errlen);
+
 /* One query token's attention over the cache at `pos`: the ring's last `cap`
  * positions (a ring created with the layer's window), or every position of an
  * appending cache. gm4_gpu_kv_put(pos) must come first, so the query sees its
@@ -187,6 +269,11 @@ typedef struct {
     const float *input_norm, *post_attn_norm, *pre_ffn_norm, *post_ffn_norm;
     const float *pre_ffn_norm2, *post_ffn_norm1, *post_ffn_norm2;
     const float *q_norm, *k_norm, *router_scale, *per_expert_scale, *rope_inv;
+    /* Optional: when both are set, this layer's key and value are written to
+     * and read from VQ containers (the KV unit) instead of the f16 gm4_kv the
+     * caller also passes. NULL keeps the f16 path. The caches are the
+     * caller's and are not freed by gm4_gpu_layer_free. */
+    gm4_vqkv *kvq_k, *kvq_v;
 } gm4_layer_spec;
 
 typedef struct gm4_layer gm4_layer;
@@ -286,6 +373,50 @@ size_t gm4_gpu_model_bytes(const gm4_model *m);
  * the position after it, softcapped, in `logits[vocab]`. */
 int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logits, char *err,
                        size_t errlen);
+
+/* A block of n tokens at pos0..pos0+n-1, in one submission per layer, and the
+ * softcapped logits of the block's last position. This is the prefill the
+ * step-per-token walk lacks: the caches take every position, so a prompt is
+ * one call (or a few blocks), and a second block at pos0 + n reads the first
+ * block's keys. The dense projections run the tiled tensor-core kernel over
+ * the block and the routed experts run the reference engine's work items -
+ * one expert's rows decoded once for the ~8 tokens that chose it - which is
+ * where a block's speed over a token walk comes from.
+ *
+ * The block is limited to 1024 tokens; the scratch is grown on first use to
+ * the longest block the session asks for and reused after that. */
+int gm4_gpu_model_prefill(gm4_gpu *g, gm4_model *m, const int32_t *tokens, int n, int pos0,
+                          float *logits, char *err, size_t errlen);
+
+/* Diagnostic: copy one scratch buffer of the block path back as f32, so the
+ * bisect can name the first wrong stage. The indices are gm4_gpu_layer_probe's
+ * names where the buffer is single-use: 3 qb, 5 kb, 7 vb, 8 attn, 9 attn2,
+ * 15 dense, 16 r, 17 scores, 18 moe, 19 moe2, 20 comb, 21 comb2, 22 outd.
+ * `floats` is the caller's buffer size. Not on any inference path. */
+int gm4_gpu_prefill_probe(gm4_model *m, int which, float *out, size_t floats, char *err,
+                          size_t errlen);
+
+/* Diagnostic: the block's expert lists, so a gate can compare the expert pass
+ * against the step's values in the right order instead of by rms. which 0 is
+ * the pairs' token (perm), 1 the slot each pair's down projection writes (dst),
+ * 2 the (expert, first pair, count) items. `n` is the caller's capacity and is
+ * the pair count for 0 and 1; the item count comes back through *count. */
+int gm4_gpu_prefill_list(gm4_model *m, int which, int32_t *out, int n, int *count, char *err,
+                         size_t errlen);
+
+/* Diagnostic: this layer's router selection (which 0) or its renormalised
+ * weights as f32 (which 1), so a gate can compare a block's routing against
+ * the step's. `n` must be the layer's top_k. */
+int gm4_gpu_layer_list(gm4_layer *L, int which, void *out, int n, char *err, size_t errlen);
+
+/* The block path's device footprint, 0 before its first block. */
+size_t gm4_gpu_model_prefill_bytes(const gm4_model *m);
+
+/* Diagnostic: the tiled kernel's token tile and codebook placement for the
+ * block path's dense projections (gm4_gpu_prefill's six combinations). Returns
+ * the previous tile; a non-positive `bn` leaves it alone, and cb < 0 leaves the
+ * placement alone. */
+int gm4_gpu_prefill_cfg(int bn, int cb);
 
 /* The last step's two halves in milliseconds, the reference engine's account
  * of a decode step (/data/ds4-dfm-rs/ds4_ds41_graph.inc:106-113): `submit` is
