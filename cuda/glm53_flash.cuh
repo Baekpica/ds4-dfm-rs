@@ -3,7 +3,9 @@
 
 #include "glm_vq_flash.cuh"
 
-/* Tensor-core latent attention for the compact (mixed-artifact) cache.
+/* Tensor-core prefill paths of the compact (mixed-artifact) GLM-5.3 graph.
+ *
+ * Latent attention for the compact cache.
  * The reference kernel runs one SIMT block per (row, head): each of the 64
  * heads re-reads the row's 2,051 selected FP16 latents, 41.7% of an 8K
  * prefill (15.8 of 37.9 s). GLM VQ's flash tile scores all 64 heads against
@@ -177,6 +179,58 @@ extern "C" int ds4_gpu_glm53_flash(ds4_gpu_tensor *heads_out, const ds4_gpu_tens
         low, CUDA_R_16F, (int)(heads * latent_dim), latent_dim, &zero,
         heads_out->ptr, CUDA_R_32F, (int)(heads * head_dim), head_dim, (int)heads,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM-5.3 V projection GEMM");
+    (void)cublasSetStream(g_cublas, prior);
+    return ok ? 1 : -1;
+}
+
+/* Rank-128 KDA projections (f_b, g_b: Q8_0, K=128 -> 8192) at prefill
+ * widths. The generic Q8_0 dispatch sends K < 256 to a warp-per-row SIMT
+ * kernel: 7.8 ms per 2,048-row call, 2.1 of an 8K prefill's 15.4 s. The
+ * product is bound by its 64 MB F32 output, so widen the 4 MiB weight to
+ * F32 into `scratch` and run one cuBLAS SGEMM (TF32 tensor cores unless
+ * quality mode); activations stay F32. 1 done, 0 not covered, -1 failed. */
+enum { GLM53_SMALL_K_MIN_ROWS = 16, GLM53_SMALL_K_MAX = 256 };
+
+__global__ static void glm53_q8_f32_kernel(float *out, const char *w, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const char *block = w + i / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES;
+    out[i] = __half2float(*(const __half *)block) *
+        (float)((const int8_t *)(block + sizeof(__half)))[i % GLM53_COMPACT_Q8_BLOCK];
+}
+
+extern "C" int ds4_gpu_glm53_q8_small_k(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        ds4_gpu_tensor *scratch, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_GLM53_SMALL_K");
+        on = !env || strcmp(env, "0") != 0;
+    }
+    const uint64_t count = (uint64_t)in_dim * out_dim;
+    if (!on || !g_cublas_ready || ds4_capture_active() || rows < GLM53_SMALL_K_MIN_ROWS ||
+        !in_dim || in_dim % GLM53_COMPACT_Q8_BLOCK || in_dim >= GLM53_SMALL_K_MAX || !out_dim ||
+        out_dim > INT_MAX || rows > INT_MAX ||
+        !glm53_compact_has(out, (uint64_t)rows * out_dim, sizeof(float)) ||
+        !glm53_compact_has(x, (uint64_t)rows * in_dim, sizeof(float)) ||
+        !glm53_compact_has(scratch, count, sizeof(float))) {
+        return 0;
+    }
+    const char *w = glm53_compact_weight(model_map, model_size, weight_offset,
+        count / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES, out, "GLM-5.3 small-K Q8_0");
+    if (!w) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    float *wf = (float *)scratch->ptr;
+    glm53_q8_f32_kernel<<<(unsigned)((count + 255u) / 256u), 256u, 0, stream>>>(wf, w, count);
+    if (!cuda_ok(cudaGetLastError(), "GLM-5.3 small-K widen")) { return -1; }
+    cudaStream_t prior = 0;
+    (void)cublasGetStream(g_cublas, &prior);
+    (void)cublasSetStream(g_cublas, stream);
+    const float one = 1.0f, zero = 0.0f;
+    // Row-major [out][in] weights are column-major (in x out): op = T.
+    const bool ok = cublas_ok(cublasSgemm(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, (int)out_dim,
+        (int)rows, (int)in_dim, &one, wf, (int)in_dim, (const float *)x->ptr, (int)in_dim,
+        &zero, (float *)out->ptr, (int)out_dim), "GLM-5.3 small-K GEMM");
     (void)cublasSetStream(g_cublas, prior);
     return ok ? 1 : -1;
 }

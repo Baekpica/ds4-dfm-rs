@@ -4,6 +4,7 @@
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <stdint.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -274,9 +275,44 @@ static void check_chain(uint32_t pos0, uint32_t rows, bool sparse) {
         pos0, rows, stride, rms, worst, worst / rms);
 }
 
+// Rank-128 Q8_0 projection through the F32-widened SGEMM vs an FP64 product.
+static void check_small_k(uint32_t rows) {
+    const uint32_t in = 128u, out_dim = 8192u;
+    std::vector<uint8_t> raw;
+    std::vector<float> w;
+    make_q8(raw, w, (uint64_t)in * out_dim, 5u);
+    std::vector<float> x((uint64_t)rows * in);
+    for (uint64_t i = 0; i < x.size(); i++) { x[i] = sinf((float)(i % 6007u) * 0.021f) * 1.3f; }
+    ds4_gpu_tensor dmap = alloc(raw.size()), dx = alloc(x.size() * sizeof(float));
+    ds4_gpu_tensor dout = alloc((uint64_t)rows * out_dim * sizeof(float));
+    ds4_gpu_tensor scratch = alloc((uint64_t)in * out_dim * sizeof(float));
+    CHECK(cuda_ok(cudaMemcpy(dmap.ptr, raw.data(), raw.size(), cudaMemcpyHostToDevice), "map"));
+    CHECK(cuda_ok(cudaMemcpy(dx.ptr, x.data(), (size_t)dx.bytes, cudaMemcpyHostToDevice), "x"));
+    CHECK(ds4_gpu_glm53_q8_small_k(&dout, &dx, &scratch, dmap.ptr, raw.size(), 0u, in, out_dim, rows) == 1);
+    std::vector<float> got((uint64_t)rows * out_dim);
+    CHECK(cuda_ok(cudaMemcpy(got.data(), dout.ptr, (size_t)dout.bytes, cudaMemcpyDeviceToHost), "out"));
+    double worst = 0.0, scale = 0.0;
+    for (uint32_t r = 0u; r < rows; r++) {
+        for (uint32_t o = 0u; o < out_dim; o++) {
+            double expected = 0.0;
+            for (uint32_t k = 0u; k < in; k++) { expected += (double)w[(uint64_t)o * in + k] * (double)x[(uint64_t)r * in + k]; }
+            worst = fmax(worst, fabs((double)got[(uint64_t)r * out_dim + o] - expected));
+            scale += expected * expected;
+        }
+    }
+    const double rms = sqrt(scale / ((double)rows * out_dim));
+    CHECK(worst < 5.0e-3 * rms);  // TF32 operand rounding
+    CHECK(ds4_gpu_glm53_q8_small_k(&dout, &dx, &scratch, dmap.ptr, raw.size(), 0u, in, out_dim,
+        GLM53_SMALL_K_MIN_ROWS - 1u) == 0);
+    cudaFree(scratch.ptr); cudaFree(dout.ptr); cudaFree(dx.ptr); cudaFree(dmap.ptr);
+    printf("GLM small-K: rows=%u output_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n", rows, rms, worst, worst / rms);
+}
+
 int main(void) {
     CHECK(cublas_ok(cublasCreate(&g_cublas), "create"));
+    CHECK(cublas_ok(cublasSetMathMode(g_cublas, CUBLAS_TF32_TENSOR_OP_MATH), "tf32"));
     g_cublas_ready = 1;
+    check_small_k(64u);
     check_chain(0u, 300u, false);
     check_chain(2051u, 64u, true);
     check_case(0u, 300u, false);     // dense causal prefix from the first key

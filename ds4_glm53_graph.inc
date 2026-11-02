@@ -419,6 +419,14 @@ static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
             norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS);
 }
 
+// Rank-128 projections; the KDA chunk scratch is free until the recurrence.
+static bool glm53_graph_rank(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *out, const ds4_model *model,
+        const ds4_tensor *w, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
+    const int done = w->type == GLM53_QUANT_Q8 ? ds4_gpu_glm53_q8_small_k(out, x, g->kda_scratch,
+        model->map, model->size, w->abs_offset, DS4_N_KDA_HEAD_DIM, out_dim, rows) : 0;
+    return done > 0 || (!done && plain_graph_matmul_tensor(out, model, w, DS4_N_KDA_HEAD_DIM, out_dim, x, rows));
+}
+
 static bool glm53_graph_kda(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_layer_weights *l, uint32_t il, uint32_t rows) {
     const uint32_t projection = DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
@@ -426,10 +434,10 @@ static bool glm53_graph_kda(ds4_glm53_gpu_graph *g, const ds4_model *model,
         !plain_graph_matmul_tensor(g->k, model, l->kda_k, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->v, model, l->kda_v, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->q_rank, model, l->kda_f_a, DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->heads, model, l->kda_f_b, DS4_N_KDA_HEAD_DIM, projection, g->q_rank, rows) ||
+        !glm53_graph_rank(g, g->heads, model, l->kda_f_b, projection, g->q_rank, rows) ||
         !plain_graph_matmul_tensor(g->kv_rank, model, l->kda_beta, DS4_N_EMBD, DS4_N_HEAD, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->q_rank, model, l->kda_g_a, DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->ffn_gate, model, l->kda_g_b, DS4_N_KDA_HEAD_DIM, projection, g->q_rank, rows)) {
+        !glm53_graph_rank(g, g->ffn_gate, model, l->kda_g_b, projection, g->q_rank, rows)) {
         return false;
     }
     const bool recurrence = rows == 1u

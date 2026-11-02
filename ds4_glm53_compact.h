@@ -51,6 +51,12 @@ int ds4_gpu_glm53_flash(ds4_gpu_tensor *heads_out, const ds4_gpu_tensor *q,
         uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
         uint32_t head_dim);
 
+/* Q8_0 projection with K < 256 (KDA's rank-128 f_b/g_b) for 16+ rows:
+ * F32-widened weights in `scratch` and one SGEMM. 1/0/-1 as above. */
+int ds4_gpu_glm53_q8_small_k(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        ds4_gpu_tensor *scratch, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32
  * [4,128], addressed by absolute position % 4. Pool rows are FP16. */
