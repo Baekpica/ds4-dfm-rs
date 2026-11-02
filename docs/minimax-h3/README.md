@@ -112,6 +112,7 @@ The model's license is included in the downloaded repository.
 - [The release's own FP8 route, ported and measured in both arms, 2026-10-29](fp8-route-2026-10-29.md)
 - [The FP8 arm's per-row scales: cuBLASLt refuses, and the route that is left, 2026-10-29](fp8-row-scales-2026-10-29.md)
 - [The per-row FP8 arm, built and priced: exact, 1.73 s/eval, no visible gain, 2026-10-29](fp8-row-arm-2026-10-29.md)
+- [The release's FP8 route at the delivery canvas: 12.8% of a step, and detail the arm does not lose, 2026-11-02](fp8-delivery-2026-11-02.md)
 - [The video VAE decoder attributed, and its four bias passes fused away, 2026-10-29](vae-decoder-attribution-2026-10-29.md)
 - [The decoder's block GEMMs on BF16 operands: 19% of FRAMES, and what it rounds, 2026-10-29](vae-bf16-arm-2026-10-29.md)
 - [The decoder's readback: 1.87 s of pageable D2H, and the route it hid behind, 2026-10-29](vae-readback-2026-10-29.md)
