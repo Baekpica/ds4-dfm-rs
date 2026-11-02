@@ -2,10 +2,10 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 04a2679b (all work is on top of 8c2068b5, unpushed)
+last_updated_commit: 2dca7709 (all work is on top of 8c2068b5, unpushed)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T00:45:00+01:00
+handoff_written_at: 2026-11-03T01:25:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -25,12 +25,16 @@ the same contract every other family has:
                                  CPU execution lane for a VQ payload
   ds4 --serving-check            runs every declared lane on the artifact
 
-State at this handoff: the graph runs but produces nan. P6 is in progress:
-the serial session exists, the engine binds the plan, allocates the graph
-(KV 0.62 GiB at ctx 2048) and executes all 30 layers, and the logits come
-back non-finite. The embedding is finite and sane, so the break is inside
-layer 0. Section 4 records the exact evidence and the next probe. The
-commits below are unpushed.
+State at this handoff: the graph runs and the numbers are good. The serial
+session binds the plan, allocates the graph (KV 0.62 GiB at ctx 2048),
+executes all 30 layers, and returns 262,144 of 262,144 finite logits; two
+identical runs are byte-identical, and with single-row forwards the serving
+checklist's prefix, rewind and continue items are exact. The nan of the
+previous state was three primitives reading BF16 weights as float32 (fixed in
+7dd5b2d8). What is still open is the prefill/decode numeric spread (section
+4b): a row-grouped prefill moves this model's logits by a few nats against the
+one-row path, which flips a near-tie in the checklist's continue item. The five
+banks items and the disk items are P7. The commits below are unpushed.
 
   25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
   c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
@@ -49,6 +53,12 @@ commits below are unpushed.
             instructions (e2m1x2, try_wait.parity, bulk prefetch)
   04a2679b  feat(gemma4-vq): the serial session reaches the graph
             (P6, gate open: graph line PASS, logits nan)
+  7dd5b2d8  fix(gemma4-vq): read the norm and router weights as BF16
+            (the P6 nan; primitives gate 15/15, all finite, deterministic)
+  c85a975b  fix(gemma4-vq): run the tokenizer.json decoder when a piece is
+            printed (U+2581 -> space, ByteFallback), both engines
+  2dca7709  fix(gemma4-vq): refuse the multi-sequence graph instead of
+            segfaulting (the serving check no longer core-dumps)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -267,68 +277,130 @@ W2, native skeleton and binding:
   artifact, and it asserts that a full layer's value projection is its own
   key projection (attention_k_eq_v).
 
-4b. P6, the serial session: what ran, what it proved, what is next
+4b. P6, the serial session: the nan is fixed, the gate state, the spread
 
-What is in the tree now (04a2679b):
+What is in the tree now:
 
   ds4.c               the family memory quote, prefill cap, session fit, the
                       engine-load bind, context-memory arms, session create /
                       lazy alloc / free / invalidate / rewind, sync and eval
                       dispatch, the hidden-width arm, prewarm skip, eager
-                      residency, payload refusals.
+                      residency, payload refusals, and the batching refusal.
   ds4_gemma4_session.inc   sync (prefix resume, chunked prefill, head on the
                       last chunk) and decode (one row, head every step),
                       logits readback with a non-finite count.
-  ds4_gemma4_graph.inc     named step failures and the DS4_GEMMA4_DEBUG probe.
+  ds4_gemma4_graph.inc     named step failures plus the DS4_GEMMA4_DEBUG
+                      probe set: gemma4_probe_at (four leading values),
+                      gemma4_probe_row (the same at any row), gemma4_scan
+                      (whole-buffer non-finite count and range) and the layer-0
+                      weight dump from the map. All silent without the env.
   ds4_gemma4_plan.h        gemma4_activation_bytes, shared with the graph's
                       own size, so graph and estimate cannot drift.
   ds4_gemma4_bind.inc      gemma4_prefill_cap, gemma4_session_memory.
 
-Evidence, in the plan's gate order:
+The nan (7dd5b2d8) — root cause, with the evidence that pinned it:
+
+  The artifact stores every RMSNorm weight, router.scale and
+  router.per_expert_scale as GGUF type 30 (BF16). `ds4 --inventory` reports
+  model.layers.0.input_layernorm.weight as 2816 x bf16 at abs 4692465280, and
+  an od dump of that offset decodes to 1.70..30.6, all sane. The three Gemma-4
+  primitives that take a weight index (g4_rms_kernel,
+  g4_router_input_kernel, g4_router_kernel) took `const float *` and indexed
+  per element, so each read two BF16 values as one float32. That is why the
+  failure was partial, not total: a float whose high half is the BF16 weight
+  reads as that weight, so the first 1408 elements of a 2816-wide norm looked
+  plausible and the rest read past the tensor. The scan shows the signature:
+  58 non-finite of 8448, first at index 1572, range [-2.5e38, 3.3e38].
+
+  The unit test carried the same wrong shape (float32 weight arrays), which is
+  why it passed while the real path failed; it now rounds the weights to BF16
+  before the copy, so the reference and the kernel see the artifact's values.
+
+Gate state, in the plan's order:
 
 1. graph line with KV bytes — PASS.
    ds4: Gemma-4 graph ctx=2048 chunk=2048 KV=0.62 GiB activation=132.0 MiB
-2. first-token determinism — not reached.
-3. numeric bring-up — OPEN, and this is the next unit.
-   DS4_GEMMA4_DEBUG=1 prints after each stage managed by gemma4_forward:
-     ds4: G4 embed: 0.00139618 -0.0010376 0.0115967 0.00643921
-     ds4: G4 layer 0: nan nan nan nan
-     ... every layer and the final norm nan ...
-     ds4: Gemma-4 logits hold 262144 non-finite values of 262144
-   So: the embedding gather and its bf16 53.0 scale are right, the 30-layer
-   loop completes (every named stage reports success, and
-   gemma4_session_fail is only reached after forward returns true and the
-   readback refuses), and the nan is produced inside layer 0.
-4. ds4 --serving-check — not reached.
+2. first-token determinism — PASS.
+   Two identical prompt runs with --dump-logits: byte-identical files.
+3. numeric bring-up — PASS for finiteness and shape sanity.
+   Every stage probe is finite; 0 of 262144 logits non-finite; exit 0.
+   Single-row forwards are exact: DS4_GEMMA4_PREFILL_CHUNK=1 --serving-check
+   reports prefix, rewind and continue "works ... exact" (kept 21, top-1 17/17).
+   The layer-0 stage values for a given token are identical between a 3-row
+   batch and the same token computed alone through attention (q proj, k proj,
+   attn out all bit-equal; the block output differs by 2 bf16 ULPs).
+4. ds4 --serving-check — RUNS, verdict FAIL, 1 WRONG. Exact output:
+
+   reuse     prefix    works, undeclared  top-1 17/17
+   reuse     rewind    works, undeclared  top-1 17/17
+   reuse     continue  WRONG              top-1 16/17; row 0 picked 236772
+                                         (lead 2.438) where both references
+                                         picked 1595 (leads 3.438, 1.812)
+   disk/snapshot     no  (P7; the payload refusal is explicit)
+   banks x5          no  "this model does not yet implement the
+                         multi-sequence graph" (P7; 2dca7709)
+   mtp/context/prompt/media: no check yet
+
+The open item: prefill row-grouping moves the logits
+
+  Measured with the same prompt, same tokens, same positions, only the prefill
+  chunk size differing (--dump-logits, 262144 values each):
+
+    chunk 2    vs chunk 1   max |delta| 2.375   at index 14067
+    chunk 8    vs chunk 1   max |delta| 2.625   at index 101
+    chunk 9    vs chunk 1   max |delta| 3.125   at index 148583
+    chunk 22   vs chunk 1   max |delta| 4.8125  at index 238348
+    chunk 8    vs chunk 9   max |delta| 2.9375
+  The argmax is the same token (100, <|channel>) in every configuration; the
+  spread is in the logit magnitudes, which grows with the grouped width. Per
+  stage it is ULP-level at layer 0, so this is amplification through the
+  top-8 router (a discontinuous selection) rather than one stage being wrong.
+
+  Ruled out as the source, each with a measured run:
+    - the Q8_0 dense down: DS4_CUDA_PREFILL_PATH=cublas at chunk 2 gives the
+      same 2.375 at 14067 as the default mmq path.
+    - the Q4_K 2..8-token MMA (q4m): DS4_GLMVQ_Q4_MMA=0 at chunk 2 still
+      differs (4.125 at 237033).
+    - the VQ expert tensor-core paths: DS4_GLMVQ_MMA=0 DS4_GLMVQ_MMA8=0 at
+      chunk 2 gives the same 2.375 at 14067 as the defaults.
+  What is left to bisect: the per-row stage hashes (a full-row check rather
+  than four floats) for a 2-row batch against the same tokens alone, stage by
+  stage, to name the first stage that differs by more than one bf16 ULP. Then
+  decide between (a) routing Gemma-4's prefill through the row-count-invariant
+  kernels the GVQ runtime already documents as bit-identical
+  (ds4_gpu_gvq_q4_decode_many's contract), and (b) recording the spread as a
+  property of this geometry and teaching the checklist a family floor.
 
 Next step, in order:
 
-  a. Add probes inside gemma4_layer at six points and rerun with
-     DS4_GEMMA4_DEBUG=1: after the input norm, after q/k/v (+ the k->v copy
-     on a full layer), after attention, after o_proj + residual, after the
-     dense FFN, after the router, and inside the expert block (before the
-     gather, after each of gate/up/down for one expert, after the scatter).
-     The first nan names the stage.
-  b. The three stages with no reference check at real shapes are the
-     suspects, in this order: ds4_gpu_matmul_q8_0_tensor's (in_dim=2112,
-     out_dim=2816) argument pair on the dense down; the expert
-     gather/scatter in ds4_gpu_g4_moe_run (host grouping, bf16 accumulate,
-     and the `weights[pair]` indexing); and ds4_gpu_g4_router_input's
-     double-rounding order.
-  c. Cross-check each suspect against tests/test_gemma4_primitives.cu — the
-     rms, router input and router kernels are already gated there at their
-     own shapes, so a mismatch at 2048 rows and 2816 columns points at the
-     tensor-call wrapper, not the kernel.
-  d. Then the determinism gate (same ids twice) and ds4 --serving-check.
+  a. Add a full-row hash probe at layer 0 (q proj, k proj, attn out,
+     o proj residual, dense down, router input, expert acc, block out) and
+     run chunk 2 against chunk 1 for the same 3-token id list; the first
+     stage whose hash differs names the kernel.
+  b. If it is q4m or the VQ prefill path, prefer the bit-identical decode
+     kernel for Gemma-4's projections (correctness before speed, as the graph
+     comment already states) and re-measure the chunk spread; expect it to
+     collapse to 0 and the checklist's continue item to pass.
+  c. Then the logits gate against the reference checkpoint (section 6: the
+     48.07 GiB source, GB10 is the safe host) and P7.
+
+Commands this host needs:
+
+  make cuda CUDA_ARCH=sm_89
+  DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock ./ds4 -m /data/vq-artifacts/gguf-family-it \
+      --cuda -c 2048 --serving-check -p "Hello"
+  DS4_GEMMA4_DEBUG=1 ... --token-ids 2,818,5279 --predict 2 --temp 0
+  DS4_GEMMA4_PREFILL_CHUNK=1 ... (the single-row control)
+  --dump-logits FILE with -p (22 tokens) for the chunk comparisons above
 
 Measured facts from these runs:
 
   - The engine binds the plan: 12177 tensors, 6.71 GiB mapped, residency
     eager; the graph allocates lazily at the session's ctx.
   - The run needs DS4_LOCK_FILE because the default lock is held by the
-    EmbeddingGemma server; 11.3 GiB of the 12 GiB card was free, and the
-    graph plus the mapped weights fit.
-  - Wall time to the failure: about 45 s, most of it the weight registration.
+    EmbeddingGemma server; 11.3 GiB of the 12 GiB card was free.
+  - A 22-token prefill plus one token costs about 50 s wall, most of it
+    weight registration; the graph free is clean (exit 0).
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

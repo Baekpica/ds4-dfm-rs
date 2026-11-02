@@ -41,14 +41,20 @@ no extra memory).
 - P5 device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the 30-layer graph
   (ds4_gemma4_graph.inc); both units compile, no session reaches them yet.
 
-## P6: the serial session (in progress, gate open)
+## P6: the serial session (numbers run; two items open)
 
 State at 2026-11-03: the engine binds the plan, the session allocates the
-graph (KV 0.62 GiB at ctx 2048) and runs all 30 layers, but layer 0 already
-emits nan and every logit is non-finite. The stage probe
-(DS4_GEMMA4_DEBUG=1) and the ordered suspects are section 4b of
-gemma4-port-handoff.md. Gate items 1 (graph line) is PASS; 2, 3 and 4 are
-open.
+graph (KV 0.62 GiB at ctx 2048), runs all 30 layers and returns 262,144 of
+262,144 finite logits; two identical runs are byte-identical; with single-row
+forwards the serving checklist's prefix, rewind and continue items are exact.
+The nan of the previous state was three primitives reading the artifact's BF16
+weights as float32 (7dd5b2d8). Open: (a) a row-grouped prefill moves the
+logits by 2.4-4.8 nats against the one-row path, which flips a near-tie in the
+checklist's continue item, and (b) the logits gate against the reference
+checkpoint. Section 4b of gemma4-port-handoff.md holds the measurements and
+the bisect that is next. Gate items 1 (graph line) and 2 (determinism) PASS;
+3 is PASS for finiteness and shape sanity with the spread above recorded; 4
+(serving check) runs and reports the gap list.
 
 Goal: one prompt in, one token out, deterministically, through the C engine.
 
@@ -65,9 +71,14 @@ about 40 sites, far fewer apply here):
    confirm the host shape reaches `config_validate_model` bypass (~73369).
 
 Gate, in this order:
-- `ds4 --inspect` or the load path prints the graph line with KV bytes;
-- a first-token run on a fixed prompt twice gives identical ids (determinism);
-- `ds4 --serving-check` on the artifact reports the declared items;
+- `ds4 --inspect` or the load path prints the graph line with KV bytes — PASS;
+- a first-token run on a fixed prompt twice gives identical ids (determinism)
+  — PASS (--dump-logits byte-identical);
+- numeric bring-up: every stage finite, and the prefill row-grouping spread
+  measured and either removed or recorded — finite PASS, spread OPEN (4b);
+- `ds4 --serving-check` on the artifact reports the declared items — runs; the
+  reuse items pass with single-row forwards and continue fails at a grouped
+  prefill width; the bank and disk items are P7;
 - the logits gate against the reference (section 6 risk 1: 48.07 GiB
   checkpoint, 8.19 GiB active path, paged run untested here; GB10 is the safe
   host). If the reference cannot run, record the gate as OPEN and do not claim
@@ -81,7 +92,10 @@ the shared scratch borrowed from the owner graph, payload save/restore of the
 KV and the RNG/sampling state, snapshot capture/drop, and the disk-KV
 directory. Gemma's KV is two kinds (ring 1024+chunk for 25 layers, full
 context for 5), so the payload writer must state the per-layer layout
-explicitly and the restore must validate it.
+explicitly and the restore must validate it. `ds4_engine_supports_batching`
+returns false for this family today (2dca7709 stopped the serving check
+crashing in the DeepSeek slab body); the batch include removes that refusal
+and replaces it with the real lane.
 
 Gate: `ds4 --serving-check` with banks > 1; a snapshot restore reproducing the
 next token; a disk-KV reload reproducing it again; `ds4_context_memory`
