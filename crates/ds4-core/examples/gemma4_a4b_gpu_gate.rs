@@ -207,6 +207,48 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_kv_new(
+        g: *mut c_void,
+        kv_heads: i32,
+        head_dim: i32,
+        window: i32,
+        max_pos: i32,
+        out: *mut *mut c_void,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_kv_free(kv: *mut c_void);
+    fn gm4_gpu_kv_bytes(kv: *const c_void) -> usize;
+    fn gm4_gpu_kv_reset(g: *mut c_void, kv: *mut c_void, err: *mut c_char, errlen: usize) -> i32;
+    fn gm4_gpu_kv_put(
+        g: *mut c_void,
+        kv: *mut c_void,
+        pos: i32,
+        k: *const f32,
+        v: *const f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_kv_get(
+        g: *mut c_void,
+        kv: *mut c_void,
+        pos: i32,
+        k: *mut f32,
+        v: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_attention_ring(
+        g: *mut c_void,
+        kv: *mut c_void,
+        q: *const f32,
+        heads: i32,
+        pos: i32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -230,6 +272,7 @@ fn usage() -> &'static str {
   --skip-attention   skip rotary and decode attention (step 6)
   --skip-router      skip the router's top-k (step 7)
   --skip-head        skip the embedding lookup and the logits head (step 8)
+  --skip-ring        skip the per-layer KV cache (step 9a)
   --help             this text"
 }
 
@@ -259,6 +302,7 @@ fn run() -> Result<(), String> {
     let mut attention = true;
     let mut router = true;
     let mut head = true;
+    let mut ring = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -289,6 +333,7 @@ fn run() -> Result<(), String> {
             "--skip-attention" => attention = false,
             "--skip-router" => router = false,
             "--skip-head" => head = false,
+            "--skip-ring" => ring = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -491,6 +536,9 @@ fn run() -> Result<(), String> {
     }
     if attention {
         attention_gate(&device, &family, &root, &mut failed)?;
+    }
+    if ring {
+        ring_gate(&device, &family, &root, timing, &mut failed)?;
     }
     if router {
         router_gate(&device, &family, &root, &encoded, &mut failed)?;
@@ -1018,6 +1066,59 @@ fn elementwise_gate(device: &Residency, failed: &mut bool) -> Result<(), String>
     Ok(())
 }
 
+/// One layer's key/value history, built in the forward's order
+/// (`forward.rs:409-426`): `k_proj`, `k_norm` and rotary; the value is
+/// `v_proj` on a layer that has one and the raw key projection where `k_eq_v`
+/// holds (`modeling_gemma4.py:1258-1263`), then the weightless norm. Returns
+/// the history as [positions][kv_heads][head_dim] and the last activation,
+/// which the query projection needs.
+fn build_history(
+    root: &Path,
+    family: &Family,
+    layer: usize,
+    positions: usize,
+) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), String> {
+    let config = &family.config;
+    let spec = &family.layout.layers[layer];
+    let kind = spec.kind;
+    let head_dim = config.head_dim_of(kind);
+    let kv_heads = config.kv_heads_of(kind);
+    let eps = config.rms_eps;
+    let k_proj = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let v_proj = match config.has_v_proj(kind) {
+        true => Some(
+            Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+        ),
+        false => None,
+    };
+    let k_norm = decode(root, spec.get(Role::KNorm).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?
+        .data;
+    let inv = config.rope_inv(kind);
+    let mut k_all = Vec::with_capacity(positions * kv_heads * head_dim);
+    let mut v_all = Vec::with_capacity(positions * kv_heads * head_dim);
+    let mut h_last = vec![0f32; config.hidden];
+    for p in 0..positions {
+        let h = shift_probe(&elementwise_probe(config.hidden, 1.0), p);
+        if p + 1 == positions {
+            h_last = h.clone();
+        }
+        let k_raw = k_proj.matvec(&h).map_err(|e| e.to_string())?;
+        let mut k = normalize_heads(&k_raw, &k_norm, kv_heads, head_dim, eps);
+        rope(&mut k, kv_heads, head_dim, p, &inv);
+        let v_raw = match &v_proj {
+            Some(m) => m.matvec(&h).map_err(|e| e.to_string())?,
+            None => k_raw.clone(),
+        };
+        let v = normalize_heads(&v_raw, &[], kv_heads, head_dim, eps);
+        k_all.extend_from_slice(&k);
+        v_all.extend_from_slice(&v);
+    }
+    Ok((k_all, v_all, h_last))
+}
+
 /// Step 6: rotary and the single-token attention, on two real layers (0 is
 /// sliding, 5 is full).
 ///
@@ -1037,7 +1138,6 @@ fn attention_gate(
 ) -> Result<(), String> {
     let config = &family.config;
     let eps = config.rms_eps;
-    let hidden = config.hidden;
 
     // The rotary kernel first, in both flavours, at a position large enough
     // that the angle's f32 precision is exercised.
@@ -1083,45 +1183,14 @@ fn attention_gate(
 
         let q_proj = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        let k_proj = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        let v_proj = match config.has_v_proj(kind) {
-            true => Some(
-                Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?,
-            ),
-            false => None,
-        };
         let q_norm = decode(root, spec.get(Role::QNorm).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?
-            .data;
-        let k_norm = decode(root, spec.get(Role::KNorm).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?
             .data;
         let inv = config.rope_inv(kind);
 
         // The history: one activation vector per position, projected and
         // normalised the way the forward does it.
-        let mut k_all = Vec::with_capacity(positions * kv_heads * head_dim);
-        let mut v_all = Vec::with_capacity(positions * kv_heads * head_dim);
-        let mut h_last = vec![0f32; hidden];
-        for p in 0..positions {
-            let h = elementwise_probe(hidden, 1.0);
-            let h = shift_probe(&h, p);
-            if p + 1 == positions {
-                h_last = h.clone();
-            }
-            let k_raw = k_proj.matvec(&h).map_err(|e| e.to_string())?;
-            let mut k = normalize_heads(&k_raw, &k_norm, kv_heads, head_dim, eps);
-            rope(&mut k, kv_heads, head_dim, p, &inv);
-            let v_raw = match &v_proj {
-                Some(m) => m.matvec(&h).map_err(|e| e.to_string())?,
-                None => k_raw.clone(),
-            };
-            let v = normalize_heads(&v_raw, &[], kv_heads, head_dim, eps);
-            k_all.extend_from_slice(&k);
-            v_all.extend_from_slice(&v);
-        }
+        let (k_all, v_all, h_last) = build_history(root, family, layer, positions)?;
 
         let q_raw = q_proj.matvec(&h_last).map_err(|e| e.to_string())?;
         let mut q = normalize_heads(&q_raw, &q_norm, heads, head_dim, eps);
@@ -1183,6 +1252,221 @@ fn attention_gate(
             }
         }
     }
+    Ok(())
+}
+
+/// Step 9(a): the per-layer KV cache on the device.
+///
+/// The slot rule is the CPU session's own (`forward.rs:248-254`): `pos % cap`
+/// for a rolling layer, `pos` for a growing one. Three things are proven here,
+/// because a ring can be wrong in three places: a position still in the cache
+/// reads back its own f16 key and value; a position whose slot has been
+/// overwritten returns the newer occupant, so the ring really rolls; and the
+/// ring's attention is the same arithmetic as the step-6 dense walk, reached
+/// through the wrapped addresses. The sliding history runs 276 positions past
+/// the window on purpose: that is the case the dense path never exercises.
+fn ring_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    timing: usize,
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let eps = config.rms_eps;
+
+    for &layer in &[0usize, 5] {
+        let spec = &family.layout.layers[layer];
+        let kind = spec.kind;
+        let head_dim = config.head_dim_of(kind);
+        let heads = config.heads;
+        let kv_heads = config.kv_heads_of(kind);
+        let per = kv_heads * head_dim;
+        let window = match kind {
+            LayerType::Sliding => config.sliding_window as i32,
+            LayerType::Full => 0,
+        };
+        // A ring holds exactly the window; an appending cache gets a session
+        // bound the caller names, which here is 4096.
+        let cap = match kind {
+            LayerType::Sliding => config.sliding_window,
+            LayerType::Full => 4096,
+        };
+        let positions = match kind {
+            LayerType::Sliding => config.sliding_window + 276,
+            LayerType::Full => 192,
+        };
+        let pos = positions - 1;
+
+        let (k_all, v_all, h_last) = build_history(root, family, layer, positions)?;
+        let q_proj = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let q_norm = decode(root, spec.get(Role::QNorm).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+            .data;
+        let inv = config.rope_inv(kind);
+        let q_raw = q_proj.matvec(&h_last).map_err(|e| e.to_string())?;
+        let mut q = normalize_heads(&q_raw, &q_norm, heads, head_dim, eps);
+        rope(&mut q, heads, head_dim, pos, &inv);
+
+        let kv = call_kv_new(device, kv_heads, head_dim, window, cap)?;
+
+        // A session's reset has to clear the slots, not just move a counter.
+        call_kv_put(device, &kv, 0, &k_all[..per], &v_all[..per])?;
+        call_kv_reset(device, &kv)?;
+        let mut zk = vec![1f32; per];
+        let mut zv = vec![1f32; per];
+        call_kv_get(device, &kv, 0, &mut zk, &mut zv)?;
+        let cleared = zk.iter().chain(&zv).all(|&x| x == 0.0);
+        println!("  RESET layer {layer} position 0 after a write and a reset: zeros {cleared}");
+        if !cleared {
+            println!("  FAIL the reset left values in a slot");
+            *failed = true;
+        }
+
+        for p in 0..positions {
+            let k = &k_all[p * per..(p + 1) * per];
+            let v = &v_all[p * per..(p + 1) * per];
+            call_kv_put(device, &kv, p, k, v)?;
+        }
+
+        // Every position the ring still holds must read back as its own f16
+        // key and value: the write path, the slot rule and the rounding.
+        let lo = positions.saturating_sub(cap);
+        let mut worst = 0f64;
+        for p in lo..positions {
+            let mut k = vec![0f32; per];
+            let mut v = vec![0f32; per];
+            call_kv_get(device, &kv, p, &mut k, &mut v)?;
+            for i in 0..per {
+                let dk = (f64::from(k[i]) - f64::from(round_f16(k_all[p * per + i]))).abs();
+                let dv = (f64::from(v[i]) - f64::from(round_f16(v_all[p * per + i]))).abs();
+                worst = worst.max(dk).max(dv);
+            }
+        }
+        println!(
+            "RING SLOT layer {layer} {kind:?} cap {cap} positions {positions} read back {lo}..{pos} maxabs {worst:.3e}"
+        );
+        if worst != 0.0 {
+            println!("  FAIL a slot returned values that are not its own position's");
+            *failed = true;
+        }
+
+        // The roll itself: position 0 and position `cap` share slot 0, so the
+        // slot now holds the newer one, and position 0's own values are gone.
+        if kind == LayerType::Sliding {
+            let mut k0 = vec![0f32; per];
+            let mut v0 = vec![0f32; per];
+            let mut kc = vec![0f32; per];
+            let mut vc = vec![0f32; per];
+            call_kv_get(device, &kv, 0, &mut k0, &mut v0)?;
+            call_kv_get(device, &kv, config.sliding_window, &mut kc, &mut vc)?;
+            let mut same = 0f64;
+            let mut moved = 0f64;
+            for i in 0..per {
+                same = same
+                    .max((f64::from(k0[i]) - f64::from(kc[i])).abs())
+                    .max((f64::from(v0[i]) - f64::from(vc[i])).abs());
+                moved = moved
+                    .max((f64::from(k0[i]) - f64::from(round_f16(k_all[i]))).abs())
+                    .max((f64::from(v0[i]) - f64::from(round_f16(v_all[i]))).abs());
+            }
+            println!(
+                "  WRAP position 0 and {} share slot 0: maxabs {same:.3e}; position 0's own values are gone by {moved:.3e}",
+                config.sliding_window
+            );
+            if same != 0.0 || moved == 0.0 {
+                println!("  FAIL the ring did not roll as the CPU session's slot rule rolls it");
+                *failed = true;
+            }
+        }
+
+        // The attention itself, against the f16 reference the step-6 gate
+        // uses, and then against the dense walk on the same history.
+        let first = positions.saturating_sub(cap.min(positions));
+        let k16: Vec<f32> = k_all.iter().map(|&x| round_f16(x)).collect();
+        let v16: Vec<f32> = v_all.iter().map(|&x| round_f16(x)).collect();
+        let want = f64_attention(&q, &k16, &v16, heads, kv_heads, head_dim, positions, first);
+        let mut out = vec![0f32; heads * head_dim];
+        call_attention_ring(device, &kv, &q, heads, pos, &mut out)?;
+        let (vs_f64, max_f64) = compare_f32_f64(&out, &want);
+        println!(
+            "RING ATTENTION layer {layer} {kind:?} from the cache at {pos}, window {}, vs f64(f16 kv) {vs_f64:.3e} (maxabs {max_f64:.3e})",
+            if window > 0 { window.to_string() } else { "all".to_string() }
+        );
+        if vs_f64 > 1e-5 {
+            println!("  FAIL the ring's attention is past 1e-5 against the f16 reference");
+            *failed = true;
+        }
+
+        let mut dense = vec![0f32; heads * head_dim];
+        call_attention(
+            device, &q, &k_all, &v_all, heads, kv_heads, head_dim, positions, window, &mut dense,
+        )?;
+        let (drift, max_drift, _) = compare(&dense, &out);
+        println!(
+            "  DENSE the step-6 walk on the same history: relL2 {drift:.3e} maxabs {max_drift:.3e}"
+        );
+        if drift != 0.0 {
+            println!("  FAIL the ring changes the arithmetic, not just the addresses");
+            *failed = true;
+        }
+
+        if timing > 0 {
+            let k = &k_all[pos * per..(pos + 1) * per];
+            let v = &v_all[pos * per..(pos + 1) * per];
+            call_kv_put(device, &kv, pos, k, v)?;
+            let mut best_put = f64::INFINITY;
+            let mut best_attn = f64::INFINITY;
+            for _ in 0..timing {
+                let t = Instant::now();
+                call_kv_put(device, &kv, pos, k, v)?;
+                best_put = best_put.min(t.elapsed().as_secs_f64());
+                let t = Instant::now();
+                call_attention_ring(device, &kv, &q, heads, pos, &mut out)?;
+                best_attn = best_attn.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "  TIMING one token's cache: put {:.3} ms, attention {:.3} ms at {positions} positions",
+                best_put * 1e3,
+                best_attn * 1e3
+            );
+        }
+    }
+
+    // The whole session's cache, through the same constructor the session
+    // will use: 25 rings at the window, 5 appending caches at the bound.
+    let bound = 4096usize;
+    let mut total = 0usize;
+    let mut full_bytes = 0usize;
+    let mut rings = 0usize;
+    let mut fulls = 0usize;
+    for layer in 0..family.layout.layers.len() {
+        let kind = family.layout.layers[layer].kind;
+        let head_dim = config.head_dim_of(kind);
+        let kv_heads = config.kv_heads_of(kind);
+        let window = match kind {
+            LayerType::Sliding => config.sliding_window as i32,
+            LayerType::Full => 0,
+        };
+        let kv = call_kv_new(device, kv_heads, head_dim, window, bound)?;
+        let bytes = unsafe { gm4_gpu_kv_bytes(kv.0) };
+        total += bytes;
+        match kind {
+            LayerType::Sliding => rings += 1,
+            LayerType::Full => {
+                fulls += 1;
+                full_bytes += bytes;
+            }
+        }
+    }
+    println!(
+        "RING ACCOUNT {rings} rings of {} and {fulls} appending caches of {bound}: {:.1} MiB total, of which {:.1} MiB is the appending caches, so each doubling of the bound adds {:.1} MiB",
+        config.sliding_window,
+        total as f64 / 1048576.0,
+        full_bytes as f64 / 1048576.0,
+        full_bytes as f64 / 1048576.0
+    );
     Ok(())
 }
 
@@ -1638,6 +1922,129 @@ fn call_attention(
     };
     if rc != 0 {
         return Err(format!("attention: {}", message(&err)));
+    }
+    Ok(())
+}
+
+/// A cache handle that frees itself, so a failed check between new and the end
+/// of the section does not leak device memory.
+struct Cache(*mut c_void);
+
+impl Drop for Cache {
+    fn drop(&mut self) {
+        unsafe { gm4_gpu_kv_free(self.0) }
+    }
+}
+
+fn call_kv_new(
+    device: &Residency,
+    kv_heads: usize,
+    head_dim: usize,
+    window: i32,
+    max_pos: usize,
+) -> Result<Cache, String> {
+    let mut err = [0i8; 512];
+    let mut out: *mut c_void = std::ptr::null_mut();
+    let rc = unsafe {
+        gm4_gpu_kv_new(
+            device.0,
+            kv_heads as i32,
+            head_dim as i32,
+            window,
+            max_pos as i32,
+            &mut out,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("kv_new: {}", message(&err)));
+    }
+    Ok(Cache(out))
+}
+
+fn call_kv_reset(device: &Residency, kv: &Cache) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe { gm4_gpu_kv_reset(device.0, kv.0, err.as_mut_ptr(), err.len()) };
+    if rc != 0 {
+        return Err(format!("kv_reset: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_kv_put(
+    device: &Residency,
+    kv: &Cache,
+    pos: usize,
+    k: &[f32],
+    v: &[f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_kv_put(
+            device.0,
+            kv.0,
+            pos as i32,
+            k.as_ptr(),
+            v.as_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("kv_put at {pos}: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_kv_get(
+    device: &Residency,
+    kv: &Cache,
+    pos: usize,
+    k: &mut [f32],
+    v: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_kv_get(
+            device.0,
+            kv.0,
+            pos as i32,
+            k.as_mut_ptr(),
+            v.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("kv_get at {pos}: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_attention_ring(
+    device: &Residency,
+    kv: &Cache,
+    q: &[f32],
+    heads: usize,
+    pos: usize,
+    out: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_attention_ring(
+            device.0,
+            kv.0,
+            q.as_ptr(),
+            heads as i32,
+            pos as i32,
+            out.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("ring attention: {}", message(&err)));
     }
     Ok(())
 }

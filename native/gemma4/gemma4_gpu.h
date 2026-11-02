@@ -140,6 +140,38 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
                       int kv_heads, int head_dim, int positions, int window, float *out,
                       char *err, size_t errlen);
 
+/* A layer's key/value cache on the device, the structure the CPU session
+ * keeps (crates/ds4-core/src/gemma4_a4b/forward.rs:239-269): `per =
+ * kv_heads * head_dim` f16 values per position, `cap` positions, and
+ * `slot(pos) = pos % cap` for a ring layer, `pos` for an appending one.
+ * `window > 0` makes a ring of that many positions (a sliding layer's
+ * config.sliding_window); `window == 0` makes an appending cache of
+ * `max_pos` (the caller's session bound for a full layer, which the CPU
+ * grows lazily instead). The handle is opaque and owns its two buffers. */
+typedef struct gm4_kv gm4_kv;
+int gm4_gpu_kv_new(gm4_gpu *g, int kv_heads, int head_dim, int window, int max_pos, gm4_kv **out,
+                   char *err, size_t errlen);
+void gm4_gpu_kv_free(gm4_kv *kv);
+size_t gm4_gpu_kv_bytes(const gm4_kv *kv);
+int gm4_gpu_kv_reset(gm4_gpu *g, gm4_kv *kv, char *err, size_t errlen);
+
+/* Write position `pos` into its slot, rounding to f16, which is the cache's
+ * format. A ring accepts any non-negative position; an appending cache
+ * refuses pos >= cap. */
+int gm4_gpu_kv_put(gm4_gpu *g, gm4_kv *kv, int pos, const float *k, const float *v, char *err,
+                   size_t errlen);
+
+/* Read a position's slot back as f32, for checking the slot walk. */
+int gm4_gpu_kv_get(gm4_gpu *g, gm4_kv *kv, int pos, float *k, float *v, char *err, size_t errlen);
+
+/* One query token's attention over the cache at `pos`: the ring's last `cap`
+ * positions (a ring created with the layer's window), or every position of an
+ * appending cache. gm4_gpu_kv_put(pos) must come first, so the query sees its
+ * own key and value. q is [heads][head_dim]; the output is the same width.
+ * fp32 softmax, scaling 1.0, exactly gm4_gpu_attention's arithmetic. */
+int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, int pos, float *out,
+                           char *err, size_t errlen);
+
 /* out = x * w over n values: the router's per-dimension scale. */
 int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
                 size_t errlen);

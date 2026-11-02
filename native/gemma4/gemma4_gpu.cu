@@ -674,14 +674,27 @@ __device__ __forceinline__ float block_sum(float v, float *red) {
     return v;
 }
 
+/* Which slot holds position `p`. The CPU session's rule, verbatim
+ * (crates/ds4-core/src/gemma4_a4b/forward.rs:248-254): a sliding layer wraps
+ * at its capacity, a full layer appends, so the caller passing cap ==
+ * positions and ring == 0 gets the identity mapping the host-history path
+ * always used. */
+__device__ __forceinline__ size_t kv_slot(int p, int cap, int ring) {
+    return ring ? (size_t) (p % cap) : (size_t) p;
+}
+
 /* One query token against a K/V history. Grid is one block per head; a warp
  * takes every nwarps-th position in the window for the score pass, the whole
  * block shares the softmax, and the value pass is one thread per dimension
  * with no reduction at all. K and V are f16, which is finer than the
- * reference's bf16 activations. */
+ * reference's bf16 activations. The history is either dense (kv_ring == 0) or
+ * a ring of `kv_cap` positions (kv_ring == 1), in which case every access goes
+ * through kv_slot; the walk itself is always in position order, so the ring
+ * changes addresses, never arithmetic. */
 __global__ void attn_decode_kernel(const float *q, const __half *k, const __half *v,
                                    float *scores, float *out, int heads, int kv_heads,
-                                   int head_dim, int positions, int first, int nwin) {
+                                   int head_dim, int positions, int first, int nwin,
+                                   int kv_cap, int kv_ring) {
     extern __shared__ float red[];
     const int h = blockIdx.x;
     const int group = heads / kv_heads;
@@ -693,7 +706,8 @@ __global__ void attn_decode_kernel(const float *q, const __half *k, const __half
     const size_t kv_stride = (size_t) kv_heads * (size_t) head_dim;
 
     for (int p = first + warp; p < positions; p += nwarps) {
-        const __half *kp = k + (size_t) p * kv_stride + (size_t) kv_head * head_dim;
+        const size_t ks = kv_slot(p, kv_cap, kv_ring);
+        const __half *kp = k + ks * kv_stride + (size_t) kv_head * head_dim;
         float s = 0.0f;
         for (int d = lane; d < head_dim; d += 32) s += qh[d] * __half2float(kp[d]);
         for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xffffffffu, s, off);
@@ -715,10 +729,24 @@ __global__ void attn_decode_kernel(const float *q, const __half *k, const __half
 
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
         float acc = 0.0f;
-        const __half *vp = v + (size_t) first * kv_stride + (size_t) kv_head * head_dim + d;
-        for (int p = 0; p < nwin; p++) acc += (sc[p] / sum) * __half2float(vp[(size_t) p * kv_stride]);
+        for (int p = 0; p < nwin; p++) {
+            const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
+            acc += (sc[p] / sum)
+                   * __half2float(v[ks * kv_stride + (size_t) kv_head * head_dim + d]);
+        }
         out[(size_t) h * (size_t) head_dim + d] = acc;
     }
+}
+
+/* Append one position to a cache: position `pos` goes to slot(pos), which the
+ * host computed with the same rule. One thread per value of the position. */
+__global__ void kv_put_kernel(__half *k, __half *v, const float *ksrc, const float *vsrc, int per,
+                              int slot) {
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    if (i >= per) return;
+    const size_t at = (size_t) slot * (size_t) per + (size_t) i;
+    k[at] = __float2half_rn(ksrc[i]);
+    v[at] = __float2half_rn(vsrc[i]);
 }
 
 /* ---- the router ---------------------------------------------------------
@@ -1107,8 +1135,26 @@ struct gm4_gpu {
     size_t aqcap, axcap, aicap, ascorescap, aoutcap;
     __half *akv;
     size_t akvcap;
+    float *kvu; /* one position's k and v, on their way into a ring slot */
+    size_t kvucap;
     char devname[256];
     gm4_account acct;
+};
+
+/* One layer's key/value cache on the device, the same structure the CPU
+ * session keeps (crates/ds4-core/src/gemma4_a4b/forward.rs:239-269): `per`
+ * values per position, `cap` positions, and `pos % cap` as the slot of a ring
+ * layer. Keys and values are f16 at the boundary, which is the cache format
+ * the attention gate already measured against the CPU's f32 history. The
+ * handle owns both buffers; a session keeps one per layer. */
+struct gm4_kv {
+    __half *keys;
+    __half *values;
+    int kv_heads;
+    int head_dim;
+    int per;   /* kv_heads * head_dim */
+    int cap;   /* positions held: the window for a ring, max_pos otherwise */
+    int ring;  /* 1 when the slot wraps at cap (the sliding layers) */
 };
 
 extern "C" {
@@ -1194,6 +1240,7 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->ascores) cudaFree(g->ascores);
     if (g->aout) cudaFree(g->aout);
     if (g->akv) cudaFree(g->akv);
+    if (g->kvu) cudaFree(g->kvu);
     free(g);
 }
 
@@ -1741,13 +1788,221 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
 
     attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
         g->aq, g->akv, g->akv + kvn, g->ascores, g->aout, heads, kv_heads, head_dim, positions,
-        first, nwin);
+        first, nwin, positions, 0);
     e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "attention launch", e);
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "attention sync", e);
     e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "attention download", e);
+    return 0;
+}
+
+/* ---- the per-layer KV cache ---------------------------------------------
+ *
+ * The CPU session keeps one cache per layer (forward.rs:239-269): a sliding
+ * layer holds exactly the window and overwrites its oldest slot, `slot(pos) =
+ * pos % cap`; a full layer appends, `slot(pos) = pos`. The device cache is the
+ * same object, preallocated: `window > 0` makes a ring of that many positions,
+ * `window == 0` makes an appending cache of `max_pos`. The CPU grows a full
+ * layer lazily because the checkpoint's 262,144 positions are 5 GB; here the
+ * caller names the session's bound and that bound is what gets allocated.
+ *
+ * The write order mirrors the CPU's `kv.append` then the attention walk:
+ * gm4_gpu_kv_put for position pos, then gm4_gpu_attention_ring at pos, so the
+ * query sees its own key and value, exactly as `first..=pos` does.
+ */
+
+int gm4_gpu_kv_new(gm4_gpu *g, int kv_heads, int head_dim, int window, int max_pos, gm4_kv **out,
+                   char *err, size_t errlen) {
+    if (!g || !out) {
+        snprintf(err, errlen, "kv_new needs a device handle and an out pointer");
+        return -1;
+    }
+    *out = NULL;
+    if (kv_heads <= 0 || head_dim <= 0 || window < 0 || max_pos <= 0) {
+        snprintf(err, errlen,
+                 "kv_new needs positive kv_heads and head_dim, a non-negative window and a "
+                 "positive max_pos");
+        return -1;
+    }
+    const int ring = window > 0;
+    const int cap = ring ? window : max_pos;
+    const int per = kv_heads * head_dim;
+    const size_t bytes = (size_t) cap * (size_t) per * sizeof(__half);
+    gm4_kv *kv = (gm4_kv *) calloc(1, sizeof(gm4_kv));
+    if (!kv) {
+        snprintf(err, errlen, "out of host memory for the kv handle");
+        return -1;
+    }
+    cudaError_t e = cudaMalloc((void **) &kv->keys, bytes);
+    if (e == cudaSuccess) e = cudaMalloc((void **) &kv->values, bytes);
+    if (e != cudaSuccess) {
+        if (kv->keys) cudaFree(kv->keys);
+        free(kv);
+        snprintf(err, errlen, "kv cudaMalloc of 2 x %.1f MiB failed: %s",
+                 (double) bytes / (1024.0 * 1024.0), cudaGetErrorString(e));
+        return -1;
+    }
+    /* Zeroed so a slot read before it is written is a repeatable zero rather
+     * than whatever the allocator last held. The walk never reads past the
+     * written prefix, so this is for the gate's benefit, not attention's. */
+    e = cudaMemset(kv->keys, 0, bytes);
+    if (e == cudaSuccess) e = cudaMemset(kv->values, 0, bytes);
+    if (e != cudaSuccess) {
+        cudaFree(kv->keys);
+        cudaFree(kv->values);
+        free(kv);
+        return fail(err, errlen, "kv clear", e);
+    }
+    kv->kv_heads = kv_heads;
+    kv->head_dim = head_dim;
+    kv->per = per;
+    kv->cap = cap;
+    kv->ring = ring;
+    *out = kv;
+    return 0;
+}
+
+void gm4_gpu_kv_free(gm4_kv *kv) {
+    if (!kv) return;
+    if (kv->keys) cudaFree(kv->keys);
+    if (kv->values) cudaFree(kv->values);
+    free(kv);
+}
+
+size_t gm4_gpu_kv_bytes(const gm4_kv *kv) {
+    if (!kv) return 0;
+    return 2 * (size_t) kv->cap * (size_t) kv->per * sizeof(__half);
+}
+
+int gm4_gpu_kv_reset(gm4_gpu *g, gm4_kv *kv, char *err, size_t errlen) {
+    if (!g || !kv) {
+        snprintf(err, errlen, "kv_reset needs a cache");
+        return -1;
+    }
+    const size_t bytes = (size_t) kv->cap * (size_t) kv->per * sizeof(__half);
+    cudaError_t e = cudaMemset(kv->keys, 0, bytes);
+    if (e == cudaSuccess) e = cudaMemset(kv->values, 0, bytes);
+    if (e != cudaSuccess) return fail(err, errlen, "kv reset", e);
+    return 0;
+}
+
+int gm4_gpu_kv_put(gm4_gpu *g, gm4_kv *kv, int pos, const float *k, const float *v, char *err,
+                   size_t errlen) {
+    if (!g || !kv || !k || !v) {
+        snprintf(err, errlen, "kv_put needs a cache, a key and a value");
+        return -1;
+    }
+    if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
+        snprintf(err, errlen, "kv_put position %d outside the %s cache's %d positions", pos,
+                 kv->ring ? "ring" : "appending", kv->cap);
+        return -1;
+    }
+    const size_t need = 2 * (size_t) kv->per;
+    if (need > g->kvucap) {
+        float *next = NULL;
+        cudaError_t e = cudaMalloc((void **) &next, need * sizeof(float));
+        if (e != cudaSuccess) {
+            snprintf(err, errlen, "kv scratch cudaMalloc of %.1f KiB failed: %s",
+                     (double) need * sizeof(float) / 1024.0, cudaGetErrorString(e));
+            return -1;
+        }
+        if (g->kvu) cudaFree(g->kvu);
+        g->kvu = next;
+        g->kvucap = need;
+    }
+    cudaError_t e = cudaMemcpy(g->kvu, k, (size_t) kv->per * sizeof(float), cudaMemcpyHostToDevice);
+    if (e == cudaSuccess)
+        e = cudaMemcpy(g->kvu + kv->per, v, (size_t) kv->per * sizeof(float),
+                       cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "kv upload", e);
+    const int slot = kv->ring ? pos % kv->cap : pos;
+    const int block = 128;
+    kv_put_kernel<<<(kv->per + block - 1) / block, block>>>(kv->keys, kv->values, g->kvu,
+                                                            g->kvu + kv->per, kv->per, slot);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "kv put launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "kv put sync", e);
+    return 0;
+}
+
+/* Read one position's slot back as f32. Not on any inference path; it is how
+ * the gate checks the slot walk itself, including after the ring wrapped. */
+int gm4_gpu_kv_get(gm4_gpu *g, gm4_kv *kv, int pos, float *k, float *v, char *err, size_t errlen) {
+    if (!g || !kv || !k || !v) {
+        snprintf(err, errlen, "kv_get needs a cache and two outputs");
+        return -1;
+    }
+    if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
+        snprintf(err, errlen, "kv_get position %d outside the %s cache's %d positions", pos,
+                 kv->ring ? "ring" : "appending", kv->cap);
+        return -1;
+    }
+    const int slot = kv->ring ? pos % kv->cap : pos;
+    const size_t per = (size_t) kv->per;
+    __half *host = (__half *) malloc(2 * per * sizeof(__half));
+    if (!host) {
+        snprintf(err, errlen, "out of host memory for the kv readback");
+        return -1;
+    }
+    cudaError_t e = cudaMemcpy(host, kv->keys + (size_t) slot * per, per * sizeof(__half),
+                               cudaMemcpyDeviceToHost);
+    if (e == cudaSuccess)
+        e = cudaMemcpy(host + per, kv->values + (size_t) slot * per, per * sizeof(__half),
+                       cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) {
+        free(host);
+        return fail(err, errlen, "kv readback", e);
+    }
+    for (size_t i = 0; i < per; i++) {
+        k[i] = __half2float(host[i]);
+        v[i] = __half2float(host[per + i]);
+    }
+    free(host);
+    return 0;
+}
+
+/* One query token against a cache: the last `cap` positions of a ring, every
+ * position of an appending cache up to `pos`. The window is the cache's own
+ * capacity, which is what the CPU passes as config.sliding_window
+ * (forward.rs:430-433), so the two cannot disagree. */
+int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, int pos, float *out,
+                           char *err, size_t errlen) {
+    if (!g || !kv || !q || !out || heads <= 0 || pos < 0) {
+        snprintf(err, errlen, "ring attention needs a cache, a query and a non-negative position");
+        return -1;
+    }
+    if (heads % kv->kv_heads) {
+        snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads,
+                 kv->kv_heads);
+        return -1;
+    }
+    if (!kv->ring && pos >= kv->cap) {
+        snprintf(err, errlen, "position %d past the appending cache's %d positions", pos, kv->cap);
+        return -1;
+    }
+    const int positions = pos + 1;
+    const int nwin = kv->ring && positions > kv->cap ? kv->cap : positions;
+    const int first = positions - nwin;
+    const int head_dim = kv->head_dim;
+    const size_t qn = (size_t) heads * (size_t) head_dim;
+    if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
+    if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
+    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
+        return -1;
+    cudaError_t e = cudaMemcpy(g->aq, q, qn * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "ring attention upload", e);
+    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
+        g->aq, kv->keys, kv->values, g->ascores, g->aout, heads, kv->kv_heads, head_dim, positions,
+        first, nwin, kv->cap, kv->ring);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "ring attention launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "ring attention sync", e);
+    e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "ring attention download", e);
     return 0;
 }
 
