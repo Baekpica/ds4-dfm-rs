@@ -109,6 +109,20 @@ int gm4_gpu_prefill_rows(gm4_gpu *g, int tensor, int row0, int nrows, const floa
  * 1 when it can, 0 when it cannot, with the reason in `err`. */
 int gm4_gpu_prefill_ready(const gm4_gpu *g, int tensor, int bn, int cb, char *err, size_t errlen);
 
+/* The layer's elementwise arithmetic, the same definitions the CPU forward
+ * uses (crates/ds4-core/src/gemma4_a4b/forward.rs): RMSNorm with `eps` and an
+ * optional weight, gelu_pytorch_tanh times a second vector, a residual add
+ * with an optional addend and a scale, and the logit softcap. Host in, host
+ * out; every kernel is gated against the CPU forward, so the chain has one
+ * definition of each op. */
+int gm4_gpu_rmsnorm(gm4_gpu *g, const float *x, int rows, int width, const float *weight, float *y,
+                    float eps, char *err, size_t errlen);
+int gm4_gpu_gelu_mul(gm4_gpu *g, const float *gate, const float *up, float *act, size_t n,
+                     char *err, size_t errlen);
+int gm4_gpu_residual_scale(gm4_gpu *g, const float *x, const float *add, float *out, size_t n,
+                           float scale, char *err, size_t errlen);
+int gm4_gpu_softcap(gm4_gpu *g, float *y, size_t n, float cap, char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

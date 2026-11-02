@@ -548,6 +548,62 @@ __global__ void gemm_prefill_kernel(const uint8_t *p, const Layout L, const floa
     y[(size_t) t * L.rows + r] += acc * __half2float(gh);
 }
 
+/* ---- the layer's elementwise arithmetic --------------------------------
+ *
+ * The reference here is not a device kernel: it is this repository's CPU
+ * forward (crates/ds4-core/src/gemma4_a4b/forward.rs), whose rms_norm, gelu
+ * and bf16_round are the family's arithmetic. These kernels are that
+ * arithmetic on the device, gated against it, so the chain can use one
+ * definition of a norm and one of the activation.
+ */
+
+/* `Gemma4RMSNorm.forward`: y = x * pow(mean(x^2) + eps, -0.5) * w. One block
+ * per row. The block sums the squares tree-wise, which orders the f32 adds
+ * differently from the CPU's sequential sum and nothing more. */
+__global__ void rmsnorm_kernel(const float *x, const float *w, float *y, int width, float eps) {
+    extern __shared__ float red[];
+    const long long r = blockIdx.x;
+    const float *row = x + (size_t) r * (size_t) width;
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < width; i += blockDim.x) sum += row[i] * row[i];
+    red[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    const float inv = rsqrtf(red[0] / (float) width + eps);
+    float *out = y + (size_t) r * (size_t) width;
+    for (int i = threadIdx.x; i < width; i += blockDim.x)
+        out[i] = w ? row[i] * inv * w[i] : row[i] * inv;
+}
+
+/* `ACT2FN["gelu_pytorch_tanh"]` and the `gelu(gate) * up` the forward writes:
+ * the constants are forward.rs:42-46 verbatim. */
+__global__ void gelu_mul_kernel(const float *gate, const float *up, float *act, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float x = gate[i];
+    const float k = 0.7978846f; /* sqrt(2/pi) */
+    act[i] = 0.5f * x * (1.0f + tanhf(k * (x + 0.044715f * x * x * x))) * up[i];
+}
+
+/* out = (x + add) * scale, with add optional: the residual add and the layer
+ * scalar the forward applies as two separate loops. */
+__global__ void residual_scale_kernel(const float *x, const float *add, float *out, size_t n,
+                                      float scale) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = (x[i] + (add ? add[i] : 0.0f)) * scale;
+}
+
+/* The logit softcap the forward applies last: cap * tanh(x / cap). */
+__global__ void softcap_kernel(float *y, size_t n, float cap) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    y[i] = cap * tanhf(y[i] / cap);
+}
+
 /* Largest dynamic shared-memory window the device accepts; the shared-codebook
  * variant needs nc*dim f16 in one block, which a wide codebook cannot fit. */
 size_t smem_max(void) {
@@ -866,6 +922,8 @@ struct gm4_gpu {
     size_t rlcap;
     float *pxt, *py;   /* the prefill's [cols][ntok] and [ntok][rows] */
     size_t pxtcap, pycap;
+    float *ew[3];      /* the elementwise kernels' operands, grown on demand */
+    size_t ewcap[3];
     char devname[256];
     gm4_account acct;
 };
@@ -945,6 +1003,8 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->rlbuf) cudaFree(g->rlbuf);
     if (g->pxt) cudaFree(g->pxt);
     if (g->py) cudaFree(g->py);
+    for (int i = 0; i < 3; i++)
+        if (g->ew[i]) cudaFree(g->ew[i]);
     free(g);
 }
 
@@ -1212,6 +1272,122 @@ int gm4_gpu_prefill(gm4_gpu *g, int tensor, const float *xT, int ntok, float *y,
 int gm4_gpu_prefill_rows(gm4_gpu *g, int tensor, int row0, int nrows, const float *xT, int ntok,
                          float *y, int bn, int cb, char *err, size_t errlen) {
     return prefill_core(g, tensor, row0, nrows, xT, ntok, y, bn, cb, err, errlen);
+}
+
+/* Grow one elementwise operand buffer without leaking the old one. */
+static int ensure_ew(gm4_gpu *g, int slot, size_t need, char *err, size_t errlen) {
+    if (need <= g->ewcap[slot]) return 0;
+    float *next = NULL;
+    cudaError_t e = cudaMalloc((void **) &next, need * sizeof(float));
+    if (e != cudaSuccess) {
+        snprintf(err, errlen, "elementwise buffer %d cudaMalloc of %.1f MiB failed: %s", slot,
+                 (double) need * sizeof(float) / (1024.0 * 1024.0), cudaGetErrorString(e));
+        return -1;
+    }
+    if (g->ew[slot]) cudaFree(g->ew[slot]);
+    g->ew[slot] = next;
+    g->ewcap[slot] = need;
+    return 0;
+}
+
+/* Everything below is host in, host out, like the rest of this ABI. The
+ * arithmetic never changes when step 9 gives the chain device pointers: only
+ * the upload/download around these launches goes away. */
+int gm4_gpu_rmsnorm(gm4_gpu *g, const float *x, int rows, int width, const float *weight, float *y,
+                    float eps, char *err, size_t errlen) {
+    if (!g || !x || !y || rows <= 0 || width <= 0) {
+        snprintf(err, errlen, "rmsnorm needs an input, an output and a non-empty shape");
+        return -1;
+    }
+    const size_t n = (size_t) rows * (size_t) width;
+    if (ensure_ew(g, 0, n, err, errlen) != 0) return -1;
+    if (ensure_ew(g, 1, n, err, errlen) != 0) return -1;
+    if (weight && ensure_ew(g, 2, (size_t) width, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], x, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "rmsnorm x upload", e);
+    if (weight) {
+        e = cudaMemcpy(g->ew[2], weight, (size_t) width * sizeof(float), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) return fail(err, errlen, "rmsnorm weight upload", e);
+    }
+    const int threads = 256;
+    rmsnorm_kernel<<<(unsigned) rows, threads, threads * sizeof(float)>>>(
+        g->ew[0], weight ? g->ew[2] : NULL, g->ew[1], width, eps);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "rmsnorm launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "rmsnorm sync", e);
+    e = cudaMemcpy(y, g->ew[1], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "rmsnorm download", e);
+    return 0;
+}
+
+int gm4_gpu_gelu_mul(gm4_gpu *g, const float *gate, const float *up, float *act, size_t n,
+                     char *err, size_t errlen) {
+    if (!g || !gate || !up || !act || n == 0) {
+        snprintf(err, errlen, "gelu_mul needs two inputs and an output");
+        return -1;
+    }
+    for (int i = 0; i < 3; i++)
+        if (ensure_ew(g, i, n, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], gate, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "gelu_mul gate upload", e);
+    e = cudaMemcpy(g->ew[1], up, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "gelu_mul up upload", e);
+    const unsigned threads = 256;
+    gelu_mul_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(g->ew[0], g->ew[1],
+                                                                         g->ew[2], n);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "gelu_mul launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "gelu_mul sync", e);
+    e = cudaMemcpy(act, g->ew[2], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "gelu_mul download", e);
+    return 0;
+}
+
+int gm4_gpu_residual_scale(gm4_gpu *g, const float *x, const float *add, float *out, size_t n,
+                           float scale, char *err, size_t errlen) {
+    if (!g || !x || !out || n == 0) {
+        snprintf(err, errlen, "residual_scale needs an input and an output");
+        return -1;
+    }
+    for (int i = 0; i < (add ? 3 : 2); i++)
+        if (ensure_ew(g, i, n, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], x, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "residual x upload", e);
+    if (add) {
+        e = cudaMemcpy(g->ew[1], add, n * sizeof(float), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) return fail(err, errlen, "residual add upload", e);
+    }
+    const unsigned threads = 256;
+    residual_scale_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(
+        g->ew[0], add ? g->ew[1] : NULL, g->ew[2], n, scale);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "residual launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "residual sync", e);
+    e = cudaMemcpy(out, g->ew[2], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "residual download", e);
+    return 0;
+}
+
+int gm4_gpu_softcap(gm4_gpu *g, float *y, size_t n, float cap, char *err, size_t errlen) {
+    if (!g || !y || n == 0 || cap <= 0.0f) {
+        snprintf(err, errlen, "softcap needs a vector and a positive cap");
+        return -1;
+    }
+    if (ensure_ew(g, 0, n, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], y, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "softcap upload", e);
+    const unsigned threads = 256;
+    softcap_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(g->ew[0], n, cap);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "softcap launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "softcap sync", e);
+    e = cudaMemcpy(y, g->ew[0], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "softcap download", e);
+    return 0;
 }
 
 } /* extern "C" */

@@ -39,7 +39,7 @@ use super::weights::Matrix;
 use super::{Error, Family};
 
 /// `ACT2FN["gelu_pytorch_tanh"]`: `nn.functional.gelu(x, approximate="tanh")`.
-fn gelu(x: f32) -> f32 {
+pub fn gelu(x: f32) -> f32 {
     const K: f32 = 0.797_884_6; // sqrt(2/pi)
     0.5 * x * (1.0 + (K * (x + 0.044_715 * x * x * x)).tanh())
 }
@@ -48,7 +48,7 @@ fn gelu(x: f32) -> f32 {
 /// `embed_scale.to(embed_tokens.weight.dtype)` does before the multiply
 /// (`modeling_gemma4.py:1477`; the note at :1605-1606 spells out the
 /// sqrt(3072) rounding for the 31B sibling).
-fn bf16_round(x: f32) -> f32 {
+pub fn bf16_round(x: f32) -> f32 {
     let bits = x.to_bits();
     let rounded = bits.wrapping_add(0x7fff + ((bits >> 16) & 1)) & 0xffff_0000;
     f32::from_bits(rounded)
@@ -56,7 +56,7 @@ fn bf16_round(x: f32) -> f32 {
 
 /// `Gemma4RMSNorm.forward` (:210-214): `x * pow(mean(x^2) + eps, -0.5)`,
 /// computed in f32, scaled by the weight when the norm has one.
-fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32) -> Vec<f32> {
+pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32) -> Vec<f32> {
     let mean = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + eps;
     let inv = mean.powf(-0.5);
     match weight {

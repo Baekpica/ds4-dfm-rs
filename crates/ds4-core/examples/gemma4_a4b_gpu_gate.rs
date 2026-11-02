@@ -36,7 +36,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ds4_core::f16_to_f32;
-use ds4_core::gemma4_a4b::{decode, Entry, Family, Matrix, Tensor};
+use ds4_core::gemma4_a4b::{bf16_round, decode, gelu, rms_norm, Entry, Family, Matrix, Tensor};
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
 #[repr(C)]
@@ -118,6 +118,45 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_rmsnorm(
+        g: *mut c_void,
+        x: *const f32,
+        rows: i32,
+        width: i32,
+        weight: *const f32,
+        y: *mut f32,
+        eps: f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_gelu_mul(
+        g: *mut c_void,
+        gate: *const f32,
+        up: *const f32,
+        act: *mut f32,
+        n: usize,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_residual_scale(
+        g: *mut c_void,
+        x: *const f32,
+        add: *const f32,
+        out: *mut f32,
+        n: usize,
+        scale: f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_softcap(
+        g: *mut c_void,
+        y: *mut f32,
+        n: usize,
+        cap: f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -137,6 +176,7 @@ fn usage() -> &'static str {
   --timing N         best of N launches per shape, plus the effective GB/s
   --skip-gather      skip the routed-expert gather (step 3)
   --skip-prefill     skip the tensor-core prefill (step 4)
+  --skip-elementwise skip the norms and elementwise kernels (step 5)
   --help             this text"
 }
 
@@ -162,6 +202,7 @@ fn run() -> Result<(), String> {
     let mut onehot: Vec<usize> = Vec::new();
     let mut gather = true;
     let mut prefill = true;
+    let mut elementwise = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -188,6 +229,7 @@ fn run() -> Result<(), String> {
             }
             "--skip-gather" => gather = false,
             "--skip-prefill" => prefill = false,
+            "--skip-elementwise" => elementwise = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -384,6 +426,9 @@ fn run() -> Result<(), String> {
     }
     if prefill {
         prefill_gate(&device, &root, &encoded, timing, &mut failed)?;
+    }
+    if elementwise {
+        elementwise_gate(&device, &mut failed)?;
     }
     if failed {
         return Err("a kernel is past the gate".into());
@@ -800,6 +845,241 @@ fn prefill_gate(
     if rel > 1e-5 || !untouched {
         println!("  FAIL the row-slice prefill is wrong");
         *failed = true;
+    }
+    Ok(())
+}
+
+/// Step 5: the layer's elementwise arithmetic, gated against the CPU
+/// forward's own functions rather than against a second copy of the formula.
+///
+/// RMSNorm is the one that matters: it runs on every layer boundary and on
+/// each attention head, with `eps` 1e-6, with and without a weight. The
+/// reference is an f64 evaluation of the same definition, so the printed relL2
+/// is the whole claim; the CPU function's own value is printed beside it.
+fn elementwise_gate(device: &Residency, failed: &mut bool) -> Result<(), String> {
+    let eps = 1e-6f32;
+    // `Gemma4TextScaledWordEmbedding` multiplies by the scale downcast to the
+    // checkpoint's dtype, so the embedding scale is bf16(sqrt(2816)).
+    let embed_scale = bf16_round((2816f32).sqrt());
+    println!(
+        "ELEMENTWISE embed scale {embed_scale} (bf16 of sqrt(2816) = {})",
+        (2816f32).sqrt()
+    );
+    if embed_scale != 53.0 {
+        println!("  FAIL the embedding scale is not the bf16-rounded sqrt(hidden)");
+        *failed = true;
+    }
+
+    for &(rows, width) in &[(4usize, 2816usize), (2, 256)] {
+        let x = elementwise_probe(rows * width, 1.0);
+        let weight = elementwise_probe(width, 1.0);
+        for (tag, w) in [("weighted", Some(weight.as_slice())), ("weightless", None)] {
+            let mut y = vec![0f32; rows * width];
+            call_rmsnorm(device, &x, rows, width, w, &mut y, eps)?;
+            let cpu: Vec<f32> = (0..rows)
+                .flat_map(|r| rms_norm(&x[r * width..(r + 1) * width], w, eps))
+                .collect();
+            let want = f64_rmsnorm(&x, w, rows, width, eps);
+            let (vs_cpu, max_cpu, _) = compare(&cpu, &y);
+            let (vs_f64, max_f64) = compare_f32_f64(&y, &want);
+            println!(
+                "RMSNORM {tag} {rows}x{width} vs cpu {vs_cpu:.3e} (maxabs {max_cpu:.3e}) vs f64 {vs_f64:.3e} (maxabs {max_f64:.3e})"
+            );
+            if vs_cpu > 1e-6 || vs_f64 > 1e-6 {
+                println!("  FAIL the device norm is past 1e-6");
+                *failed = true;
+            }
+        }
+    }
+
+    // gelu(gate) * up: the dense and the expert feed-forward both write it.
+    let n = 2816usize;
+    let gate = elementwise_probe(n, 6.0);
+    let up = elementwise_probe(n, 1.0);
+    let mut act = vec![0f32; n];
+    call_gelu_mul(device, &gate, &up, &mut act)?;
+    let cpu: Vec<f32> = gate.iter().zip(&up).map(|(&g, &u)| gelu(g) * u).collect();
+    let want: Vec<f64> = gate
+        .iter()
+        .zip(&up)
+        .map(|(&g, &u)| f64_gelu(f64::from(g)) * f64::from(u))
+        .collect();
+    let (vs_cpu, max_cpu, _) = compare(&cpu, &act);
+    let (vs_f64, max_f64) = compare_f32_f64(&act, &want);
+    println!("GELU_MUL {n} vs cpu {vs_cpu:.3e} (maxabs {max_cpu:.3e}) vs f64 {vs_f64:.3e} (maxabs {max_f64:.3e})");
+    if vs_cpu > 1e-6 || vs_f64 > 1e-6 {
+        println!("  FAIL the activation is past 1e-6");
+        *failed = true;
+    }
+
+    // The residual add and the layer scalar are f32 arithmetic on both sides,
+    // so they must agree bit for bit; a difference would be a different
+    // rounding, not a tolerance.
+    let x = elementwise_probe(n, 1.0);
+    let add = elementwise_probe(n, 1.0);
+    for &scale in &[1.0f32, 1.7, 53.0] {
+        let mut out = vec![0f32; n];
+        call_residual_scale(device, &x, &add, &mut out, scale)?;
+        let want: Vec<f32> = x.iter().zip(&add).map(|(&a, &b)| (a + b) * scale).collect();
+        let differ = out
+            .iter()
+            .zip(&want)
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        println!("RESIDUAL_SCALE scale {scale} bit-identical {differ} differences of {n}");
+        if differ != 0 {
+            println!("  FAIL the residual add or the scale rounds differently");
+            *failed = true;
+        }
+    }
+
+    // The logit softcap the forward applies last.
+    let logits = elementwise_probe(n, 50.0);
+    let mut capped = logits.clone();
+    call_softcap(device, &mut capped, 30.0)?;
+    let want: Vec<f64> = logits
+        .iter()
+        .map(|&v| 30.0 * (f64::from(v) / 30.0).tanh())
+        .collect();
+    let (rel, max) = compare_f32_f64(&capped, &want);
+    println!("SOFTCAP {n} cap 30 vs f64 {rel:.3e} maxabs {max:.3e}");
+    if rel > 1e-6 {
+        println!("  FAIL the softcap is past 1e-6");
+        *failed = true;
+    }
+    Ok(())
+}
+
+/// A deterministic vector in [-scale, scale], distinct from the other probes.
+fn elementwise_probe(n: usize, scale: f32) -> Vec<f32> {
+    let mut state = 0x1f12_3456u32;
+    (0..n)
+        .map(|_| {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (((state >> 8) as f32 / 16_777_216.0) * 2.0 - 1.0) * scale
+        })
+        .collect()
+}
+
+fn f64_rmsnorm(x: &[f32], weight: Option<&[f32]>, rows: usize, width: usize, eps: f32) -> Vec<f64> {
+    let mut out = vec![0f64; rows * width];
+    for r in 0..rows {
+        let row = &x[r * width..(r + 1) * width];
+        let mean = row
+            .iter()
+            .map(|&v| f64::from(v) * f64::from(v))
+            .sum::<f64>()
+            / width as f64
+            + f64::from(eps);
+        let inv = 1.0 / mean.sqrt();
+        for i in 0..width {
+            let w = weight.map_or(1.0, |w| f64::from(w[i]));
+            out[r * width + i] = f64::from(row[i]) * inv * w;
+        }
+    }
+    out
+}
+
+/// `nn.functional.gelu(x, approximate="tanh")` in f64.
+fn f64_gelu(x: f64) -> f64 {
+    const K: f64 = 0.797_884_560_802_865_4; // sqrt(2/pi)
+    0.5 * x * (1.0 + (K * (x + 0.044_715 * x * x * x)).tanh())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_rmsnorm(
+    device: &Residency,
+    x: &[f32],
+    rows: usize,
+    width: usize,
+    weight: Option<&[f32]>,
+    y: &mut [f32],
+    eps: f32,
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_rmsnorm(
+            device.0,
+            x.as_ptr(),
+            rows as i32,
+            width as i32,
+            weight.map_or(std::ptr::null(), |w| w.as_ptr()),
+            y.as_mut_ptr(),
+            eps,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("rmsnorm: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_gelu_mul(
+    device: &Residency,
+    gate: &[f32],
+    up: &[f32],
+    act: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_gelu_mul(
+            device.0,
+            gate.as_ptr(),
+            up.as_ptr(),
+            act.as_mut_ptr(),
+            gate.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("gelu_mul: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_residual_scale(
+    device: &Residency,
+    x: &[f32],
+    add: &[f32],
+    out: &mut [f32],
+    scale: f32,
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_residual_scale(
+            device.0,
+            x.as_ptr(),
+            add.as_ptr(),
+            out.as_mut_ptr(),
+            x.len(),
+            scale,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("residual_scale: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_softcap(device: &Residency, y: &mut [f32], cap: f32) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_softcap(
+            device.0,
+            y.as_mut_ptr(),
+            y.len(),
+            cap,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("softcap: {}", message(&err)));
     }
     Ok(())
 }
