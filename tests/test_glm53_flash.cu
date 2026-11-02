@@ -63,7 +63,7 @@ static ds4_gpu_tensor alloc(uint64_t bytes) {
     return out;
 }
 
-static void check_case(uint32_t pos0, uint32_t rows, bool sparse) {
+static void check_case(uint32_t pos0, uint32_t rows, bool sparse, bool split = false) {
     const uint32_t cap = pos0 + rows;
     const uint32_t stride = sparse ? DS4_GLM53_MAX_SELECTED : 0u;
     std::vector<__half> cache((uint64_t)cap * DIM);
@@ -105,8 +105,9 @@ static void check_case(uint32_t pos0, uint32_t rows, bool sparse) {
     }
     CHECK(ds4_gpu_glm53_attn_low(&ref, &q, &dcache, stride ? &picked : NULL, stride, rows, pos0, cap,
         HEADS, DIM, 256u));
-    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, &dcache, stride ? &picked : NULL, stride, rows, pos0, cap,
-        HEADS, DIM, 256u) == 1);
+    ds4_gpu_tensor partials = split ? alloc((uint64_t)48u * HEADS * (DIM + 2u) * sizeof(float)) : ds4_gpu_tensor{NULL, 0u};
+    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, split ? &partials : NULL, &dcache, stride ? &picked : NULL, stride,
+        rows, pos0, cap, HEADS, DIM, 256u) == 1);
     std::vector<float> output(query.size()), expected_ref(query.size());
     CHECK(cuda_ok(cudaMemcpy(output.data(), out.ptr, (size_t)out.bytes, cudaMemcpyDeviceToHost), "out"));
     CHECK(cuda_ok(cudaMemcpy(expected_ref.data(), ref.ptr, (size_t)ref.bytes, cudaMemcpyDeviceToHost), "ref"));
@@ -120,6 +121,7 @@ static void check_case(uint32_t pos0, uint32_t rows, bool sparse) {
     double worst = 0.0;
     const uint32_t sample[] = {0u, 1u, rows / 2u, rows - 1u};
     for (uint32_t t : sample) {
+        if (t >= rows) { continue; }
         const uint32_t visible = pos0 + t + 1u;
         const uint32_t count = stride ? stride : visible;
         for (uint32_t h = 0u; h < HEADS; h += 9u) {
@@ -158,15 +160,16 @@ static void check_case(uint32_t pos0, uint32_t rows, bool sparse) {
         }
     }
     // Uncovered shapes fall back to the reference kernel.
-    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, &dcache, NULL, 0u, 1u, pos0, cap, HEADS, DIM, 256u) == 0);
-    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, &dcache, NULL, 0u, rows, pos0, cap, 4u, DIM, 256u) == 0);
+    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, NULL, &dcache, NULL, 0u, 1u, pos0, cap, HEADS, DIM, 256u) == 0);
+    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, NULL, &dcache, NULL, 0u, rows, pos0, cap, 4u, DIM, 256u) == 0);
     capture = 1;
-    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, &dcache, stride ? &picked : NULL, stride, rows, pos0, cap,
+    CHECK(ds4_gpu_glm53_flash_low(&out, &q2, NULL, &dcache, stride ? &picked : NULL, stride, rows, pos0, cap,
         HEADS, DIM, 256u) == 0);
     capture = 0;
+    cudaFree(partials.ptr);
     cudaFree(picked.ptr); cudaFree(ref.ptr); cudaFree(q2.ptr); cudaFree(out.ptr); cudaFree(q.ptr); cudaFree(dcache.ptr);
-    printf("GLM flash: pos0=%u rows=%u selected=%u max_abs_oracle=%.3g max_abs_ref=%.3g PASS\n",
-        pos0, rows, stride, worst, worst_ref);
+    printf("GLM flash: pos0=%u rows=%u selected=%u split=%d max_abs_oracle=%.3g max_abs_ref=%.3g PASS\n",
+        pos0, rows, stride, (int)split, worst, worst_ref);
 }
 
 enum { HEAD_DIM = 256 };
@@ -516,5 +519,8 @@ int main(void) {
     check_case(1400u, 640u, false);  // dense prefix that ends at the selection edge
     check_case(2051u, 96u, true);    // selected keys with masked and unused slots
     check_case(6000u, 2u, true);     // two rows: smallest covered width
+    check_case(2051u, 1u, true, true);   // decode row: keys split over the SMs
+    check_case(500u, 1u, false, true);   // decode row in the dense prefix
+    check_case(6000u, 3u, true, true);   // verify width
     return 0;
 }

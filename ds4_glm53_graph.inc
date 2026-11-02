@@ -547,8 +547,9 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
     if (!fused) {
         if (!ds4_gpu_glm53_absorb_q(g->low_q, g->q, model->map, model->size,
                 l->attn_k_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) { return false; }
-        const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->layer_kv[il], selected,
-            stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+        // Decode rows keep their key-split partials in the (idle) KDA chunk scratch.
+        const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->kda_scratch, g->layer_kv[il],
+            selected, stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
         if (flash < 0 || (!flash && !ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il],
                 selected, stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) ||
             !ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
