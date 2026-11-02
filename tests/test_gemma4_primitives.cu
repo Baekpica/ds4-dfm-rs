@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include "../cuda/gemma4_primitives.cuh"
+#include "../cuda/gemma4_attn.cuh"
 
 #define CUDA_OK(call) do { cudaError_t e_=(call); if(e_!=cudaSuccess){ \
     std::fprintf(stderr,"%s: %s\n",#call,cudaGetErrorString(e_)); std::exit(2); } } while(0)
@@ -236,11 +237,46 @@ static void router_test() {
     CUDA_OK(cudaFree(dl)); CUDA_OK(cudaFree(dp)); CUDA_OK(cudaFree(di)); CUDA_OK(cudaFree(dw));
 }
 
+/* One attention configuration: build bf16 KV rows, run the warp kernel and
+ * the double reference, and report the worst absolute difference. */
+static void attn_case(const char *name,unsigned rows,unsigned first,unsigned heads,
+        unsigned kv_heads,unsigned dim,unsigned window) {
+    const unsigned capacity=first+rows;
+    const uint64_t stride=(uint64_t)kv_heads*dim;
+    std::vector<float> keys((uint64_t)capacity*stride),values((uint64_t)capacity*stride);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    std::vector<__nv_bfloat16> key16(keys.size()),value16(values.size());
+    for(uint64_t i=0;i<keys.size();i++) {
+        keys[i]=g4_ref_bf16(value((unsigned)(i%65536))*1.1f);
+        values[i]=g4_ref_bf16(value((unsigned)((i+7)%65536))*0.9f);
+        key16[i]=__float2bfloat16_rn(keys[i]);
+        value16[i]=__float2bfloat16_rn(values[i]);
+    }
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),keys.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity);
+    float *dq=device(query),*out;
+    __nv_bfloat16 *dk=device(key16),*dv=device(value16);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned warps=4;
+    const unsigned jobs=rows*heads;
+    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,stride);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,3e-5f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
+}
+
+static void attn_test() {
+    attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW);
+    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW);
+    attn_case("attn_full_decode",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_case("attn_full_prefill",4,100,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+}
+
 int main(int argc,char **argv) {
     const int ordinal=argc>1?std::atoi(argv[1]):0;
     CUDA_OK(cudaSetDevice(ordinal));
     rms_test(); router_input_test(); rope_test(); gelu_test(); embed_test();
-    softcap_test(); layer_scale_test(); router_test();
+    softcap_test(); layer_scale_test(); router_test(); attn_test();
     CUDA_OK(cudaDeviceSynchronize());
     std::printf("{\"complete\":%s,\"failures\":%u,\"scope\":\"Gemma-4 primitives against the pinned "
         "reference formulas; excludes the 30-layer walk and serving\"}\n",failures?"false":"true",failures);

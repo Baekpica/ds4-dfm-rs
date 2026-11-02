@@ -159,4 +159,44 @@ static inline float g4_ref_embed(float row) {
     return g4_ref_bf16(g4_ref_bf16(row) * G4_REF_EMBED_SCALE_BF16);
 }
 
+/* Causal attention, scale 1.0, grouped KV, optional sliding window that
+ * includes the query (3.3, 3.4). Accumulation in double: this is the golden
+ * value, not the device's arithmetic. */
+static inline void g4_ref_attn(float *out, const float *query, const float *key, const float *value,
+        uint32_t rows, uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+        uint32_t window, uint32_t capacity) {
+    const uint32_t group = heads / kv_heads;
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    for (uint32_t r = 0; r < rows; r++) {
+        const uint32_t position = first + r;
+        const uint32_t begin = window && position + 1 > window ? position + 1 - window : 0u;
+        for (uint32_t h = 0; h < heads; h++) {
+            const uint32_t kh = h / group;
+            const float *q = query + ((uint64_t)r * heads + h) * dim;
+            double maximum = -INFINITY;
+            for (uint32_t k = begin; k <= position; k++) {
+                const float *kv = key + (uint64_t)k * kv_stride + (uint64_t)kh * dim;
+                double dot = 0.0;
+                for (uint32_t d = 0; d < dim; d++) { dot += (double)q[d] * (double)kv[d]; }
+                if (dot > maximum) { maximum = dot; }
+            }
+            double total = 0.0;
+            double acc[512];
+            for (uint32_t d = 0; d < dim; d++) { acc[d] = 0.0; }
+            for (uint32_t k = begin; k <= position; k++) {
+                const float *kv = key + (uint64_t)k * kv_stride + (uint64_t)kh * dim;
+                double dot = 0.0;
+                for (uint32_t d = 0; d < dim; d++) { dot += (double)q[d] * (double)kv[d]; }
+                const double p = exp(dot - maximum);
+                total += p;
+                const float *vv = value + (uint64_t)k * kv_stride + (uint64_t)kh * dim;
+                for (uint32_t d = 0; d < dim; d++) { acc[d] += p * (double)vv[d]; }
+            }
+            float *o = out + ((uint64_t)r * heads + h) * dim;
+            for (uint32_t d = 0; d < dim; d++) { o[d] = (float)(acc[d] / total); }
+        }
+    }
+    (void)capacity;
+}
+
 #endif
