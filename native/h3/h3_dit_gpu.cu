@@ -4116,15 +4116,32 @@ enum {
     H3D_MMA_DIMS = H3D_MMA_HD / 8,    /* n8 slices of the output */
     H3D_MMA_KS = H3D_MMA_HD / 16,     /* k16 steps over the head dimension */
     H3D_MMA_NS = H3D_MMA_KEYS / 8,    /* n8 slices of the scores */
-    H3D_MMA_CHUNKS = H3D_MMA_HD / 8   /* 16-byte copies in one staged row */
+    H3D_MMA_CHUNKS = H3D_MMA_HD / 8,  /* 16-byte copies in one staged row */
+    /* The tile row carries no padding: the +8 bf16 of `H3D_MMA_LD` is spent on
+     * bank rotation instead, as a XOR swizzle over the row's 16-byte chunks.
+     * That matters because it is the binding resource, not the registers: two
+     * CTAs of the padded row take 69,632 B of the 102,400 B an SM offers and a
+     * third would take 104,448, so the kernel ran 2 CTAs / 8 warps. Unpadded
+     * rows are 32,768 B, three CTAs are 98,304 B, and the register file has
+     * room for three (3 x 169 x 128 = 64,896 of 65,536). */
+    H3D_MMA_ROW = H3D_MMA_HD
 };
+
+/* Row-major tile slot of one 16-byte chunk. Eight consecutive rows of a chunk
+ * column land in eight distinct bank groups, which is what the padded stride
+ * bought before; `ldmatrix` reads eight rows of one column at a time, so this
+ * is the only access the swizzle has to serve. */
+__device__ __forceinline__ static uint32_t h3d_mma_slot(uint32_t row,
+                                                        uint32_t chunk) {
+    return (chunk ^ (row & 7u)) * 8u;
+}
 
 __global__ static void h3d_attention_mma_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t sequence, uint32_t heads, float scale) {
-    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_LD];
-    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_LD];
+    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_ROW];
+    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_ROW];
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t warp = threadIdx.x >> 5u;
     const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
@@ -4181,14 +4198,16 @@ __global__ static void h3d_attention_mma_kernel(
                 const size_t at =
                         ((size_t)head * sequence + source) * H3D_MMA_HD +
                         chunk * 8u;
-                *(uint4 *)&shared_key[row][chunk * 8u] =
+                const uint32_t slot = h3d_mma_slot(row, chunk);
+                *(uint4 *)&shared_key[row][slot] =
                         *(const uint4 *)(key + at);
-                *(uint4 *)&shared_value[row][chunk * 8u] =
+                *(uint4 *)&shared_value[row][slot] =
                         *(const uint4 *)(value + at);
             } else {
                 const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
-                *(uint4 *)&shared_key[row][chunk * 8u] = zero;
-                *(uint4 *)&shared_value[row][chunk * 8u] = zero;
+                const uint32_t slot = h3d_mma_slot(row, chunk);
+                *(uint4 *)&shared_key[row][slot] = zero;
+                *(uint4 *)&shared_value[row][slot] = zero;
             }
         }
         __syncthreads();
@@ -4207,7 +4226,7 @@ __global__ static void h3d_attention_mma_kernel(
                 const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
                 const uint32_t col = step * 16u + (matrix & 1u) * 8u;
                 uint32_t b[4];
-                h3d_mma_load(b, &shared_key[row][col]);
+                h3d_mma_load(b, &shared_key[row][h3d_mma_slot(row, col / 8u)]);
                 h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
                 h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
             }
@@ -4290,7 +4309,7 @@ __global__ static void h3d_attention_mma_kernel(
                         step * 16u + (matrix & 1u) * 8u + (lane & 7u);
                 const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
                 uint32_t b[4];
-                h3d_mma_load_trans(b, &shared_value[row][col]);
+                h3d_mma_load_trans(b, &shared_value[row][h3d_mma_slot(row, col / 8u)]);
                 h3d_mma_step(result[2u * part], p, b[0], b[1]);
                 h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
             }
