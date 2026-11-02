@@ -506,6 +506,14 @@ tests/gemma4_gpu_gate: $(DS4_RS_SOURCES) $(GEMMA4_GPU_OBJ)
 	-C link-arg=$(DS4_RS_ROOT)/$(GEMMA4_GPU_OBJ) $(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/gemma4_a4b_gpu_gate" $@
 
+# The OpenAI host: the ds4 server's own wire loop driven by the Gemma-4 device
+# engine (crates/ds4-server/src/bin/gemma4_engine.rs). Same object, same link.
+tests/gemma4_server: $(DS4_RS_SOURCES) $(GEMMA4_GPU_OBJ)
+	cargo rustc -p ds4-server --bin gemma4-server-rs --release --features gemma4-gpu -- \
+	-C metadata=$(GEMMA4_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/$(GEMMA4_GPU_OBJ) $(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/gemma4-server-rs" $@
+
 # Portable reference tests: host-only, without model weights.
 H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))

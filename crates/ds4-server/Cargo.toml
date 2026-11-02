@@ -21,10 +21,14 @@ path = "src/bin/h3-server-rs.rs"
 [[bin]]
 name = "gemma4-server-rs"
 path = "src/bin/gemma4-server-rs.rs"
+required-features = ["gemma4-gpu"]
 
 [features]
 default = []
 native = []
+# The Gemma-4 device path: links native/gemma4/gemma4_gpu.o, which the
+# Makefile's gemma4-server target compiles and passes to rustc.
+gemma4-gpu = []
 
 [dependencies]
 ds4-core = { path = "../ds4-core" }

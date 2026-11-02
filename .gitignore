@@ -21,6 +21,7 @@
 /tests/test_mmq_parity
 /tests/test_ling3vl_q5pair
 /tests/gemma4_gpu_gate
+/tests/gemma4_server
 /tests/test_ds41_vq
 /tests/test_ds41_sample
 /tests/test_ds41_pick

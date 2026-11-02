@@ -361,6 +361,7 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_expert_legacy(g: *mut c_void, legacy: i32) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -2141,6 +2142,63 @@ fn model_gate(
         println!("  FAIL the replayed step is not the direct walk's arithmetic");
         *failed = true;
     }
+
+    // The expert block: the engine's persistent walk against the eight-launch
+    // path, at the same position and interleaved for the same reason. The two
+    // paths compute the same rows with the same arithmetic, so the logits are
+    // compared first; only then is the time meaningful. The persistent walk is
+    // not the default yet (it fails this comparison), so the A/B runs only when
+    // GM4_EXPERT_PERSIST asks for it and the default gate stays green.
+    if std::env::var_os("GM4_EXPERT_PERSIST").is_some() {
+        let mut legacy = vec![0f32; vocab];
+        let mut persistent = vec![0f32; vocab];
+        call_model_set_graph(&model, false)?;
+        call_expert_legacy(device, true);
+        call_model_step(device, &model, current, at, &mut legacy)?;
+        call_expert_legacy(device, false);
+        call_model_step(device, &model, current, at, &mut persistent)?;
+        let (erel, emax, _escale) = compare(&legacy, &persistent);
+        println!(
+            "    EXPERT persistent walk vs eight launches at pos {at}: relL2 {erel:.3e} maxabs {emax:.3e}"
+        );
+        if erel > 1e-7 || emax > 1e-6 {
+            println!("  FAIL the persistent expert walk is not the eight-launch arithmetic");
+            *failed = true;
+        }
+        let mut p_ms = Vec::with_capacity(SAMPLES);
+        let mut l_ms = Vec::with_capacity(SAMPLES);
+        let mut p_wait = 0f64;
+        let mut l_wait = 0f64;
+        for _ in 0..SAMPLES {
+            let started = Instant::now();
+            call_model_step(device, &model, current, at, &mut persistent)?;
+            p_ms.push(started.elapsed().as_secs_f64() * 1e3);
+            p_wait += call_model_split(&model).1;
+            call_expert_legacy(device, true);
+            let started = Instant::now();
+            call_model_step(device, &model, current, at, &mut legacy)?;
+            l_ms.push(started.elapsed().as_secs_f64() * 1e3);
+            l_wait += call_model_split(&model).1;
+            call_expert_legacy(device, false);
+        }
+        println!(
+            "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, persistent expert walk: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+            min(&p_ms),
+            1000.0 / min(&p_ms),
+            mean(&p_ms),
+            1000.0 / mean(&p_ms)
+        );
+        println!("    SPLIT mean device wait {:.2} ms", p_wait / SAMPLES as f64);
+        println!(
+            "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, eight-launch expert block: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+            min(&l_ms),
+            1000.0 / min(&l_ms),
+            mean(&l_ms),
+            1000.0 / mean(&l_ms)
+        );
+        println!("    SPLIT mean device wait {:.2} ms", l_wait / SAMPLES as f64);
+    }
+    call_model_set_graph(&model, default_on)?;
     Ok(())
 }
 
@@ -2863,6 +2921,11 @@ fn call_model_set_graph(model: &DeviceModel, on: bool) -> Result<(), String> {
         return Err("model_set_graph: the handle was refused".to_string());
     }
     Ok(())
+}
+
+/// Force the eight-launch expert path (legacy) or the persistent walk.
+fn call_expert_legacy(device: &Residency, legacy: bool) {
+    unsafe { gm4_gpu_expert_legacy(device.0, i32::from(legacy)) };
 }
 
 fn call_model_step(

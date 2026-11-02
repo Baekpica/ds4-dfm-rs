@@ -46,7 +46,9 @@ mod payload;
 mod ple;
 mod progress;
 mod qwen35;
-mod sample;
+/* Public so a second engine (the Gemma-4 device host in ds4-server) draws from
+ * the same one sampler the native path uses, rather than its own copy. */
+pub mod sample;
 mod serving;
 mod serving_check;
 mod serving_cuda;

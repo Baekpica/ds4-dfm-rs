@@ -209,15 +209,15 @@ __device__ __forceinline__ const float *row_x(const float *x, const Layout &L, u
     return x + (size_t) (lo / (uint32_t) L.xrows) * (size_t) L.xcols;
 }
 
-/* One warp per row, the three 128-byte lines of the next block issued before
- * this one computes (the reference's cross-block pipeline). */
+/* One row of one payload: the block kernel's arithmetic exactly, the eight
+ * 32-index rounds per block, the cross-block prefetch, the lane<->index map
+ * of `v3_rounds` and the gain after the sum. Extracted so the block kernel
+ * and the persistent expert walk run one code path instead of two that could
+ * drift; the gate's layer bands are the check that they did not. */
 template <int DIM, int EXT>
-__global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
-                                  const float *x, float *y) {
-    const uint32_t lo = (uint32_t) ((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+__device__ __forceinline__ float v3blk_row_dot(const uint8_t *p, const Layout &L, size_t r,
+                                               const float *xr) {
     const uint32_t lane = threadIdx.x & 31u;
-    if (lo >= (uint32_t) L.nrows) return;
-    const size_t r = row_of(L, lo, rl);
     const __half *cb = (const __half *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
     const uint32_t *row = (const uint32_t *) (p + L.stream_off + (size_t) r * L.mrow);
@@ -241,13 +241,24 @@ __global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32
         }
         const uint32_t rem = R - b * 8u;
         v3_rounds<DIM, EXT>(cur, rem < 8u ? rem : 8u, a, sh,
-                            row_x(x, L, lo) + (size_t) b * 256u * (DIM > 0 ? DIM : L.dim), cb,
+                            xr + (size_t) b * 256u * (DIM > 0 ? DIM : L.dim), cb,
                             L.dim, acc);
         cur = nxt;
     }
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+    return __shfl_sync(0xffffffffu, acc, 0) * __half2float(gr[r]);
+}
+
+/* One warp per row, the three 128-byte lines of the next block issued before
+ * this one computes (the reference's cross-block pipeline). */
+template <int DIM, int EXT>
+__global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                  const float *x, float *y) {
+    const uint32_t lo = (uint32_t) ((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+    const uint32_t lane = threadIdx.x & 31u;
+    if (lo >= (uint32_t) L.nrows) return;
+    const float v = v3blk_row_dot<DIM, EXT>(p, L, row_of(L, lo, rl), row_x(x, L, lo));
     if (lane == 0) {
-        const float v = acc * __half2float(gr[r]);
         if (L.first) y[lo] = v;
         else y[lo] += v;
     }
@@ -326,12 +337,13 @@ __global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const uint32
  * most 19 bits, which is b[0..2]. A payload with a 13th-bit plane is left on
  * the generic path, since the plane is a second bit array this kernel does
  * not read. */
+/* One row of one payload by the three-byte index read: the span kernel's
+ * arithmetic, extracted for the same reason as v3blk_row_dot. A payload with
+ * a 13th-bit plane is not read here (the caller checks L.prow == 0). */
 template <int DIM>
-__global__ void gemv_rowspan_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
-                                    const float *x, float *y, int span) {
-    const int lo0 = ((blockIdx.x * blockDim.x + threadIdx.x) >> 5) * span;
+__device__ __forceinline__ float span_row_dot(const uint8_t *p, const Layout &L, size_t r,
+                                              const float *xr) {
     const int lane = threadIdx.x & 31;
-    if (lo0 >= L.nrows) return;
     const int nidx_row = L.cols / L.dim;
     const int groups = (nidx_row + 31) / 32;
     const __half *cb = (const __half *) (p + L.cb_off);
@@ -339,46 +351,152 @@ __global__ void gemv_rowspan_kernel(const uint8_t *p, const Layout L, const uint
     const uint8_t *st = p + L.stream_off;
     const uint32_t mb = L.nbit > 12 ? 12u : (uint32_t) L.nbit;
     const uint32_t imsk = (1u << mb) - 1u;
+    const uint8_t *row = st + r * (size_t) L.mrow;
+    float acc = 0.0f;
+    for (int g = 0; g < groups; g++) {
+        const int i = g * 32 + lane;
+        if (i >= nidx_row) break;
+        const uint32_t bit = (uint32_t) i * mb;
+        const uint8_t *q = row + (bit >> 3);
+        const uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
+        const uint32_t v = (w >> (bit & 7)) & imsk;
+        if (DIM == 4) {
+            const float4 xv = *(const float4 *) (xr + (size_t) i * 4u);
+            const uint2 c = __ldg((const uint2 *) cb + v);
+            const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+            const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+            acc += a.x * xv.x + a.y * xv.y + b.x * xv.z + b.y * xv.w;
+        } else {
+            const float4 x0 = *(const float4 *) (xr + (size_t) i * (size_t) DIM);
+            const float4 x1 = *(const float4 *) (xr + (size_t) i * (size_t) DIM + 4u);
+            const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
+            const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
+            const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+            const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+            const float2 c = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+            const float2 d = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+            acc += a.x * x0.x + a.y * x0.y + b.x * x0.z + b.y * x0.w
+                 + c.x * x1.x + c.y * x1.y + d.x * x1.z + d.y * x1.w;
+        }
+    }
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+    return __shfl_sync(0xffffffffu, acc, 0) * __half2float(gr[r]);
+}
 
+template <int DIM>
+__global__ void gemv_rowspan_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                    const float *x, float *y, int span) {
+    const int lo0 = ((blockIdx.x * blockDim.x + threadIdx.x) >> 5) * span;
+    const int lane = threadIdx.x & 31;
+    if (lo0 >= L.nrows) return;
     #pragma unroll 4
     for (int s = 0; s < span; s++) {
         const int lo = lo0 + s;
         if (lo >= L.nrows) break;
-        const size_t r = row_of(L, (uint32_t) lo, rl);
-        const float *xr = row_x(x, L, (uint32_t) lo);
-        const uint8_t *row = st + r * (size_t) L.mrow;
-        float acc = 0.0f;
-        for (int g = 0; g < groups; g++) {
-            const int i = g * 32 + lane;
-            if (i >= nidx_row) break;
-            const uint32_t bit = (uint32_t) i * mb;
-            const uint8_t *q = row + (bit >> 3);
-            const uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
-            const uint32_t v = (w >> (bit & 7)) & imsk;
-            if (DIM == 4) {
-                const float4 xv = *(const float4 *) (xr + (size_t) i * 4u);
-                const uint2 c = __ldg((const uint2 *) cb + v);
-                const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
-                const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
-                acc += a.x * xv.x + a.y * xv.y + b.x * xv.z + b.y * xv.w;
-            } else {
-                const float4 x0 = *(const float4 *) (xr + (size_t) i * (size_t) DIM);
-                const float4 x1 = *(const float4 *) (xr + (size_t) i * (size_t) DIM + 4u);
-                const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
-                const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
-                const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
-                const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
-                const float2 c = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
-                const float2 d = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
-                acc += a.x * x0.x + a.y * x0.y + b.x * x0.z + b.y * x0.w
-                     + c.x * x1.x + c.y * x1.y + d.x * x1.z + d.y * x1.w;
-            }
-        }
-        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+        const float v = span_row_dot<DIM>(p, L, row_of(L, (uint32_t) lo, rl), row_x(x, L, (uint32_t) lo));
         if (lane == 0) {
-            const float v = acc * __half2float(gr[r]);
             if (L.first) y[lo] = v;
             else y[lo] += v;
+        }
+    }
+}
+
+/* ---- the expert block, in the reference engine's persistent shape --------
+ *
+ * Source read first-hand: /data/ds4-dfm-rs/cuda/ds41_vq_persist.cuh:157-213
+ * (v41_vq_gu_persist_kernel) and :215-238 (v41_vq_dn_persist_kernel), with
+ * the launcher at :399-411. What transfers unchanged:
+ *
+ *  - grid sized to the SMs, one persistent block each, so the block ramp and
+ *    every per-block setup are paid once per stack, not once per row or per
+ *    block of rows (the engine's :8-13 says why: with its shared-memory
+ *    codebook, a per-block copy stalls the whole SM at every block);
+ *  - warps cut the (expert, row) items into contiguous spans of at most 32
+ *    rows, a span never crossing an expert (V41_VQ_SEG, :144-146);
+ *  - gate and up for the same row are one warp's work, and the SwiGLU is
+ *    applied in registers, so the gate value never round-trips through h
+ *    (:11-13);
+ *  - the down stack writes its f32 partials and the weighted reduce is one
+ *    separate launch (:361-363).
+ *
+ * The two deviations forced by this container, both named rather than
+ * silent. (1) A row carries two payloads - the tools' two-stage residual VQ
+ * - so the row dot runs twice per row, stage 0 then stage 1, each with its
+ * own gain, and the two values are added in that order. That is exactly the
+ * pair of launches this replaces (stage 0 assigns, stage 1 accumulates), so
+ * the value is bit-identical. (2) A down row here is 88 indices, 2.75
+ * rounds, so the engine's cross-row bitstream stream (:46-56) does not
+ * apply; each row still starts its own stream, as the span kernel already
+ * does. The gate/up row is 352 indices, 11 rounds, and keeps the block
+ * walk.
+ *
+ * The grid is nsm * blocks_per_sm because this kernel has no shared-memory
+ * request to cap occupancy (the engine's is 1 block/SM at 1024 threads);
+ * blocks_per_sm is the SM's thread capacity divided by the block. */
+
+static constexpr int GM4_EXPERT_THREADS = 512;
+
+template <int DIM>
+__global__ void expert_gu_persist_kernel(const Payload a, const Payload b, const int *picked,
+                                         const float *x, float *act, int k, int ff, int stride) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warps = (uint32_t) (blockDim.x >> 5);
+    const uint32_t gw = (uint32_t) blockIdx.x * warps + (threadIdx.x >> 5);
+    const uint32_t nw = (uint32_t) gridDim.x * warps;
+    const uint32_t total = (uint32_t) k * (uint32_t) ff;
+    const uint32_t per = (total + nw - 1u) / nw;
+    uint32_t u = gw * per;
+    const uint32_t uend = (u + per < total) ? u + per : total;
+    while (u < uend) {
+        const uint32_t p = u / (uint32_t) ff;
+        const uint32_t r0 = u % (uint32_t) ff;
+        uint32_t n = uend - u;
+        if (n > (uint32_t) ff - r0) n = (uint32_t) ff - r0;
+        if (n > 32u) n = 32u;
+        u += n;
+        const int e = picked[p];
+        if (e < 0) continue;
+        const size_t base = (size_t) e * (size_t) stride + (size_t) r0;
+        for (uint32_t j = 0; j < n; j++) {
+            const size_t r = base + j;
+            const float g = v3blk_row_dot<DIM, 0>(a.dev, a.l, r, x);
+            const float v = v3blk_row_dot<DIM, 0>(b.dev, b.l, r + (size_t) ff, x);
+            if (lane == 0) {
+                const float kk = 0.7978846f; /* sqrt(2/pi), gelu_mul_blocks_kernel */
+                act[(size_t) p * (size_t) ff + r0 + j] =
+                    0.5f * g * (1.0f + tanhf(kk * (g + 0.044715f * g * g * g))) * v;
+            }
+        }
+    }
+}
+
+template <int DIM>
+__global__ void expert_dn_persist_kernel(const Payload a, const Payload b, const int *picked,
+                                         const float *act, float *d, int k, int hidden, int ff) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warps = (uint32_t) (blockDim.x >> 5);
+    const uint32_t gw = (uint32_t) blockIdx.x * warps + (threadIdx.x >> 5);
+    const uint32_t nw = (uint32_t) gridDim.x * warps;
+    const uint32_t total = (uint32_t) k * (uint32_t) hidden;
+    const uint32_t per = (total + nw - 1u) / nw;
+    uint32_t u = gw * per;
+    const uint32_t uend = (u + per < total) ? u + per : total;
+    while (u < uend) {
+        const uint32_t p = u / (uint32_t) hidden;
+        const uint32_t r0 = u % (uint32_t) hidden;
+        uint32_t n = uend - u;
+        if (n > (uint32_t) hidden - r0) n = (uint32_t) hidden - r0;
+        if (n > 32u) n = 32u;
+        u += n;
+        const int e = picked[p];
+        if (e < 0) continue;
+        const size_t base = (size_t) e * (size_t) hidden + (size_t) r0;
+        const float *xr = act + (size_t) p * (size_t) ff;
+        for (uint32_t j = 0; j < n; j++) {
+            const size_t r = base + j;
+            const float v = span_row_dot<DIM>(a.dev, a.l, r, xr)
+                          + span_row_dot<DIM>(b.dev, b.l, r, xr);
+            if (lane == 0) d[(size_t) p * (size_t) hidden + r0 + j] = v;
         }
     }
 }
@@ -1484,6 +1602,7 @@ struct gm4_gpu {
     float *kvu; /* one position's k and v, on their way into a ring slot */
     size_t kvucap;
     int32_t *posone; /* the host entry points' staged position (gm4_gpu_rope, gm4_gpu_attention) */
+    int expert_legacy; /* 1 = the eight-launch expert path, for the A/B gate */
     char devname[256];
     gm4_account acct;
 };
@@ -1585,6 +1704,9 @@ gm4_gpu *gm4_gpu_open(const gm4_spec *specs, int n, char *err, size_t errlen) {
     }
     snprintf(g->devname, sizeof g->devname, "%s", prop.name);
     g->acct.device_free_before = free_before;
+    /* The eight-launch expert path is the default until the persistent walk
+     * passes the layer gate (it is one switch away, GM4_EXPERT_PERSIST=1). */
+    g->expert_legacy = getenv("GM4_EXPERT_PERSIST") ? 0 : 1;
 
     for (int i = 0; i < n; i++) {
         if (upload(g, &g->ts[i], &specs[i], &g->acct, err, errlen) != 0) {
@@ -1655,6 +1777,18 @@ void gm4_gpu_account_of(const gm4_gpu *g, gm4_account *out) { *out = g->acct; }
 int gm4_gpu_span(int span) {
     const int prev = g_span;
     if (span > 0) g_span = span;
+    return prev;
+}
+
+/* Force the eight-launch expert path (1) or the persistent walk (0),
+ * returning the previous value. A diagnostic knob for the A/B gate, in the
+ * spirit of the engine's DS41_VQ_NO_PERSIST; it changes the number and shape
+ * of the launches, never any row's arithmetic, so the gate's bands are the
+ * check and the interleaved sampler is the measurement. */
+int gm4_gpu_expert_legacy(gm4_gpu *g, int legacy) {
+    if (!g) return 0;
+    const int prev = g->expert_legacy;
+    g->expert_legacy = legacy ? 1 : 0;
     return prev;
 }
 
@@ -2170,6 +2304,41 @@ static int rows_dev(gm4_gpu *g, int tensor, const uint32_t *rld, int nrows, cons
         if (e != cudaSuccess) return fail(err, errlen, "chain gather launch", e);
     }
     return 0;
+}
+
+/* The whole routed expert block in two persistent launches plus the reduce,
+ * the engine's shape (expert_gu_persist_kernel above). 1 = taken,
+ * 0 = geometry not covered (the caller keeps the eight-launch path), -1 on a
+ * CUDA error. The geometry is checked, never assumed. */
+static int expert_block_dev(gm4_layer *L, gm4_gpu *g, char *err, size_t errlen) {
+    /* Diagnostic switch, the engine's DS41_VQ_NO_PERSIST in spirit
+     * (/data/ds4-dfm-rs/cuda/ds41_vq_decode.cuh:329-335): force the
+     * eight-launch path so the persistent walk can be A/B'd against it. */
+    if (g->expert_legacy) return 0;
+    const Tensor *gu = &g->ts[L->egu];
+    const Tensor *dn = &g->ts[L->edn];
+    if (gu->npay != 2 || dn->npay != 2) return 0;
+    if (gu->pays[0].variant != 3 || gu->pays[1].variant != 3) return 0;
+    if (dn->pays[0].variant != 4 || dn->pays[1].variant != 4) return 0;
+    if (gu->pays[0].l.dim != 8 || dn->pays[0].l.dim != 8) return 0;
+    if (gu->pays[0].l.prow || dn->pays[0].l.prow) return 0;
+    static int nsm = 0;
+    if (!nsm && cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return 0;
+    }
+    int per_sm = 1536 / GM4_EXPERT_THREADS; /* the SM's thread capacity, sm_89 */
+    if (per_sm < 1) per_sm = 1;
+    const int grid = nsm * per_sm;
+    expert_gu_persist_kernel<8><<<grid, GM4_EXPERT_THREADS>>>(
+        gu->pays[0], gu->pays[1], L->picked, L->hb, L->act, L->top_k, L->moe_ff, 2 * L->moe_ff);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "expert gate/up persistent launch", e);
+    expert_dn_persist_kernel<8><<<grid, GM4_EXPERT_THREADS>>>(
+        dn->pays[0], dn->pays[1], L->picked, L->act, L->d, L->top_k, L->hidden, L->moe_ff);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "expert down persistent launch", e);
+    return 1;
 }
 
 /* The embedding row, reconstructed on the device: the one table read that is
@@ -3044,27 +3213,33 @@ static int layer_forward_dev(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *
         return -1;
     mark(L, 8);
 
-    /* The experts: one gate_up gather for all k, one gelu per expert, then a
-     * down gather and a weighted accumulate per expert, as forward.rs:376-388
-     * does it. */
+    /* The experts: the engine's persistent walk when the geometry is its own
+     * (one gate/up launch with the SwiGLU in registers, one down launch, then
+     * the reduce), otherwise the per-payload gathers and the block gelu. */
     const int gcount = 2 * L->moe_ff;
     const size_t gn = (size_t) L->top_k * (size_t) gcount;
     if (rmsnorm_dev(L->xb, L->pre_ffn2, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
-    if (rowlist_dev(L->rl1, L->picked, L->top_k, gcount, gcount, err, errlen) != 0) return -1;
-    if (rows_dev(g, L->egu, L->rl1, (int) gn, L->hb, 0, 0, L->gu, L->threads, err, errlen) != 0)
-        return -1;
-    /* One gelu over all k blocks: the same arithmetic as k launches, with the
-     * expert's stride instead of the caller's loop. */
-    if (gelu_blocks_dev(L->gu, L->act, (int) L->moe_ff, L->top_k, err, errlen) != 0) return -1;
-    if (rowlist_dev(L->rl2, L->picked, L->top_k, nh, nh, err, errlen) != 0) return -1;
-    /* One gather over all k experts and one weighted reduce: the down rows
-     * are disjoint, so the launch is the concatenation of the k blocks. */
-    e = cudaMemsetAsync(L->d, 0, (size_t) L->top_k * (size_t) nh * sizeof(float), cudaStreamPerThread);
-    if (e != cudaSuccess) return fail(err, errlen, "layer down clear", e);
-    if (rows_dev(g, L->edn, L->rl2, L->top_k * nh, L->act, nh, (int) L->moe_ff, L->d, L->threads,
-                 err, errlen) != 0)
-        return -1;
-    if (moe_reduce_dev(L->d, L->wsel, L->moe, L->top_k, nh, err, errlen) != 0) return -1;
+    const int fast = expert_block_dev(L, g, err, errlen);
+    if (fast < 0) return -1;
+    if (fast) {
+        if (moe_reduce_dev(L->d, L->wsel, L->moe, L->top_k, nh, err, errlen) != 0) return -1;
+    } else {
+        if (rowlist_dev(L->rl1, L->picked, L->top_k, gcount, gcount, err, errlen) != 0) return -1;
+        if (rows_dev(g, L->egu, L->rl1, (int) gn, L->hb, 0, 0, L->gu, L->threads, err, errlen) != 0)
+            return -1;
+        /* One gelu over all k blocks: the same arithmetic as k launches, with
+         * the expert's stride instead of the caller's loop. */
+        if (gelu_blocks_dev(L->gu, L->act, (int) L->moe_ff, L->top_k, err, errlen) != 0) return -1;
+        if (rowlist_dev(L->rl2, L->picked, L->top_k, nh, nh, err, errlen) != 0) return -1;
+        /* One gather over all k experts and one weighted reduce: the down rows
+         * are disjoint, so the launch is the concatenation of the k blocks. */
+        e = cudaMemsetAsync(L->d, 0, (size_t) L->top_k * (size_t) nh * sizeof(float), cudaStreamPerThread);
+        if (e != cudaSuccess) return fail(err, errlen, "layer down clear", e);
+        if (rows_dev(g, L->edn, L->rl2, L->top_k * nh, L->act, nh, (int) L->moe_ff, L->d, L->threads,
+                     err, errlen) != 0)
+            return -1;
+        if (moe_reduce_dev(L->d, L->wsel, L->moe, L->top_k, nh, err, errlen) != 0) return -1;
+    }
     mark(L, 9);
 
     /* The close: moe norm, dense + moe, the pair norm, the residual, scalar. */

@@ -232,6 +232,14 @@ int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n);
  * never a row's arithmetic. */
 int gm4_gpu_span(int span);
 
+/* Force the eight-launch expert path (legacy = 1) or the persistent walk
+ * (legacy = 0); returns the previous value. Diagnostic only: both paths run
+ * the same row arithmetic, so the A/B changes the launches, never a value.
+ * The shape is the reference engine's, /data/ds4-dfm-rs/cuda/
+ * ds41_vq_persist.cuh:157-238, and its own switch is at
+ * cuda/ds41_vq_decode.cuh:329-335. */
+int gm4_gpu_expert_legacy(gm4_gpu *g, int legacy);
+
 /* ---- one token, the whole model ------------------------------------------
  *
  * The layers above chained into 30 and bounded by the two ends the CPU's step
