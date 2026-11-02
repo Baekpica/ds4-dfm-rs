@@ -544,6 +544,10 @@ fn usage() -> &'static str {
   --block-tokens N   tokens for --block-layers (default 1)
   --block-stages     with --block-layers 1, compare the block's scratch buffers
                      against the step's own probes stage by stage
+  --block-cross      with --block-layers, prefill a prompt longer than the
+                     sliding window as blocks and compare every block's logits
+                     with the walk's; the ring case the one-shot block cannot
+                     reach (needs --block-tokens past the window)
   --help             this text"
 }
 
@@ -590,6 +594,7 @@ fn run() -> Result<(), String> {
     let mut block_layers: Option<usize> = None;
     let mut block_tokens = 1usize;
     let mut block_stages = false;
+    let mut block_cross = false;
     let mut block_text: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
@@ -719,6 +724,7 @@ fn run() -> Result<(), String> {
                     .ok_or("--block-tokens needs a number")?
             }
             "--block-stages" => block_stages = true,
+            "--block-cross" => block_cross = true,
             "--block-text" => {
                 let path = args.next().ok_or("--block-text needs a path")?;
                 block_text = Some(
@@ -980,6 +986,7 @@ fn run() -> Result<(), String> {
             layers,
             block_tokens,
             block_stages,
+            block_cross,
             block_text.clone(),
         );
     }
@@ -4118,6 +4125,22 @@ fn build_chain(
     layer: usize,
     vq: Option<(&VqKv, &VqKv)>,
 ) -> Result<(Chain, Cache), String> {
+    build_chain_cap(device, family, root, encoded, layer, vq, 1024)
+}
+
+/// The same builder with the appending caches' bound as a parameter: the ring
+/// crossing needs a prompt longer than that bound, and the model's context is
+/// the shortest appending cache's capacity (native/gemma4/gemma4_gpu.cu:5385-5388).
+#[allow(clippy::too_many_arguments)]
+fn build_chain_cap(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    layer: usize,
+    vq: Option<(&VqKv, &VqKv)>,
+    full_cap: usize,
+) -> Result<(Chain, Cache), String> {
     let config = &family.config;
     let spec = &family.layout.layers[layer];
     let kind = spec.kind;
@@ -4129,7 +4152,7 @@ fn build_chain(
     };
     let cap = match kind {
         LayerType::Sliding => config.sliding_window,
-        LayerType::Full => 1024,
+        LayerType::Full => full_cap,
     };
 
     let tensor = |role: Role| -> Result<i32, String> {
@@ -5405,6 +5428,7 @@ fn block_bisect(
     layers: usize,
     tokens_wanted: usize,
     stages: bool,
+    cross: bool,
     text: Option<String>,
 ) -> Result<(), String> {
     const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
@@ -5424,6 +5448,12 @@ fn block_bisect(
     if n == 0 {
         return Err("--block-tokens is zero".into());
     }
+    if cross && n <= config.sliding_window {
+        return Err(format!(
+            "--block-cross needs a prompt past the sliding window ({}), got {n}",
+            config.sliding_window
+        ));
+    }
     let embed_entry = &family.layout.embed;
     let embed = encoded
         .iter()
@@ -5437,7 +5467,12 @@ fn block_bisect(
     let mut chains = Vec::with_capacity(layers);
     let mut caches = Vec::with_capacity(layers);
     for layer in 0..layers {
-        let (chain, cache) = build_chain(device, family, root, encoded, layer, None)?;
+        let full_cap = if cross {
+            n.max(config.sliding_window)
+        } else {
+            config.sliding_window
+        };
+        let (chain, cache) = build_chain_cap(device, family, root, encoded, layer, None, full_cap)?;
         chains.push(chain);
         caches.push(cache);
     }
@@ -5464,6 +5499,10 @@ fn block_bisect(
         }
         Ok(())
     };
+
+    if cross {
+        return block_cross(device, &model, &caches, &prompt, n, config);
+    }
 
     let vocab = config.vocab;
     let mut want = vec![0f32; vocab];
@@ -5603,5 +5642,187 @@ fn block_bisect(
         return Err("the block path is wrong at this depth".into());
     }
     println!("PASS block bisect: {layers} layer(s), {n} token(s)");
+    Ok(())
+}
+
+/// The ring crossing: a prompt longer than the sliding window, prefilled as a
+/// sequence of blocks. A block writes every one of its rows before its
+/// attention runs, and a sliding layer's cache is a ring of `window`
+/// positions, so a block that starts past the window overwrites rows its own
+/// first tokens still need. The reference keeps a batch's rows in a staging
+/// area, reads history and the batch from those two sources, and commits to
+/// the ring after attention (/data/ds4-dfm-rs/cuda/ds41_attn.cuh:39-46,
+/// :324-327, :377-401); this gate proves the same shape here. The walk is the
+/// oracle: it appends one position and attends it before the next, which is
+/// the CPU forward's own order (crates/ds4-core/src/gemma4_a4b/forward.rs:437-446).
+fn block_cross(
+    device: &Residency,
+    model: &DeviceModel,
+    caches: &[Cache],
+    prompt: &[u32],
+    n: usize,
+    config: &Config,
+) -> Result<(), String> {
+    let window = config.sliding_window;
+
+    // A plan is a fixed prefix of block sizes, then 512-token blocks to the
+    // end. Two plans with different boundaries past the window are the
+    // instrument: the block path's logits must not depend on where its chunks
+    // end. That is the doc's chunked property, and exactly what a block that
+    // reads the ring's overwritten rows breaks.
+    let plan_of = |prefix: &[usize]| -> Vec<usize> {
+        let mut chunks = Vec::new();
+        let mut left = n;
+        for &take in prefix {
+            let t = take.min(left);
+            if t > 0 {
+                chunks.push(t);
+                left -= t;
+            }
+        }
+        while left > 0 {
+            let t = left.min(512);
+            chunks.push(t);
+            left -= t;
+        }
+        chunks
+    };
+    let plan_a = plan_of(&[window, 256, 256]);
+    // GM4_CROSS_CHUNKS overrides the second plan, for a diagnosis that wants
+    // a particular boundary.
+    let plan_b = match std::env::var("GM4_CROSS_CHUNKS") {
+        Ok(s) => {
+            let prefix: Vec<usize> = s
+                .split(',')
+                .filter_map(|x| x.trim().parse().ok())
+                .filter(|&x| x > 0)
+                .collect();
+            if prefix.is_empty() {
+                plan_of(&[window, 512])
+            } else {
+                plan_of(&prefix)
+            }
+        }
+        Err(_) => plan_of(&[window, 512]),
+    };
+    let checkpoints = |chunks: &[usize]| -> Vec<usize> {
+        let mut at = 0usize;
+        let mut out = Vec::with_capacity(chunks.len());
+        for &take in chunks {
+            at += take;
+            out.push(at);
+        }
+        out
+    };
+    let cps_a = checkpoints(&plan_a);
+    let cps_b = checkpoints(&plan_b);
+    let mut ats = cps_a.clone();
+    for &c in &cps_b {
+        if !ats.contains(&c) {
+            ats.push(c);
+        }
+    }
+    ats.sort_unstable();
+
+    let reset = |device: &Residency| -> Result<(), String> {
+        for cache in caches {
+            call_kv_reset(device, cache)?;
+        }
+        Ok(())
+    };
+    let vocab = config.vocab;
+    let mut logits = vec![0f32; vocab];
+    let run = |device: &Residency,
+               chunks: &[usize],
+               logits: &mut Vec<f32>|
+     -> Result<Vec<(usize, Vec<f32>)>, String> {
+        reset(device)?;
+        let mut out = Vec::with_capacity(chunks.len());
+        let mut pos0 = 0usize;
+        for &take in chunks {
+            call_model_prefill(device, model, &prompt[pos0..pos0 + take], pos0, logits)?;
+            pos0 += take;
+            out.push((pos0, logits.clone()));
+        }
+        Ok(out)
+    };
+
+    // The walk, recording every checkpoint both plans report.
+    reset(device)?;
+    let started = std::time::Instant::now();
+    let mut walked: Vec<(usize, Vec<f32>)> = Vec::with_capacity(ats.len());
+    for (pos, &token) in prompt[..n].iter().enumerate() {
+        call_model_step(device, model, token, pos, &mut logits)?;
+        if ats.contains(&(pos + 1)) {
+            walked.push((pos + 1, logits.clone()));
+        }
+    }
+    let walk_ms = started.elapsed().as_secs_f64() * 1e3;
+
+    let started = std::time::Instant::now();
+    let blocked_a = run(device, &plan_a, &mut logits)?;
+    let a_ms = started.elapsed().as_secs_f64() * 1e3;
+    let started = std::time::Instant::now();
+    let blocked_b = run(device, &plan_b, &mut logits)?;
+    let b_ms = started.elapsed().as_secs_f64() * 1e3;
+
+    println!(
+        "CROSS {n} tokens, window {window}, plans {plan_a:?} and {plan_b:?}: walk {walk_ms:.1} ms, block A {a_ms:.1} ms, block B {b_ms:.1} ms"
+    );
+    let mut failed = false;
+    for &at in &ats {
+        let want = &walked
+            .iter()
+            .find(|(p, _)| *p == at)
+            .ok_or("the walk did not reach a checkpoint")?
+            .1;
+        let tw = argmax(want);
+        let side = if at > window {
+            "past the window"
+        } else {
+            "inside the window"
+        };
+        let mut got_a: Option<&Vec<f32>> = None;
+        if let Some((_, got)) = blocked_a.iter().find(|(p, _)| *p == at) {
+            let (rel, max, _scale) = compare(want, got);
+            println!(
+                "    CROSS A at {at} ({side}): block vs walk relL2 {rel:.3e} maxabs {max:.3e}, top-1 {tw} vs {}",
+                argmax(got)
+            );
+            if argmax(got) != tw {
+                println!("  FAIL plan A's top-1 at {at} is not the walk's");
+                failed = true;
+            }
+            got_a = Some(got);
+        }
+        let mut got_b: Option<&Vec<f32>> = None;
+        if let Some((_, got)) = blocked_b.iter().find(|(p, _)| *p == at) {
+            let (rel, max, _scale) = compare(want, got);
+            println!(
+                "    CROSS B at {at} ({side}): block vs walk relL2 {rel:.3e} maxabs {max:.3e}, top-1 {tw} vs {}",
+                argmax(got)
+            );
+            if argmax(got) != tw {
+                println!("  FAIL plan B's top-1 at {at} is not the walk's");
+                failed = true;
+            }
+            got_b = Some(got);
+        }
+        // A ring block reads history and its own rows from two sources; the
+        // sources are the same whatever the block's length, so two plans must
+        // produce the same logits at a checkpoint they share.
+        if let (Some(ga), Some(gb)) = (got_a, got_b) {
+            let (rel, max, _scale) = compare(ga, gb);
+            println!("    CROSS A vs B at {at}: relL2 {rel:.3e} maxabs {max:.3e}");
+            if rel > 1e-7 || max > 1e-6 {
+                println!("  FAIL the block's logits at {at} depend on where its chunks end");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        return Err("the block path reads the ring's history incorrectly".into());
+    }
+    println!("PASS block-cross: both block plans match the walk and each other");
     Ok(())
 }

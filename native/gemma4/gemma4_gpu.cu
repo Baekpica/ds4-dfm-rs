@@ -1356,16 +1356,55 @@ __global__ void kv_put_rows_kernel(__half *k, __half *v, const float *ksrc, cons
     v[at] = __float2half_rn(vsrc[(size_t) t * (size_t) per + (size_t) i]);
 }
 
+/* A ring block's rows, staged as the cache itself rounds them. The attention
+ * reads these until the block's history is consumed, so the block's own
+ * writes cannot clobber a position its first tokens still need. The staging
+ * row is the layer's own width, so the two sources of attn_rows_kernel use
+ * the same stride. */
+__global__ void kv_stage_rows_kernel(__half *ks, __half *vs, const float *k, const float *v,
+                                     int per, int n) {
+    const int t = blockIdx.y;
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    if (i >= per) return;
+    const size_t at = (size_t) t * (size_t) per + (size_t) i;
+    ks[at] = __float2half_rn(k[at]);
+    vs[at] = __float2half_rn(v[at]);
+}
+
+/* The block's staged rows into their ring slots, after its attention has read
+ * the history. Only the last cap rows of a block longer than the ring are
+ * committed, the reference's own rule (ds41_attn.cuh:377-401): the earlier
+ * ones alias rows the block itself already read, so the ascending write's net
+ * result is exactly "the last cap rows in place". */
+__global__ void kv_commit_rows_kernel(__half *k, __half *v, const __half *ks, const __half *vs,
+                                      int per, int pos0, int i0, int cap) {
+    const int t = blockIdx.y;
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    if (i >= per) return;
+    const int pos = pos0 + i0 + t;
+    const size_t dst = (size_t) (pos % cap) * (size_t) per + (size_t) i;
+    const size_t src = (size_t) (i0 + t) * (size_t) per + (size_t) i;
+    k[dst] = ks[src];
+    v[dst] = vs[src];
+}
+
 /* One block per (query head, query token), over the window that token may
  * see. The arithmetic is attn_split_kernel's with one run - the fp32 score
  * pass in ascending position order, the max, the sum of the exponentials,
  * then the value pass in the same order - so the prefill and a decode over
  * the same history differ only by the split rescale the decode's runs add.
  * The scores of one query fit in the launch's dynamic shared memory: the
- * widest window here is the context bound. */
-__global__ void attn_rows_kernel(const float *q, const __half *k, const __half *v, float *out,
-                                 int heads, int kv_heads, int head_dim, int pos0, int window,
-                                 int kv_cap, int kv_ring) {
+ * widest window here is the context bound.
+ *
+ * `knew`/`vnew` are the block's own rows, staged as f16 until the block has
+ * read its history and they are committed to a ring. A position at or past
+ * pos0 comes from the staging, an older one from the cache
+ * (/data/ds4-dfm-rs/cuda/ds41_attn.cuh:39-46, :324-327); NULL is the
+ * appending cache's write-then-attend, which never overwrites history. */
+__global__ void attn_rows_kernel(const float *q, const __half *k, const __half *v,
+                                 const __half *knew, const __half *vnew, float *out, int heads,
+                                 int kv_heads, int head_dim, int pos0, int window, int kv_cap,
+                                 int kv_ring) {
     extern __shared__ float red[];
     float *sc = red + 32;
     const int h = blockIdx.x;
@@ -1381,8 +1420,10 @@ __global__ void attn_rows_kernel(const float *q, const __half *k, const __half *
     const int first = positions - nwin;
 
     for (int p = warp; p < nwin; p += nwarps) {
-        const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
-        const __half *kp = k + ks * kv_stride + (size_t) kv_head * head_dim;
+        const int pos = first + p;
+        const int fresh = knew && pos >= pos0;
+        const size_t row = fresh ? (size_t) (pos - pos0) : kv_slot(pos, kv_cap, kv_ring);
+        const __half *kp = (fresh ? knew : k) + row * kv_stride + (size_t) kv_head * head_dim;
         float acc = 0.0f;
         for (int d = lane * 2; d < head_dim; d += 64) {
             const float2 qq = *(const float2 *) (qh + d);
@@ -1409,10 +1450,13 @@ __global__ void attn_rows_kernel(const float *q, const __half *k, const __half *
     for (int d = threadIdx.x * 2; d < head_dim; d += blockDim.x * 2) {
         float2 acc = make_float2(0.0f, 0.0f);
         for (int i = 0; i < nwin; i++) {
-            const size_t ks = kv_slot(first + i, kv_cap, kv_ring);
+            const int pos = first + i;
+            const int fresh = vnew && pos >= pos0;
+            const size_t row = fresh ? (size_t) (pos - pos0) : kv_slot(pos, kv_cap, kv_ring);
             const float pr = sc[i];
+            const __half *vp = fresh ? vnew : v;
             const float2 vv = __half22float2(
-                *(const __half2 *) (v + ks * kv_stride + (size_t) kv_head * head_dim + d));
+                *(const __half2 *) (vp + row * kv_stride + (size_t) kv_head * head_dim + d));
             acc.x = fmaf(pr, vv.x, acc.x);
             acc.y = fmaf(pr, vv.y, acc.y);
         }
@@ -5544,6 +5588,12 @@ struct gm4_pre {
     int32_t *items, *perm, *dst;
     int32_t *tokd; /* the block's tokens, so the embedding launch reads them */
     size_t listcap; /* pairs the MoE lists hold */
+    /* A ring block's rows, f16 like the cache, read by its attention until it
+     * has consumed the history and they are committed. One buffer for the
+     * whole chain: a layer stages, attends and commits before the next layer
+     * runs, so no two layers need it at once. */
+    __half *ks, *vs;
+    int stage_per; /* the widest kv row the staging holds (model_widths' nk) */
 };
 
 static float *pre_cut(gm4_pre *P, size_t n) {
@@ -5578,6 +5628,8 @@ static void model_widths(const gm4_model *m, int *nh, int *nq, int *nk, int *ndf
 static void pre_free(gm4_pre *P) {
     if (!P) return;
     if (P->arena) cudaFree(P->arena);
+    if (P->ks) cudaFree(P->ks);
+    if (P->vs) cudaFree(P->vs);
     if (P->items) cudaFree(P->items);
     if (P->perm) cudaFree(P->perm);
     if (P->dst) cudaFree(P->dst);
@@ -5620,6 +5672,20 @@ static int pre_scratch(gm4_model *m, int n, char *err, size_t errlen) {
         snprintf(err, errlen, "prefill scratch cudaMalloc of %.1f MiB failed: %s",
                  (double) floats * sizeof(float) / (1024.0 * 1024.0), cudaGetErrorString(e));
         free(next);
+        return -1;
+    }
+    /* The ring staging: a block's rows in f16, the cache's own rounding, so
+     * the attention reads exactly the rows a committed write would produce.
+     * Sized for the widest kv row in the chain; a layer packs its own width. */
+    const size_t stage = (size_t) n * (size_t) nk;
+    next->stage_per = nk;
+    e = cudaMalloc((void **) &next->ks, stage * sizeof(__half));
+    if (e == cudaSuccess) e = cudaMalloc((void **) &next->vs, stage * sizeof(__half));
+    if (e != cudaSuccess) {
+        (void) cudaGetLastError();
+        snprintf(err, errlen, "prefill ring staging cudaMalloc of %.1f MiB failed",
+                 (double) stage * sizeof(__half) / (1024.0 * 1024.0));
+        pre_free(next);
         return -1;
     }
     next->floats = 0;
@@ -5783,11 +5849,47 @@ static int kv_put_rows_dev(gm4_kv *kv, int n, int pos0, const float *kd, const f
     return 0;
 }
 
+/* A ring block's rows into the staging, before its attention. The source is
+ * the block's f32 k/v, the destination its f16 stage: the same rounding the
+ * cache write makes, so the two paths read identical rows. */
+static int kv_stage_rows_dev(gm4_pre *P, gm4_kv *kv, int n, const float *kd, const float *vd,
+                             char *err, size_t errlen) {
+    if (!P->ks || !P->vs || kv->per > P->stage_per || n > P->cap) {
+        snprintf(err, errlen, "ring staging has no room for %d rows of %d", n, kv->per);
+        return -1;
+    }
+    const int block = 128;
+    const dim3 grid((unsigned) ((kv->per + block - 1) / block), (unsigned) n);
+    kv_stage_rows_kernel<<<grid, block>>>(P->ks, P->vs, kd, vd, kv->per, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "ring stage launch", e);
+    return 0;
+}
+
+/* The staged rows into their ring slots, after the block's attention has read
+ * the history. A block at or past the window overwrites exactly the slots the
+ * walk would have overwritten by the same positions, so the next block reads
+ * the same history from either path. */
+static int kv_commit_rows_dev(gm4_pre *P, gm4_kv *kv, int n, int pos0, char *err, size_t errlen) {
+    const int i0 = n > kv->cap ? n - kv->cap : 0;
+    const int rows = n - i0;
+    const int block = 128;
+    const dim3 grid((unsigned) ((kv->per + block - 1) / block), (unsigned) rows);
+    kv_commit_rows_kernel<<<grid, block>>>(kv->keys, kv->values, P->ks, P->vs, kv->per, pos0, i0,
+                                           kv->cap);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "ring commit launch", e);
+    return 0;
+}
+
 /* The block's attention: one block per (head, query), the window each query's
  * own position allows. The widest window over the block sizes the launch's
- * shared scores, the same array attn_split_kernel keeps per run. */
+ * shared scores, the same array attn_split_kernel keeps per run.
+ * `knew`/`vnew` are a ring block's staged rows; both NULL is the appending
+ * cache's path, where the block's writes never overwrite history. */
 static int attn_rows_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int n, int pos0, int heads,
-                         float *outd, char *err, size_t errlen) {
+                         float *outd, const __half *knew, const __half *vnew, char *err,
+                         size_t errlen) {
     if (heads % kv->kv_heads) {
         snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads,
                  kv->kv_heads);
@@ -5803,8 +5905,9 @@ static int attn_rows_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int n, int pos
         return -1;
     }
     const dim3 grid((unsigned) heads, (unsigned) n);
-    attn_rows_kernel<<<grid, 256, smem>>>(qd, kv->keys, kv->values, outd, heads, kv->kv_heads,
-                                          kv->head_dim, pos0, window, kv->cap, kv->ring);
+    attn_rows_kernel<<<grid, 256, smem>>>(qd, kv->keys, kv->values, knew, vnew, outd, heads,
+                                          kv->kv_heads, kv->head_dim, pos0, window, kv->cap,
+                                          kv->ring);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "block attention launch", e);
     return 0;
@@ -6021,8 +6124,23 @@ static int layer_prefill_dev(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, gm4_pre *P, i
         return -1;
     if (rmsnorm_dev(P->v, NULL, P->v, n * L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
         return -1;
-    if (kv_put_rows_dev(kv, n, pos0, P->k, P->v, err, errlen) != 0) return -1;
-    if (attn_rows_dev(g, kv, P->q, n, pos0, L->heads, P->att, err, errlen) != 0) return -1;
+    /* A ring cache cannot take the block's rows before the block's own
+     * attention: writing position p0+k overwrites the slot of p0+k-cap, and
+     * the block's first tokens still need those positions. Stage the rows,
+     * let the attention read history from the ring and the block from the
+     * staging, then commit (/data/ds4-dfm-rs/cuda/ds41_attn.cuh:324-327,
+     * :377-401). An appending cache never overwrites history, so it keeps the
+     * one-pass write. */
+    if (kv->ring) {
+        if (kv_stage_rows_dev(P, kv, n, P->k, P->v, err, errlen) != 0) return -1;
+        if (attn_rows_dev(g, kv, P->q, n, pos0, L->heads, P->att, P->ks, P->vs, err, errlen) != 0)
+            return -1;
+        if (kv_commit_rows_dev(P, kv, n, pos0, err, errlen) != 0) return -1;
+    } else {
+        if (kv_put_rows_dev(kv, n, pos0, P->k, P->v, err, errlen) != 0) return -1;
+        if (attn_rows_dev(g, kv, P->q, n, pos0, L->heads, P->att, NULL, NULL, err, errlen) != 0)
+            return -1;
+    }
 
     if (transpose_dev(P->att, P->xT, n, nhq, err, errlen) != 0) return -1;
     if (prefill_dev(g, L->o, P->xT, n, P->o, err, errlen) != 0) return -1;
@@ -6295,6 +6413,7 @@ int gm4_gpu_layer_list(gm4_layer *L, int which, void *out, int n, char *err, siz
 size_t gm4_gpu_model_prefill_bytes(const gm4_model *m) {
     if (!m || !m->pre) return 0;
     return m->pre->floats * sizeof(float)
+         + 2 * (size_t) m->pre->cap * (size_t) m->pre->stage_per * sizeof(__half)
          + m->pre->listcap * 3 * sizeof(float) + m->pre->listcap * 3 * sizeof(int32_t)
          + (size_t) m->pre->cap * sizeof(int32_t);
 }

@@ -384,7 +384,12 @@ int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logi
  * where a block's speed over a token walk comes from.
  *
  * The block is limited to 1024 tokens; the scratch is grown on first use to
- * the longest block the session asks for and reused after that. */
+ * the longest block the session asks for and reused after that. A sliding
+ * layer's ring cache is written only after the block's attention has read the
+ * history, and the block's own rows are read from an f16 staging area until
+ * then, so a block at or past the window reads the same history the token
+ * walk would have written (the reference's shape,
+ * /data/ds4-dfm-rs/cuda/ds41_attn.cuh:39-46, :377-401). */
 int gm4_gpu_model_prefill(gm4_gpu *g, gm4_model *m, const int32_t *tokens, int n, int pos0,
                           float *logits, char *err, size_t errlen);
 
