@@ -2367,6 +2367,14 @@ int ds4_mmq_moe_impl(
                         M, K, ne_get_rows, n_experts, s01, s02, stream);
                 }
             }
+            if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+                if (worklist_rc == -1 && policy == MoePolicy::GlmIq2) {
+                    worklist_rc = ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                        tag, *ctx, W, (const int *)src1_q8_1.get(),
+                        ids_dst.get(), expert_bounds.get(), out_f32,
+                        M, K, ne_get_rows, n_experts, s01, s02, stream);
+                }
+            }
             if (worklist_rc == -1 && (type != GGML_TYPE_Q2_K || glm_q2)) {
                 worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                     tag, *ctx, W, (const int *)src1_q8_1.get(),
@@ -2739,7 +2747,8 @@ int ds4_mmq_moe_pair_impl(
         /* See ds4_mmq_moe_impl: family D2R engagement floor (0 = policy). */
         int64_t         d2r_ncols_floor = 0,
         /* Raw GLM cache slots may include whole-quant-block padding. */
-        int64_t         expert_stride = 0) {
+        int64_t         expert_stride = 0,
+        MoePolicy       policy = MoePolicy::Generic) {
 
     const bool direct_gateup_q8 =
         fused_down != nullptr && fused_down->direct_gateup_q8;
@@ -3340,15 +3349,21 @@ int ds4_mmq_moe_pair_impl(
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0 ||
                       type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
                       type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
-            pair_a_rc = ds4_mmq_moe_worklist_launch<type>(
-                tag, *ctx, W_a, (const int *)src1_q8_1,
-                ids_dst, expert_bounds, out_a,
-                M, K, ne_get_rows, n_experts, s01, s02, stream);
-            if (pair_a_rc == 0) {
-                pair_b_rc = ds4_mmq_moe_worklist_launch<type>(
-                    tag, *ctx, W_b, (const int *)src1_q8_1,
-                    ids_dst, expert_bounds, out_b,
+            auto launch = [&](const void *W, float *out) {
+                if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+                    if (policy == MoePolicy::GlmIq2) {
+                        return ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                            tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
+                            M, K, ne_get_rows, n_experts, s01, s02, stream);
+                    }
+                }
+                return ds4_mmq_moe_worklist_launch<type>(
+                    tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
                     M, K, ne_get_rows, n_experts, s01, s02, stream);
+            };
+            pair_a_rc = launch(W_a, out_a);
+            if (pair_a_rc == 0) {
+                pair_b_rc = launch(W_b, out_b);
             }
         }
         if (pair_a_rc == 0 && pair_b_rc == 0) {
@@ -5755,6 +5770,21 @@ extern "C" int ds4_mmq_iq2_xs_moe_vec(
         n_tokens, n_experts, n_expert_used, stream);
 }
 
+/* GLM's IQ2 worklists run the pipelined 64-column tile throughout: the
+ * 128-wide tiles took the unpipelined K loop, so each layer's 1.95 GB of
+ * expert weights streamed in series with the MMAs (MoE time ~ a + b/rows
+ * with b matching the stream). More, shorter tiles reread some weights;
+ * the tile math is the same. DS4_GLM53_PIPE64=0 keeps the 128 tile. */
+template <ggml_type type>
+static MoePolicy glm_iq2_policy() {
+    if constexpr (type != GGML_TYPE_IQ2_XXS && type != GGML_TYPE_IQ2_XS) {
+        return MoePolicy::Generic;
+    }
+    const char *env = getenv("DS4_GLM53_PIPE64");
+    return (!env || strcmp(env, "0") != 0) && moe_worklist_pipe_enabled() &&
+        moe_worklist_tail64_enabled() ? MoePolicy::GlmIq2 : MoePolicy::Generic;
+}
+
 /* SSD slots keep a common padded byte stride across GLM's layer recipes. */
 template <ggml_type type>
 static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
@@ -5770,7 +5800,7 @@ static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
             out, m, k, tokens, experts, used, stream, blocks);
         if (rc == 0) { return rc; }
     }
-    MoePolicy policy = MoePolicy::Generic;
+    MoePolicy policy = glm_iq2_policy<type>();
     if constexpr (type == GGML_TYPE_Q2_K) {
         static_assert(GLM_Q2_SPARK_CC == GGML_CUDA_CC_DGX_SPARK &&
                       GLM_Q2_TYPE == GGML_TYPE_Q2_K, "GLM Q2 backend codes");
@@ -5825,7 +5855,7 @@ static int glm_pair_strided(const void *gate, const void *up, const float *x,
     return ds4_mmq_moe_pair_impl<type>("glm-raw-pair", gate, up, x, ids,
         gate_out, up_out, m, k, tokens, experts, used, stream,
         nullptr, nullptr, 0, false, nullptr, (int64_t)tokens * used,
-        nullptr, 0, (int64_t)(stride / block));
+        nullptr, 0, (int64_t)(stride / block), glm_iq2_policy<type>());
 }
 
 extern "C" int ds4_mmq_glm_pair(uint32_t type, const void *gate,
