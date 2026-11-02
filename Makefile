@@ -468,6 +468,13 @@ tests/weight_mapping_probe: tests/test_weight_mapping.cu
 tests/weight_mapping_policy: tests/test_weight_mapping_policy.cu $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -DDS4_USE_CUDA -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_gemma4_primitives: tests/test_gemma4_primitives.cu cuda/gemma4_primitives.cuh ds4_gemma4_ref.h
+	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
+
+.PHONY: test-gemma4-primitives
+test-gemma4-primitives: tests/test_gemma4_primitives
+	./tests/test_gemma4_primitives
+
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
 
