@@ -410,8 +410,11 @@ static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
     if (!g || !model || !fn || !scale || !base || !norm_weight || !residual_hc) { return false; }
     const uint32_t hc_dim = DS4_N_HC * DS4_N_EMBD;
     const uint32_t mix_dim = DS4_N_HC * (DS4_N_HC + 2u);
-    return ds4_gpu_rms_norm_plain_rows_tensor(g->hc_flat, residual_hc, hc_dim, rows, DS4_RMS_EPS) &&
-        plain_graph_matmul_tensor(g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, rows) &&
+    const int fused = fn->type == DS4_TENSOR_BF16 ? ds4_gpu_glm53_hc_mix(g->hc_mix, residual_hc,
+        model->map, model->size, fn->abs_offset, hc_dim, mix_dim, rows, DS4_RMS_EPS) : 0;
+    return fused >= 0 &&
+        (fused > 0 || (ds4_gpu_rms_norm_plain_rows_tensor(g->hc_flat, residual_hc, hc_dim, rows, DS4_RMS_EPS) &&
+            plain_graph_matmul_tensor(g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, rows))) &&
         ds4_gpu_hc_split_weighted_sum_tensor(g->cur, g->hc_split, g->hc_mix, residual_hc,
             model->map, model->size, scale->abs_offset, base->abs_offset,
             DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&

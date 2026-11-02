@@ -57,6 +57,11 @@ int ds4_gpu_glm53_q8_small_k(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         ds4_gpu_tensor *scratch, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim, uint32_t rows);
 
+/* mHC RMS + 24 BF16 mapping dots of F32 residual rows in one pass. */
+int ds4_gpu_glm53_hc_mix(ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+        const void *model_map, uint64_t model_size, uint64_t fn_offset, uint32_t width,
+        uint32_t outputs, uint32_t rows, float eps);
+
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32
  * [4,128], addressed by absolute position % 4. Pool rows are FP16. */

@@ -344,7 +344,43 @@ static void check_index(uint32_t pos0, uint32_t rows) {
         pos0, rows, pools, rms, worst, worst / rms);
 }
 
+// Fused mHC mix (one-row and row-tiled kernels) vs an FP64 RMS + 24 dots.
+static void check_hc_mix(uint32_t rows) {
+    const uint32_t width = 16384u, outputs = 24u;
+    const float eps = 1.0e-5f;
+    std::vector<__nv_bfloat16> w((uint64_t)outputs * width);
+    std::vector<float> x((uint64_t)rows * width);
+    for (uint64_t i = 0; i < w.size(); i++) { w[i] = __float2bfloat16_rn(sinf((float)(i % 7001u) * 0.053f) * 0.02f); }
+    for (uint64_t i = 0; i < x.size(); i++) { x[i] = cosf((float)(i % 9001u) * 0.011f) * (1.0f + (float)(i / width % 3u)); }
+    ds4_gpu_tensor dw = alloc(w.size() * 2), dx = alloc(x.size() * 4), dm = alloc((uint64_t)rows * outputs * 4);
+    CHECK(cuda_ok(cudaMemcpy(dw.ptr, w.data(), (size_t)dw.bytes, cudaMemcpyHostToDevice), "w"));
+    CHECK(cuda_ok(cudaMemcpy(dx.ptr, x.data(), (size_t)dx.bytes, cudaMemcpyHostToDevice), "x"));
+    CHECK(ds4_gpu_glm53_hc_mix(&dm, &dx, dw.ptr, dw.bytes, 0u, width, outputs, rows, eps) == 1);
+    std::vector<float> got((uint64_t)rows * outputs);
+    CHECK(cuda_ok(cudaMemcpy(got.data(), dm.ptr, (size_t)dm.bytes, cudaMemcpyDeviceToHost), "mix"));
+    double worst = 0.0, scale = 0.0;
+    for (uint32_t r = 0u; r < rows; r++) {
+        double squares = 0.0;
+        for (uint32_t c = 0u; c < width; c++) { squares += (double)x[(uint64_t)r * width + c] * x[(uint64_t)r * width + c]; }
+        const double inv = 1.0 / sqrt(squares / width + eps);
+        for (uint32_t o = 0u; o < outputs; o++) {
+            double dot = 0.0;
+            for (uint32_t c = 0u; c < width; c++) {
+                dot += (double)__bfloat162float(w[(uint64_t)o * width + c]) * x[(uint64_t)r * width + c];
+            }
+            worst = fmax(worst, fabs(dot * inv - (double)got[(uint64_t)r * outputs + o]));
+            scale += dot * inv * dot * inv;
+        }
+    }
+    const double rms = sqrt(scale / ((double)rows * outputs));
+    CHECK(worst < 1.0e-4 * rms);  // F32 accumulation orders only
+    cudaFree(dm.ptr); cudaFree(dx.ptr); cudaFree(dw.ptr);
+    printf("GLM mHC mix: rows=%u mix_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n", rows, rms, worst, worst / rms);
+}
+
 int main(void) {
+    check_hc_mix(1u);
+    check_hc_mix(70u);
     check_index(2050u, 130u);
     check_index(8000u, 37u);
     CHECK(cublas_ok(cublasCreate(&g_cublas), "create"));

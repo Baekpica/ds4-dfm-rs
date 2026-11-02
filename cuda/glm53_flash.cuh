@@ -3,8 +3,9 @@
 
 #include "glm_vq_flash.cuh"
 #include "glm_vq_index.cuh"
+#include "glm_vq_gemv.cuh"
 
-/* Tensor-core prefill paths of the compact (mixed-artifact) GLM-5.3 graph.
+/* Fast paths of the compact (mixed-artifact) GLM-5.3 graph.
  *
  * Latent attention for the compact cache.
  * The reference kernel runs one SIMT block per (row, head): each of the 64
@@ -266,6 +267,43 @@ extern "C" int ds4_gpu_glm53_index_mma(ds4_gpu_tensor *scores, const ds4_gpu_ten
         (float *)scores->ptr, (const float *)q->ptr, (const float *)weights->ptr,
         (const __half *)pool_cache->ptr, n_pools, rows, pos0);
     return cuda_ok(cudaGetLastError(), "GLM-5.3 fused index scores") ? 1 : -1;
+}
+
+/* mHC mix: RMS of the 4 x 4096 residual row and its 24 BF16 mapping dots.
+ * The reference wrote the normalized 16K row (rms_norm_plain), widened it
+ * to BF16 and ran a 24-output BF16 GEMM: four passes over each row and
+ * 1.0 of an 8K prefill's 12.1 s (17.7 us + 6.6 us per decode call). GLM
+ * VQ's kernels take F32 rows in one pass: prefill rows accumulate squares
+ * and raw dots together (mix = inv * W x), decode rows recompute the RMS
+ * per output block. Activations stay F32 instead of rounding to BF16.
+ * 1 done, 0 not covered, -1 failed. */
+extern "C" int ds4_gpu_glm53_hc_mix(ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+        const void *model_map, uint64_t model_size, uint64_t fn_offset, uint32_t width,
+        uint32_t outputs, uint32_t rows, float eps) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_GLM53_HC_MIX");
+        on = !env || strcmp(env, "0") != 0;
+    }
+    if (!on || !rows || outputs != GLMVQ_HC_MIX || !width ||
+        width % (GLMVQ_THREADS * GLMVQ_DOT_VECTOR) || width % GLMVQ_MIX_TILE ||
+        !glm53_compact_has(mix, (uint64_t)rows * outputs, sizeof(float)) ||
+        !glm53_compact_has(residual, (uint64_t)rows * width, sizeof(float)) ||
+        (uintptr_t)residual->ptr % 16) {
+        return 0;
+    }
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)glm53_compact_weight(model_map, model_size,
+        fn_offset, (uint64_t)outputs * width * sizeof(__nv_bfloat16), mix, "GLM-5.3 mHC fn BF16");
+    if (!w || (uintptr_t)w % 16) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    if (rows > GLMVQ_ABS_ROWS) {
+        glmvq_hc_mix_rows<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, 0, stream>>>(
+            (const float *)residual->ptr, w, (float *)mix->ptr, rows, width, eps);
+    } else {
+        glmvq_hc_mix<<<dim3(outputs, rows), GLMVQ_THREADS, 0, stream>>>(
+            (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
+    }
+    return cuda_ok(cudaGetLastError(), "GLM-5.3 mHC mix") ? 1 : -1;
 }
 
 #endif
