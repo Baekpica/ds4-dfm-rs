@@ -372,6 +372,14 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
+            // The VQ artifact is weights only: no tokenizer.json and no GGUF
+            // tokenizer table. Refusing here is the gate that keeps this
+            // family out of the encode dispatch below.
+            ModelFamily::Gemma4A4b => {
+                return Err(TokError::InvalidTokenizer(
+                    "gemma4_a4b has no tokenizer in the VQ artifact",
+                ))
+            }
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -2411,6 +2419,9 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
+        // Unreachable: the artifact carries no tokenizer, so `load_specials`
+        // refuses the family and no `Vocab` with this family can be built.
+        ModelFamily::Gemma4A4b => {}
     }
 }
 

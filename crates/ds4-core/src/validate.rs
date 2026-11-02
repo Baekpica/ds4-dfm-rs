@@ -1994,6 +1994,9 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Axk2Vq => Err(ValidateError::Token(
             "A.X-K2 VQ requires a complete release directory",
         )),
+        ModelFamily::Gemma4A4b => Err(ValidateError::Token(
+            "Gemma-4 VQ requires a complete release directory",
+        )),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::Qwen35 => validate_qwen35(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -2104,6 +2107,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::BeamVq => crate::shape::SHAPE_BEAM_VQ,
                         Variant::MinimaxVq => crate::shape::SHAPE_MINIMAX_VQ,
                         Variant::Axk2Vq => crate::shape::SHAPE_AXK2_VQ,
+                        Variant::Gemma4A4bVq => crate::shape::SHAPE_GEMMA4_A4B,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,

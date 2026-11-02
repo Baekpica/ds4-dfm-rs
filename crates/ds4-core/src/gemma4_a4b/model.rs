@@ -78,21 +78,54 @@ impl Family {
     }
 }
 
-/// Is `dir` a directory whose release names this schema? Cheap: one small
-/// JSON read, used before the full open in an identification chain.
+/// The prefix every entry of this artifact carries: `layout::check` insists
+/// on it, and it is what distinguishes this release from the other VQ
+/// families'. Theirs index GGUF part files (`axk2_vq/release.rs:145-231`, and
+/// the same shape in `beam_vq`, `minimax_vq`, `ling31_vq`, `glm_vq`), while
+/// this one lists HF-named tensors from the original checkpoint.
+pub const NAME_PREFIX: &str = "model.language_model.";
+
+/// Is `dir` a directory whose release names this schema and lists this
+/// family's tensors? One small JSON read, used before the full open in an
+/// identification chain. The schema string alone is shared by every
+/// `vq-release/1` artifact, so the entry naming is what makes the claim.
 pub fn is_release(dir: &Path) -> bool {
     let path = dir.join(release::FILE);
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("schema")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|s| s == release::SCHEMA)
-            })
-            .unwrap_or(false),
-        Err(_) => false,
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    let schema = value.get("schema").and_then(serde_json::Value::as_str);
+    if schema != Some(release::SCHEMA) {
+        return false;
     }
+    value
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry.get("name"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.starts_with(NAME_PREFIX))
+}
+
+/// Identify a directory that already claimed this family through
+/// [`is_release`]. The release has no GGUF header: `split_count` is one
+/// artifact rather than a shard set, `n_tensors` counts the release's named
+/// entries, and the GGUF-only fields are zero instead of borrowed from another
+/// file.
+pub fn identify(dir: &Path) -> Result<crate::Identified, crate::IdentifyError> {
+    let family = Family::open(dir).map_err(|e| crate::IdentifyError::Artifact(e.to_string()))?;
+    Ok(crate::Identified {
+        shape: crate::shape_for_variant(crate::Variant::Gemma4A4bVq),
+        architecture: Some(NAME_PREFIX.trim_end_matches('.').as_bytes().to_vec()),
+        split_count: 1,
+        n_kv: 0,
+        n_tensors: family.release.entries().len() as u64,
+        alignment: 0,
+        version: 0,
+    })
 }
 
 #[cfg(test)]

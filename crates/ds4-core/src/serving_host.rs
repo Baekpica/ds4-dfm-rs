@@ -139,6 +139,11 @@ const MINIMAX_RESIDENT_CTX: u32 = 131_072;
 const AXK2_PREFILL_CHUNK_ENV: &str = "DS4_AXK2_PREFILL_CHUNK";
 const AXK2_NATIVE_DEFAULT: u32 = 2048;
 const AXK2_NATIVE_MAX: u32 = 4096;
+/// Gemma-4 has no measured native prefill geometry, and its serving surface is
+/// refused (`ServingCaps` reports `Support::None` on every lane), so both the
+/// limit and the chunk are unreachable. The sliding window bounds a chunk that
+/// could be useful once a forward exists; neither number is a qualification.
+const GEMMA4_NATIVE_CHUNK: u32 = 1024;
 // Halving floor when the quote does not fit (Ling-3.1's rule): the 262K
 // plan keeps ~0.2-0.6 GiB beside the 2,048-row workspace, 1,024 rows free
 // ~0.9 GiB more. Snapshots are position-indexed, so the chunk is not part
@@ -1270,6 +1275,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
+        ModelFamily::Gemma4A4b => GEMMA4_NATIVE_CHUNK,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1359,6 +1365,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             AXK2_NATIVE_MAX,
         ),
+        ModelFamily::Gemma4A4b => GEMMA4_NATIVE_CHUNK,
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
             if caps.variant == Variant::K2Horizon375B {

@@ -998,6 +998,13 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::BeamVq => return layout_names(crate::beam_vq::layouts()),
         ModelFamily::MinimaxVq => return layout_names(crate::minimax_vq::layouts()),
         ModelFamily::Axk2Vq => return layout_names(crate::axk2_vq::layouts()),
+        // This family's artifact is a VQ release of HF-named files with no
+        // GGUF part, so there are no GGUF names to bind. The list is empty and
+        // the GGUF path must never reach it: `validate_file` refuses the family
+        // by name (`gemma4_a4b` below in `validate.rs`) and `identify_gguf`
+        // refuses a directory that carries no GLM release. The empty list is
+        // pinned by a test so a silent zero-slot binder cannot appear later.
+        ModelFamily::Gemma4A4b => {}
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");

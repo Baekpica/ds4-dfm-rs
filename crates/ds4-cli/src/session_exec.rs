@@ -22,7 +22,10 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Inkling
         | ModelFamily::Qwen35
         | ModelFamily::IQuestQ1
-        | ModelFamily::NaiveN05 => u64::from(shape.n_embd),
+        | ModelFamily::NaiveN05
+        // A plain residual stream of `n_embd`; no session exists for this
+        // family yet, so the arm describes it rather than running.
+        | ModelFamily::Gemma4A4b => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note

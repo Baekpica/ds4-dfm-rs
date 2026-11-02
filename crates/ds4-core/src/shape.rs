@@ -37,6 +37,7 @@ pub enum ModelFamily {
     BeamVq = 16,
     MinimaxVq = 17,
     Axk2Vq = 18,
+    Gemma4A4b = 19,
 }
 
 impl ModelFamily {
@@ -54,6 +55,7 @@ impl ModelFamily {
             "beam_vq" => Some(Self::BeamVq),
             "minimax_m3_vq" => Some(Self::MinimaxVq),
             "axk2_vq" => Some(Self::Axk2Vq),
+            "gemma4_a4b" => Some(Self::Gemma4A4b),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -79,6 +81,7 @@ impl ModelFamily {
             Self::BeamVq => "beam_vq",
             Self::MinimaxVq => "minimax_m3_vq",
             Self::Axk2Vq => "axk2_vq",
+            Self::Gemma4A4b => "gemma4_a4b",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -116,6 +119,7 @@ pub enum Variant {
     MinimaxVq = 20,
     Axk2Vq = 21,
     Mimo26FlashVq = 22,
+    Gemma4A4bVq = 23,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -376,6 +380,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"beam_vq") => ArchRoute::Fixed(Variant::BeamVq),
         Some(b"minimax_m3_vq") => ArchRoute::Fixed(Variant::MinimaxVq),
         Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
+        Some(b"gemma4_a4b") => ArchRoute::Fixed(Variant::Gemma4A4bVq),
         Some(b"mimo2_vq") => ArchRoute::Fixed(Variant::Mimo26FlashVq),
         Some(_) => ArchRoute::Unsupported,
     }
@@ -406,6 +411,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::MinimaxVq => SHAPE_MINIMAX_VQ,
         Variant::Axk2Vq => SHAPE_AXK2_VQ,
         Variant::Mimo26FlashVq => SHAPE_MIMO26_FLASH_VQ,
+        Variant::Gemma4A4bVq => SHAPE_GEMMA4_A4B,
     }
 }
 
@@ -1451,6 +1457,76 @@ pub(crate) const SHAPE_AXK2_VQ: Shape = Shape {
     rope_scale_factor: 2.0,
     rope_orig_ctx: 131_072,
     ..SHAPE_K2_HORIZON_375B
+};
+
+// The flat shape can hold one attention geometry, and this family has two.
+// The un-prefixed fields are the full-attention geometry (the convention
+// `layout.rs` already follows when it picks `n_head` or `n_swa_head`), and
+// `n_swa`/`n_swa_head`/`rope_freq_base_swa` are the sliding ones. Neither
+// field set states the sliding layers' head width (256) or KV head count (8),
+// because no `n_swa_head_dim` or `n_swa_kv_heads` field exists: the
+// configuration in `gemma4_a4b/config.rs` is the only authority for those, and
+// any code that prices or binds a layer must ask it, not this constant. Written
+// out in full rather than based on another family's constant, so no unrelated
+// value (an MLA rank, a YaRN factor) leaks in by default.
+pub(crate) const SHAPE_GEMMA4_A4B: Shape = Shape {
+    name: "Gemma-4-26B-A4B-VQ",
+    family: ModelFamily::Gemma4A4b,
+    variant: Variant::Gemma4A4bVq,
+    n_layer: 30,
+    n_embd: 2816,
+    n_vocab: 262_144,
+    n_head: 16,
+    n_head_kv: 2,
+    n_noise_head: 0,
+    n_head_dim: 512,
+    n_value_dim: 512,
+    n_rot: 128,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 128,
+    n_expert_used: 8,
+    n_expert_shared: 0,
+    n_ff_exp: 704,
+    n_ff_dense: 2112,
+    n_ff_shexp: 0,
+    n_hash_layer: 0,
+    n_swa: 1024,
+    // The five full layers are at 5, 11, 17, 23 and 29, not every Nth layer,
+    // so the schedule lives in the family's layer table (MiMo's rule).
+    n_swa_period: 0,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 0,
+    n_leading_dense: 0,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 16,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 5,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    use_rope: true,
+    use_qk_norm: true,
+    rms_eps: 1e-6,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 1.0,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 1_000_000.0,
+    rope_freq_base_swa: 10_000.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 262_144,
 };
 
 // Naive shares GQA dimensions, but replaces all nine global layers with DSA.

@@ -1084,6 +1084,7 @@ mod tests {
             Variant::MinimaxVq,
             Variant::Axk2Vq,
             Variant::Mimo26FlashVq,
+            Variant::Gemma4A4bVq,
         ];
         for v in &all {
             match v {
@@ -1109,7 +1110,8 @@ mod tests {
                 | Variant::BeamVq
                 | Variant::MinimaxVq
                 | Variant::Axk2Vq
-                | Variant::Mimo26FlashVq => {}
+                | Variant::Mimo26FlashVq
+                | Variant::Gemma4A4bVq => {}
             }
         }
         all
@@ -1127,8 +1129,14 @@ mod tests {
 
     #[test]
     fn declarations_follow_the_caps() {
-        // Every family states some reuse, so every family has items to run.
+        // Every servable family states some reuse, so every family has items
+        // to run. Gemma-4 is the exception while it has no executor: its caps
+        // refuse every lane, so an empty declaration is the refusal itself.
         for v in variants() {
+            if v == Variant::Gemma4A4bVq {
+                assert!(declared(v).is_empty(), "{v:?}");
+                continue;
+            }
             assert!(declared(v).contains(&"prefix"), "{v:?}");
         }
         // Bonsai keeps no banks, disk KV or snapshots; Inkling reuses exactly

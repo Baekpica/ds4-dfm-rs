@@ -198,6 +198,9 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
 
 pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
     if path.is_dir() {
+        if crate::gemma4_a4b::is_release(path) {
+            return crate::gemma4_a4b::identify(path);
+        }
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::identify(path);
         }

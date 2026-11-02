@@ -3796,6 +3796,10 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::BeamVq => crate::beam_vq::layouts(),
         ModelFamily::MinimaxVq => crate::minimax_vq::layouts(),
         ModelFamily::Axk2Vq => crate::axk2_vq::layouts(),
+        // No GGUF layout exists for this family; its layout is the release's
+        // own name -> role table (`gemma4_a4b::layout`). Empty here, and the
+        // GGUF path refuses the family before this point, as in `bind.rs`.
+        ModelFamily::Gemma4A4b => Vec::new(),
         ModelFamily::Qwen35 => expected_qwen35(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),

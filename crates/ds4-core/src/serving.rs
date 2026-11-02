@@ -32,6 +32,9 @@ const BEAM_CTX_MAX: u32 = 1_048_576;
 const MINIMAX_CTX_MAX: u32 = 1_048_576;
 /// A.X-K2's max_position_embeddings (YaRN x 2 over 131,072).
 const AXK2_CTX_MAX: u32 = 262_144;
+/// Gemma-4's max_position_embeddings; the two rope widths (1e4 sliding, 1e6
+/// full) are native, so no scaling factor widens it.
+const GEMMA4_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -1139,6 +1142,31 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: true,
         },
+        // The family has a verified artifact contract and no executor: there
+        // is no forward, no attention, no MoE and no device bind. Every lane
+        // is therefore `None` rather than unqualified, which makes a request
+        // an error instead of a quote. The ceiling is the checkpoint's own
+        // max_position_embeddings; it is a limit, not a qualification.
+        ModelFamily::Gemma4A4b => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::None,
+            reuse_support: Support::None,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 0,
+            host: HostNeed::Cuda,
+            ctx_max: Some(GEMMA4_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         ModelFamily::DeepSeek4 => ServingCaps {
             family,
             variant,
@@ -1654,6 +1682,7 @@ impl ServingCaps {
             Variant::NaiveN05Flash => "naive_n05_flash",
             Variant::IQuestQ1 => "iquest_q1",
             Variant::DeepSeek41Flash => "deepseek4-v41-flash",
+            Variant::Gemma4A4bVq => "gemma4_a4b",
         }
     }
 }

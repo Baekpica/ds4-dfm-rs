@@ -49,5 +49,5 @@ impl std::error::Error for Error {}
 
 pub use config::{Config, LayerType};
 pub use layout::{Layer, Layout, Role};
-pub use model::{is_release, Family};
+pub use model::{identify, is_release, Family, NAME_PREFIX};
 pub use release::{Codebook, Entry, Payload, Release, Totals};

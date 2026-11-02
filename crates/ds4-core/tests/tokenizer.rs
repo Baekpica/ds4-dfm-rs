@@ -373,6 +373,10 @@ impl Builder {
 fn write_family(family: ModelFamily) -> PathBuf {
     let path = tmp(&format!("{}.gguf", family.oracle_name()));
     match family {
+        // The VQ artifact is weights only: no tokenizer table to compare.
+        ModelFamily::Gemma4A4b => {
+            panic!("this family's artifact carries no tokenizer")
+        }
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
@@ -622,6 +626,10 @@ fn family_cases(family: ModelFamily) {
     ];
     let mut renders: Vec<String> = Vec::new();
     match family {
+        // The VQ artifact is weights only: no tokenizer table to compare.
+        ModelFamily::Gemma4A4b => {
+            panic!("this family's artifact carries no tokenizer")
+        }
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
@@ -744,6 +752,10 @@ fn family_cases(family: ModelFamily) {
 
     let mut tokens = TokenBuffer::from_tokens(vec![7]);
     match family {
+        // The VQ artifact is weights only: no tokenizer table to compare.
+        ModelFamily::Gemma4A4b => {
+            panic!("this family's artifact carries no tokenizer")
+        }
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
