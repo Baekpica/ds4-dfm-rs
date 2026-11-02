@@ -2128,6 +2128,13 @@ tests/glm53_mtp_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm53_mtp_gate" $@
 
+tests/glm53_nll: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm53_nll --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm53_nll" $@
+
 GLM53_NATIVE_DEPS = ds4_glm53_cache.h ds4_glm53_stream.inc ds4_glm53_compact.h \
 	ds4_glm53_graph.inc ds4_glm53_payload.inc ds4_glm53_mtp.inc ds4_glm53_batch.inc \
 	ds4_glm53_image.inc
@@ -2617,7 +2624,7 @@ BUILD_PROGRAMS := \
     ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
     tests/beam_mtp_gate tests/beam_quality tests/bench_glm53_attention tests/bench_glm53_pool \
     tests/bench_glm53_shared tests/bench_glm53_stream tests/cuda_long_context_smoke \
-    tests/cuda_tokentile_ldmatrix tests/ds41_boundary_verify tests/glm53_mtp_gate \
+    tests/cuda_tokentile_ldmatrix tests/ds41_boundary_verify tests/glm53_mtp_gate tests/glm53_nll \
     tests/glm53_state_gate tests/glm_vq_quality tests/glm_vq_state tests/iquest_attention_profile \
     tests/iquest_attn_precision tests/iquest_bank_verify tests/iquest_perf_verify \
     tests/iquest_reduce_verify tests/iquest_router_profile tests/iquest_router_verify \

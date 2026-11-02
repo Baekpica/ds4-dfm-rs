@@ -66,6 +66,10 @@ name = "glm53_mtp_gate"
 required-features = ["native"]
 
 [[example]]
+name = "glm53_nll"
+required-features = ["native"]
+
+[[example]]
 name = "glm_vq_gate"
 required-features = ["native"]
 

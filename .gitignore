@@ -228,6 +228,7 @@ tests/naive_banks
 /tests/test_glm53_mtp_long
 /tests/glm53_state_gate
 /tests/glm53_mtp_gate
+/tests/glm53_nll
 /tests/test_glm53_pair
 /tests/test_glm53_upload_async
 /tests/test_glm53_width
