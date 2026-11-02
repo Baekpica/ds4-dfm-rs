@@ -23,6 +23,7 @@
 //! disagreement it can see without compute.
 
 mod config;
+mod decode;
 mod layout;
 mod model;
 mod release;
@@ -48,6 +49,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub use config::{Config, LayerType};
+pub use decode::{decode, Tensor};
 pub use layout::{Layer, Layout, Role};
 pub use model::{identify, is_release, Family, NAME_PREFIX};
 pub use release::{Codebook, Entry, Payload, Release, Totals};
