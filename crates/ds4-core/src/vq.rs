@@ -121,8 +121,17 @@ fn u64_le(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(w)
 }
 
-/// C `ds4vq_f16` (`vq_fmt.h:22-28`): a half decode that keeps subnormals
-/// exact, including the negative-zero and NaN encodings.
+/// Half to float, subnormals included.
+///
+/// The reference is the producer's decoder,
+/// `/data/VQ_Tools/crates/vq-format/src/lib.rs:86-108`, which starts the
+/// normalization exponent at 113 and decrements once per left shift. A
+/// transcription of ds4's C copy (`ds41_vq_fmt.h:37-43`, `ds4vq_f16`) had it
+/// at 112, which makes every subnormal half decode at half its value: the
+/// 2026-11-02 device gate found it on a one-hot probe whose only nonzero
+/// codebook entry was 5.1558e-05 and whose CPU dot came out 2.578e-05. The
+/// C copy in this tree still carries the off-by-one and is not this
+/// family's decoder; it is recorded, not silently shared.
 pub fn f16_to_f32(h: u16) -> f32 {
     let s = (u32::from(h) & 0x8000) << 16;
     let e = (u32::from(h) >> 10) & 0x1F;
@@ -131,7 +140,7 @@ pub fn f16_to_f32(h: u16) -> f32 {
         if m == 0 {
             s
         } else {
-            let mut e = 112u32;
+            let mut e = 113u32;
             let mut m = m;
             while m & 0x400 == 0 {
                 m <<= 1;

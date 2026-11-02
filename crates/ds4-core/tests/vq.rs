@@ -26,11 +26,23 @@ fn f16(f: f32) -> u16 {
     h
 }
 
-fn push_u16(b: &mut Vec<u8>, v: u16) {
-    b.extend_from_slice(&v.to_le_bytes());
+/// Subnormal halves must decode exactly: the codebook of a real artifact
+/// carries them, and the device converts them with the hardware instruction.
+/// The value 0x0361 is the one the 2026-11-02 device gate found the CPU
+/// oracle halving (`/data/VQ_Tools/crates/vq-format/src/lib.rs:86-108`).
+#[test]
+fn half_subnormals_are_exact() {
+    assert_eq!(f16_to_f32(0x0361), 5.155_801_8e-5);
+    assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+    assert_eq!(f16_to_f32(0x03FF), 1023.0 * 2f32.powi(-24));
+    assert_eq!(f16_to_f32(0x0400), 2f32.powi(-14));
+    assert_eq!(f16_to_f32(0x8361), -5.155_801_8e-5);
+    assert_eq!(f16_to_f32(0x8000), 0.0);
 }
 
-fn push_u32(b: &mut Vec<u8>, v: u32) {
+fn push_u16(b: &mut Vec<u8>, v: u16) {
+    b.extend_from_slice(&v.to_le_bytes());
+}fn push_u32(b: &mut Vec<u8>, v: u32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
