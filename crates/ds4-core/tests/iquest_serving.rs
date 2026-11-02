@@ -142,7 +142,7 @@ fn context_and_bank_admission() {
     let resolved = plan(&req, &fitted);
     no_errors(&resolved);
     assert_eq!(resolved.effective.max_seqs, 2);
-    assert_eq!(resolved.qualified.banks, Support::Present);
+    assert_eq!(resolved.qualified.banks, Support::Qualified);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn cache_needs_runtime() {
     no_errors(&resolved);
     assert_eq!(resolved.effective.prefix_reuse, ReuseKind::Partial);
     assert!(resolved.effective.disk);
-    assert_eq!(resolved.qualified.disk, Support::Present);
+    assert_eq!(resolved.qualified.disk, Support::Qualified);
     state.partial_reuse = Some(false);
     has_error(&plan(&req, &state), "partial_runtime");
     state.disk_ready = Some(false);

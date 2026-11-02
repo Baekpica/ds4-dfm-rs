@@ -86,7 +86,7 @@ static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
     } else if (keep) {
         // Agent clients re-render the last answer: resume below the common prefix.
         g->position = keep;
-        s->checkpoint.len = (int)keep;
+        session_rewound(s, keep);
         mimo2_draft_reset(g);
         start = keep;
     } else {
@@ -107,13 +107,6 @@ static int mimo2_session_sync(ds4_session *s, const ds4_tokens *prompt,
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
     return 0;
-}
-
-/* The host asks rather than mirroring the high-water mark and restore floor. */
-int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
-    if (!ds4_session_is_mimo2(s) || !s->mimo2_graph_ready || !tokens || n_tokens <= 0) { return 0; }
-    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
-    return (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt);
 }
 
 static int mimo2_session_eval(ds4_session *s, int token, char *err, size_t errlen) {

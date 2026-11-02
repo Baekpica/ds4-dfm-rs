@@ -13,7 +13,7 @@ static void die_usage(void)
             "  rewrite LIVE CANONICAL COMMON\n"
             "  prefix LIVE_IDS PROMPT_IDS\n"
             "  rewrite-from CTX LIVE_IDS PROMPT_IDS COMMON\n"
-            "  plan FAMILY BACKEND CTX PREFILL VALID SOLAR SPAN LIVE;PROMPT\n"
+            "  plan FAMILY BACKEND CTX PREFILL VALID SOLAR LIVE;PROMPT\n"
             "  rewind CTX LIVE_LEN POS SOLAR\n"
             "  invalidate\n"
             "  create CTX\n");
@@ -127,11 +127,11 @@ static void cmd_plan(int argc, char **argv)
 {
     token_vec live = {0}, prompt = {0};
     const char *fam, *pair;
-    int ctx, valid, solar, span, plen;
+    int ctx, valid, solar, plen;
     uint32_t prefill;
     int cuda;
     int err = 0, start = 0, rebuild = 0, bump = 0, fence = 0, bounds = 0;
-    if (argc != 10) die_usage();
+    if (argc != 9) { die_usage(); }
     fam = argv[2];
     set_family(fam);
     cuda = strcmp(argv[3], "cpu") != 0;
@@ -140,8 +140,7 @@ static void cmd_plan(int argc, char **argv)
     if (prefill == 0) prefill = 1;
     valid = atoi(argv[6]) != 0;
     solar = atoi(argv[7]) != 0;
-    span = atoi(argv[8]);
-    pair = argv[9];
+    pair = argv[8];
     {
         const char *semi = strchr(pair, ';');
         char live_s[4096], prompt_s[4096];
@@ -164,25 +163,6 @@ static void cmd_plan(int argc, char **argv)
         bounds = 1;
         printf("PLAN err=%d start=%d rebuild=%d bump=%d fence=%d bounds=%d\n",
                err, start, rebuild, bump, fence, bounds);
-        free(live.v);
-        free(prompt.v);
-        return;
-    }
-
-    if (strcmp(fam, "exaone-moe") == 0) {
-        int live_len = valid ? live.len : 0;
-        if (valid) {
-            ds4_session *s = dummy_live(ctx, &live, 1);
-            int common = ds4_session_common_prefix(s, &prompt);
-            start = common;
-            if (start > 0 && start == plen) start = plen - 1;
-            if (live_len - start > span) start = 0;
-            if (common < live_len) bump = 1;
-            dummy_free(s);
-        }
-        rebuild = (start == 0);
-        printf("PLAN err=0 start=%d rebuild=%d bump=%d fence=0 bounds=0\n",
-               start, rebuild, bump);
         free(live.v);
         free(prompt.v);
         return;

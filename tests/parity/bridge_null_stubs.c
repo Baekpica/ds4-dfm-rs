@@ -285,9 +285,9 @@ int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen)
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_mimo2_commit");
 }
-int ds4_session_mimo2_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     (void)s; (void)tokens; (void)n_tokens;
-    STUB("ds4_session_mimo2_sync_keep");
+    STUB("ds4_session_sync_keep");
 }
 int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
                                     unsigned n_patches, unsigned grid_h, unsigned grid_w,
@@ -393,9 +393,6 @@ uint64_t ds4_session_generation(const ds4_session *s) {
 }
 int ds4_session_prefill_cap(ds4_session *s) { (void)s; STUB("ds4_session_prefill_cap"); }
 uint64_t ds4_session_payload_bytes(ds4_session *s) { (void)s; STUB("ds4_session_payload_bytes"); }
-int ds4_session_exaone_rewind_span(ds4_session *s) {
-    (void)s; STUB("ds4_session_exaone_rewind_span");
-}
 int ds4_session_distributed_route_ready(ds4_session *s, char *err, size_t errlen) {
     (void)err; (void)errlen;
     if (!s) {

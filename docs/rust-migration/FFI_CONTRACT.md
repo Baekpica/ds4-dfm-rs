@@ -85,7 +85,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_invalidate` | `ds4_session_invalidate` |
 | `ds4_bridge_session_generation` | Inc 5a content generation |
 | `ds4_bridge_session_prefill_cap` | chunk cap used by the native graph |
-| `ds4_bridge_session_exaone_rewind_span` | EXAONE sliding-window reuse span |
+| `ds4_bridge_session_sync_keep` | rows a sync keeps of the live state (common prefix the family can resume); -1: extension only |
 | `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials hand their verify rows to the host's `verify` callback (sample-and-match) until cleared (NULL); `ud` must outlive those trials |
 | `ds4_bridge_session_save_payload` | path wrapper over `ds4_session_save_payload` (native writes header+tokens+GPU tail) |
 | `ds4_bridge_session_load_payload` | path wrapper; `payload_bytes` = file size |

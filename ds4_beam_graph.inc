@@ -15,6 +15,9 @@
 
 typedef struct {
     uint32_t ctx_cap, row_cap, swa_cap, position;
+    // Newest row any forward wrote (verify rows too) and a restore's floor:
+    // what the SWA rings still hold for a rewind.
+    uint32_t high, restored;
     // Lowest position whose DFlash2 context rows are in the draft rings.
     uint32_t draft_first;
     bool ready, failed, borrowed;
@@ -69,6 +72,7 @@ static bool beam_graph_reset(ds4_beam_graph *g) {
     if (!g || !g->ready) { return false; }
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0u;
+    g->high = g->restored = 0u;
     g->draft_first = 0u;
     if (g->draft) { g->draft->trial_n = 0u; }
     g->failed = false;
@@ -377,6 +381,7 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
         return false;
     }
     g->position = pos + rows;
+    if (g->position > g->high) { g->high = g->position; }
     g->failed = false;
     return true;
 }

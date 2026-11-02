@@ -157,6 +157,7 @@ static int iquest_payload_restore(ds4_iquest_graph *g, FILE *fp, uint64_t *left,
     if (rc) { free(tokens); return 1; }
     g->position = n;
     g->mtp_position = g->mtp_enabled ? n - 1 : 0;
+    g->high = g->restored = n;  // the rings get back only the window under n
     g->failed = false;
     *tokens_out = tokens;
     return 0;

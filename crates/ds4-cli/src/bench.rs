@@ -1441,7 +1441,6 @@ mod tests {
         "--dist-prefill-chunk",
         "--dist-prefill-window",
         "--dist-activation-bits",
-        "--dist-replay-check",
         "--debug",
         "--ctx-start",
         "--ctx-max",

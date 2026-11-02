@@ -8,6 +8,9 @@ typedef struct {
     ds4_gpu_tensor *scores, *top_a, *top_b;
     ds4_gpu_tensor *kv[N05_LAYERS], *codes[N05_LAYERS], *scales[N05_LAYERS];
     unsigned kv_cap[N05_LAYERS], context, cap, position;
+    /* Newest row any forward wrote (verify rows too) and a restore's floor:
+     * what the SWA rings still hold for a rewind. */
+    unsigned high, restored;
     unsigned *host_positions;
     uint64_t bytes;
     ds4_naive_df_runtime draft;
@@ -305,5 +308,6 @@ static bool naive_forward(ds4_naive_graph *g, const ds4_model *m, const ds4_weig
     }
     if (!naive_head(g, m, w, n - 1) || !naive_draft_prepare(&g->draft, pos, n)) { return false; }
     g->position = pos + n; g->failed = false;
+    if (g->position > g->high) { g->high = g->position; }
     return true;
 }

@@ -240,7 +240,6 @@ pub struct ds4_bridge_distributed_options {
     pub prefill_chunk: u32,
     pub prefill_window: u32,
     pub activation_bits: u32,
-    pub replay_check: i32,
     pub debug: i32,
 }
 
@@ -890,7 +889,7 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
-    pub fn ds4_bridge_mimo2_sync_keep(
+    pub fn ds4_bridge_session_sync_keep(
         s: *mut ds4_bridge_session,
         tokens: *const i32,
         n_tokens: i32,
@@ -1123,8 +1122,6 @@ extern "C" {
     pub fn ds4_bridge_session_generation(s: *mut ds4_bridge_session) -> u64;
 
     pub fn ds4_bridge_session_prefill_cap(s: *mut ds4_bridge_session) -> c_int;
-
-    pub fn ds4_bridge_session_exaone_rewind_span(s: *mut ds4_bridge_session) -> c_int;
 
     pub fn ds4_bridge_session_distributed_route_ready(
         s: *mut ds4_bridge_session,

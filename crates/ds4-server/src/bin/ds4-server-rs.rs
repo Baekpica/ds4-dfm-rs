@@ -39,7 +39,6 @@ fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
         prefill_chunk: opt.prefill_chunk,
         prefill_window: opt.prefill_window,
         activation_bits: opt.activation_bits,
-        replay_check: opt.replay_check,
         debug: opt.debug,
     })
 }
@@ -1416,7 +1415,7 @@ Tool replay: [--disable-exact-dsml-tool-replay] [--tool-memory-max-ids N]\n\
          [--dspark] [--no-dspark] [--dspark-verify K] [--no-graph] [--no-kv-reuse] [--v41-prof]\n\
          [--emit-trace] [--mem-budget-mb N]\n\
          Distributed: [--role coordinator|worker] [--layers A:B] [--listen HOST PORT] [--coordinator HOST PORT]\n\
-         [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--dist-replay-check] [--debug]"
+         [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--debug]"
     );
     std::process::exit(2);
 }

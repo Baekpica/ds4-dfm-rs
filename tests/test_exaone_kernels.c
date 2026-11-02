@@ -133,28 +133,6 @@ static void test_family_session_graph_memory_plan(void) {
     g_ds4_shape = saved;
 }
 
-static void test_exaone_rewind_span(void) {
-    ds4_engine engine = {0};
-    ds4_session session = {0};
-    session.engine = &engine;
-    session.exaone_graph_ready = true;
-    session.exaone_graph.ctx_size = 262144u;
-    session.exaone_graph.layer_kv[0] =
-        (ds4_gpu_tensor *)(uintptr_t)1u;
-    session.exaone_graph.layer_kv_cap[0] = 640u;
-    session.checkpoint_valid = true;
-
-    session.checkpoint.len = 500;
-    const int short_span = ds4_session_exaone_rewind_span(&session);
-    session.checkpoint.len = 1000;
-    const int wrapped_span = ds4_session_exaone_rewind_span(&session);
-    const int ok = short_span == 500 && wrapped_span == 513;
-    if (!ok) g_fail++;
-    printf("%-38s short=%d wrapped=%d  %s\n",
-           "diverged-prefix rewind span", short_span, wrapped_span,
-           ok ? "ok" : "FAIL");
-}
-
 static void report(const char *what, double max_abs, double max_rel, double tol_abs,
                    double tol_rel) {
     const int ok = (max_abs <= tol_abs) || (max_rel <= tol_rel);
@@ -1831,7 +1809,6 @@ int main(int argc, char **argv) {
     test_k2_full_attention_memory_plan();
     test_batch_memory_plan();
     test_family_session_graph_memory_plan();
-    test_exaone_rewind_span();
     if (!ds4_gpu_init()) { fprintf(stderr, "ds4_gpu_init failed\n"); return 1; }
     test_shared_prefill_workspace();
     test_persistent_bank_runtime_ownership();

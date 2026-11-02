@@ -146,7 +146,7 @@ banks beside the drafter, so `--mtp` serves one sequence.
 ## Serving
 
 The serving surface is GLM VQ's: persistent banks, partial prefix reuse, disk
-KV and session snapshots, present and not yet release-qualified
+KV and session snapshots, qualified by `ds4 --serving-check`
 ([capabilities](serving-capabilities.md)); the DFlash2 drafter runs on the
 serial lane. The native context default is `max_position_embeddings` =
 1,048,576.
@@ -264,5 +264,5 @@ gains 22% (above).
 - With `--mtp` the serial lane keeps no disk KV for Beam's chat requests
   (its ordinary disk cache skips thinking requests); in-memory continuation
   still reuses every token.
-- Partial reuse, disk KV, snapshots and DFlash2 are implemented and measured
-  here, not release-qualified.
+- DFlash2 is implemented and measured here, not release-qualified.
+  `ds4 --serving-check` qualifies partial reuse, disk KV and snapshots.
