@@ -422,6 +422,14 @@ static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
             norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS);
 }
 
+// Q4_K decode rows take the GEMV; other widths keep the MMQ tile.
+static bool glm53_graph_mm(ds4_gpu_tensor *out, const ds4_model *model, const ds4_tensor *w,
+        uint32_t in_dim, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
+    const int done = w->type == DS4_TENSOR_Q4_K ? ds4_gpu_glm53_q4k_vec(out, x, model->map, model->size,
+        w->abs_offset, in_dim, out_dim, rows) : 0;
+    return done > 0 || (!done && plain_graph_matmul_tensor(out, model, w, in_dim, out_dim, x, rows));
+}
+
 // Rank-128 projections; the KDA chunk scratch is free until the recurrence.
 static bool glm53_graph_rank(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *out, const ds4_model *model,
         const ds4_tensor *w, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
@@ -433,8 +441,8 @@ static bool glm53_graph_rank(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *out, const 
 static bool glm53_graph_kda(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_layer_weights *l, uint32_t il, uint32_t rows) {
     const uint32_t projection = DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
-    if (!plain_graph_matmul_tensor(g->q, model, l->kda_q, DS4_N_EMBD, projection, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->k, model, l->kda_k, DS4_N_EMBD, projection, g->norm, rows) ||
+    if (!glm53_graph_mm(g->q, model, l->kda_q, DS4_N_EMBD, projection, g->norm, rows) ||
+        !glm53_graph_mm(g->k, model, l->kda_k, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->v, model, l->kda_v, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->q_rank, model, l->kda_f_a, DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, g->norm, rows) ||
         !glm53_graph_rank(g, g->heads, model, l->kda_f_b, projection, g->q_rank, rows) ||

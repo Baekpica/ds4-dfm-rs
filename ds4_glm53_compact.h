@@ -73,6 +73,11 @@ int ds4_gpu_glm53_kda_mma(ds4_gpu_tensor *out, ds4_gpu_tensor *scratch,
         const ds4_gpu_tensor *a_log, const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate,
         const ds4_gpu_tensor *norm, uint32_t rows, uint32_t heads, float lower_bound, float eps);
 
+/* One-row Q4_K projection on the MMVQ GEMV (decode). 1/0/-1 as above. */
+int ds4_gpu_glm53_q4k_vec(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32
  * [4,128], addressed by absolute position % 4. Pool rows are FP16. */

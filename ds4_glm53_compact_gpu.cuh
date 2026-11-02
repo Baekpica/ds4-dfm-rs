@@ -156,6 +156,33 @@ extern "C" int ds4_gpu_glm53_proj_v(ds4_gpu_tensor *out,
     return cuda_ok(cudaGetLastError(), "GLM-5.3 compact V projection");
 }
 
+/* Decode rows of the KDA q/k projections (Q4_K, 4096 -> 8192). The generic
+ * Q4_K dispatch always takes the MMQ tile, padding one row to an 8-column
+ * tile: 104.5 us per call at 181 GB/s, 7.1 ms of a 64 ms decode token. The
+ * MMVQ GEMV streams the 18.9 MB row-major weight once. 1/0/-1 as above. */
+enum { GLM53_Q4K_BLOCK = 256, GLM53_Q4K_BYTES = 144, GLM53_Q4K_VEC_ROWS = 1 };
+
+extern "C" int ds4_gpu_glm53_q4k_vec(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_GLM53_Q4K_VEC");
+        on = !env || strcmp(env, "0") != 0;
+    }
+    if (!on || rows > GLM53_Q4K_VEC_ROWS || !rows || !in_dim || in_dim % GLM53_Q4K_BLOCK ||
+        !out_dim || out_dim > INT_MAX || in_dim > INT_MAX ||
+        !glm53_compact_has(out, (uint64_t)rows * out_dim, sizeof(float)) ||
+        !glm53_compact_has(x, (uint64_t)rows * in_dim, sizeof(float))) {
+        return 0;
+    }
+    const char *w = glm53_compact_weight(model_map, model_size, weight_offset,
+        (uint64_t)out_dim * (in_dim / GLM53_Q4K_BLOCK) * GLM53_Q4K_BYTES, out, "GLM-5.3 Q4_K vec");
+    if (!w) { return 0; }
+    return ds4_mmq_q4_K_dense_vec(w, (const float *)x->ptr, (float *)out->ptr,
+        (int)out_dim, (int)rows, (int)in_dim, ds4_current_stream()) == 0 ? 1 : -1;
+}
+
 __global__ static void glm53_pool_key_kernel(__half *pool_cache,
         float *tail_k, float *tail_gate, const float *raw_k, const float *gate,
         const float *norm, const float *bias, const uint16_t *ape,
