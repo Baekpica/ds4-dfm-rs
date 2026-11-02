@@ -2,18 +2,24 @@
 
 MiMo-V2.6-Flash VQ (family `Mimo2`, variant `Mimo26FlashVq`, architecture
 `mimo2_vq`) is a GVQ1 conversion of
-[XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/tree/f657ba2f7d24c9adc5730675baaa2d34de878a49)
-and its UNCENSORED tune
-([dealignai/MiMo-V2.6-Flash-RL-UNCENSORED](https://huggingface.co/dealignai/MiMo-V2.6-Flash-RL-UNCENSORED/tree/0bdb11d7f37d3f6939e53f822c2bff518e4852fa)),
+[XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/tree/f657ba2f7d24c9adc5730675baaa2d34de878a49),
+its UNCENSORED tune
+([dealignai/MiMo-V2.6-Flash-RL-UNCENSORED](https://huggingface.co/dealignai/MiMo-V2.6-Flash-RL-UNCENSORED/tree/0bdb11d7f37d3f6939e53f822c2bff518e4852fa))
+and its MOPD post-training
+([XiaomiMiMo/MiMo-V2.6-Flash-MOPD](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-MOPD/tree/5220c3f513065a0426be5e094571cbed0983386e)),
 recipe `mimo26f-vq8-r13x47-r8x32-q8-fp8kv-embssd-v1`:
 
 | Release | Commit |
 |---|---|
 | [Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF) | `8a15b057` |
 | [Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF) | `f1cd8523` |
+| [Baekpica/MiMo-V2.6-Flash-MOPD-VQ-GGUF](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-VQ-GGUF) | `79ae75e5` |
 
-Both share one architecture; UNCENSORED differs only in layers 34–47's
-`o_proj`, and 38 of its 53 parts are RL's bytes. The mixed-quant MiMo
+All three share one architecture; UNCENSORED differs only in layers 34–47's
+`o_proj`, and 38 of its 53 parts are RL's bytes. MOPD converts its 47 expert
+parts, body and embedding from the MOPD checkpoint; its vision, audio, MTP
+and DFlash parts are RL's bytes. MOPD has no GB10 measurement yet; the
+numbers below are RL's or UNCENSORED's. The mixed-quant MiMo
 artifacts ([MiMo release scope](ds4-dfm-model-families.md#mimo-release-scope))
 keep their own gates; nothing transfers between the two.
 
@@ -30,7 +36,8 @@ keep their own gates; nothing transfers between the two.
 | DFlash drafter | five SWA-1024 layers, block 8 | Q8_0 `dflash-q8_0.gguf` |
 | Vision / audio | MiMo ViT (28 layers) and merger; audio tokenizer encoder, RVQ books, patch encoder | Q8_0 `vision-q8_0.gguf`, `audio-q8_0.gguf` |
 
-`release.json` names 53 independent GGUF parts (98,520,657,024 bytes). The
+`release.json` names 53 independent GGUF parts (98,520,657,024 bytes; MOPD
+98,520,656,896). The
 host checks the recipe, every part's SHA-256 (`O_DIRECT`), the GVQ1/GVR8
 headers and book links, the residual plan against `r13p8_layers` and the Q8_0
 scales, then binds the Hugging Face tensor names. Engine open copies 86.82 GiB
