@@ -217,6 +217,7 @@ tests/naive_banks
 
 /tests/test_glm53_attention
 /tests/test_glm53_attention_cuda
+/tests/test_glm53_flash
 /tests/bench_glm53_attention
 /tests/bench_glm53_pool
 /tests/bench_glm53_shared

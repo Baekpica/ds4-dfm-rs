@@ -34,6 +34,13 @@ int ds4_gpu_glm53_proj_v(ds4_gpu_tensor *out,
         const ds4_gpu_tensor *low_out, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t rows, uint32_t heads,
         uint32_t latent_dim, uint32_t head_dim);
+/* Tensor-core attn_low for 2+ rows (64 heads, 512 latents): 1 done,
+ * 0 not covered (reference kernel applies), -1 failed. Both views are
+ * consumed as scratch; low_out receives the result. */
+int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *low_q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected,
+        uint32_t sel_stride, uint32_t rows, uint32_t pos0, uint32_t cap,
+        uint32_t heads, uint32_t latent_dim, uint32_t head_dim);
 
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32

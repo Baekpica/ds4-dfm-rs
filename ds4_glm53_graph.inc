@@ -518,8 +518,11 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
         selected = g->idx_selected;
         stride = DS4_GLM53_MAX_SELECTED;
     }
-    return ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il], selected,
-        stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA) &&
+    const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->layer_kv[il], selected,
+        stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+    if (flash < 0) { return false; }
+    return (flash > 0 || ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il], selected,
+            stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) &&
         ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
             l->attn_v_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_VALUE_MLA) &&
         plain_graph_matmul_tensor(g->attn_out, model, l->attn_output,

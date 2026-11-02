@@ -118,6 +118,7 @@ extern "C" int ds4_gpu_glm53_absorb_q(ds4_gpu_tensor *low_q,
 }
 
 #include "cuda/glm53_low_attn.cuh"
+#include "cuda/glm53_flash.cuh"
 
 __global__ static void glm53_proj_v_kernel(float *out, const float *low,
         const char *weight, uint32_t heads, uint32_t latent_dim,

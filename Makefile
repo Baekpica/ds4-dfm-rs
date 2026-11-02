@@ -2150,7 +2150,8 @@ tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc \
-	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
+	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh \
+	cuda/glm53_flash.cuh
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
@@ -2282,6 +2283,10 @@ tests/test_glm53_attention_cuda: tests/test_glm53_attention.cu ds4_glm53_attn.h 
 tests/bench_glm53_attention: tests/bench_glm53_attention.cu ds4_glm53_attn.h ds4_glm53_compact.h cuda/glm53_low_attn.cuh
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
 
+tests/test_glm53_flash: tests/test_glm53_flash.cu ds4_glm53_attn.h ds4_glm53_compact.h cuda/glm53_low_attn.cuh \
+	cuda/glm53_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
 tests/bench_glm53_pool: tests/bench_glm53_pool.cu ds4_glm53_compact.h cuda/glm53_pool_score.cuh
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
 
@@ -2294,6 +2299,10 @@ test-glm53-attention: tests/test_glm53_attention
 
 test-glm53-attention-cuda: tests/test_glm53_attention_cuda
 	./tests/test_glm53_attention_cuda
+
+.PHONY: test-glm53-flash
+test-glm53-flash: tests/test_glm53_flash
+	./tests/test_glm53_flash
 
 .PHONY: test-glm53-quant test-glm53-mixed test-glm53-weight \
 	test-glm53-payload test-glm53-mtp test-glm53-banks test-glm53-map test-glm53-vision-norm
@@ -2655,7 +2664,7 @@ BUILD_PROGRAMS := \
     tests/test_ds41_pick tests/test_ds41_sample tests/test_ds41_vq tests/test_eos_sampling \
     tests/test_exaone_batch tests/test_exaone_checkpoint tests/test_exaone_forward \
     tests/test_exaone_kernels tests/test_exaone_partial tests/test_exaone_ref \
-    tests/test_exaone_tokenizer tests/test_glm53_attention tests/test_glm53_attention_cuda \
+    tests/test_exaone_tokenizer tests/test_glm53_attention tests/test_glm53_attention_cuda tests/test_glm53_flash \
     tests/test_glm53_banks tests/test_glm53_bounds tests/test_glm53_cache tests/test_glm53_compact \
     tests/test_glm53_compare tests/test_glm53_dsa tests/test_glm53_image \
     tests/test_glm53_loader tests/test_glm53_long tests/test_glm53_map tests/test_glm53_mixed \
