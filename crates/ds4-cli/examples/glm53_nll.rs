@@ -7,7 +7,10 @@ use serde_json::json;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(5..=6).contains(&args.len()) {
-        return Err("usage: glm53_nll MODEL TEXT_FILE OUT_JSON PREFIX_TOKENS TARGET_TOKENS [CONTEXT]".into());
+        return Err(
+            "usage: glm53_nll MODEL TEXT_FILE OUT_JSON PREFIX_TOKENS TARGET_TOKENS [CONTEXT]"
+                .into(),
+        );
     }
     let prefix: usize = args[3].parse()?;
     let targets: usize = args[4].parse()?;
@@ -36,7 +39,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
         let sum: f64 = logits.iter().map(|&v| (v as f64 - max).exp()).sum();
         nll.push(max + sum.ln() - logits[next as usize] as f64);
-        let argmax = (0..vocab).max_by(|&a, &b| logits[a].total_cmp(&logits[b])).unwrap_or(0);
+        let argmax = (0..vocab)
+            .max_by(|&a, &b| logits[a].total_cmp(&logits[b]))
+            .unwrap_or(0);
         top1.push(argmax as i32 == next);
         session.eval(next)?;
     }
@@ -44,8 +49,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hits = top1.iter().filter(|&&hit| hit).count();
     std::fs::write(
         &args[2],
-        serde_json::to_vec(&json!({"prefix": prefix, "targets": targets, "context": context,
-            "mean_nll": mean, "top1": hits, "nll": nll, "top1_hits": top1}))?,
+        serde_json::to_vec(
+            &json!({"prefix": prefix, "targets": targets, "context": context,
+            "mean_nll": mean, "top1": hits, "nll": nll, "top1_hits": top1}),
+        )?,
     )?;
     println!("prefix {prefix} targets {targets}: mean NLL {mean:.5}, top-1 {hits}/{targets}");
     Ok(())
