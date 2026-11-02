@@ -44,8 +44,10 @@ __global__ void __launch_bounds__(GLMVQ_DOT_WARPS * 32) glmvq_bf16_dot(
     const uint32_t row = blockIdx.x * (GLMVQ_DOT_WARPS / split) + local;
     // The row's weights head for L2 while the predecessor drains.
     if (row < rows && !lane && !part) {
+        #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
         asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
             "l"(weight + (uint64_t)row * cols), "r"(cols * (uint32_t)sizeof(__nv_bfloat16)) : "memory");
+        #endif
     }
     glmvq_pdl_wait();
     float sum[NT] = {};
@@ -122,8 +124,10 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_mix(const float *resid
     glmvq_pdl_open();
     // This output's 32 KB weight row heads for L2 while the predecessor drains.
     if (!lane) {
+        #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
         asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
             "l"(weight + (uint64_t)blockIdx.x * width), "r"(width * (uint32_t)sizeof(__nv_bfloat16)) : "memory");
+        #endif
     }
     glmvq_pdl_wait();
     // MTP verify rows: blockIdx.y selects the row; per-row math is unchanged.

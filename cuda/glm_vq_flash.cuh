@@ -306,9 +306,11 @@ __global__ void __launch_bounds__(256) glmvq_absorb_k(__nv_bfloat16 *qlow, const
     // The head's W_k (256 KB) heads for L2 in four pieces while the predecessor drains.
     if (threadIdx.x < 4) {
         constexpr uint32_t piece = GLMVQ_ABS_DIM * GLMVQ_FA_LATENT * sizeof(__nv_bfloat16) / 4;
+        #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
         asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
             "l"((const uint8_t *)(weight + (uint64_t)head * 2 * GLMVQ_ABS_DIM * GLMVQ_FA_LATENT) + threadIdx.x * piece),
             "r"(piece) : "memory");
+        #endif
     }
     glmvq_pdl_wait();
     const __nv_bfloat16 *w = weight + (uint64_t)head * 2 * GLMVQ_ABS_DIM * GLMVQ_FA_LATENT + col;
@@ -337,8 +339,10 @@ __global__ void __launch_bounds__(256) glmvq_absorb_v(float *out, const __nv_bfl
     const __nv_bfloat16 *w = weight + ((uint64_t)head * 2 * GLMVQ_ABS_DIM + GLMVQ_ABS_DIM + c) * GLMVQ_FA_LATENT;
     glmvq_pdl_open();
     if (!lane) {
+        #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
         asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
             "l"(w), "r"((uint32_t)(GLMVQ_FA_LATENT * sizeof(__nv_bfloat16))) : "memory");
+        #endif
     }
     glmvq_pdl_wait();
     float sum[GLMVQ_ABS_ROWS] = {};
