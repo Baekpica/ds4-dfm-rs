@@ -90,8 +90,22 @@ struct h3d_context {
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
     int attention_mma;    /* 1 = tensor-core attention (default), 0 = byte-exact scalar */
-    int attention_pipe;   /* 1 = the eight-warp pipelined block instead of the four-warp one */
+    int attention_warps;  /* the pipelined block's warps per CTA; 0 = the four-warp block */
     struct h3d_vae_options vae;
+};
+
+/* The pipelined attention block's shapes, as warps per CTA: 16 query rows each,
+ * so the width is also the row count and the register ceiling `__launch_bounds__`
+ * hands ptxas -- 256 threads leave the block's own 208 registers alone, 384 cap
+ * them at 170, and 512 at 128, which is the only width that could ever fit a
+ * second CTA. Every width shares the same three-stage ring, because the ring is
+ * measured in key tiles and not in rows; what the width buys is half the K/V
+ * traffic per 64 extra rows, and what it costs is registers. */
+enum {
+    H3D_ATTN_FOUR = 0,
+    H3D_ATTN_PIPE8 = 8,
+    H3D_ATTN_PIPE12 = 12,
+    H3D_ATTN_PIPE16 = 16
 };
 
 /* Whether the byte-exact scalar attention was asked for, from the environment.
@@ -111,26 +125,33 @@ static int h3d_attention_scalar_from_env(void) {
     return 0;
 }
 
-/* Whether the four-warp block was asked for by name. The eight-warp pipelined
- * block is the tensor-core default as of the unit that measured it
- * bit-identical and 23.7% faster at the delivery shape, so `H3_DIT_ATTENTION`
- * takes `four` to select the older shape; as with its neighbours the value is
- * matched on its first letter. */
-static int h3d_attention_four_from_env(void) {
+/* Which pipelined width, or the four-warp block, was asked for by name. The
+ * eight-warp block is the tensor-core default as of the unit that measured it
+ * bit-identical and 23.7% faster at the delivery shape; `four` names the older
+ * synchronous one and `pipe12`/`pipe16` the wider rows-per-CTA shapes, whose
+ * digits are matched anywhere in the value so `pipe12`, `12` and `w12` agree.
+ * A value with no width in it stays on the default rather than guessing. */
+static int h3d_attention_warps_from_env(void) {
     const char *mode = getenv("H3_DIT_ATTENTION");
-    return mode && (mode[0] == 'f' || mode[0] == 'F');
+    if (!mode) return H3D_ATTN_PIPE8;
+    if (mode[0] == 'f' || mode[0] == 'F') return H3D_ATTN_FOUR;
+    for (const char *at = mode; at[0] != '\0'; at++) {
+        if (at[0] == '1' && at[1] == '2') return H3D_ATTN_PIPE12;
+        if (at[0] == '1' && at[1] == '6') return H3D_ATTN_PIPE16;
+    }
+    return H3D_ATTN_PIPE8;
 }
 
 /* Select the attention per run. `scalar` nonzero asks for the byte-exact
  * kernel, which is the only path that carries the reference guarantee; zero is
  * the tensor-core default, which is the pipelined block unless the environment
- * named the four-warp one. A host chooses tensor-core or scalar; which of the
- * two tensor-core blocks runs is the environment's, so `H3_DIT_ATTENTION=four`
- * still reaches a host that sets the arm itself. */
+ * named another shape. A host chooses tensor-core or scalar; which tensor-core
+ * shape runs is the environment's, so `H3_DIT_ATTENTION=four` and `=pipe16`
+ * still reach a host that sets the arm itself. */
 void h3d_set_attention(h3d_context *context, int scalar) {
     if (context) {
         context->attention_mma = !scalar;
-        context->attention_pipe = !scalar && !h3d_attention_four_from_env();
+        context->attention_warps = scalar ? 0 : h3d_attention_warps_from_env();
     }
 }
 
@@ -304,7 +325,8 @@ h3d_context *h3d_create(char *error, size_t error_size) {
      * choose with `h3d_set_attention`; the environment is read once here as the
      * default for callers that never call it, such as the reproducer. */
     context->attention_mma = !h3d_attention_scalar_from_env();
-    context->attention_pipe = context->attention_mma && !h3d_attention_four_from_env();
+    context->attention_warps =
+            context->attention_mma ? h3d_attention_warps_from_env() : 0;
     context->vae = h3d_vae_options_from_env();
     h3d_lt_forget();
     return context;
@@ -4364,24 +4386,27 @@ __global__ static void h3d_attention_mma_kernel(
  * The four-warp block above stages one 64-key tile with a load-then-barrier,
  * so a warp waits out its CTA's global reads, and because a CTA covers only 64
  * query rows the head's whole K and V is re-read once per 64 rows -- 677 GB
- * per call at the delivery shape. Eight warps double the rows a CTA covers and
- * halve that traffic, and a three-deep `cp.async` ring keeps the next tiles'
- * copies in flight under this tile's math, so staging stops being a stall.
+ * per call at the delivery shape. Sixteen query rows per warp and a three-deep
+ * `cp.async` ring answer both: the ring keeps the next tiles' copies in flight
+ * under this tile's math, so staging stops being a stall, and the width divides
+ * that traffic.
  *
- * The ring is dynamic shared memory (3 x 2 x 64 x 128 bf16 = 98,304 B), which
- * is past the 48 KB static limit and has to be opted into; one CTA of 256
- * threads then runs. What that buys besides the traffic is registers: 256
- * threads leave room for 255 each, where the four-warp block's third CTA
- * capped the kernel at 169 and left the compiler nothing to pipeline
- * `ldmatrix` with.
+ * The width is a template parameter because it is the one knob that trades the
+ * two costs against each other. The ring is 3 x 2 x 64 x 128 bf16 = 98,304 B
+ * at every width -- it is measured in key tiles, not rows -- so those 98,304 B
+ * are one CTA's whole shared-memory budget whatever the width, and a second CTA
+ * cannot fit beside them (2 x 98,304 against the 102,400 B an SM holds). What
+ * the width does move is registers: `__launch_bounds__` takes the thread count,
+ * so eight warps may use the block's 208, twelve are capped at 170 and sixteen
+ * at 128. That is why the wider shapes are options to measure, not a default to
+ * assume: 256 rows per CTA halves the traffic again and may pay for itself in
+ * spills.
  *
  * The arithmetic is the four-warp block's, step for step: the k16 mma order,
  * the 64-key tile, the one maximum per tile and the BF16 P all stay, so the
  * output is bit-identical and the shape is the only thing that moved.
  * ------------------------------------------------------------------------ */
 enum {
-    H3D_PIPE_WARPS = 8,
-    H3D_PIPE_ROWS = H3D_MMA_M * H3D_PIPE_WARPS,   /* 128 query rows per CTA */
     H3D_PIPE_STAGES = 3,                          /* one tile read, two in flight */
     H3D_PIPE_PLANE = H3D_MMA_KEYS * H3D_MMA_ROW,  /* one stage's K or V, elements */
     H3D_PIPE_SMEM = (int)(H3D_PIPE_STAGES) * 2 * H3D_PIPE_PLANE *
@@ -4418,7 +4443,9 @@ __device__ __forceinline__ static void h3d_pipe_wait(void) {
 
 /* Stage one 64-key tile at `base` into `stage`, swizzled as the four-warp
  * block swizzles its tile. Commit is the caller's, so a tile's K and V land as
- * one group. */
+ * one group. The stride is the CTA's own thread count, which is the template's
+ * width: a wider CTA stages the same tile with more threads at work on it. */
+template <uint32_t WARPS>
 __device__ __forceinline__ static void h3d_pipe_stage(
         __nv_bfloat16 *ring, uint32_t stage, const __nv_bfloat16 *key,
         const __nv_bfloat16 *value, uint32_t head, uint32_t sequence,
@@ -4427,7 +4454,7 @@ __device__ __forceinline__ static void h3d_pipe_stage(
     __nv_bfloat16 *const tile_value = h3d_pipe_plane(ring, stage, 1u);
     for (uint32_t index = threadIdx.x;
          index < H3D_MMA_KEYS * H3D_MMA_CHUNKS;
-         index += H3D_PIPE_WARPS * 32u) {
+         index += WARPS * 32u) {
         const uint32_t row = index / H3D_MMA_CHUNKS;
         const uint32_t chunk = index % H3D_MMA_CHUNKS;
         const uint32_t source = base + row;
@@ -4442,11 +4469,20 @@ __device__ __forceinline__ static void h3d_pipe_stage(
     }
 }
 
-__global__ __launch_bounds__(H3D_PIPE_WARPS * 32u, 1)
+/* One instantiation per width. `__launch_bounds__` takes the thread count, so
+ * ptxas is held to 208 registers at eight warps, 170 at twelve and 128 at
+ * sixteen without `-maxrregcount` in the build: the ceiling follows the shape.
+ * `MIN_CTA` is the second half of that bound and exists to be *asked*, not
+ * shipped: the ring as it stands fills an SM on its own, so the only way to
+ * make ptxas answer "what would two CTAs cost this block" is to demand two and
+ * read the spills. Every instantiation the dispatch launches leaves it at 1. */
+template <uint32_t WARPS, uint32_t MIN_CTA = 1>
+__global__ __launch_bounds__(WARPS * 32u, MIN_CTA)
 static void h3d_attention_mma_pipe_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t sequence, uint32_t heads, float scale) {
+    constexpr uint32_t rows_per_cta = H3D_MMA_M * WARPS;
     extern __shared__ __align__(16) __nv_bfloat16 ring[];
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t warp = threadIdx.x >> 5u;
@@ -4454,7 +4490,7 @@ static void h3d_attention_mma_pipe_kernel(
     const uint32_t column = (lane & 3u) * 2u;     /* first of its two columns */
     const uint32_t matrix = lane >> 3u;           /* ldmatrix: which 8x8 quadrant */
     const uint32_t head = blockIdx.y;
-    const uint32_t first_row = blockIdx.x * H3D_PIPE_ROWS + warp * H3D_MMA_M;
+    const uint32_t first_row = blockIdx.x * rows_per_cta + warp * H3D_MMA_M;
     const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
     const int live0 = row0 < sequence, live1 = row1 < sequence;
     const uint32_t read0 = live0 ? row0 : sequence - 1u;
@@ -4488,12 +4524,12 @@ static void h3d_attention_mma_pipe_kernel(
 
     /* Fill the ring, then issue one tile's copies per iteration so that the
      * tile being read completed `stages - 1` tiles ago. */
-    h3d_pipe_stage(ring, 0u, key, value, head, sequence, 0u);
+    h3d_pipe_stage<WARPS>(ring, 0u, key, value, head, sequence, 0u);
     h3d_pipe_commit();
     for (uint32_t ahead = 1; ahead + 1u < H3D_PIPE_STAGES; ahead++) {
         const uint32_t base = ahead * H3D_MMA_KEYS;
         if (base < sequence) {
-            h3d_pipe_stage(ring, ahead, key, value, head, sequence, base);
+            h3d_pipe_stage<WARPS>(ring, ahead, key, value, head, sequence, base);
         }
         h3d_pipe_commit();
     }
@@ -4506,7 +4542,7 @@ static void h3d_attention_mma_pipe_kernel(
         const uint32_t next = base + (H3D_PIPE_STAGES - 1u) * H3D_MMA_KEYS;
         const uint32_t current = tile % H3D_PIPE_STAGES;
         if (next < sequence) {
-            h3d_pipe_stage(ring, (tile + H3D_PIPE_STAGES - 1u) % H3D_PIPE_STAGES,
+            h3d_pipe_stage<WARPS>(ring, (tile + H3D_PIPE_STAGES - 1u) % H3D_PIPE_STAGES,
                            key, value, head, sequence, next);
         }
         /* An empty group keeps the ring's depth fixed, so the wait below is the
@@ -4647,20 +4683,42 @@ static void h3d_attention_mma_pipe_kernel(
     }
 }
 
-/* The pipelined block's shared-memory admission. Its ring is past the 48 KB
- * every kernel gets without asking, so the CTA's ceiling has to be raised
- * once; a refused request retires the arm rather than failing the launch.
- * Returns 0 when the shape is admitted. */
+/* The pipelined block's shared-memory admission, one per width. Its ring is
+ * past the 48 KB every kernel gets without asking, so that shape's own ceiling
+ * has to be raised once; a refused request retires the shape rather than
+ * failing the launch. Returns 0 when the shape is admitted. */
+template <uint32_t WARPS>
 static int h3d_pipe_admit(void) {
     static int refused = -1;
     if (refused < 0) {
         const cudaError_t status = cudaFuncSetAttribute(
-                (const void *)h3d_attention_mma_pipe_kernel,
+                (const void *)h3d_attention_mma_pipe_kernel<WARPS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, H3D_PIPE_SMEM);
         refused = status == cudaSuccess ? 0 : 1;
         if (refused) (void)cudaGetLastError();
     }
     return refused;
+}
+
+/* Launch one width of the pipelined block. Returns nonzero when the launch was
+ * issued; zero sends the caller down to the next narrower shape. The label
+ * carries the width, because the record's A/Bs read these lines and two shapes
+ * that print the same string are indistinguishable in a log. */
+template <uint32_t WARPS>
+static int h3d_pipe_launch(h3d_context *context, h3d_tensor *output,
+                           const h3d_tensor *query, const h3d_tensor *key,
+                           const h3d_tensor *value, uint32_t sequence,
+                           uint32_t heads, float scale) {
+    if (h3d_pipe_admit<WARPS>() != 0) return 0;
+    const uint32_t rows = H3D_MMA_M * WARPS;
+    dim3 grid((sequence + rows - 1) / rows, heads);
+    h3d_attention_mma_pipe_kernel<WARPS><<<grid, WARPS * 32u,
+                                            (size_t)H3D_PIPE_SMEM,
+                                            context->stream>>>(
+            (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
+            (const __nv_bfloat16 *)key->data,
+            (const __nv_bfloat16 *)value->data, sequence, heads, scale);
+    return 1;
 }
 
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
@@ -4678,31 +4736,34 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    /* Tensor-core arithmetic, on the eight-warp pipelined block unless the
-     * four-warp one was named. Both kernels are 128-wide, so the 64-wide
+    /* Tensor-core arithmetic, on whichever pipelined width the environment
+     * asked for, or on the four-warp block. A width whose shared-memory
+     * admission is refused narrows rather than fails: sixteen warps fall to
+     * twelve, then eight, then the four-warp block, and `attention_warps` is
+     * left at zero so the rest of the run does not retry the refused shape.
+     * Both pipelined and four-warp kernels are 128-wide, so the 64-wide
      * connector attention stays on the tiled path. */
     if (context->attention_mma && head_dim == 128) {
-        if (context->attention_pipe) {
-            /* The ring is past the 48 KB static limit, so the CTA has to ask
-             * for it; the request is idempotent and its failure is not fatal,
-             * it only retires the arm for this context. */
-            if (h3d_pipe_admit() == 0) {
-                dim3 pipe_grid((sequence + H3D_PIPE_ROWS - 1) / H3D_PIPE_ROWS,
-                               heads);
-                h3d_attention_mma_pipe_kernel<<<pipe_grid,
-                                                H3D_PIPE_WARPS * 32u,
-                                                (size_t)H3D_PIPE_SMEM,
-                                                context->stream>>>(
-                    (__nv_bfloat16 *)output->data,
-                    (const __nv_bfloat16 *)query->data,
-                    (const __nv_bfloat16 *)key->data,
-                    (const __nv_bfloat16 *)value->data, sequence, heads,
-                    scale);
-                return h3d_launch_ok("BF16 attention (mma, pipelined)", error,
-                                     error_size);
-            }
-            context->attention_pipe = 0;
+        int issued = 0;
+        if (context->attention_warps == H3D_ATTN_PIPE16) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE16>(
+                    context, output, query, key, value, sequence, heads, scale);
         }
+        if (!issued && context->attention_warps == H3D_ATTN_PIPE12) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE12>(
+                    context, output, query, key, value, sequence, heads, scale);
+        }
+        if (!issued && context->attention_warps == H3D_ATTN_PIPE8) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE8>(
+                    context, output, query, key, value, sequence, heads, scale);
+        }
+        if (issued) {
+            char label[64];
+            snprintf(label, sizeof label, "BF16 attention (mma, pipelined %u warps)",
+                     (unsigned)context->attention_warps);
+            return h3d_launch_ok(label, error, error_size);
+        }
+        context->attention_warps = 0;
         dim3 mma_grid((sequence + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
         h3d_attention_mma_kernel<<<mma_grid, H3D_MMA_WARPS * 32u, 0,
                                    context->stream>>>(
