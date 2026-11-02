@@ -42,7 +42,9 @@ fn half_subnormals_are_exact() {
 
 fn push_u16(b: &mut Vec<u8>, v: u16) {
     b.extend_from_slice(&v.to_le_bytes());
-}fn push_u32(b: &mut Vec<u8>, v: u32) {
+}
+
+fn push_u32(b: &mut Vec<u8>, v: u32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 

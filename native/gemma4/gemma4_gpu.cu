@@ -22,6 +22,10 @@
  * whole container is uploaded with every payload start on a 256-byte
  * boundary and its own zeroed 64-byte tail, because the container is what
  * the release hands us. The kernels never see that framing.
+ *
+ * The routed gather (gm4_gpu_rows) is the same kernels with a row list: a
+ * warp's row is rl[lo] instead of row0 + lo, so a mixture layer reads its
+ * eight chosen expert slices and nothing else.
  */
 #include "gemma4_gpu.h"
 
@@ -177,14 +181,22 @@ __device__ __forceinline__ void v3_rounds(const v3blk &cur, uint32_t rounds, uin
     }
 }
 
+/* Which row of the payload a warp walks: the next contiguous row, or the
+ * row the caller's gather list names. The list is uniform across a launch,
+ * so the branch costs one predicate per row, not per index. */
+__device__ __forceinline__ size_t row_of(const Layout &L, uint32_t lo, const uint32_t *rl) {
+    return rl ? (size_t) rl[lo] : (size_t) L.row0 + (size_t) lo;
+}
+
 /* One warp per row, the three 128-byte lines of the next block issued before
  * this one computes (the reference's cross-block pipeline). */
 template <int DIM, int EXT>
-__global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const float *x, float *y) {
+__global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                  const float *x, float *y) {
     const uint32_t lo = (uint32_t) ((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
     const uint32_t lane = threadIdx.x & 31u;
     if (lo >= (uint32_t) L.nrows) return;
-    const size_t r = (size_t) L.row0 + (size_t) lo;
+    const size_t r = row_of(L, lo, rl);
     const __half *cb = (const __half *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
     const uint32_t *row = (const uint32_t *) (p + L.stream_off + (size_t) r * L.mrow);
@@ -220,11 +232,12 @@ __global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const float 
  * select for nc below 4096 (v3_blk_ok requires nbit >= 12), which is the
  * router geometry. */
 #define GEMV_UNROLL 4
-__global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const float *x, float *y) {
+__global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                  const float *x, float *y) {
     const int lo = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int lane = threadIdx.x & 31;
     if (lo >= L.nrows) return;
-    const size_t r = (size_t) L.row0 + (size_t) lo;
+    const size_t r = row_of(L, (uint32_t) lo, rl);
     const int nidx_row = L.cols / 4;
     const uint2 *cb = (const uint2 *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
@@ -259,11 +272,12 @@ __global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const float 
 /* One warp per row, no shared codebook: the 64 KB table stays in L1. The
  * fallback for any dim and any index width. */
 template <int DIM>
-__global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const float *x, float *y) {
+__global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                 const float *x, float *y) {
     const int lo = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int lane = threadIdx.x & 31;
     if (lo >= L.nrows) return;
-    const size_t r = (size_t) L.row0 + (size_t) lo;
+    const size_t r = row_of(L, (uint32_t) lo, rl);
     const int nidx_row = L.cols / L.dim;
     const __half *cb = (const __half *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
@@ -501,20 +515,20 @@ int upload(gm4_gpu *g, Tensor *t, const gm4_spec *spec, gm4_account *acct, char 
     return rc;
 }
 
-int launch_payload(const Payload &p, const float *x, float *y, int threads) {
+int launch_payload(const Payload &p, const uint32_t *rl, const float *x, float *y, int threads) {
     const int blocks = (p.l.nrows * 32 + threads - 1) / threads;
     if (p.variant == 3) {
-        if (p.l.dim == 8) gemv_v3blk_kernel<8, 0><<<blocks, threads>>>(p.dev, p.l, x, y);
-        else if (p.l.dim == 4) gemv_v3blk_kernel<4, 0><<<blocks, threads>>>(p.dev, p.l, x, y);
-        else gemv_v3blk_kernel<0, 0><<<blocks, threads>>>(p.dev, p.l, x, y);
+        if (p.l.dim == 8) gemv_v3blk_kernel<8, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
+        else if (p.l.dim == 4) gemv_v3blk_kernel<4, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
+        else gemv_v3blk_kernel<0, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
     } else if (p.variant == 2 && p.l.dim == 4) {
-        gemv_warp4_kernel<<<blocks, threads>>>(p.dev, p.l, x, y);
+        gemv_warp4_kernel<<<blocks, threads>>>(p.dev, p.l, rl, x, y);
     } else if (p.l.dim == 4) {
-        gemv_warp_kernel<4><<<blocks, threads>>>(p.dev, p.l, x, y);
+        gemv_warp_kernel<4><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
     } else if (p.l.dim == 8) {
-        gemv_warp_kernel<8><<<blocks, threads>>>(p.dev, p.l, x, y);
+        gemv_warp_kernel<8><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
     } else {
-        gemv_warp_kernel<0><<<blocks, threads>>>(p.dev, p.l, x, y);
+        gemv_warp_kernel<0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
     }
     return 0;
 }
@@ -529,6 +543,8 @@ struct gm4_gpu {
     int nt;
     float *xbuf, *ybuf;
     size_t xcap, ycap;
+    uint32_t *rlbuf;   /* the gather's row list, grown on demand */
+    size_t rlcap;
     char devname[256];
     gm4_account acct;
 };
@@ -605,6 +621,7 @@ void gm4_gpu_close(gm4_gpu *g) {
     free(g->ts);
     if (g->xbuf) cudaFree(g->xbuf);
     if (g->ybuf) cudaFree(g->ybuf);
+    if (g->rlbuf) cudaFree(g->rlbuf);
     free(g);
 }
 
@@ -647,7 +664,7 @@ int gm4_gpu_matvec(gm4_gpu *g, int tensor, const float *x, float *y, int threads
             snprintf(err, errlen, "payload %d disagrees with payload 0", p);
             return -1;
         }
-        launch_payload(t->pays[p], g->xbuf, g->ybuf, threads);
+        launch_payload(t->pays[p], NULL, g->xbuf, g->ybuf, threads);
         e = cudaGetLastError();
         if (e != cudaSuccess) return fail(err, errlen, "matvec launch", e);
     }
@@ -655,6 +672,85 @@ int gm4_gpu_matvec(gm4_gpu *g, int tensor, const float *x, float *y, int threads
     if (e != cudaSuccess) return fail(err, errlen, "matvec sync", e);
     e = cudaMemcpy(y, g->ybuf, (size_t) L.rows * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "y download", e);
+    return 0;
+}
+
+/* Grow the device row list without leaking the old one on failure. cudaFree
+ * synchronises, which is harmless here: no kernel from this module is in
+ * flight when a call reaches this point. */
+static int ensure_rows(gm4_gpu *g, int nrows, char *err, size_t errlen) {
+    if ((size_t) nrows <= g->rlcap) return 0;
+    uint32_t *next = NULL;
+    cudaError_t e = cudaMalloc((void **) &next, (size_t) nrows * sizeof(uint32_t));
+    if (e != cudaSuccess) {
+        snprintf(err, errlen, "row list cudaMalloc of %d entries failed: %s", nrows,
+                 cudaGetErrorString(e));
+        return -1;
+    }
+    if (g->rlbuf) cudaFree(g->rlbuf);
+    g->rlbuf = next;
+    g->rlcap = (size_t) nrows;
+    return 0;
+}
+
+int gm4_gpu_rows(gm4_gpu *g, int tensor, const uint32_t *rows, int nrows, const float *x,
+                 float *y, int threads, char *err, size_t errlen) {
+    if (!g || tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    if (!rows || !x || !y || nrows <= 0) {
+        snprintf(err, errlen, "rows needs a row list, an input and an output");
+        return -1;
+    }
+    if (threads < 32 || threads > 1024 || threads % 32) {
+        snprintf(err, errlen, "launch width %d is not a warp multiple up to 1024", threads);
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    const Layout &L = t->pays[0].l;
+    /* The kernels index the payload's own row stream, so a row past the
+     * tensor's row count would read the next payload. Refuse it here, where
+     * the message can name the offending entry. */
+    for (int i = 0; i < nrows; i++) {
+        if (rows[i] >= (uint32_t) L.rows) {
+            snprintf(err, errlen, "row %u at entry %d is outside the tensor's %d rows",
+                     rows[i], i, L.rows);
+            return -1;
+        }
+    }
+    if ((size_t) L.cols > g->xcap || (size_t) nrows > g->ycap) {
+        snprintf(err, errlen, "gather geometry overflows the workspace");
+        return -1;
+    }
+    if (ensure_rows(g, nrows, err, errlen) != 0) return -1;
+
+    cudaError_t e = cudaMemcpy(g->xbuf, x, (size_t) L.cols * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "x upload", e);
+    e = cudaMemcpy(g->rlbuf, rows, (size_t) nrows * sizeof(uint32_t), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "row list upload", e);
+    e = cudaMemset(g->ybuf, 0, (size_t) nrows * sizeof(float));
+    if (e != cudaSuccess) return fail(err, errlen, "y clear", e);
+
+    /* Each payload is the whole matrix for one stage, so the gather runs
+     * every payload with the same list and the same output buffer; the
+     * stages accumulate and each applies its own gain. */
+    for (int p = 0; p < t->npay; p++) {
+        if (t->pays[p].l.rows != L.rows || t->pays[p].l.cols != L.cols) {
+            snprintf(err, errlen, "payload %d disagrees with payload 0", p);
+            return -1;
+        }
+        Payload one = t->pays[p];
+        one.l.row0 = 0;
+        one.l.nrows = nrows;
+        launch_payload(one, g->rlbuf, g->xbuf, g->ybuf, threads);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "row gather launch", e);
+    }
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "row gather sync", e);
+    e = cudaMemcpy(y, g->ybuf, (size_t) nrows * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "row gather download", e);
     return 0;
 }
 

@@ -694,7 +694,8 @@ impl<'a> VqMatrix<'a> {
     /// [`Self::dot_row`] with the caller's codeword buffer, so a matrix loop
     /// allocates once. A forward that gathers one row of a fused expert stack
     /// per selected expert calls this directly.
-    pub fn dot_row_scratch(&self, row: usize, x: &[f32], word: &mut [f32]) -> f32 {        let dim = usize::from(self.dim);
+    pub fn dot_row_scratch(&self, row: usize, x: &[f32], word: &mut [f32]) -> f32 {
+        let dim = usize::from(self.dim);
         let nidx_row = self.nidx_row();
         let mut s = 0.0f32;
         for i in 0..nidx_row {
@@ -710,7 +711,8 @@ impl<'a> VqMatrix<'a> {
     /// length is the payload's `cols`. This is the single-row form of
     /// [`Self::add_into`] a token-embedding lookup needs: the table is
     /// 262144 rows and only one is read.
-    pub fn add_row_values(&self, row: usize, out: &mut [f32], word: &mut [f32]) {        let dim = usize::from(self.dim);
+    pub fn add_row_values(&self, row: usize, out: &mut [f32], word: &mut [f32]) {
+        let dim = usize::from(self.dim);
         let nidx_row = self.nidx_row();
         debug_assert_eq!(out.len(), self.cols as usize);
         let gain = self.gain(row);

@@ -6,7 +6,8 @@
  * release records, and this module maps, checks and uploads each one once.
  * A matvec then runs wholly on the device: one fused gather-and-dot per
  * payload, stages summed in the payload's own gain, nothing decoded into a
- * weight matrix.
+ * weight matrix. A row-list gather (gm4_gpu_rows) reads only the rows a
+ * mixture layer routed to, from the same resident containers.
  *
  * The payload is the TOOLS' DQV3 (24-byte header, inline f16 codebook,
  * min(nbit, 12)-bit row stream, no plane), which is what this artifact
@@ -64,6 +65,17 @@ const char *gm4_gpu_device_name(const gm4_gpu *g);
  * warps share a block, never the arithmetic. Returns 0, or -1 with `err`. */
 int gm4_gpu_matvec(gm4_gpu *g, int tensor, const float *x, float *y, int threads,
                    char *err, size_t errlen);
+
+/* y[i] = the dot of x with row rows[i], in the order given, summed over the
+ * container's payloads with each stage's own gain. The list is host row
+ * numbers of the whole tensor; it is uploaded once per call and every entry
+ * must be below the tensor's row count. This is the routed-expert gather:
+ * eight chosen experts touch 11264 of the 180224 rows of
+ * `experts.gate_up_proj` and 22528 of the 360448 rows of
+ * `experts.down_proj`, so the read is the selected rows and their gains, not
+ * the stack. A repeated row produces a repeated output. */
+int gm4_gpu_rows(gm4_gpu *g, int tensor, const uint32_t *rows, int nrows,
+                 const float *x, float *y, int threads, char *err, size_t errlen);
 
 /* Which kernel a tensor's payloads run: 3 = the DQV3 block kernel, 2 = the
  * dim-4 fast path, 1 = the generic warp kernel. Per payload; they agree for

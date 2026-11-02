@@ -22,9 +22,16 @@
 //! the same input in the same process, and the printed relL2 is the whole
 //! claim. A run that cannot upload the artifact fails loudly; nothing falls
 //! back to host streaming.
+//!
+//! Step 3 is the routed gather: a mixture-of-experts layer dots eight chosen
+//! experts, not 128, so the device side must read the selected rows only.
+//! `GATHER` runs the eight-expert shape against the CPU's `dot_rows`, then
+//! against a f64 reference built from the per-row decode (a different CPU
+//! path), then `MIX` proves the list is honored as an order, not a range:
+//! two experts interleaved and one row repeated.
 
 use std::ffi::{c_char, c_void, CString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -66,6 +73,17 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_rows(
+        g: *mut c_void,
+        tensor: i32,
+        rows: *const u32,
+        nrows: i32,
+        x: *const f32,
+        y: *mut f32,
+        threads: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -82,7 +100,8 @@ fn usage() -> &'static str {
   --dir DIR          artifact directory (vq-release.json)
   --threads N        launch width for the warp-per-row kernels (default 256)
   --tensor NAME      tensor to gate; repeatable (default: q_proj and router)
-  --timing N         best of N matvecs per tensor, plus the effective GB/s
+  --timing N         best of N launches per shape, plus the effective GB/s
+  --skip-gather      skip the routed-expert gather (step 3)
   --help             this text"
 }
 
@@ -106,6 +125,7 @@ fn run() -> Result<(), String> {
     let mut timing = 0usize;
     let mut wanted: Vec<String> = Vec::new();
     let mut onehot: Vec<usize> = Vec::new();
+    let mut gather = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -130,6 +150,7 @@ fn run() -> Result<(), String> {
                     .and_then(|v| v.parse().ok())
                     .ok_or("--timing needs a number")?
             }
+            "--skip-gather" => gather = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -137,7 +158,9 @@ fn run() -> Result<(), String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let dir: PathBuf = dir.ok_or_else(|| format!("--dir is required\n\n{}", usage()))?.into();
+    let dir: PathBuf = dir
+        .ok_or_else(|| format!("--dir is required\n\n{}", usage()))?
+        .into();
     let family = Family::open(&dir).map_err(|e| e.to_string())?;
     let root = family.dir.clone();
     if wanted.is_empty() {
@@ -148,7 +171,12 @@ fn run() -> Result<(), String> {
     // The release's entry list is the residency's own inventory: only encoded
     // containers are uploaded, and each is named with the shape the release
     // records, which the device header check repeats.
-    let encoded: Vec<&Entry> = family.release.entries().iter().filter(|e| e.encoded).collect();
+    let encoded: Vec<&Entry> = family
+        .release
+        .entries()
+        .iter()
+        .filter(|e| e.encoded)
+        .collect();
     if encoded.is_empty() {
         return Err("the release holds no encoded entries".into());
     }
@@ -215,7 +243,9 @@ fn run() -> Result<(), String> {
         let entry = encoded[index];
         let matrix = Matrix::open(&root, entry).map_err(|e| e.to_string())?;
         if matrix.rows() != entry.rows || matrix.cols() != entry.cols {
-            return Err(format!("{target}: CPU matrix shape disagrees with the release"));
+            return Err(format!(
+                "{target}: CPU matrix shape disagrees with the release"
+            ));
         }
         let x = probe_input(matrix.cols());
 
@@ -304,8 +334,206 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    if gather {
+        gather_gate(
+            &device,
+            &family,
+            &root,
+            &encoded,
+            threads,
+            timing,
+            &mut failed,
+        )?;
+    }
     if failed {
         return Err("a kernel is past the gate".into());
+    }
+    Ok(())
+}
+
+/// The eight experts the gather is measured on. The ids are arbitrary but
+/// fixed, and they span the stack, so an expert base that is off by a slice
+/// shows up as a large relL2 instead of a plausible number.
+const GATHER_EXPERTS: [usize; 8] = [0, 3, 17, 42, 64, 91, 120, 127];
+
+/// Step 3: the routed gather on both expert stacks of layer 0.
+///
+/// `experts.gate_up_proj` is 180224 x 2816 and `experts.down_proj` is
+/// 360448 x 704, both dim 8 / nc 4096, so both run the block kernel. The
+/// routed shape is eight whole expert slices, expert-major; a mixture layer
+/// never reads the other 120.
+fn gather_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    threads: i32,
+    timing: usize,
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let layer = "model.language_model.layers.0";
+    let stack = [
+        (
+            "expert_gate_up",
+            format!("{layer}.experts.gate_up_proj"),
+            2 * config.moe_ff,
+        ),
+        (
+            "expert_down",
+            format!("{layer}.experts.down_proj"),
+            config.hidden,
+        ),
+    ];
+    for (tag, name, per_expert) in stack {
+        let index = encoded
+            .iter()
+            .position(|e| e.name == name)
+            .ok_or_else(|| format!("{name}: not an encoded entry of this release"))?;
+        let entry = encoded[index];
+        let expected = config.experts * per_expert;
+        if entry.rows != expected {
+            return Err(format!(
+                "{name}: {} rows, the config says {} experts x {per_expert} = {expected}",
+                entry.rows, config.experts
+            ));
+        }
+        if config.experts < 2 {
+            return Err(format!(
+                "{tag}: the config routes from {} experts",
+                config.experts
+            ));
+        }
+        let matrix = Matrix::open(root, entry).map_err(|e| e.to_string())?;
+        let x = probe_input(entry.cols);
+
+        let mut rows: Vec<u32> = Vec::with_capacity(GATHER_EXPERTS.len() * per_expert);
+        for &expert in &GATHER_EXPERTS {
+            let base = expert * per_expert;
+            rows.extend((base..base + per_expert).map(|r| r as u32));
+        }
+        let named: Vec<usize> = rows.iter().map(|&r| r as usize).collect();
+
+        let cpu_start = Instant::now();
+        let cpu = matrix.dot_rows(&named, &x).map_err(|e| e.to_string())?;
+        let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1e3;
+
+        let mut gpu = vec![0f32; rows.len()];
+        let started = Instant::now();
+        call_rows(device, index, &rows, &x, &mut gpu, threads)?;
+        let gpu_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        let (rel_l2, max_abs, scale) = compare(&cpu, &gpu);
+        println!(
+            "GATHER {name} {}x{} rows {} of {} experts {:?} cpu {:.1} ms gpu {:.3} ms relL2 {:.3e} maxabs {:.3e} scale {:.3e}",
+            entry.rows,
+            entry.cols,
+            rows.len(),
+            entry.rows,
+            GATHER_EXPERTS,
+            cpu_ms,
+            gpu_ms,
+            rel_l2,
+            max_abs,
+            scale
+        );
+        if rel_l2 > 1e-4 {
+            println!("  FAIL {tag} gather relL2 {rel_l2:.3e} is past 1e-4");
+            *failed = true;
+        }
+
+        // The independent reference, from the per-row decode path rather than
+        // the batched one the CPU oracle used, accumulated in f64.
+        let mut reference = vec![0f64; named.len()];
+        for (slot, &row) in named.iter().enumerate() {
+            let values = matrix.row(row).map_err(|e| e.to_string())?;
+            let mut sum = 0f64;
+            for (&w, &v) in values.iter().zip(&x) {
+                sum += f64::from(w) * f64::from(v);
+            }
+            reference[slot] = sum;
+        }
+        let (cpu_vs_f64, _, _) = compare_f64(&cpu, &reference);
+        let (gpu_vs_f64, _, _) = compare_f64(&gpu, &reference);
+        println!(
+            "  F64 cpu {cpu_vs_f64:.3e} gpu {gpu_vs_f64:.3e} over {} gathered rows",
+            rows.len()
+        );
+        if gpu_vs_f64 > 1e-5 || cpu_vs_f64 > 1e-5 {
+            println!("  FAIL a gather path is past 1e-5 against the f64 reference");
+            *failed = true;
+        }
+
+        // The list is an order, not a range: interleave the first and last
+        // expert in opposite directions, then repeat a row. A gather that
+        // read contiguously from row 0 would still pass the shape above, and
+        // would fail here.
+        let mut mix: Vec<u32> = Vec::with_capacity(129);
+        let low = 0usize;
+        let high = (config.experts - 1) * per_expert;
+        for k in 0..64 {
+            mix.push((high + per_expert - 1 - k) as u32);
+            mix.push((low + k) as u32);
+        }
+        mix.push(mix[0]);
+        let mix_named: Vec<usize> = mix.iter().map(|&r| r as usize).collect();
+        let mix_cpu = matrix.dot_rows(&mix_named, &x).map_err(|e| e.to_string())?;
+        let mut mix_gpu = vec![0f32; mix.len()];
+        call_rows(device, index, &mix, &x, &mut mix_gpu, threads)?;
+        let (mix_rel, mix_abs, _) = compare(&mix_cpu, &mix_gpu);
+        let repeat_exact = mix_gpu[0].to_bits() == mix_gpu[mix.len() - 1].to_bits();
+        println!(
+            "  MIX interleaved 128 rows + repeat: relL2 {mix_rel:.3e} maxabs {mix_abs:.3e} repeat bit-identical {repeat_exact}"
+        );
+        if mix_rel > 1e-4 || !repeat_exact {
+            println!("  FAIL the gather does not follow the row list");
+            *failed = true;
+        }
+
+        // A row past the tensor must be refused, not read as the next payload.
+        let bad = [entry.rows as u32];
+        let mut sink = [0f32; 1];
+        let mut err = [0i8; 512];
+        let rc = unsafe {
+            gm4_gpu_rows(
+                device.0,
+                index as i32,
+                bad.as_ptr(),
+                1,
+                x.as_ptr(),
+                sink.as_mut_ptr(),
+                threads,
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        if rc == 0 {
+            println!(
+                "  FAIL row {} was accepted, it is past {} rows",
+                bad[0], entry.rows
+            );
+            *failed = true;
+        } else {
+            println!("  REFUSE row {}: {}", bad[0], message(&err));
+        }
+
+        if timing > 0 {
+            let mut best = f64::INFINITY;
+            for _ in 0..timing {
+                let t = Instant::now();
+                call_rows(device, index, &rows, &x, &mut gpu, threads)?;
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            let per_row = entry.bytes as f64 / entry.rows as f64;
+            let mib = (rows.len() as f64 * per_row) / (1024.0 * 1024.0);
+            println!(
+                "  TIMING best {:.3} ms of {} launches, {:.1} MiB of the stack read at {:.1} GB/s",
+                best * 1e3,
+                timing,
+                mib,
+                rows.len() as f64 * per_row / best / 1e9
+            );
+        }
     }
     Ok(())
 }
@@ -335,8 +563,40 @@ fn call_matvec(
     Ok(())
 }
 
+fn call_rows(
+    device: &Residency,
+    tensor: usize,
+    rows: &[u32],
+    x: &[f32],
+    y: &mut [f32],
+    threads: i32,
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_rows(
+            device.0,
+            tensor as i32,
+            rows.as_ptr(),
+            rows.len() as i32,
+            x.as_ptr(),
+            y.as_mut_ptr(),
+            threads,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("rows: {}", message(&err)));
+    }
+    Ok(())
+}
+
 fn message(buf: &[i8]) -> String {
-    let bytes: Vec<u8> = buf.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    let bytes: Vec<u8> = buf
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
@@ -367,7 +627,11 @@ fn compare(cpu: &[f32], gpu: &[f32]) -> (f64, f64, f64) {
         max_abs = max_abs.max(d.abs());
         scale = scale.max(f64::from(c).abs());
     }
-    let rel = if norm > 0.0 { (diff / norm).sqrt() } else { 0.0 };
+    let rel = if norm > 0.0 {
+        (diff / norm).sqrt()
+    } else {
+        0.0
+    };
     (rel, max_abs, scale)
 }
 
@@ -397,6 +661,10 @@ fn compare_f64(values: &[f32], reference: &[f64]) -> (f64, f64, f64) {
         norm += r * r;
         max_abs = max_abs.max(d.abs());
     }
-    let rel = if norm > 0.0 { (diff / norm).sqrt() } else { 0.0 };
+    let rel = if norm > 0.0 {
+        (diff / norm).sqrt()
+    } else {
+        0.0
+    };
     (rel, max_abs, 0.0)
 }
