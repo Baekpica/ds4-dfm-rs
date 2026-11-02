@@ -313,6 +313,325 @@ __global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_
     if (lane == 0) y[lo] += acc * __half2float(gr[r]);
 }
 
+/* ==== Tiled prefill: f16 tensor cores =====================================
+ *
+ * Ported from /data/VQ_Tools/c/gpu/decode-gpu.cu:320-520 (the tiled kernel),
+ * :588-612 (the legacy one-thread-per-(row, token) kernel), :531-560 (the
+ * shared-memory account and the geometry gate) and :1010-1160 (the entry
+ * points). The structure is the reference's, unchanged:
+ *
+ * One block computes 128 weight rows x BN tokens over all K, stepping BK 64
+ * columns per round: 16 warps = 8 row tiles of 16 rows x 2 token halves; a
+ * warp owns 16 rows and BN/16 n8 slices, and a round is 4 k16 mma groups.
+ * The tile shape, the 16-warp split, the ldmatrix addressing and the
+ * 16-byte-chunk XOR swizzle are the tiled prefill's layout.
+ *
+ * The products are f16, not bf16: our codebook is f16 (10 mantissa bits), and
+ * bf16 would round every learned codeword by 2^-8 - a quality change, not a
+ * layout choice. So the tile is f16: a code word is a straight 8- or 16-byte
+ * copy out of the codebook with no conversion at all, the activations are
+ * rounded f32 -> f16, and the mma is f32.f16.f16.f32. An f16 x f16 product is
+ * exact in f32.
+ *
+ * The mma starts every k16 from zero and adds back with a plain FADD (ds4's
+ * 2026-09-24 finding, decode-gpu.cu:337-341: letting K accumulate inside the
+ * tensor core's own f32 adder truncates low bits on alignment instead of
+ * rounding).
+ */
+#define PRE_BM 128
+#define PRE_THREADS 512
+#define PRE_LEGACY_THREADS 256
+
+/* A tile row is BK f16 = BK/8 chunks of 16 B; chunk ^ (row & 7) spreads the 8
+ * rows ldmatrix reads at once over 8 bank groups. `stride` is the row's byte
+ * stride, BK*2. */
+__device__ __forceinline__ uint32_t pre_swz(uint32_t row, uint32_t chunk, uint32_t stride) {
+    return row * stride + ((chunk ^ (row & 7u)) << 4);
+}
+
+__device__ __forceinline__ void pre_ldsm4(uint32_t *r, const uint8_t *p) {
+    const uint32_t a = (uint32_t) __cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
+}
+
+__device__ __forceinline__ void pre_mma(float *c, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                 "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__device__ __forceinline__ uint32_t pre_h2u(__half2 h) { return *reinterpret_cast<uint32_t *>(&h); }
+
+/* CB 0 keeps the codebook in global (it is 64 KB here: it stays in L1 under
+ * three resident blocks), CB 1 stages it in shared behind the two tiles. */
+template <int BN, int BK, int CB, int DIM>
+__global__ __launch_bounds__(PRE_THREADS, 1) void gemm_tiled_kernel(
+        const uint8_t *p, const Layout L, const float *xT, int ntok, float *y) {
+    constexpr uint32_t CW = BK / (uint32_t) DIM;     /* code words per row-round: 16 (dim 4), 8 (dim 8) */
+    constexpr uint32_t TPR = 4u, CPT = CW / TPR;     /* 4 threads per row, 4 / 2 code words each */
+    constexpr uint32_t NFW = BN / 16u;               /* n8 slices per warp */
+    constexpr uint32_t CPL = BK / 8u;                /* 16 B chunks per tile row: 8 (BK 64), 16 (BK 128) */
+    constexpr uint32_t NCH = BN * CPL / PRE_THREADS; /* B-tile chunks per thread */
+    constexpr uint32_t STR = BK * 2u;                /* tile row stride in bytes */
+    extern __shared__ __align__(16) uint8_t sh[];
+    uint8_t *As = sh, *Bs = sh + PRE_BM * STR;
+    uint8_t *cbs = Bs + BN * STR;
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const __half *gr = (const __half *) (p + L.gain_off);
+    const uint8_t *st = p + L.stream_off;
+    const uint8_t *pl = L.prow ? st + L.mrow * (size_t) L.rows : NULL;
+
+    const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5u;
+    const uint32_t wr = warp & 7u, th = warp >> 3u;
+    if (CB) { /* the codebook bytes are already the tile format: copy, no convert */
+        const uint2 *src = (const uint2 *) cb;
+        uint2 *dst = (uint2 *) cbs;
+        for (uint32_t i = tid; i < (uint32_t) L.nc * (uint32_t) L.dim * 2u / 8u; i += PRE_THREADS)
+            dst[i] = __ldg(src + i);
+    }
+
+    const uint32_t ar = tid / TPR, sub = tid % TPR; /* A-tile row this thread fills */
+    const int r0 = L.row0 + (int) blockIdx.x * PRE_BM, t0 = (int) blockIdx.y * BN;
+    const int nt = min((int) BN, ntok - t0);
+    const int nrnd = (int) (L.cols / BK);
+    const bool rv = r0 + (int) ar < L.row0 + L.nrows;
+    const uint32_t rsrc = (uint32_t) (rv ? r0 + (int) ar : 0);
+    const uint8_t *rowp = st + (size_t) rsrc * L.mrow;
+    const uint8_t *rowq = pl ? pl + (size_t) rsrc * L.prow : NULL;
+
+    float acc[NFW][4];
+    #pragma unroll
+    for (uint32_t f = 0; f < NFW; f++) acc[f][0] = acc[f][1] = acc[f][2] = acc[f][3] = 0.f;
+    __syncthreads();
+
+    for (int i = 0; i < nrnd; i++) {
+        /* This thread's code words of round i sit at bit 12*(i*CW + sub*CPT).
+         * Two aligned words are read and shifted; the offset inside them is
+         * 0 or 16 for dim 4 and in {0,8,16,24} for dim 8, and CPT*12 <= 48, so
+         * every index of the round stays inside the 64-bit window. The window
+         * can reach up to 5 bytes past the row's stream (decode-gpu.cu:96-101);
+         * the container's zeroed tail past the payload covers it. */
+        const uint32_t bit = (uint32_t) i * 12u * CW + sub * 12u * CPT;
+        const uint32_t aoff = (bit >> 5) << 2, sh64 = bit & 31u;
+        uint32_t w0 = 0, w1 = 0, eb = 0;
+        if (rv) {
+            w0 = __ldg((const uint32_t *) (rowp + aoff));
+            w1 = __ldg((const uint32_t *) (rowp + aoff + 4u));
+            if (rowq) eb = (uint32_t) __ldg(rowq + ((uint32_t) i * CW + sub * CPT) / 8u);
+        }
+        /* The next round's activations, converted here so the global latency
+         * overlaps the previous round's mma. */
+        uint4 bx[NCH];
+        #pragma unroll
+        for (uint32_t c = 0; c < NCH; c++) {
+            const uint32_t ch = tid + c * PRE_THREADS, t = ch / CPL, cc = ch % CPL;
+            bx[c] = make_uint4(0, 0, 0, 0);
+            if ((int) t < nt) {
+                const float *s = xT + (size_t) ((uint32_t) i * BK + cc * 8u) * (size_t) ntok
+                               + (size_t) (t0 + (int) t);
+                const size_t S = (size_t) ntok;
+                bx[c].x = pre_h2u(__floats2half2_rn(s[0], s[S]));
+                bx[c].y = pre_h2u(__floats2half2_rn(s[2 * S], s[3 * S]));
+                bx[c].z = pre_h2u(__floats2half2_rn(s[4 * S], s[5 * S]));
+                bx[c].w = pre_h2u(__floats2half2_rn(s[6 * S], s[7 * S]));
+            }
+        }
+        __syncthreads(); /* the previous round's tiles are done being read */
+
+        const uint64_t u = ((uint64_t) w1 << 32) | (uint64_t) w0;
+        #pragma unroll
+        for (uint32_t q = 0; q < CPT; q++) {
+            const uint32_t j = sub * CPT + q; /* code word of this round */
+            uint32_t v = (uint32_t) (u >> (sh64 + 12u * q)) & 0xFFFu;
+            if (rowq) v |= ((eb >> (j & 7u)) & 1u) << 12;
+            if (DIM == 4) { /* 8-byte code word: half of a 16 B chunk */
+                const uint8_t *src = CB ? cbs + (size_t) v * 8u : (const uint8_t *) cb + (size_t) v * 8u;
+                const uint2 cw = CB ? *(const uint2 *) src : __ldg((const uint2 *) src);
+                *(uint2 *) (As + pre_swz(ar, j >> 1, STR) + ((j & 1u) << 3)) = cw;
+            } else { /* dim 8: one code word is one 16 B chunk, two aligned 8 B halves */
+                const uint8_t *src = CB ? cbs + (size_t) v * 16u : (const uint8_t *) cb + (size_t) v * 16u;
+                const uint2 lo = CB ? *(const uint2 *) src : __ldg((const uint2 *) src);
+                const uint2 hi = CB ? *(const uint2 *) (src + 8u) : __ldg((const uint2 *) (src + 8u));
+                uint8_t *dst = As + pre_swz(ar, j, STR);
+                *(uint2 *) dst = lo;
+                *(uint2 *) (dst + 8u) = hi;
+            }
+        }
+        #pragma unroll
+        for (uint32_t c = 0; c < NCH; c++) {
+            const uint32_t ch = tid + c * PRE_THREADS;
+            *(uint4 *) (Bs + pre_swz(ch / CPL, ch % CPL, STR)) = bx[c];
+        }
+        __syncthreads();
+
+        /* The warp's 16 rows over this half's n8 slices. */
+        #pragma unroll
+        for (uint32_t kk = 0; kk < BK / 16u; kk++) {
+            const uint32_t mt = lane >> 3;
+            uint32_t a[4];
+            pre_ldsm4(a, As + pre_swz(wr * 16u + (lane & 7u) + (mt & 1u) * 8u, kk * 2u + (mt >> 1), STR));
+            #pragma unroll
+            for (uint32_t np = 0; np < NFW / 2u; np++) {
+                const uint32_t f0 = th * NFW + 2u * np;
+                if ((int) (f0 * 8u) >= nt) break;
+                uint32_t b[4];
+                pre_ldsm4(b, Bs + pre_swz((f0 + (mt >> 1)) * 8u + (lane & 7u), kk * 2u + (mt & 1u), STR));
+                float t0v[4] = {0.f, 0.f, 0.f, 0.f};
+                pre_mma(t0v, a, b[0], b[1]);
+                #pragma unroll
+                for (uint32_t e = 0; e < 4u; e++) acc[2 * np][e] += t0v[e];
+                if ((int) ((f0 + 1u) * 8u) < nt) {
+                    float t1v[4] = {0.f, 0.f, 0.f, 0.f};
+                    pre_mma(t1v, a, b[2], b[3]);
+                    #pragma unroll
+                    for (uint32_t e = 0; e < 4u; e++) acc[2 * np + 1][e] += t1v[e];
+                }
+            }
+        }
+    }
+
+    /* Exit: c0,c1 = row lane/4, token (lane&3)*2+{0,1}; c2,c3 = row + 8. */
+    #pragma unroll
+    for (uint32_t h = 0; h < 2u; h++) {
+        const uint32_t r = (uint32_t) r0 + wr * 16u + (lane >> 2) + h * 8u;
+        if (r >= (uint32_t) (L.row0 + L.nrows)) continue;
+        const float g = __half2float(__ldg(gr + r));
+        #pragma unroll
+        for (uint32_t f = 0; f < NFW; f++) {
+            const uint32_t gf = th * NFW + f;
+            if ((int) (gf * 8u) >= nt) break;
+            #pragma unroll
+            for (uint32_t e = 0; e < 2u; e++) {
+                const uint32_t t = gf * 8u + (lane & 3u) * 2u + e;
+                if ((int) t >= nt) continue;
+                y[(size_t) (t0 + (int) t) * L.rows + r] += acc[f][h * 2u + e] * g;
+            }
+        }
+    }
+}
+
+/* Prefill: one thread per (row, token). The row's indices are staged in shared
+ * memory once by the block, then every thread walks them, reading the codebook
+ * (the same address across the block, so L1 broadcasts it) and its own token's
+ * activations. xT is [col][token], so the block's reads at a fixed (i, d) are
+ * consecutive addresses: one coalesced transaction per warp. There is no
+ * cross-thread reduction, because each thread owns one output element.
+ *
+ * The reference keeps this as the fallback for any geometry the tiled kernel
+ * cannot take (dim-4 8-bit codebooks among them), and as the comparison that
+ * showed why the tiled shape exists. */
+__global__ void gemm_prefill_kernel(const uint8_t *p, const Layout L, const float *xT,
+                                    int ntok, float *y) {
+    extern __shared__ uint16_t sidx[];
+    const int r = L.row0 + blockIdx.x;
+    const int nidx_row = L.cols / L.dim;
+    const uint8_t *st = p + L.stream_off;
+
+    for (int i = threadIdx.x; i < nidx_row; i += blockDim.x)
+        sidx[i] = (uint16_t) rd_idx_fmt(st, L, r, i);
+    __syncthreads();
+
+    const int t = blockIdx.y * blockDim.x + threadIdx.x;
+    if (t >= ntok) return;
+
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const float *xt = xT + t;
+    float acc = 0.0f;
+    for (int i = 0; i < nidx_row; i++) {
+        const __half *c = cb + (size_t) sidx[i] * L.dim;
+        const float *xg = xt + (size_t) i * L.dim * ntok;
+        for (int d = 0; d < L.dim; d++) acc += __half2float(c[d]) * xg[(size_t) d * ntok];
+    }
+    const __half gh = ((const __half *) (p + L.gain_off))[r];
+    y[(size_t) t * L.rows + r] += acc * __half2float(gh);
+}
+
+/* Largest dynamic shared-memory window the device accepts; the shared-codebook
+ * variant needs nc*dim f16 in one block, which a wide codebook cannot fit. */
+size_t smem_max(void) {
+    static size_t v = 0;
+    if (!v) {
+        int x = 0;
+        v = (cudaDeviceGetAttribute(&x, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0) == cudaSuccess && x > 0)
+            ? (size_t) x : (size_t) (48 * 1024);
+    }
+    return v;
+}
+
+/* Shared bytes a tiled launch needs: the two tiles, plus the codebook when it
+ * is staged (cb 1). */
+size_t pre_smem(int bn, int bk, const Layout &L, int cb) {
+    return (size_t) (PRE_BM + bn) * bk * 2u + (cb ? (size_t) L.nc * L.dim * 2u : 0u);
+}
+
+/* Geometry the tiled kernel can take: a DQV3 payload, dim 4 or 8 (the
+ * 4-thread-per-row split assumes 2 or 4 code words each), a 12-bit main
+ * stream (nc >= 4096), whole bk-column rounds, and a row stream whose 4-byte
+ * loads are aligned. BK is 64 only: the A-tile fill extracts CPT = BK/(4*DIM)
+ * code words from one 64-bit window, which is exactly 4 code words (48 bits)
+ * at BK 64. BK 128 needs 8 (96 bits) and would silently truncate, so this
+ * build does not offer it (decode-gpu.cu:543-556). */
+bool pre_ok(const Layout &L, int bk) {
+    return L.v3 && (L.dim == 4 || L.dim == 8) && L.rows > 0 && L.cols > 0 && L.nbit >= 12
+        && L.cols % bk == 0 && L.mrow % 4 == 0 && L.stream_off % 4 == 0;
+}
+
+/* The shared-memory opt-in is monotone per instantiation: it only has to
+ * grow, and the largest matrix's window covers every smaller one. */
+template <int BN, int BK, int CB, int DIM>
+int pre_opt_in(size_t smem) {
+    static size_t opted = 0;
+    if (smem > opted) {
+        if (cudaFuncSetAttribute(gemm_tiled_kernel<BN, BK, CB, DIM>,
+                                 cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem) != cudaSuccess)
+            return -1;
+        opted = smem;
+    }
+    return 0;
+}
+
+template <int BN, int BK, int CB, int DIM>
+int pre_launch_impl(const uint8_t *p, const Layout &L, const float *xT, int ntok, float *y) {
+    const size_t smem = pre_smem(BN, BK, L, CB);
+    if (pre_opt_in<BN, BK, CB, DIM>(smem) != 0) return -1;
+    const dim3 grid((unsigned) ((L.nrows + PRE_BM - 1) / PRE_BM),
+                    (unsigned) ((ntok + BN - 1) / BN));
+    gemm_tiled_kernel<BN, BK, CB, DIM><<<grid, PRE_THREADS, smem>>>(p, L, xT, ntok, y);
+    return 0;
+}
+
+/* The tile shape is a runtime choice, so the dispatch is a table over the
+ * instantiations. A shape not in the table is an error, never a silent
+ * fallback to the default. */
+#define PRE_CASE(BN_, CB_)                                                        \
+    if (bn == (BN_) && cb == (CB_))                                               \
+        return L.dim == 4 ? pre_launch_impl<BN_, 64, CB_, 4>(p, L, xT, ntok, y)   \
+                          : pre_launch_impl<BN_, 64, CB_, 8>(p, L, xT, ntok, y);
+
+int pre_launch_cfg(const uint8_t *p, const Layout &L, const float *xT, int ntok, float *y,
+                   int bn, int cb) {
+    PRE_CASE(64, 0)
+    PRE_CASE(128, 0)
+    PRE_CASE(256, 0)
+    PRE_CASE(64, 1)
+    PRE_CASE(128, 1)
+    PRE_CASE(256, 1)
+    return -1;
+}
+
+int pre_legacy(const uint8_t *p, const Layout &L, const float *xT, int ntok, float *y) {
+    const size_t smem = (size_t) (L.cols / L.dim) * 2;
+    if (smem > 48 * 1024
+        && cudaFuncSetAttribute(gemm_prefill_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                (int) smem) != cudaSuccess)
+        return -1;
+    const dim3 grid((unsigned) L.nrows, (unsigned) ((ntok + PRE_LEGACY_THREADS - 1) / PRE_LEGACY_THREADS));
+    gemm_prefill_kernel<<<grid, PRE_LEGACY_THREADS, smem>>>(p, L, xT, ntok, y);
+    return 0;
+}
+
 /* ---- host side -------------------------------------------------------- */
 
 int index_bits(int nc) {
@@ -545,6 +864,8 @@ struct gm4_gpu {
     size_t xcap, ycap;
     uint32_t *rlbuf;   /* the gather's row list, grown on demand */
     size_t rlcap;
+    float *pxt, *py;   /* the prefill's [cols][ntok] and [ntok][rows] */
+    size_t pxtcap, pycap;
     char devname[256];
     gm4_account acct;
 };
@@ -622,6 +943,8 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->xbuf) cudaFree(g->xbuf);
     if (g->ybuf) cudaFree(g->ybuf);
     if (g->rlbuf) cudaFree(g->rlbuf);
+    if (g->pxt) cudaFree(g->pxt);
+    if (g->py) cudaFree(g->py);
     free(g);
 }
 
@@ -752,6 +1075,143 @@ int gm4_gpu_rows(gm4_gpu *g, int tensor, const uint32_t *rows, int nrows, const 
     e = cudaMemcpy(y, g->ybuf, (size_t) nrows * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "row gather download", e);
     return 0;
+}
+
+/* Whether this tensor can run the tiled prefill with this tile and codebook
+ * placement. Returns 1 when it can, 0 when it cannot with the reason in
+ * `err`; a geometry the tiled kernel cannot take still has the legacy path,
+ * which gm4_gpu_prefill asks for with bn 0. */
+int gm4_gpu_prefill_ready(const gm4_gpu *g, int tensor, int bn, int cb, char *err, size_t errlen) {
+    if (!g || tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return 0;
+    }
+    const Layout &L = g->ts[tensor].pays[0].l;
+    if (bn == 0) return 1;
+    if (bn != 64 && bn != 128 && bn != 256) {
+        snprintf(err, errlen, "token tile %d is not one of 64, 128, 256", bn);
+        return 0;
+    }
+    if (cb != 0 && cb != 1) {
+        snprintf(err, errlen, "codebook placement %d is not 0 (L1) or 1 (shared)", cb);
+        return 0;
+    }
+    if (!pre_ok(L, 64)) {
+        snprintf(err, errlen,
+                 "dim %d nc %d cols %d nbit %d does not fit the tiled kernel: it needs dim 4 or 8, "
+                 "nc >= 4096, cols a multiple of 64 and an aligned row stream",
+                 L.dim, L.nc, L.cols, L.nbit);
+        return 0;
+    }
+    if (cb && pre_smem(bn, 64, L, 1) > smem_max()) {
+        snprintf(err, errlen, "a shared codebook with tile %d needs %zu bytes of shared memory, the device allows %zu",
+                 bn, pre_smem(bn, 64, L, 1), smem_max());
+        return 0;
+    }
+    return 1;
+}
+
+/* Grow a prefill buffer without leaking the old one on failure. */
+static int ensure_pre(gm4_gpu *g, int which, size_t need, char *err, size_t errlen) {
+    float **slot = which ? &g->py : &g->pxt;
+    size_t *cap = which ? &g->pycap : &g->pxtcap;
+    if (need <= *cap) return 0;
+    float *next = NULL;
+    cudaError_t e = cudaMalloc((void **) &next, need * sizeof(float));
+    if (e != cudaSuccess) {
+        snprintf(err, errlen, "prefill %s cudaMalloc of %.1f MiB failed: %s",
+                 which ? "y" : "xT", (double) need * sizeof(float) / (1024.0 * 1024.0),
+                 cudaGetErrorString(e));
+        return -1;
+    }
+    if (*slot) cudaFree(*slot);
+    *slot = next;
+    *cap = need;
+    return 0;
+}
+
+/* One prefill: y[t * rows + r] = the row dot for token t, every payload, gain
+ * applied per stage. row0/nrows carve out a contiguous slice; the output keeps
+ * the container's full-row layout so a slice writes exactly the addresses a
+ * full launch writes for those rows. bn 0 takes the tiled kernel when the
+ * geometry fits and the legacy kernel otherwise. */
+static int prefill_core(gm4_gpu *g, int tensor, int row0, int nrows, const float *xT, int ntok,
+                        float *y, int bn, int cb, char *err, size_t errlen) {
+    if (!g || tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    if (!xT || !y || ntok <= 0) {
+        snprintf(err, errlen, "prefill needs transposed input, an output and at least one token");
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    const Layout &L = t->pays[0].l;
+    if (row0 < 0 || nrows <= 0 || row0 + nrows > L.rows) {
+        snprintf(err, errlen, "row slice %d+%d is outside the tensor's %d rows", row0, nrows, L.rows);
+        return -1;
+    }
+    const int choice = bn == 0 ? (pre_ok(L, 64) ? 1 : 0) : 1;
+    if (choice == 1) {
+        char why[256];
+        if (!gm4_gpu_prefill_ready(g, tensor, bn == 0 ? 128 : bn, cb, why, sizeof why)) {
+            snprintf(err, errlen, "prefill: %s", why);
+            return -1;
+        }
+    }
+    const int tile = bn == 0 ? 128 : bn;
+    if (ensure_pre(g, 0, (size_t) L.cols * (size_t) ntok, err, errlen) != 0) return -1;
+    if (ensure_pre(g, 1, (size_t) L.rows * (size_t) ntok, err, errlen) != 0) return -1;
+
+    cudaError_t e = cudaMemcpy(g->pxt, xT, (size_t) L.cols * (size_t) ntok * sizeof(float),
+                               cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill xT upload", e);
+    e = cudaMemset(g->py, 0, (size_t) L.rows * (size_t) ntok * sizeof(float));
+    if (e != cudaSuccess) return fail(err, errlen, "prefill y clear", e);
+
+    for (int p = 0; p < t->npay; p++) {
+        const Payload &one = t->pays[p];
+        if (one.l.rows != L.rows || one.l.cols != L.cols) {
+            snprintf(err, errlen, "payload %d disagrees with payload 0", p);
+            return -1;
+        }
+        /* The slice belongs to the whole tensor's rows: the kernels index the
+         * payload's stream by the container row, not by the slice. */
+        Layout slice = one.l;
+        slice.row0 = row0;
+        slice.nrows = nrows;
+        const int rc = choice == 1
+            ? pre_launch_cfg(one.dev, slice, g->pxt, ntok, g->py, tile, cb)
+            : pre_legacy(one.dev, slice, g->pxt, ntok, g->py);
+        if (rc != 0) {
+            snprintf(err, errlen, "prefill launch setup failed for payload %d (tile %d, placement %d)",
+                     p, tile, cb);
+            return -1;
+        }
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "prefill launch", e);
+    }
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "prefill sync", e);
+    e = cudaMemcpy(y, g->py, (size_t) L.rows * (size_t) ntok * sizeof(float),
+                   cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "prefill download", e);
+    return 0;
+}
+
+int gm4_gpu_prefill(gm4_gpu *g, int tensor, const float *xT, int ntok, float *y, int bn, int cb,
+                    char *err, size_t errlen) {
+    if (!g || tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    const Layout &L = g->ts[tensor].pays[0].l;
+    return prefill_core(g, tensor, 0, L.rows, xT, ntok, y, bn, cb, err, errlen);
+}
+
+int gm4_gpu_prefill_rows(gm4_gpu *g, int tensor, int row0, int nrows, const float *xT, int ntok,
+                         float *y, int bn, int cb, char *err, size_t errlen) {
+    return prefill_core(g, tensor, row0, nrows, xT, ntok, y, bn, cb, err, errlen);
 }
 
 } /* extern "C" */

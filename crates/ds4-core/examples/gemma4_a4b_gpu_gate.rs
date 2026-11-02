@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use ds4_core::f16_to_f32;
 use ds4_core::gemma4_a4b::{decode, Entry, Family, Matrix, Tensor};
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
@@ -84,6 +85,39 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_prefill(
+        g: *mut c_void,
+        tensor: i32,
+        xt: *const f32,
+        ntok: i32,
+        y: *mut f32,
+        bn: i32,
+        cb: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_prefill_rows(
+        g: *mut c_void,
+        tensor: i32,
+        row0: i32,
+        nrows: i32,
+        xt: *const f32,
+        ntok: i32,
+        y: *mut f32,
+        bn: i32,
+        cb: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_prefill_ready(
+        g: *const c_void,
+        tensor: i32,
+        bn: i32,
+        cb: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -102,6 +136,7 @@ fn usage() -> &'static str {
   --tensor NAME      tensor to gate; repeatable (default: q_proj and router)
   --timing N         best of N launches per shape, plus the effective GB/s
   --skip-gather      skip the routed-expert gather (step 3)
+  --skip-prefill     skip the tensor-core prefill (step 4)
   --help             this text"
 }
 
@@ -126,6 +161,7 @@ fn run() -> Result<(), String> {
     let mut wanted: Vec<String> = Vec::new();
     let mut onehot: Vec<usize> = Vec::new();
     let mut gather = true;
+    let mut prefill = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -151,6 +187,7 @@ fn run() -> Result<(), String> {
                     .ok_or("--timing needs a number")?
             }
             "--skip-gather" => gather = false,
+            "--skip-prefill" => prefill = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -345,6 +382,9 @@ fn run() -> Result<(), String> {
             &mut failed,
         )?;
     }
+    if prefill {
+        prefill_gate(&device, &root, &encoded, timing, &mut failed)?;
+    }
     if failed {
         return Err("a kernel is past the gate".into());
     }
@@ -534,6 +574,403 @@ fn gather_gate(
                 rows.len() as f64 * per_row / best / 1e9
             );
         }
+    }
+    Ok(())
+}
+
+/// The tile shapes the tools' build offers, as (token tile, codebook
+/// placement). The column round is 64 in each: BK 128 would need a 96-bit
+/// index window the A-tile fill does not have (`decode-gpu.cu:543-563`).
+const PREFILL_TILES: [(i32, i32); 6] = [(64, 0), (128, 0), (256, 0), (64, 1), (128, 1), (256, 1)];
+
+/// Step 4: the tiled f16 prefill on the real containers.
+///
+/// The tiled kernel rounds the activations to f16 (the codebook is already
+/// f16, and an f16 x f16 product is exact in f32). The reference therefore
+/// dots the same rows against activations rounded the same way, in f64:
+/// comparing against an unrounded f32 reference would measure the f16 input
+/// rounding instead of the kernel. That rounding is reported separately, as
+/// the cost of the tensor-core path.
+fn prefill_gate(
+    device: &Residency,
+    root: &Path,
+    encoded: &[&Entry],
+    timing: usize,
+    failed: &mut bool,
+) -> Result<(), String> {
+    // The rounding helper is the reference for every gate below; if it were
+    // wrong, the gates would be wrong with it. Round-trip known f16 patterns
+    // first, including the subnormal the artifact actually carries.
+    for (value, bits) in [
+        (0.0f32, 0x0000u16),
+        (-2.0, 0xC000),
+        (1.0, 0x3C00),
+        (2f32.powi(-24), 0x0001),
+        (5.155_801_8e-5, 0x0361),
+        (65504.0, 0x7BFF),
+        (65520.0, 0x7C00),
+    ] {
+        assert_eq!(to_f16_bits(value), bits, "f16 rounding of {value}");
+    }
+    let layer = "model.language_model.layers.0";
+    let q_name = format!("{layer}.self_attn.q_proj.weight");
+    let index = encoded
+        .iter()
+        .position(|e| e.name == q_name)
+        .ok_or_else(|| format!("{q_name}: not an encoded entry of this release"))?;
+    let entry = encoded[index];
+    let matrix = Matrix::open(root, entry).map_err(|e| e.to_string())?;
+
+    // Two prompt sizes: a short one where the f64 reference is cheap, and one
+    // long enough to fill the tile's 128 tokens with a partial second block.
+    for &ntok in &[8usize, 64] {
+        let xt = transposed_probe(entry.cols, ntok);
+        let xt16: Vec<f32> = xt.iter().map(|&v| round_f16(v)).collect();
+        let reference = f64_prefill(&matrix, &xt16, ntok, 0, entry.rows);
+        println!(
+            "PREFILL {q_name} {}x{} ntok {ntok} reference f64 over f16-round activations",
+            entry.rows, entry.cols
+        );
+        let mut best_tile: Option<(f64, f64, i32, i32)> = None;
+        for (bn, cb) in PREFILL_TILES {
+            let mut why = [0i8; 512];
+            let ready = unsafe {
+                gm4_gpu_prefill_ready(device.0, index as i32, bn, cb, why.as_mut_ptr(), why.len())
+            };
+            if ready == 0 {
+                println!("  TILE bn {bn} cb {cb} REFUSED: {}", message(&why));
+                continue;
+            }
+            let mut y = vec![0f32; ntok * entry.rows];
+            let started = Instant::now();
+            call_prefill(device, index, &xt, ntok, &mut y, bn, cb)?;
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            let (rel, max) = compare_f32_f64(&y, &reference);
+            println!("  TILE bn {bn} cb {cb} relL2 {rel:.3e} maxabs {max:.3e} {ms:.3} ms");
+            if rel > 1e-5 {
+                println!("  FAIL tile {bn}/{cb} is past 1e-5 against the f64 reference");
+                *failed = true;
+            }
+            if best_tile.map_or(true, |(b, _, _, _)| ms < b) {
+                best_tile = Some((ms, rel, bn, cb));
+            }
+
+            // The remaining checks run on one tile, so they do not repeat per
+            // configuration.
+            if (bn, cb) != (128, 0) {
+                continue;
+            }
+
+            // What the f16 input rounding costs: the same tensor against the
+            // unrounded CPU path, one matvec per token.
+            let mut f32_ref = vec![0f32; ntok * entry.rows];
+            for t in 0..ntok {
+                let x: Vec<f32> = (0..entry.cols).map(|c| xt[c * ntok + t]).collect();
+                let one = matrix.matvec(&x).map_err(|e| e.to_string())?;
+                f32_ref[t * entry.rows..(t + 1) * entry.rows].copy_from_slice(&one);
+            }
+            let (vs32, max32, _) = compare(&f32_ref, &y);
+            println!(
+                "    VSF32 relL2 {vs32:.3e} maxabs {max32:.3e} (the f16 input rounding; gate 2e-3)"
+            );
+            if vs32 > 2e-3 {
+                println!("  FAIL f16 rounding costs more than the 2e-3 band");
+                *failed = true;
+            }
+
+            // A one-hot column is exact in f16, so every row's output must be
+            // the decoded value at that column, for every token.
+            let pick = entry.cols / 3;
+            let mut xt_one = vec![0f32; entry.cols * ntok];
+            for t in 0..ntok {
+                xt_one[pick * ntok + t] = 1.0;
+            }
+            let mut y_one = vec![0f32; ntok * entry.rows];
+            call_prefill(device, index, &xt_one, ntok, &mut y_one, bn, cb)?;
+            let decoded: Vec<f32> = (0..entry.rows)
+                .map(|r| {
+                    // The decoded value is f16 codebook times f16 gain in f32,
+                    // and the kernel applies the gain after the mma: nothing
+                    // rounds the product, so the reference must not either.
+                    let row = matrix.row(r).expect("row is inside the matrix");
+                    row[pick]
+                })
+                .collect();
+            let mut max = 0f64;
+            let mut worst = (0usize, 0usize);
+            for t in 0..ntok {
+                for r in 0..entry.rows {
+                    let got = f64::from(y_one[t * entry.rows + r]);
+                    let d = (got - f64::from(decoded[r])).abs();
+                    if d > max {
+                        max = d;
+                        worst = (t, r);
+                    }
+                }
+            }
+            println!(
+                "    ONEHOT column {pick} maxabs {max:.3e} at token {} row {} (device {:.9})",
+                worst.0,
+                worst.1,
+                y_one[worst.0 * entry.rows + worst.1]
+            );
+            if max > 1e-6 {
+                println!("  FAIL a one-hot column is not reproduced exactly");
+                *failed = true;
+            }
+
+            if timing > 0 {
+                let mut best = f64::INFINITY;
+                for _ in 0..timing {
+                    let t = Instant::now();
+                    call_prefill(device, index, &xt, ntok, &mut y, bn, cb)?;
+                    best = best.min(t.elapsed().as_secs_f64());
+                }
+                let flops = 2.0 * ntok as f64 * entry.rows as f64 * entry.cols as f64;
+                println!(
+                    "    TIMING best {:.3} ms of {} launches, {:.1} GFLOP/s over the ideal count",
+                    best * 1e3,
+                    timing,
+                    flops / best / 1e9
+                );
+            }
+        }
+        if let Some((ms, rel, bn, cb)) = best_tile {
+            println!("  BEST tile {bn}/{cb} at {ms:.3} ms, relL2 {rel:.3e}");
+        }
+    }
+
+    // The fallback: the router's dim-4, 8-bit codebook cannot run the tiled
+    // kernel, so bn 0 takes the legacy one-thread-per-(row, token) kernel. It
+    // keeps f32 activations, so its reference is unrounded.
+    let router_name = format!("{layer}.router.proj.weight");
+    let router_index = encoded
+        .iter()
+        .position(|e| e.name == router_name)
+        .ok_or_else(|| format!("{router_name}: not an encoded entry of this release"))?;
+    let router = encoded[router_index];
+    let matrix = Matrix::open(root, router).map_err(|e| e.to_string())?;
+    let ntok = 8usize;
+    let xt = transposed_probe(router.cols, ntok);
+    let reference = f64_prefill(&matrix, &xt, ntok, 0, router.rows);
+    let mut y = vec![0f32; ntok * router.rows];
+    call_prefill(device, router_index, &xt, ntok, &mut y, 0, 0)?;
+    let (rel, max) = compare_f32_f64(&y, &reference);
+    println!(
+        "PREFILL {router_name} {}x{} ntok {ntok} bn 0 (legacy: dim 4 nc 256 does not fit the tiled kernel) relL2 {rel:.3e} maxabs {max:.3e}",
+        router.rows, router.cols
+    );
+    if rel > 1e-5 {
+        println!("  FAIL the legacy path is past 1e-5 against the f64 reference");
+        *failed = true;
+    }
+
+    // A routed expert's prefill is a row slice of the stack. The slice must
+    // write its own rows and nothing else, in the full-row layout.
+    let gu_name = format!("{layer}.experts.gate_up_proj");
+    let gu_index = encoded
+        .iter()
+        .position(|e| e.name == gu_name)
+        .ok_or_else(|| format!("{gu_name}: not an encoded entry of this release"))?;
+    let gu = encoded[gu_index];
+    let matrix = Matrix::open(root, gu).map_err(|e| e.to_string())?;
+    let ntok = 8usize;
+    let slice_rows = 128usize; // one PRE_BM block
+    let xt = transposed_probe(gu.cols, ntok);
+    let xt16: Vec<f32> = xt.iter().map(|&v| round_f16(v)).collect();
+    let reference = f64_prefill(&matrix, &xt16, ntok, 0, slice_rows);
+    let mut y = vec![0f32; ntok * gu.rows];
+    call_prefill_rows(device, gu_index, 0, slice_rows, &xt, ntok, &mut y, 128, 0)?;
+    let mut got = Vec::with_capacity(ntok * slice_rows);
+    for t in 0..ntok {
+        got.extend_from_slice(&y[t * gu.rows..t * gu.rows + slice_rows]);
+    }
+    // The reference keeps the container's full-row layout; compact it the way
+    // `got` was compacted before comparing.
+    let mut want = Vec::with_capacity(ntok * slice_rows);
+    for t in 0..ntok {
+        want.extend_from_slice(&reference[t * gu.rows..t * gu.rows + slice_rows]);
+    }
+    let (rel, max) = compare_f32_f64(&got, &want);
+    let untouched = y[slice_rows] == 0.0 && y[ntok * gu.rows - 1] == 0.0;
+    println!(
+        "PREFILL_SLICE {gu_name} rows 0..{slice_rows} of {} ntok {ntok} relL2 {rel:.3e} maxabs {max:.3e} rows outside the slice untouched {untouched}",
+        gu.rows
+    );
+    if rel > 1e-5 || !untouched {
+        println!("  FAIL the row-slice prefill is wrong");
+        *failed = true;
+    }
+    Ok(())
+}
+
+/// The transposed activation matrix the prefill takes: [col][token], with a
+/// distinct value per (col, token) so a transposition cannot pass unnoticed.
+fn transposed_probe(cols: usize, ntok: usize) -> Vec<f32> {
+    let mut state = 0x2545_f491u32;
+    let mut xt = vec![0f32; cols * ntok];
+    for slot in xt.iter_mut() {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        *slot = ((state >> 8) as f32 / 16_777_216.0) * 2.0 - 1.0;
+    }
+    xt
+}
+
+/// f32 -> f16 -> f32 with round-to-nearest-even, the same rounding
+/// `__floats2half2_rn` applies in the kernel.
+fn round_f16(v: f32) -> f32 {
+    f16_to_f32(to_f16_bits(v))
+}
+
+/// The f16 bit pattern of a f32 value, round to nearest even. The crate's
+/// `f16_to_f32` is the tested decoder on the other side of the round trip.
+fn to_f16_bits(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xFF) as i32;
+    let man = b & 0x7F_FFFF;
+    if exp == 0xFF {
+        let nan = if man == 0 { 0 } else { 0x0200 };
+        return sign | 0x7C00 | nan;
+    }
+    if exp == 0 {
+        return sign; // f32 subnormals are below half of f16's smallest subnormal
+    }
+    let e = exp - 127;
+    if e > 15 {
+        return sign | 0x7C00;
+    }
+    if e >= -14 {
+        let mut m = man >> 13;
+        let lost = man & 0x1FFF;
+        if lost > 0x1000 || (lost == 0x1000 && (m & 1) == 1) {
+            m += 1;
+        }
+        let mut ee = e + 15;
+        if m == 0x400 {
+            m = 0;
+            ee += 1;
+        }
+        if ee >= 0x1F {
+            return sign | 0x7C00;
+        }
+        return sign | ((ee as u16) << 10) | (m as u16);
+    }
+    // f16 subnormal: the quantum is 2^-24, so the value is m * 2^(e - 23)
+    // and m * 2^(e + 1) counts quanta.
+    let m = 0x80_0000u64 | u64::from(man);
+    let shift = (-(e + 1)) as u32;
+    if shift > 24 {
+        return sign;
+    }
+    let q = m >> shift;
+    let rem = m & ((1u64 << shift) - 1);
+    let half = 1u64 << (shift - 1);
+    let mut q = q;
+    if rem > half || (rem == half && (q & 1) == 1) {
+        q += 1;
+    }
+    if q >= 0x400 {
+        return sign | 0x0400;
+    }
+    sign | q as u16
+}
+
+/// The f64 dot of the named rows against the transposed activations, over an
+/// f64 accumulator: the reference the tensor-core path approximates.
+fn f64_prefill(matrix: &Matrix, xt: &[f32], ntok: usize, row0: usize, nrows: usize) -> Vec<f64> {
+    let rows = matrix.rows();
+    let cols = matrix.cols();
+    let mut out = vec![0f64; ntok * rows];
+    for r in 0..nrows {
+        let values = matrix.row(row0 + r).expect("row is inside the matrix");
+        for t in 0..ntok {
+            let mut sum = 0f64;
+            for c in 0..cols {
+                sum += f64::from(values[c]) * f64::from(xt[c * ntok + t]);
+            }
+            out[t * rows + row0 + r] = sum;
+        }
+    }
+    out
+}
+
+fn compare_f32_f64(values: &[f32], reference: &[f64]) -> (f64, f64) {
+    let mut diff = 0f64;
+    let mut norm = 0f64;
+    let mut max_abs = 0f64;
+    for (&v, &r) in values.iter().zip(reference) {
+        let d = f64::from(v) - r;
+        diff += d * d;
+        norm += r * r;
+        max_abs = max_abs.max(d.abs());
+    }
+    let rel = if norm > 0.0 {
+        (diff / norm).sqrt()
+    } else {
+        0.0
+    };
+    (rel, max_abs)
+}
+
+fn call_prefill(
+    device: &Residency,
+    tensor: usize,
+    xt: &[f32],
+    ntok: usize,
+    y: &mut [f32],
+    bn: i32,
+    cb: i32,
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_prefill(
+            device.0,
+            tensor as i32,
+            xt.as_ptr(),
+            ntok as i32,
+            y.as_mut_ptr(),
+            bn,
+            cb,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("prefill: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_prefill_rows(
+    device: &Residency,
+    tensor: usize,
+    row0: usize,
+    nrows: usize,
+    xt: &[f32],
+    ntok: usize,
+    y: &mut [f32],
+    bn: i32,
+    cb: i32,
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_prefill_rows(
+            device.0,
+            tensor as i32,
+            row0 as i32,
+            nrows as i32,
+            xt.as_ptr(),
+            ntok as i32,
+            y.as_mut_ptr(),
+            bn,
+            cb,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("prefill_rows: {}", message(&err)));
     }
     Ok(())
 }

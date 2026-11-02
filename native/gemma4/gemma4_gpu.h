@@ -82,6 +82,33 @@ int gm4_gpu_rows(gm4_gpu *g, int tensor, const uint32_t *rows, int nrows,
  * a real container because the geometry is constant across its payloads. */
 int gm4_gpu_variant(const gm4_gpu *g, int tensor);
 
+/* Tiled prefill, the VQ tools' f16 tensor-core path
+ * (/data/VQ_Tools/c/gpu/decode-gpu.cu:320-520). xT is the transposed
+ * activation matrix [cols][ntok] and y is [ntok][rows], both host f32; y is
+ * cleared and then filled with every payload's contribution, so the caller
+ * reads the complete result and need not zero it.
+ *
+ * bn is the token tile (64, 128 or 256) and cb the codebook placement (0 =
+ * global/L1, 1 = shared behind the tiles). The column round is 64: the
+ * A-tile fill reads one 64-bit window per thread and BK 128 would silently
+ * truncate, which is why this build offers only BK 64. bn 0 is the auto
+ * choice: the tiled kernel at 128/0 when the geometry fits, the legacy
+ * one-thread-per-(row, token) kernel otherwise (a dim-4 8-bit codebook, for
+ * instance). */
+int gm4_gpu_prefill(gm4_gpu *g, int tensor, const float *xT, int ntok, float *y, int bn, int cb,
+                    char *err, size_t errlen);
+
+/* The same prefill over a contiguous row slice, written into the full-row
+ * layout y[t * rows + r], so a slice produces exactly the addresses a full
+ * launch writes for those rows. This is a routed expert's prefill: its rows
+ * are one contiguous block of the stack. */
+int gm4_gpu_prefill_rows(gm4_gpu *g, int tensor, int row0, int nrows, const float *xT, int ntok,
+                         float *y, int bn, int cb, char *err, size_t errlen);
+
+/* Whether the tiled prefill can run this tensor with this tile and placement:
+ * 1 when it can, 0 when it cannot, with the reason in `err`. */
+int gm4_gpu_prefill_ready(const gm4_gpu *g, int tensor, int bn, int cb, char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif
