@@ -25,7 +25,7 @@ fn subset(actual: &Value, expected: &Value, path: &str) -> Result<(), IdentifyEr
 }
 
 fn config(value: &Value) -> Result<(), IdentifyError> {
-    // Source config of both releases (sha256 61bea4a0...). This admits one
+    // Source config of all three releases (sha256 61bea4a0...). This admits one
     // topology; it does not transfer any other artifact's qualification.
     let contract: Value = serde_json::from_str(include_str!("config.json")).map_err(error)?;
     subset(value, &contract, "config.json")

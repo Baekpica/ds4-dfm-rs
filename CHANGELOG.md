@@ -85,6 +85,11 @@ for exact provenance. Historical entries retain their original scope.
   longer warns `disk_unverified` for these families, K2-Horizon, Inkling
   and V4.1. GLM 5.3, DeepSeek V4 and Bonsai had no local artifact and keep
   their declarations.
+- MiMo VQ admits the MOPD release
+  ([Baekpica/MiMo-V2.6-Flash-MOPD-VQ-GGUF](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-VQ-GGUF)
+  `79ae75e5`, from XiaomiMiMo/MiMo-V2.6-Flash-MOPD `5220c3f5`): same recipe
+  and residual layers; its vision, audio, MTP and DFlash parts are RL's
+  bytes. Not yet measured on GB10.
 
 ## v0.1.5 — 2026-11-01
 
