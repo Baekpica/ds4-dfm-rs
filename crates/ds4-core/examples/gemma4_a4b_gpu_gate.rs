@@ -37,8 +37,8 @@ use std::time::Instant;
 
 use ds4_core::f16_to_f32;
 use ds4_core::gemma4_a4b::{
-    bf16_round, decode, gelu, normalize_heads, rms_norm, rope, Entry, Family, LayerType, Matrix,
-    Role, Tensor,
+    bf16_round, decode, gelu, normalize_heads, rms_norm, rope, softmax, top_k, Entry, Family,
+    LayerType, Matrix, Role, Tensor,
 };
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
@@ -185,6 +185,28 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_mul(
+        g: *mut c_void,
+        x: *const f32,
+        w: *const f32,
+        out: *mut f32,
+        n: usize,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_router_topk(
+        g: *mut c_void,
+        scores: *const f32,
+        per_expert_scale: *const f32,
+        experts: i32,
+        k: i32,
+        probs: *mut f32,
+        indices: *mut i32,
+        weights: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -206,6 +228,7 @@ fn usage() -> &'static str {
   --skip-prefill     skip the tensor-core prefill (step 4)
   --skip-elementwise skip the norms and elementwise kernels (step 5)
   --skip-attention   skip rotary and decode attention (step 6)
+  --skip-router      skip the router's top-k (step 7)
   --help             this text"
 }
 
@@ -233,6 +256,7 @@ fn run() -> Result<(), String> {
     let mut prefill = true;
     let mut elementwise = true;
     let mut attention = true;
+    let mut router = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -261,6 +285,7 @@ fn run() -> Result<(), String> {
             "--skip-prefill" => prefill = false,
             "--skip-elementwise" => elementwise = false,
             "--skip-attention" => attention = false,
+            "--skip-router" => router = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -463,6 +488,9 @@ fn run() -> Result<(), String> {
     }
     if attention {
         attention_gate(&device, &family, &root, &mut failed)?;
+    }
+    if router {
+        router_gate(&device, &family, &root, &encoded, &mut failed)?;
     }
     if failed {
         return Err("a kernel is past the gate".into());
@@ -1047,10 +1075,15 @@ fn attention_gate(
         };
         let pos = positions - 1;
 
-        let q_proj = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let k_proj = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let q_proj = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let k_proj = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
         let v_proj = match config.has_v_proj(kind) {
-            true => Some(Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?),
+            true => Some(
+                Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?,
+            ),
             false => None,
         };
         let q_norm = decode(root, spec.get(Role::QNorm).map_err(|e| e.to_string())?)
@@ -1143,6 +1176,190 @@ fn attention_gate(
                 *failed = true;
             }
         }
+    }
+    Ok(())
+}
+
+/// Step 7: the router's selection, which is the one place a small numeric
+/// difference can change the answer, because the experts themselves are
+/// discrete. The CPU reference is the forward's own `rms_norm`, `softmax` and
+/// `top_k` in the forward's order (`forward.rs:365-381`), and the indices must
+/// match exactly, not approximately.
+fn router_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let eps = config.rms_eps;
+    let hidden = config.hidden;
+    let experts = config.experts;
+    let k = config.top_k;
+    let root_scale = 1.0 / (hidden as f32).sqrt();
+
+    let spec = &family.layout.layers[0];
+    let name = spec
+        .get(Role::RouterProj)
+        .map_err(|e| e.to_string())?
+        .name
+        .clone();
+    let index = encoded
+        .iter()
+        .position(|e| e.name == name)
+        .ok_or_else(|| format!("{name}: not an encoded entry of this release"))?;
+    let router_scale = decode(
+        root,
+        spec.get(Role::RouterScale).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?
+    .data;
+    let per_expert = decode(
+        root,
+        spec.get(Role::RouterPerExpertScale)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?
+    .data;
+    if router_scale.len() != hidden || per_expert.len() != experts {
+        return Err(format!(
+            "router sidecars are {} and {} wide, expected {hidden} and {experts}",
+            router_scale.len(),
+            per_expert.len()
+        ));
+    }
+
+    let x = elementwise_probe(hidden, 1.0);
+    let matrix = Matrix::open(root, spec.get(Role::RouterProj).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    // The forward: weightless norm, times router.scale / sqrt(hidden), the
+    // projection, softmax, top-k, renormalise, per-expert scale.
+    let normed = rms_norm(&x, None, eps);
+    let scaled: Vec<f32> = normed
+        .iter()
+        .zip(&router_scale)
+        .map(|(&v, &s)| v * s * root_scale)
+        .collect();
+    let scores_cpu = matrix.matvec(&scaled).map_err(|e| e.to_string())?;
+    let probs_cpu = softmax(&scores_cpu);
+    let (picked_cpu, mut weights_cpu) = top_k(&probs_cpu, k);
+    let picked_sum: f32 = weights_cpu.iter().sum();
+    for (slot, &expert) in weights_cpu.iter_mut().zip(&picked_cpu) {
+        *slot = *slot / picked_sum * per_expert[expert];
+    }
+
+    // The device chain, one entry point at a time.
+    let mut normed_d = vec![0f32; hidden];
+    call_rmsnorm(device, &x, 1, hidden, None, &mut normed_d, eps)?;
+    let w: Vec<f32> = router_scale.iter().map(|&s| s * root_scale).collect();
+    let mut scaled_d = vec![0f32; hidden];
+    call_mul(device, &normed_d, &w, &mut scaled_d)?;
+    let mut scores_d = vec![0f32; experts];
+    call_matvec(device, index, &scaled_d, &mut scores_d, 128)?;
+    let mut probs_d = vec![0f32; experts];
+    let mut picked_d = vec![0i32; k];
+    let mut weights_d = vec![0f32; k];
+    call_router_topk(
+        device,
+        &scores_d,
+        Some(&per_expert),
+        experts,
+        k,
+        &mut probs_d,
+        &mut picked_d,
+        &mut weights_d,
+    )?;
+
+    let (score_rel, _, _) = compare(&scores_cpu, &scores_d);
+    let (prob_rel, _, _) = compare(&probs_cpu, &probs_d);
+    let (weight_rel, weight_max, _) = compare(&weights_cpu, &weights_d);
+    let picked_d_usize: Vec<usize> = picked_d.iter().map(|&i| i as usize).collect();
+    let identical = picked_d_usize == picked_cpu;
+    println!(
+        "ROUTER layer 0 experts {experts} top {k}: scores relL2 {score_rel:.3e} probs relL2 {prob_rel:.3e} weights relL2 {weight_rel:.3e} maxabs {weight_max:.3e}"
+    );
+    println!("  PICKED cpu {picked_cpu:?}");
+    println!("  PICKED device {picked_d_usize:?} identical {identical}");
+    if score_rel > 1e-5 || prob_rel > 1e-5 || weight_rel > 1e-5 {
+        println!("  FAIL the router's arithmetic is past 1e-5");
+        *failed = true;
+    }
+    if !identical {
+        println!("  FAIL the selected experts differ from the CPU's");
+        *failed = true;
+    }
+
+    // The weights with no per-expert scale must be the renormalised
+    // probabilities, which sum to one.
+    let mut plain = vec![0f32; k];
+    call_router_topk(
+        device,
+        &scores_d,
+        None,
+        experts,
+        k,
+        &mut probs_d,
+        &mut picked_d,
+        &mut plain,
+    )?;
+    let sum: f32 = plain.iter().sum();
+    println!("  WEIGHTS without per-expert scale sum to {sum:.7} (expected 1)");
+    if (sum - 1.0).abs() > 1e-6 {
+        println!("  FAIL the renormalise is off");
+        *failed = true;
+    }
+    Ok(())
+}
+
+fn call_mul(device: &Residency, x: &[f32], w: &[f32], out: &mut [f32]) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_mul(
+            device.0,
+            x.as_ptr(),
+            w.as_ptr(),
+            out.as_mut_ptr(),
+            x.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("mul: {}", message(&err)));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_router_topk(
+    device: &Residency,
+    scores: &[f32],
+    per_expert_scale: Option<&[f32]>,
+    experts: usize,
+    k: usize,
+    probs: &mut [f32],
+    indices: &mut [i32],
+    weights: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_router_topk(
+            device.0,
+            scores.as_ptr(),
+            per_expert_scale.map_or(std::ptr::null(), |w| w.as_ptr()),
+            experts as i32,
+            k as i32,
+            probs.as_mut_ptr(),
+            indices.as_mut_ptr(),
+            weights.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("router_topk: {}", message(&err)));
     }
     Ok(())
 }

@@ -65,7 +65,7 @@ pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32) -> Vec<f32> {
     }
 }
 
-fn softmax(scores: &[f32]) -> Vec<f32> {
+pub fn softmax(scores: &[f32]) -> Vec<f32> {
     let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut out: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
     let sum: f32 = out.iter().sum();
@@ -77,7 +77,7 @@ fn softmax(scores: &[f32]) -> Vec<f32> {
 
 /// The top-k probabilities, highest first. Ties keep the lower index, which
 /// is the order `torch.topk` returns for an exact tie.
-fn top_k(probs: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
+pub fn top_k(probs: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
     let mut order: Vec<usize> = (0..probs.len()).collect();
     order.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
     order.truncate(k);

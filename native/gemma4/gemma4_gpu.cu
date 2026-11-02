@@ -721,6 +721,68 @@ __global__ void attn_decode_kernel(const float *q, const __half *k, const __half
     }
 }
 
+/* ---- the router ---------------------------------------------------------
+ *
+ * The reference's router (`modeling_gemma4.py:1357-1372` as the CPU forward
+ * cites it): a weightless norm, times `router.scale / sqrt(hidden)`, the
+ * 128-way projection, an fp32 softmax, the top-k, a renormalise and the
+ * per-expert scale. The projection is the existing dim-4 row kernel; these
+ * two pieces are the rest.
+ */
+
+/* out = x * w, the router's per-dimension scale. */
+__global__ void mul_kernel(const float *x, const float *w, float *out, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = x[i] * w[i];
+}
+
+/* The selection: the k highest probabilities, highest first, ties to the
+ * lower index (the order `torch.topk` returns for an exact tie, which the CPU
+ * forward reproduces at forward.rs:80-88), renormalised over the picked set
+ * and scaled per expert. One block; the selection itself runs on one thread,
+ * which is 128 comparisons per slot and keeps the tie rule explicit. */
+__global__ void router_topk_kernel(const float *scores, const float *per_expert_scale, int experts,
+                                   int k, float *probs, int *indices, float *weights) {
+    extern __shared__ float red[];
+    const int t = threadIdx.x;
+    float mx = -INFINITY;
+    for (int i = t; i < experts; i += blockDim.x) mx = fmaxf(mx, scores[i]);
+    mx = block_max(mx, red);
+    float sum = 0.0f;
+    for (int i = t; i < experts; i += blockDim.x) {
+        const float e = expf(scores[i] - mx);
+        probs[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+    for (int i = t; i < experts; i += blockDim.x) probs[i] /= sum;
+    __syncthreads();
+
+    if (t != 0) return;
+    float picked = 0.0f;
+    for (int j = 0; j < k; j++) {
+        int best = -1;
+        float best_prob = -1.0f;
+        for (int i = 0; i < experts; i++) {
+            bool taken = false;
+            for (int q = 0; q < j && !taken; q++) taken = indices[q] == i;
+            if (taken) continue;
+            if (probs[i] > best_prob) {
+                best_prob = probs[i];
+                best = i;
+            }
+        }
+        indices[j] = best;
+        picked += probs[best];
+    }
+    for (int j = 0; j < k; j++) {
+        const int expert = indices[j];
+        weights[j] = probs[expert] / picked
+                   * (per_expert_scale ? per_expert_scale[expert] : 1.0f);
+    }
+}
+
 /* Largest dynamic shared-memory window the device accepts; the shared-codebook
  * variant needs nc*dim f16 in one block, which a wide codebook cannot fit. */
 size_t smem_max(void) {
@@ -1039,8 +1101,8 @@ struct gm4_gpu {
     size_t rlcap;
     float *pxt, *py;   /* the prefill's [cols][ntok] and [ntok][rows] */
     size_t pxtcap, pycap;
-    float *ew[3];      /* the elementwise kernels' operands, grown on demand */
-    size_t ewcap[3];
+    float *ew[6];      /* the elementwise and router operands, grown on demand */
+    size_t ewcap[6];
     float *aq, *ax, *ai, *ascores, *aout; /* attention's and RoPE's operands */
     size_t aqcap, axcap, aicap, ascorescap, aoutcap;
     __half *akv;
@@ -1124,7 +1186,7 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->rlbuf) cudaFree(g->rlbuf);
     if (g->pxt) cudaFree(g->pxt);
     if (g->py) cudaFree(g->py);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 6; i++)
         if (g->ew[i]) cudaFree(g->ew[i]);
     if (g->aq) cudaFree(g->aq);
     if (g->ax) cudaFree(g->ax);
@@ -1514,6 +1576,73 @@ int gm4_gpu_softcap(gm4_gpu *g, float *y, size_t n, float cap, char *err, size_t
     if (e != cudaSuccess) return fail(err, errlen, "softcap sync", e);
     e = cudaMemcpy(y, g->ew[0], n * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "softcap download", e);
+    return 0;
+}
+
+/* out = x * w over n values: the router's per-dimension scale, and any other
+ * elementwise product the chain needs. */
+int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
+                size_t errlen) {
+    if (!g || !x || !w || !out || n == 0) {
+        snprintf(err, errlen, "mul needs two inputs and an output");
+        return -1;
+    }
+    for (int i = 0; i < 3; i++)
+        if (ensure_ew(g, i, n, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], x, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "mul x upload", e);
+    e = cudaMemcpy(g->ew[1], w, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "mul w upload", e);
+    const unsigned threads = 256;
+    mul_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(g->ew[0], g->ew[1], g->ew[2], n);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "mul launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "mul sync", e);
+    e = cudaMemcpy(out, g->ew[2], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "mul download", e);
+    return 0;
+}
+
+/* The router's selection over `experts` scores: probs, the k indices highest
+ * first, and their renormalised weights with the per-expert scale folded in.
+ * `per_expert_scale` may be NULL, which leaves the weights renormalised. */
+int gm4_gpu_router_topk(gm4_gpu *g, const float *scores, const float *per_expert_scale, int experts,
+                        int k, float *probs, int *indices, float *weights, char *err,
+                        size_t errlen) {
+    if (!g || !scores || !probs || !indices || !weights || experts <= 0 || k <= 0 || k > experts) {
+        snprintf(err, errlen, "router_topk needs scores, outputs and 1 <= k <= experts");
+        return -1;
+    }
+    const size_t n = (size_t) experts;
+    /* slots 0,1 hold the scores and the per-expert scale; a second pair holds
+     * the probability vector and the selection's outputs as raw floats. */
+    for (int i = 0; i < 5; i++)
+        if (ensure_ew(g, i, n, err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ew[0], scores, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "router scores upload", e);
+    if (per_expert_scale) {
+        e = cudaMemcpy(g->ew[1], per_expert_scale, n * sizeof(float), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) return fail(err, errlen, "router scale upload", e);
+    } else {
+        e = cudaMemset(g->ew[1], 0, n * sizeof(float));
+        if (e != cudaSuccess) return fail(err, errlen, "router scale clear", e);
+    }
+    unsigned threads = 32;
+    while (threads < (unsigned) experts && threads < 1024) threads <<= 1;
+    router_topk_kernel<<<1, threads, 32 * sizeof(float)>>>(
+        g->ew[0], per_expert_scale ? g->ew[1] : NULL, experts, k, g->ew[2], (int *) g->ew[3],
+        g->ew[4]);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "router_topk launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "router_topk sync", e);
+    e = cudaMemcpy(probs, g->ew[2], n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e == cudaSuccess)
+        e = cudaMemcpy(indices, g->ew[3], (size_t) k * sizeof(int), cudaMemcpyDeviceToHost);
+    if (e == cudaSuccess)
+        e = cudaMemcpy(weights, g->ew[4], (size_t) k * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "router_topk download", e);
     return 0;
 }
 

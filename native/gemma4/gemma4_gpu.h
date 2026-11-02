@@ -140,6 +140,18 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
                       int kv_heads, int head_dim, int positions, int window, float *out,
                       char *err, size_t errlen);
 
+/* out = x * w over n values: the router's per-dimension scale. */
+int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
+                size_t errlen);
+
+/* The router's selection over `experts` scores: the fp32 softmax, the k
+ * indices highest first with ties to the lower index, and their renormalised
+ * weights with the per-expert scale folded in (`per_expert_scale` may be
+ * NULL). The CPU forward's rule is forward.rs:80-88. */
+int gm4_gpu_router_topk(gm4_gpu *g, const float *scores, const float *per_expert_scale, int experts,
+                        int k, float *probs, int *indices, float *weights, char *err,
+                        size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif
