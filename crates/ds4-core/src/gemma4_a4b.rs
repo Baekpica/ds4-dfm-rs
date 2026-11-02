@@ -20,10 +20,11 @@
 //!   and an incremental decoder.
 //!
 //! What this module does not do yet, named so it is not claimed: a batched
-//! prefill, a device path (the native serving lanes still refuse this family),
-//! the vision sidecar, tool rendering and a logits-level reference gate. The
-//! OpenAI-compatible host is the separate `gemma4-server-rs` binary; it is not
-//! the native engine.
+//! prefill, a device token loop (the `gemma4-gpu` feature holds device
+//! residency and the fused row dot, gated against this CPU forward, but no
+//! layer graph or serving lane runs there), the vision sidecar, tool
+//! rendering and a logits-level reference gate. The OpenAI-compatible host is
+//! the separate `gemma4-server-rs` binary; it is not the native engine.
 
 mod config;
 mod decode;

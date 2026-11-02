@@ -500,6 +500,24 @@ tests/h3/int8_convrot_bm: tests/h3/int8_convrot_bm.cu native/h3/h3_dit_gpu.cu na
 tests/h3/gemma_tower_bm: tests/h3/gemma_tower_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
 
+# The Gemma-4 device gate: residency and the fused VQ row dot against the CPU
+# forward. Self-contained (one object, no engine objects), and built for this
+# device unless a cuda-* target has recorded an architecture in
+# .ds4-cuda-config.mk.
+GEMMA4_GPU_OBJ := native/gemma4/gemma4_gpu.o
+GEMMA4_ARCH_FLAGS := $(if $(strip $(NVCC_ARCH_FLAGS)),$(NVCC_ARCH_FLAGS),-arch=native)
+GEMMA4_NVCCFLAGS := -O3 -std=c++17 $(GEMMA4_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+GEMMA4_LINK_FINGERPRINT = $(shell cksum $(GEMMA4_GPU_OBJ) 2>/dev/null | cksum | awk '{print $$1}')
+
+$(GEMMA4_GPU_OBJ): native/gemma4/gemma4_gpu.cu native/gemma4/gemma4_gpu.h
+	$(NVCC) $(GEMMA4_NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+tests/gemma4_gpu_gate: $(DS4_RS_SOURCES) $(GEMMA4_GPU_OBJ)
+	cargo rustc -p ds4-core --example gemma4_a4b_gpu_gate --release --features gemma4-gpu -- \
+	-C metadata=$(GEMMA4_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/$(GEMMA4_GPU_OBJ) $(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/gemma4_a4b_gpu_gate" $@
+
 # Portable reference tests: host-only, without model weights.
 H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable test_int8_convrot
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))

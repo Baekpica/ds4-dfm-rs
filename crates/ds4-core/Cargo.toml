@@ -13,6 +13,13 @@ path = "src/lib.rs"
 # Keep them out of the default host-only build.
 [features]
 h3-gates = []
+# The Gemma-4 device path: links native/gemma4/gemma4_gpu.o, which the
+# Makefile's tests/gemma4_gpu_gate target compiles and passes to rustc.
+gemma4-gpu = []
+
+[[example]]
+name = "gemma4_a4b_gpu_gate"
+required-features = ["gemma4-gpu"]
 
 [[example]]
 name = "h3_text_gate"
