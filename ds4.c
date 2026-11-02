@@ -74885,6 +74885,14 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return false;
     }
+    /* Gemma-4's banked lane is P7 (ds4_gemma4_batch.inc). Until it exists the
+     * DeepSeek slab body allocates this family's raw ring through
+     * metal_graph_alloc_raw_cap and then reads a KV layout Gemma-4 does not
+     * have: the serving check segfaulted there (metal_graph_alloc_raw_cap,
+     * called from ds4_batch_ctx_create_fit). Refuse instead. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        return false;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         const char *enabled = getenv("DS4_DOTS3_BATCH");
         return enabled && strcmp(enabled, "1") == 0;
