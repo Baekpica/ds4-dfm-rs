@@ -2,7 +2,8 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 48546032 (W1 and W2 are on top of it, unpushed)
+last_updated_commit: 3530614f (all work is on top of 8c2068b5, unpushed)
+plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
 handoff_written_at: 2026-11-03T00:10:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
@@ -41,6 +42,8 @@ commits below are unpushed.
             (make test-gemma4-primitives; 0 failures)
   081bcbba  the device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the
             30-layer graph (ds4_gemma4_graph.inc); both units compile
+  3530614f  handoff: engine state and the remaining sequence
+  (next)    docs/gemma4-port-plan.md: the phase plan P6..P10
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions, so the tree failed to compile
@@ -58,8 +61,8 @@ ds4_gpu_matmul_q8_0_tensor, the router off the post-attention residual, the
 residual adds, layer_scalar, the final norm, the tied head and the tanh-30
 cap.
 
-NEXT UNIT, in order - this is the whole remaining port, so do it in this
-sequence and gate each step:
+THE PLAN IS docs/gemma4-port-plan.md (P6..P10, with gates). The summary
+below is the same sequence; the plan file carries the detail.
 
   1. ds4.c session hooks. Mirror ling31's touch points: the family
      dispatch in ds4_model_apply_host_shape and the engine load (the bind
