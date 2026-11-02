@@ -71,6 +71,7 @@
 #endif
 /* Declarations only: every build sizes Ling-3.1 banks by its latent layout. */
 #include "ds4_ling31.h"
+#include "ds4_gemma4.h"
 #include "ds4_beam.h"
 #include "ds4_minimax.h"
 #include "ds4_axk2.h"
@@ -46778,6 +46779,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_beam_graph.inc"
 #include "ds4_minimax_graph.inc"
 #include "ds4_axk2_graph.inc"
+#include "ds4_gemma4_graph.inc"
 #include "ds4_mimo2_dflash.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable

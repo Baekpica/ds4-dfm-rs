@@ -1,0 +1,294 @@
+#ifndef DS4_GEMMA4_GPU_CUH
+#define DS4_GEMMA4_GPU_CUH
+
+/* Gemma-4 device entry points. The graph lives in ds4_gemma4_graph.inc
+ * (host side, inside ds4.c); this file is the device side only: the KV store,
+ * the routed experts, and tensor-shaped wrappers over the primitives.
+ *
+ * The shared GVQ runtime supplies the linear, the norm-free plumbing and the
+ * allocator. Everything the runtime does not have lives here or in
+ * cuda/gemma4_{primitives,attn,moe}.cuh, and every kernel cites
+ * docs/gemma4-reference-semantics.md. */
+
+#include "ds4_gemma4.h"
+#include "cuda/gemma4_primitives.cuh"
+#include "cuda/gemma4_attn.cuh"
+
+/* One routed-expert scratch set, sized for `chunk` tokens and reused across
+ * layers: gather rows, the three projections of the route set, and the
+ * device order table the host grouping writes each layer. */
+struct ds4_g4_moe {
+    ds4_gvq_ctx *gvq;
+    uint32_t chunk;
+    ds4_gpu_tensor *in, *out, *gate, *up, *mid, *order;
+    int32_t *routes;
+    uint32_t *grouped;
+};
+
+/* ---------------------------------------------------------------- KV store */
+
+/* Write the projected, normed and roped K/V rows of `rows` tokens into their
+ * bf16 cache slots. `ring` 0 means the slot is the absolute position. */
+__global__ static void g4_kv_store_kernel(__nv_bfloat16 *dst, const float *src,
+        const uint32_t *positions, uint32_t rows, uint32_t width, uint32_t ring) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (uint64_t)rows * width) { return; }
+    const uint32_t row = (uint32_t)(i / width);
+    const uint32_t slot = ring ? (positions[row] % ring) : positions[row];
+    dst[(uint64_t)slot * width + (uint32_t)(i % width)] = __float2bfloat16_rn(src[i]);
+}
+
+extern "C" int ds4_gpu_g4_kv_store(ds4_gpu_tensor *dst, const ds4_gpu_tensor *src,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t width, uint32_t ring,
+        uint32_t capacity) {
+    const uint64_t count = (uint64_t)rows * width;
+    if (!dst || !src || !positions || !count || !width || !capacity) { return 0; }
+    if (dst->bytes < (uint64_t)capacity * width * sizeof(__nv_bfloat16) ||
+        src->bytes < count * sizeof(float) || positions->bytes < (uint64_t)rows * sizeof(uint32_t)) {
+        return 0;
+    }
+    const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_kv_store_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (__nv_bfloat16 *)dst->ptr, (const float *)src->ptr, (const uint32_t *)positions->ptr,
+        rows, width, ring);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 KV store");
+}
+
+/* -------------------------------------------------------------- primitives */
+
+/* `weight` is a plan index (DS4_GVQ_NO_LINK for the weightless forms); the
+ * pointer comes from the GVQ source table, still owned by the plan. */
+static const float *g4_weight(const ds4_gvq_ctx *ctx, uint32_t index, uint64_t count) {
+    if (!ctx || index == DS4_GVQ_NO_LINK) { return nullptr; }
+    return (const float *)gvq_weight(ctx, index, GVQ_TYPE_BF16, count);
+}
+
+extern "C" int ds4_gpu_g4_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+    const float *w = g4_weight(ctx, weight, width);
+    if (!out || !in || !rows || !width || (weight != DS4_GVQ_NO_LINK && !w)) { return 0; }
+    if (out->bytes < (uint64_t)rows * width * sizeof(float) ||
+        in->bytes < (uint64_t)rows * width * sizeof(float)) { return 0; }
+    g4_rms_kernel<256><<<rows, 256, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)in->ptr, w, rows, width, eps);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 RMS norm");
+}
+
+extern "C" int ds4_gpu_g4_router_input(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *in, uint32_t scale, uint32_t rows, uint32_t width, float eps,
+        float root) {
+    const float *s = g4_weight(ctx, scale, width);
+    if (!out || !in || !s || !rows || !width) { return 0; }
+    if (out->bytes < (uint64_t)rows * width * sizeof(float) ||
+        in->bytes < (uint64_t)rows * width * sizeof(float)) { return 0; }
+    g4_router_input_kernel<256><<<rows, 256, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)in->ptr, s, rows, width, eps, root);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 router input");
+}
+
+extern "C" int ds4_gpu_g4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv, uint32_t rows, uint32_t heads, uint32_t dim, uint32_t pairs) {
+    if (!x || !positions || !inv || !rows || !heads || !dim) { return 0; }
+    if (x->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
+        inv->bytes < (uint64_t)(dim / 2u) * sizeof(float)) { return 0; }
+    const uint64_t jobs = (uint64_t)rows * heads;
+    const uint32_t blocks = (uint32_t)((jobs + 127u) / 128u);
+    g4_rope_kernel<<<blocks, 128, 0, ds4_current_stream()>>>((float *)x->ptr,
+        (const uint32_t *)positions->ptr, (const float *)inv->ptr, rows, heads, dim, pairs);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 rope");
+}
+
+extern "C" int ds4_gpu_g4_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
+        ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits, uint32_t per_expert,
+        uint32_t rows) {
+    const float *scale = g4_weight(ctx, per_expert, G4_EXPERTS);
+    if (!selected || !weights || !logits || !scale || !rows) { return 0; }
+    if (selected->bytes < (uint64_t)rows * G4_USED * sizeof(uint32_t) ||
+        weights->bytes < (uint64_t)rows * G4_USED * sizeof(float) ||
+        logits->bytes < (uint64_t)rows * G4_EXPERTS * sizeof(float)) { return 0; }
+    g4_router_kernel<<<rows, G4_EXPERTS, 0, ds4_current_stream()>>>((uint32_t *)selected->ptr,
+        (float *)weights->ptr, (const float *)logits->ptr, scale, rows, G4_EXPERTS, G4_USED);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 router");
+}
+
+extern "C" int ds4_gpu_g4_gelu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, uint64_t count) {
+    if (!out || !gate || !up || !count) { return 0; }
+    if (out->bytes < count * sizeof(float) || gate->bytes < count * sizeof(float) ||
+        up->bytes < count * sizeof(float)) { return 0; }
+    const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_gelu_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)gate->ptr, (const float *)up->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 gelu product");
+}
+
+extern "C" int ds4_gpu_g4_embed_scale(ds4_gpu_tensor *x, uint64_t count) {
+    if (!x || !count || x->bytes < count * sizeof(float)) { return 0; }
+    const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_embed_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)x->ptr,
+        (const float *)x->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 embedding scale");
+}
+
+extern "C" int ds4_gpu_g4_softcap(ds4_gpu_tensor *logits, uint64_t count) {
+    if (!logits || !count || logits->bytes < count * sizeof(float)) { return 0; }
+    const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_softcap_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)logits->ptr,
+        count, (float)G4_REF_SOFTCAP);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 logit softcap");
+}
+
+extern "C" int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar) {
+    if (!x || !count || x->bytes < count * sizeof(float)) { return 0; }
+    const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_layer_scale_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)x->ptr,
+        count, scalar);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 layer scalar");
+}
+
+extern "C" int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring) {
+    if (!out || !query || !key || !value || !positions || !rows || !heads || !kv_heads || !dim) {
+        return 0;
+    }
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        value->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    const uint32_t warps = 4u;
+    const uint64_t jobs = (uint64_t)rows * heads;
+    const uint32_t blocks = (uint32_t)((jobs + warps - 1u) / warps);
+    g4_attn_kernel<<<blocks, warps * 32u, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
+        (const __nv_bfloat16 *)value->ptr, rows, first, heads, kv_heads, dim, window, ring,
+        kv_stride);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 attention");
+}
+
+/* ------------------------------------------------------- routed experts */
+
+uint64_t ds4_gpu_g4_moe_bytes(uint32_t chunk) {
+    if (!chunk || chunk > G4_PREFILL_MAX) { return 0; }
+    const uint64_t pairs = (uint64_t)chunk * G4_USED;
+    return pairs * G4_EMBED * sizeof(float) * 2u + pairs * G4_FF * sizeof(float) * 3u +
+        pairs * sizeof(uint32_t) + pairs * G4_USED * sizeof(uint32_t) +
+        pairs * sizeof(int32_t) + pairs * sizeof(float);
+}
+
+ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
+    if (!gvq || !chunk || chunk > G4_PREFILL_MAX) { return nullptr; }
+    ds4_g4_moe *m = (ds4_g4_moe *)calloc(1, sizeof(*m));
+    if (!m) { return nullptr; }
+    m->gvq = gvq;
+    m->chunk = chunk;
+    const uint64_t pairs = (uint64_t)chunk * G4_USED;
+    m->in = ds4_gpu_tensor_alloc(pairs * G4_EMBED * sizeof(float));
+    m->out = ds4_gpu_tensor_alloc(pairs * G4_EMBED * sizeof(float));
+    m->gate = ds4_gpu_tensor_alloc(pairs * G4_FF * sizeof(float));
+    m->up = ds4_gpu_tensor_alloc(pairs * G4_FF * sizeof(float));
+    m->mid = ds4_gpu_tensor_alloc(pairs * G4_FF * sizeof(float));
+    m->order = ds4_gpu_tensor_alloc(pairs * sizeof(uint32_t));
+    m->routes = (int32_t *)calloc((size_t)pairs, sizeof(int32_t));
+    m->grouped = (uint32_t *)calloc((size_t)pairs, sizeof(uint32_t));
+    if (!m->in || !m->out || !m->gate || !m->up || !m->mid || !m->order ||
+        !m->routes || !m->grouped) {
+        ds4_gpu_g4_moe_free(m);
+        return nullptr;
+    }
+    return m;
+}
+
+void ds4_gpu_g4_moe_free(ds4_g4_moe *m) {
+    if (!m) { return; }
+    ds4_gpu_tensor_free(m->in);
+    ds4_gpu_tensor_free(m->out);
+    ds4_gpu_tensor_free(m->gate);
+    ds4_gpu_tensor_free(m->up);
+    ds4_gpu_tensor_free(m->mid);
+    ds4_gpu_tensor_free(m->order);
+    free(m->routes);
+    free(m->grouped);
+    free(m);
+}
+
+/* --------------------------------------------------- expert gather/scatter */
+
+__global__ static void g4_moe_gather_kernel(float *dst, const float *src, const uint32_t *pairs,
+        uint32_t base, uint64_t elements, uint32_t width) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= elements) { return; }
+    const uint64_t row = i / width;
+    const uint32_t pair = pairs[base + row];
+    dst[i] = src[(uint64_t)(pair / G4_USED) * width + (i % width)];
+}
+
+/* acc = bf16(acc + down * weight): the reference's fp32 product and its
+ * rounded index_add_ into a bf16 accumulator (semantics 3.7). */
+__global__ static void g4_moe_scatter_kernel(float *dst, const float *src, const float *weights,
+        const uint32_t *pairs, uint32_t base, uint64_t elements, uint32_t width) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= elements) { return; }
+    const uint64_t row = i / width;
+    const uint32_t pair = pairs[base + row];
+    const uint32_t column = (uint32_t)(i % width);
+    const uint64_t target = (uint64_t)(pair / G4_USED) * width + column;
+    dst[target] = g4_round(dst[target] + src[i] * weights[pair]);
+}
+
+extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const uint32_t *matrices,
+        uint32_t rows) {
+    if (!m || !out || !input || !selected || !weights || !matrices || !rows ||
+        rows > m->chunk) { return 0; }
+    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    if (!ds4_gpu_tensor_read(selected, 0, m->routes, pairs * sizeof(int32_t))) { return 0; }
+    uint32_t counts[G4_EXPERTS] = {}, offsets[G4_EXPERTS + 1] = {}, cursor[G4_EXPERTS];
+    for (uint64_t i = 0; i < pairs; i++) {
+        const int32_t expert = m->routes[i];
+        if (expert < 0 || expert >= G4_EXPERTS) { return 0; }
+        counts[expert]++;
+    }
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        offsets[e + 1] = offsets[e] + counts[e];
+        cursor[e] = offsets[e];
+    }
+    for (uint64_t i = 0; i < pairs; i++) { m->grouped[cursor[m->routes[i]]++] = (uint32_t)i; }
+    if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, pairs * sizeof(uint32_t))) { return 0; }
+    if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const uint32_t n = counts[e];
+        if (!n) { continue; }
+        const uint64_t elements = (uint64_t)n * G4_EMBED;
+        const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+        g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+            (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
+            offsets[e], elements, G4_EMBED);
+        if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather") ||
+            !ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16) ||
+            !ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n, DS4_GVQ_BF16) ||
+            !ds4_gpu_g4_gelu(m->mid, m->gate, m->up, (uint64_t)n * G4_FF) ||
+            !ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
+                DS4_GVQ_BF16)) {
+            return 0;
+        }
+        g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)m->out->ptr, (const float *)weights->ptr,
+            (const uint32_t *)m->order->ptr, offsets[e], elements, G4_EMBED);
+        if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter")) { return 0; }
+    }
+    return 1;
+}
+
+/* The expert FF 704 rows and the gathered rows hold one route each; the
+ * transient gate/up/mid rows live in the same scratch as the gather. */
+uint64_t ds4_gpu_g4_moe_workspace(uint32_t chunk) {
+    return ds4_gpu_g4_moe_bytes(chunk);
+}
+
+#endif

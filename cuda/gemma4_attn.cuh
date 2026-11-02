@@ -26,11 +26,14 @@ __device__ __forceinline__ static float g4_warp_sum(float value) {
 }
 
 /* `window` 0 means full causal; otherwise the visible set is
- * [position - window + 1, position] (semantics 3.4). */
+ * [position - window + 1, position] (semantics 3.4). `ring` is the cache's
+ * row count when rows wrap (a sliding layer keeps window + prefill_cap rows,
+ * so a prefill batch never overwrites a slot its own rows still read); 0
+ * means the cache is indexed by absolute position. */
 __global__ static void g4_attn_kernel(float *out, const float *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t rows, uint32_t first, uint32_t heads, uint32_t kv_heads,
-        uint32_t dim, uint32_t window, uint64_t kv_stride) {
+        uint32_t dim, uint32_t window, uint32_t ring, uint64_t kv_stride) {
     const uint32_t warp = threadIdx.x / 32u;
     const uint32_t lane = threadIdx.x % 32u;
     const uint64_t job = (uint64_t)blockIdx.x * (blockDim.x / 32u) + warp;
@@ -54,7 +57,8 @@ __global__ static void g4_attn_kernel(float *out, const float *query,
     float maximum = -INFINITY, total = 0.0f;
     const uint32_t begin = window && position + 1 > window ? position + 1 - window : 0u;
     for (uint32_t k = begin; k <= position; k++) {
-        const __nv_bfloat16 *kv = key + (uint64_t)k * kv_stride + (uint64_t)kv_head * dim;
+        const uint64_t slot = ring ? (uint64_t)(k % ring) : k;
+        const __nv_bfloat16 *kv = key + slot * kv_stride + (uint64_t)kv_head * dim;
         float dot = 0.0f;
         for (uint32_t i = 0; i < per_lane && i < 16u; i++) {
             const uint32_t d = lane + i * 32u;
@@ -68,7 +72,7 @@ __global__ static void g4_attn_kernel(float *out, const float *query,
         const float p = (float)exp((double)(dot - m_new));
         total = total * alpha + p;
         maximum = m_new;
-        const __nv_bfloat16 *vv = value + (uint64_t)k * kv_stride + (uint64_t)kv_head * dim;
+        const __nv_bfloat16 *vv = value + slot * kv_stride + (uint64_t)kv_head * dim;
         for (uint32_t i = 0; i < per_lane && i < 16u; i++) {
             const uint32_t d = lane + i * 32u;
             if (d < dim) { acc[i] = acc[i] * alpha + p * __bfloat162float(vv[d]); }

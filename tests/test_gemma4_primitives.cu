@@ -259,7 +259,7 @@ static void attn_case(const char *name,unsigned rows,unsigned first,unsigned hea
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     const unsigned warps=4;
     const unsigned jobs=rows*heads;
-    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,stride);
+    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,0u,stride);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,3e-5f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));

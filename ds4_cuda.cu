@@ -49512,6 +49512,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_glm53_compact_gpu.cuh"
 #include "ds4_glmvq_gpu.cuh"
+#include "ds4_gemma4_gpu.cuh"
 #include "ds4_inkling_gpu.cuh"
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_ling31_gpu.cuh"
