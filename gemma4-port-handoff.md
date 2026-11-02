@@ -39,16 +39,48 @@ commits below are unpushed.
             embedding scale, layer scalar - all gated
   272d9118  attention: both geometries, sliding window, gated
             (make test-gemma4-primitives; 0 failures)
+  081bcbba  the device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the
+            30-layer graph (ds4_gemma4_graph.inc); both units compile
 
-Next unit, in this order:
-  1. the expert path: GVQ per-expert gate/up/down through the shared
-     ds4_gvq_record plan with the gelu product and the fp32 top-8 weights,
-     gated against a host expert reference on real artifact rows;
-  2. ds4_gemma4_gpu.cuh: the per-layer plan (seven norms, layer_scalar,
-     q/k/v/o, dense FFN, router, 128 experts) over the bound pointers;
-  3. ds4_gemma4_graph.inc: the 30-layer walk, embedding scale 53.0, final
-     norm, tied head, softcap 30; first-N-id determinism, then the logits
-     gate (section 6, risk 1).
+Build note: this host has CUDA 13.3 and no recorded arch, and the default
+nvcc target emits sm_121-only instructions, so the tree failed to compile
+at all. .ds4-cuda-config.mk now records CUDA_ARCH := sm_89; use
+`make cuda CUDA_ARCH=sm_89` (or make cuda-generic).
+
+What the engine already does, none of it reachable from a session yet:
+embedding gather scaled by bf16 53.0, the 30 layers in reference order with
+the seven norms, q/k/v (v copies k on the five full layers), per-head q/k
+norms, the weightless v norm, rope, KV store into a ring of window+chunk
+rows for sliding layers and the full context for full layers, attention,
+o_proj, the dense FFN whose Q8_0 down reads the map through
+ds4_gpu_matmul_q8_0_tensor, the router off the post-attention residual, the
+128-expert block accumulating in bf16, the three post-FFN norms, the two
+residual adds, layer_scalar, the final norm, the tied head and the tanh-30
+cap.
+
+NEXT UNIT, in order - this is the whole remaining port, so do it in this
+sequence and gate each step:
+
+  1. ds4.c session hooks. Mirror ling31's touch points: the family
+     dispatch in ds4_model_apply_host_shape and the engine load (the bind
+     call at the same place ling31_gpu_bind is called), then a graph in the
+     serial session and the banked paths, then ds4_context_memory for the
+     family, then payload save/restore and the bank payload, then MTP.
+     Grep for DS4_MODEL_FAMILY_LING31_VQ in ds4.c (about 40 sites) and give
+     Gemma-4 the same treatment; anything not applicable (KDA, mHC, DSA)
+     drops out.
+  2. The first real run: ds4 --serving-check on the artifact is the gate;
+     before that, a first-N-token determinism run.
+  3. crates/ds4-sys FFI for the new entry points, crates/ds4-server family
+     arm (model id, admission, chat rendering, stop handling), and the
+     OpenAI gate.
+  4. The drafter (W5) and the docs (W7).
+
+Known gaps in the graph to close with the session work: decode currently
+recomputes the full row per token (no fused decode kernels), the KV ring
+lives wholly in VRAM (ds4_context_memory must report it), and the expert
+grouping does one host readback per layer per step (fine for decode, to be
+measured for prefill).
 
 2. The standard this port follows (read, not assumed)
 
