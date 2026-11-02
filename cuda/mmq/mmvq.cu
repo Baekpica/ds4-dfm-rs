@@ -393,6 +393,22 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
     return 1;
 }
 
+// ds4: llama.cpp #26705 backport. On DGX Spark the GEMV waits on DRAM
+// latency (long scoreboard), so each iteration asks L2 for the weight blocks
+// two iterations ahead. Limited to the dense decode types ds4 streams
+// (Q8_0, Q4_K); the arithmetic is unchanged.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+template <ggml_type type>
+static constexpr __device__ int mmvq_prefetch_bytes() {
+    return type == GGML_TYPE_Q8_0 ? (int) sizeof(block_q8_0)
+         : type == GGML_TYPE_Q4_K ? (int) sizeof(block_q4_K) : 0;
+}
+
+static __device__ __forceinline__ void mmvq_prefetch_l2(const void * p) {
+    asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
+}
+#endif
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -496,6 +512,19 @@ static __global__ void mul_mat_vec_q(
 
         // x block quant index when casting the quants to int
         const int kqs = vdr * (tid % (qi/vdr));
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+        if constexpr (mmvq_prefetch_bytes<type>() > 0) {
+            const int kbx_pf = kbx + 2*blocks_per_iter;
+            if (kbx_pf < blocks_per_row_x) {
+#pragma unroll
+                for (int i = 0; i < rows_per_cuda_block; ++i) {
+                    mmvq_prefetch_l2((const char *) vx +
+                        (size_t) (kbx_offset + i*stride_row_x + kbx_pf) * mmvq_prefetch_bytes<type>());
+                }
+            }
+        }
+#endif
 
 #pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
