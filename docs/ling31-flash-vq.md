@@ -121,8 +121,9 @@ rows: 127 → 97 µs per layer).
 ## Serving
 
 The serving surface is GLM VQ's: persistent banks, partial prefix reuse, disk
-KV, session snapshots and embedded MTP in both lanes, all present and not
-yet release-qualified ([capabilities](serving-capabilities.md)). The native
+KV and session snapshots, qualified by `ds4 --serving-check`, and embedded MTP
+in both lanes, present and not yet release-qualified
+([capabilities](serving-capabilities.md)). The native
 context default is `max_position_embeddings` = 262,144.
 
 **Memory.** On the 121.6 GiB reference host v1's trunk leaves about 8.1 GiB

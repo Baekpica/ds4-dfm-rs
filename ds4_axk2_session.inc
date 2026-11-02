@@ -1,6 +1,5 @@
 /* Serial session: one graph owns every layer's latent, rope and index-key
- * rows. A prompt that extends the checkpoint continues in place; any other
- * prompt prefills from 0. */
+ * rows, all indexed by position, so a prompt resumes at any common prefix. */
 static int axk2_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->axk2_graph.failed = true;
     s->checkpoint_valid = false;
@@ -21,6 +20,13 @@ static bool axk2_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the live state keeps for `prompt`; 0 rebuilds. */
+static uint32_t axk2_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_axk2_graph *g = &s->axk2_graph;
+    if (!s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) { return 0; }
+    return session_keep_prefix(s, prompt);
+}
+
 static int axk2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
@@ -31,14 +37,15 @@ static int axk2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     if (!s->axk2_graph_ready) { payload_set_err(err, errlen, "A.X-K2 graph is not initialized"); return 1; }
     ds4_axk2_graph *g = &s->axk2_graph;
-    uint32_t start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (uint32_t)s->checkpoint.len;
-        if (start == (uint32_t)prompt->len) { return 0; }
-    } else {
+    uint32_t start = axk2_sync_keep(s, prompt);
+    if (!start) {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "A.X-K2 graph reset failed"); return 1; }
+    } else if (start == (uint32_t)prompt->len) {
+        return 0;
+    } else if (start < (uint32_t)s->checkpoint.len) {
+        g->position = start;
+        session_rewound(s, start);
     }
     const uint32_t end = (uint32_t)prompt->len;
     while (start < end) {

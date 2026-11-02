@@ -52,7 +52,6 @@ typedef struct {
     uint32_t prefill_chunk;
     uint32_t prefill_window;
     uint32_t activation_bits;
-    int32_t replay_check;
     int32_t debug;
 } ds4_bridge_distributed_options;
 
@@ -121,12 +120,25 @@ typedef struct {
     const char *directional_steering_file; /* optional; borrowed */
     float directional_steering_attn;
     float directional_steering_ffn;
+    const ds4_host_ple *ple;   /* optional Qwen SSD-PLE sidecar; borrowed */
+    const ds4_host_mem_policy *mem; /* optional memory policy; copied */
+    /* Sidecar paths and tensor directories, borrowed: native maps each
+     * sidecar from the host's inventory instead of parsing it again. */
+    const char *audio_path;                  /* MiMo VQ audio part */
+    const ds4_host_tensor_dir *vision_tensors;
+    const ds4_host_tensor_dir *audio_tensors;
+    const ds4_host_tensor_dir *mtp_tensors;
+    const ds4_host_tensor_dir *dspark_tensors;
 } ds4_bridge_model_open_options;
 
 typedef struct {
     const uint8_t *data;      /* encoded PNG/JPEG; borrowed for the call */
     size_t data_len;
     uint32_t token_offset;
+    /* Rows packed by the host (vit_image.rs) and their grid; data unused. */
+    const float *patches;
+    uint32_t grid_h;
+    uint32_t grid_w;
 } ds4_bridge_vision_input;
 
 typedef struct {
@@ -150,18 +162,6 @@ typedef struct {
     uint32_t token_offset;
     uint32_t token_count;
 } ds4_bridge_inkling_audio;
-
-typedef struct {
-    uint32_t source_width;
-    uint32_t source_height;
-    uint32_t content_width;
-    uint32_t content_height;
-    uint32_t padded_width;
-    uint32_t padded_height;
-    uint32_t grid_height;
-    uint32_t grid_width;
-    uint32_t token_count;
-} ds4_bridge_vision_info;
 
 /* All functions: 0 on success, nonzero on failure.  err is optional; when
  * provided it is NUL-terminated on failure.  Token pointers are borrowed
@@ -192,10 +192,6 @@ void ds4_bridge_session_free(ds4_bridge_session *s);
 int ds4_bridge_session_sync(ds4_bridge_session *s,
                             const int32_t *tokens, int n_tokens,
                             char *err, size_t errlen);
-int ds4_bridge_model_vision_probe(ds4_bridge_model *m,
-                                  const uint8_t *data, size_t data_len,
-                                  ds4_bridge_vision_info *info,
-                                  char *err, size_t errlen);
 int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const int32_t *tokens, int n_tokens,
                                    const ds4_bridge_vision_input *images,
@@ -253,7 +249,8 @@ int ds4_bridge_mimo2_trial(ds4_bridge_session *s, int32_t first, int32_t max_tok
                            int32_t *tokens, int32_t *target, int32_t cap,
                            char *err, size_t errlen);
 int ds4_bridge_mimo2_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
-int ds4_bridge_mimo2_sync_keep(ds4_bridge_session *s, const int32_t *tokens, int32_t n_tokens);
+/* Rows a non-extending sync keeps; 0 rebuilds, -1 extension-only family. */
+int ds4_bridge_session_sync_keep(ds4_bridge_session *s, const int32_t *tokens, int32_t n_tokens);
 int ds4_bridge_mimo2_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
                                 const uint32_t *starts, const uint32_t *counts,
                                 const float *const *rows, uint32_t nspans, uint64_t tag,
@@ -357,10 +354,6 @@ typedef struct {
     ds4_bridge_v41_greedy_fn greedy_fn; void *greedy_ud;
 } ds4_bridge_v41_sampling;
 void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp);
-/* --mem-budget-mb (unit Z): the engine's process memory red line and its
- * L1 pre-flight load gate (core_util.c:198-256); call before opening the
- * model.  mb <= 0 leaves the budget unset (no-op gate). */
-void ds4_bridge_set_mem_budget_mb(int mb);
 /* The V4.1 zchain sidecar mount (unit Z).  The engine mounts ② / ③ per
  * state (v41_state_plugins, core_v41_state.c:77-87 -> v41_amp_load,
  * core_v41_amp.c:227-270); the Rust reader (crates/ds4-core/src/zchain.rs,
@@ -445,7 +438,6 @@ void ds4_bridge_session_rewind(ds4_bridge_session *s, int pos);
 void ds4_bridge_session_invalidate(ds4_bridge_session *s);
 uint64_t ds4_bridge_session_generation(ds4_bridge_session *s);
 int ds4_bridge_session_prefill_cap(ds4_bridge_session *s);
-int ds4_bridge_session_exaone_rewind_span(ds4_bridge_session *s);
 /* 1 ready, 0 still incomplete, -1 error (same as ds4.h). */
 int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
                                                char *err, size_t errlen);
@@ -578,24 +570,11 @@ typedef struct {
     uint32_t token_offset;
     uint32_t grid_h;
     uint32_t grid_w;
+    /* Host packer, called once native admitted the request; data unused. */
+    int (*pack)(void *ud, float *out, uint64_t values);
+    void *pack_ud;
 } ds4_bridge_qwen_image_input;
 
-typedef struct {
-    uint32_t source_width;
-    uint32_t source_height;
-    uint32_t resized_width;
-    uint32_t resized_height;
-    uint32_t grid_h;
-    uint32_t grid_w;
-    uint32_t token_count;
-} ds4_bridge_qwen_image_info;
-
-int ds4_bridge_qwen_image_probe(const uint8_t *data, size_t data_len,
-                                ds4_bridge_qwen_image_info *info,
-                                char *err, size_t errlen);
-int ds4_bridge_qwen_image_pixel_hash(const uint8_t *data, size_t data_len,
-                                     uint64_t *hash,
-                                     char *err, size_t errlen);
 
 /* Continuous batching (mid-flight admit/evict) over a persistent batch
  * context.  Mirrors ds4_batch_ctx / ds4_engine_continuous_generate with

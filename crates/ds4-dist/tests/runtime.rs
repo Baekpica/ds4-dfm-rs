@@ -3,11 +3,11 @@
 use ds4_dist::{
     build_route_plan, decode_logits_payload, decode_result_body, dispatch_eval, encode_route_blob,
     encode_work_frame, format_telemetry_line, parse_cli, parse_layers, parse_role,
-    prefetch_disabled_from, prepare_engine_options, read_frame, reconnect_local, register_worker,
-    resolved_layer_end, send_hello, serve_prefetch_local_with, token_hash_update_span,
-    token_span_hashes, validate_layers_for_model, validate_options, work_with_ids, write_frame,
-    Coordinator, CoordinatorView, EvalOutcome, JobQueue, LocalReconnect, PrefetchJob, ReturnTarget,
-    RouteEntry, SliceExec, Telemetry, Work, WorkBody, WorkOutput, WorkRequest, Worker, WorkerInfo,
+    prefetch_disabled_from, read_frame, reconnect_local, register_worker, resolved_layer_end,
+    send_hello, serve_prefetch_local_with, token_hash_update_span, token_span_hashes,
+    validate_layers_for_model, validate_options, work_with_ids, write_frame, Coordinator,
+    CoordinatorView, EvalOutcome, JobQueue, LocalReconnect, PrefetchJob, ReturnTarget, RouteEntry,
+    SliceExec, Telemetry, Work, WorkBody, WorkOutput, WorkRequest, Worker, WorkerInfo,
     ERR_NEXT_CLOSED, MSG_ERROR, MSG_RESULT, RESULT_LOGITS, ROUTE_F_OUTPUT_LOGITS,
     ROUTE_RETURN_UPSTREAM, TOKEN_HASH_INIT, WORK_F_INPUT_HC, WORK_F_OUTPUT_LOGITS,
     WORK_F_RESET_SESSION,
@@ -303,22 +303,21 @@ fn layers_for_model_match_c() {
 }
 
 #[test]
-fn replay_check_requires_coordinator() {
+fn replay_check_is_deprecated() {
     let owned = vec![
         "--role".into(),
-        "worker".into(),
+        "coordinator".into(),
         "--layers".into(),
-        "2:output".into(),
-        "--coordinator".into(),
-        "127.0.0.1".into(),
+        "0:10".into(),
+        "--listen".into(),
+        "0.0.0.0".into(),
         "7000".into(),
         "--dist-replay-check".into(),
     ];
-    let (opt, _) = parse_cli(&owned).unwrap();
-    validate_options(&opt).unwrap();
-    assert_eq!(
-        prepare_engine_options(&opt).unwrap_err(),
-        "--dist-replay-check requires --role coordinator"
+    let err = parse_cli(&owned).unwrap_err();
+    assert!(
+        err.starts_with("--dist-replay-check is deprecated"),
+        "{err}"
     );
 }
 

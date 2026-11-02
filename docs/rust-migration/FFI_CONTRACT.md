@@ -63,7 +63,7 @@ freeze or permission to bind native internals.
 | Function | Meaning |
 |---|---|
 | `ds4_bridge_bind_plan_check` | host inventory + required-name table; 0 if native can consume it |
-| `ds4_bridge_model_open` | mmap-backed `ds4_engine_open`; optional `opt->plan` is checked first; optional `opt->tensors` replaces `parse_tensors` (owned name copies); optional `opt->shape` applies the pinned C literal + DeepSeek compress table and skips `config_validate_model`; optional `opt->vocab` applies host token/merge/specials and skips `vocab_load`; optional `opt->bind` is the host name→tensor-dir index so `model_find_tensor` skips the C name walk and the main-model `weights_validate_layout` |
+| `ds4_bridge_model_open` | mmap-backed `ds4_engine_open`; optional `opt->plan` is checked first; optional `opt->tensors` replaces `parse_tensors` (owned name copies); optional `opt->shape` applies the pinned C literal + DeepSeek compress table and skips `config_validate_model`; optional `opt->vocab` applies host token/merge/specials and skips `vocab_load`; optional `opt->bind` is the host name→tensor-dir index so `model_find_tensor` skips the C name walk and the main-model `weights_validate_layout`; optional `opt->ple` is the Qwen SSD-PLE sidecar Rust validated (native rechecks read bounds); optional `opt->mem` carries the memory policy values (floor, L1 budget, fit headrooms and switch, governor modes) that C hosts read from the environment |
 | `ds4_bridge_model_boot_prewarm` | idempotent `ds4_engine_boot_prewarm`; server calls it after batch placement and before listen/accept |
 | `ds4_bridge_model_free` | `ds4_engine_close` |
 | `ds4_bridge_drafter_shared` | read-only DSpark IPC import result; zero for NULL, absent or failed imports |
@@ -85,7 +85,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_invalidate` | `ds4_session_invalidate` |
 | `ds4_bridge_session_generation` | Inc 5a content generation |
 | `ds4_bridge_session_prefill_cap` | chunk cap used by the native graph |
-| `ds4_bridge_session_exaone_rewind_span` | EXAONE sliding-window reuse span |
+| `ds4_bridge_session_sync_keep` | rows a sync keeps of the live state (common prefix the family can resume); -1: extension only |
 | `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials hand their verify rows to the host's `verify` callback (sample-and-match) until cleared (NULL); `ud` must outlive those trials |
 | `ds4_bridge_session_save_payload` | path wrapper over `ds4_session_save_payload` (native writes header+tokens+GPU tail) |
 | `ds4_bridge_session_load_payload` | path wrapper; `payload_bytes` = file size |
@@ -164,7 +164,7 @@ Open options stay a small C struct of scalars, `const char *`
 paths, and optional borrowed plan/tensor-dir/shape/vocab/bind pointers
 (model path, backend enum, thread count, defer-prewarm, then the
 optional `mtp_path` / `dspark_path` / `mtp_bind` / `dspark_bind`
-sibling fields appended at the end). Do
+sibling fields, then `ple` and `mem`, appended at the end). Do
 not pass `ds4_engine_options` by value into Rust — that struct will
 keep growing on the C side and is not the ABI.
 

@@ -41,6 +41,8 @@ this process cannot run it: checkpoint replay lives in the bank driver and
 needs the opened runtime's checkpoint store, so serial-only serving or a
 runtime without that store rejects `partial` and downgrades `auto` to
 `exact` with a warning rather than reporting reuse it will not perform.
+A serial lane still resumes at the common prefix where the family's state
+holds it (ring windows, recurrent checkpoints).
 
 ### Stop policy
 
@@ -210,6 +212,15 @@ The [generated capability table](serving-capabilities.md) reads
 `ds4_core::serving_caps` and the same resolved controls consumed by
 `ds4-perf serving-controls`. Its model-free check runs with the core tests;
 the page includes the regeneration command. Dated reports stay historical.
+
+Bank, reuse, disk and snapshot support is qualified by one procedure.
+`ds4 --cuda -m MODEL --serving-check --prompt-file FILE` runs every item
+whatever `serving_caps` declares and prints declared beside measured:
+`works`, `works, undeclared` (a declaration gap), `no`, `FAIL` (declared but
+broken) or `WRONG` (reuse flipped a top-1 token beyond the noise its cold
+references show). The
+[2026-11-02 record](benchmarks/serving-checklist-2026-11-02/README.md)
+covers every local artifact.
 
 ## Weight owner and worker
 

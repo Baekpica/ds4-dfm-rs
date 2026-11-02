@@ -149,6 +149,15 @@ ds4_ple_store *ds4_ple_store_open(
     char *error,
     size_t error_size);
 
+/* Rust hosts: the sidecar Rust parsed and validated (ds4_host_ple in
+ * native/bridge/ds4_host_load.h).  Rechecks bounds, then opens as above. */
+struct ds4_host_ple;
+ds4_ple_store *ds4_ple_store_open_host(
+    const struct ds4_host_ple *host,
+    bool prefer_direct_io,
+    char *error,
+    size_t error_size);
+
 void ds4_ple_store_close(ds4_ple_store *store);
 
 const ds4_ple_layout *ds4_ple_store_layout(const ds4_ple_store *store);
