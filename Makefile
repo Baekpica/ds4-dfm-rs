@@ -506,7 +506,7 @@ tests/h3/gemma_tower_bm: tests/h3/gemma_tower_bm.cu native/h3/h3_dit_gpu.cu nati
 # .ds4-cuda-config.mk.
 GEMMA4_GPU_OBJ := native/gemma4/gemma4_gpu.o
 GEMMA4_ARCH_FLAGS := $(if $(strip $(NVCC_ARCH_FLAGS)),$(NVCC_ARCH_FLAGS),-arch=native)
-GEMMA4_NVCCFLAGS := -O3 -std=c++17 $(GEMMA4_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+GEMMA4_NVCCFLAGS := -O3 -std=c++17 $(GEMMA4_ARCH_FLAGS) -default-stream per-thread -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
 GEMMA4_LINK_FINGERPRINT = $(shell cksum $(GEMMA4_GPU_OBJ) 2>/dev/null | cksum | awk '{print $$1}')
 
 $(GEMMA4_GPU_OBJ): native/gemma4/gemma4_gpu.cu native/gemma4/gemma4_gpu.h

@@ -232,6 +232,62 @@ int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n);
  * never a row's arithmetic. */
 int gm4_gpu_span(int span);
 
+/* ---- one token, the whole model ------------------------------------------
+ *
+ * The layers above chained into 30 and bounded by the two ends the CPU's step
+ * runs around them (forward.rs:301-336): the tied table read as one row and
+ * scaled by embed_scale, the final norm, the tied head over the whole
+ * vocabulary, and the softcap. A step uploads nothing and downloads only the
+ * logits; the activation moves between two device buffers, so the 30 layers
+ * synchronise the host once, at the end.
+ *
+ * The layers and their caches stay the caller's: build them with
+ * gm4_gpu_layer_new and gm4_gpu_kv_new, sizing every cache the way the CPU
+ * session does (the window for a sliding layer, the context bound for a full
+ * one), and pass them here. `embed` and `head` are tensor indices of the
+ * residency and may be the same tensor: the checkpoint ties them
+ * (`Gemma4ForCausalLM._tied_weights_keys`). */
+typedef struct {
+    gm4_layer *const *layers;
+    gm4_kv *const *kv;
+    int n;
+    int embed, head;
+    const float *final_norm;
+    int hidden, vocab, threads; /* threads 0 means 256 */
+    float eps, embed_scale, softcap;
+} gm4_model_spec;
+
+typedef struct gm4_model gm4_model;
+int gm4_gpu_model_new(gm4_gpu *g, const gm4_model_spec *spec, gm4_model **out, char *err,
+                      size_t errlen);
+void gm4_gpu_model_free(gm4_model *m);
+
+/* The whole device footprint: every chain's arena, every cache and the
+ * model's own activation, norm and logits buffers. */
+size_t gm4_gpu_model_bytes(const gm4_model *m);
+
+/* One token at `pos`, which must be the caches' next position: the logits of
+ * the position after it, softcapped, in `logits[vocab]`. */
+int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logits, char *err,
+                       size_t errlen);
+
+/* The last step's two halves in milliseconds, the reference engine's account
+ * of a decode step (/data/ds4-dfm-rs/ds4_ds41_graph.inc:106-113): `submit` is
+ * the host time from entry to the last launch's return, `wait` is the sync and
+ * the logits readback after it. A single wall number cannot say which half the
+ * next change has to move. Either pointer may be NULL. */
+int gm4_gpu_model_split(const gm4_model *m, double *submit, double *wait);
+
+/* How the steps ran: the number of position buckets captured, and whether the
+ * graph path is off (a capture failed, so every step walks direct, which is
+ * correct but pays the per-launch submit cost). */
+int gm4_gpu_model_graphs(const gm4_model *m, int *captures, int *off);
+
+/* Turn the graph path on or off, for a gate that compares a replayed step with
+ * the direct walk of the same step: the same kernels in the same order, so the
+ * two must agree bit for bit. */
+int gm4_gpu_model_set_graph(gm4_model *m, int on);
+
 /* out = x * w over n values: the router's per-dimension scale. */
 int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
                 size_t errlen);

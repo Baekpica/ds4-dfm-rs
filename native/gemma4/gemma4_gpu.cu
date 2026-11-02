@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -431,6 +432,58 @@ __global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_
     }
 }
 
+/* One row of a table, reconstructed: the token embedding, which is the one
+ * place the forward reads a row instead of dotting one (`forward.rs:316`).
+ * The CPU's form is `add_row_values` (crates/ds4-core/src/vq.rs:714-726):
+ * `out[i*dim + d] += f16(codebook[idx][d]) * gain`, stage by stage in
+ * ascending order, and then the whole row is scaled by embed_scale
+ * (`forward.rs:319-322`). The stage sum is therefore formed raw and the scale
+ * is applied once, on the last stage, so this is the CPU's rounding order and
+ * not a per-stage rescale. A stage contributes a whole word, so the innermost
+ * loop is the DIM code values, never a partial word. */
+template <int DIM>
+__global__ void embed_row_kernel(const uint8_t *p, const Layout L, const int32_t *tokd, float *out,
+                                 int first, int last, float scale) {
+    const int nidx_row = L.cols / L.dim;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nidx_row) return;
+    const uint32_t row = (uint32_t) tokd[0];
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const uint32_t idx = rd_idx_fmt(p + L.stream_off, L, row, i);
+    const float gain = __half2float(((const __half *) (p + L.gain_off))[row]);
+    float *o = out + (size_t) i * (size_t) DIM;
+    float w[8];
+    if (DIM == 4) {
+        const uint2 c = __ldg((const uint2 *) cb + idx);
+        const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+        const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+        w[0] = a.x * gain;
+        w[1] = a.y * gain;
+        w[2] = b.x * gain;
+        w[3] = b.y * gain;
+    } else {
+        const uint2 c0 = __ldg((const uint2 *) cb + (size_t) idx * 2u);
+        const uint2 c1 = __ldg((const uint2 *) cb + (size_t) idx * 2u + 1u);
+        const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+        const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+        const float2 c = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+        const float2 d = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+        w[0] = a.x * gain;
+        w[1] = a.y * gain;
+        w[2] = b.x * gain;
+        w[3] = b.y * gain;
+        w[4] = c.x * gain;
+        w[5] = c.y * gain;
+        w[6] = d.x * gain;
+        w[7] = d.y * gain;
+    }
+    for (int k = 0; k < DIM; k++) {
+        float v = first ? w[k] : o[k] + w[k];
+        if (last) v *= scale;
+        o[k] = v;
+    }
+}
+
 /* ==== Tiled prefill: f16 tensor cores =====================================
  *
  * Ported from /data/VQ_tools/c/gpu/decode-gpu.cu:320-520 (the tiled kernel),
@@ -771,8 +824,13 @@ __global__ void softcap_kernel(float *y, size_t n, float cap) {
 
 /* The rotary application: one thread per pair, so the two halves of a pair
  * are written by the same thread and no barrier is needed. A zero frequency
- * is the identity pair and is skipped. */
-__global__ void rope_kernel(float *x, int heads, int head_dim, int pos, const float *inv) {
+ * is the identity pair and is skipped. The position comes from the device
+ * (`posd[0]`), not from a launch parameter: a captured step is replayed at
+ * many positions and a baked-in one would be the first position forever. The
+ * reference engine's convention, /data/ds4-dfm-rs/ds4_ds41_graph.inc:9-12 and
+ * cuda/ds41_attn.cuh:125-127. */
+__global__ void rope_kernel(float *x, int heads, int head_dim, const int32_t *posd,
+                            const float *inv) {
     const int h = blockIdx.x;
     const int d = threadIdx.x;
     const int half = head_dim / 2;
@@ -780,7 +838,7 @@ __global__ void rope_kernel(float *x, int heads, int head_dim, int pos, const fl
     const float w = inv[d];
     if (w == 0.0f) return;
     float *base = x + (size_t) h * (size_t) head_dim;
-    const float angle = (float) pos * w;
+    const float angle = (float) posd[0] * w;
     float s, c;
     sincosf(angle, &s, &c);
     const float a = base[d], b = base[d + half];
@@ -851,8 +909,8 @@ __device__ __forceinline__ size_t kv_slot(int p, int cap, int ring) {
  * that the two are bit-identical therefore still holds exactly. */
 __global__ void attn_split_kernel(const float *q, const __half *k, const __half *v, float *scores,
                                   float *part, float *pm, float *pl, int heads, int kv_heads,
-                                  int head_dim, int first, int nwin, int splits, int chunk,
-                                  int kv_cap, int kv_ring) {
+                                  int head_dim, const int32_t *posd, int window, int splits,
+                                  int chunk, int kv_cap, int kv_ring) {
     extern __shared__ float red[];
     const int block = blockIdx.x;
     const int h = block / splits;
@@ -865,6 +923,15 @@ __global__ void attn_split_kernel(const float *q, const __half *k, const __half 
     const float *qh = q + (size_t) h * (size_t) head_dim;
     float *sc = scores + (size_t) block * (size_t) chunk;
     float *outp = part + (size_t) block * (size_t) head_dim;
+    /* The window of this step, from the device position: `window` is the most
+     * the caller's cache can hold (the ring's capacity, the capture's bucket
+     * bound, or 0 for everything), so a ring layer keeps its `cap` most recent
+     * positions and an appending one keeps 0..pos. `chunk` is the bucket's
+     * bound (ds4_ds41_graph.inc:205-209), so a run past the true window is
+     * simply empty and the combine gives it weight 0. */
+    const int positions = posd[0] + 1;
+    const int nwin = window > 0 && positions > window ? window : positions;
+    const int first = positions - nwin;
     const int lo = s * chunk;
     const int hi = lo + chunk < nwin ? lo + chunk : nwin;
     const int n = hi > lo ? hi - lo : 0;
@@ -947,12 +1014,14 @@ __global__ void attn_combine_kernel(const float *part, const float *pm, const fl
     }
 }
 
-/* Append one position to a cache: position `pos` goes to slot(pos), which the
- * host computed with the same rule. One thread per value of the position. */
+/* Append one position to a cache: the position is read from the device and
+ * lands at slot(pos), the same rule the host used to compute before a captured
+ * step had to stop baking it in. One thread per value of the position. */
 __global__ void kv_put_kernel(__half *k, __half *v, const float *ksrc, const float *vsrc, int per,
-                              int slot) {
+                              const int32_t *posd, int cap, int ring) {
     const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
     if (i >= per) return;
+    const int slot = ring ? (posd[0] % cap) : posd[0];
     const size_t at = (size_t) slot * (size_t) per + (size_t) i;
     k[at] = __float2half_rn(ksrc[i]);
     v[at] = __float2half_rn(vsrc[i]);
@@ -1414,6 +1483,7 @@ struct gm4_gpu {
     size_t akvcap;
     float *kvu; /* one position's k and v, on their way into a ring slot */
     size_t kvucap;
+    int32_t *posone; /* the host entry points' staged position (gm4_gpu_rope, gm4_gpu_attention) */
     char devname[256];
     gm4_account acct;
 };
@@ -1453,6 +1523,7 @@ struct gm4_layer {
     float *gu, *act, *d;
     int *picked;
     uint32_t *rl1, *rl2;
+    int32_t *posd; /* this chain's step position, read by rope, the cache write and attention */
     /* Opt-in section timing: nine boundaries of the chain, recorded on stream
      * 0 only when gm4_gpu_layer_timing has turned them on. A record costs a
      * few hundred nanoseconds and never stalls the stream, so the spans are
@@ -1571,6 +1642,7 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->aout) cudaFree(g->aout);
     if (g->akv) cudaFree(g->akv);
     if (g->kvu) cudaFree(g->kvu);
+    if (g->posone) cudaFree(g->posone);
     free(g);
 }
 
@@ -2100,6 +2172,41 @@ static int rows_dev(gm4_gpu *g, int tensor, const uint32_t *rld, int nrows, cons
     return 0;
 }
 
+/* The embedding row, reconstructed on the device: the one table read that is
+ * not a dot. The token comes from the device (`tokd[0]`), so a captured step
+ * can be replayed with a different token; the stages are summed raw and the
+ * scale is applied once, which is `add_row_values` followed by the forward's
+ * multiply (crates/ds4-core/src/vq.rs:714-726, forward.rs:319-322). */
+static int embed_row_dev(gm4_gpu *g, int tensor, const int32_t *tokd, float scale, float *yd,
+                         char *err, size_t errlen) {
+    if (tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    const int cols = t->pays[0].l.cols;
+    const int dim = t->pays[0].l.dim;
+    const int nidx = cols / dim;
+    const unsigned threads = 128;
+    const unsigned blocks = (unsigned) ((nidx + (int) threads - 1) / (int) threads);
+    for (int p = 0; p < t->npay; p++) {
+        const Payload &one = t->pays[p];
+        const int first = p == 0;
+        const int last = p == t->npay - 1;
+        if (dim == 8)
+            embed_row_kernel<8><<<blocks, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
+        else if (dim == 4)
+            embed_row_kernel<4><<<blocks, threads>>>(one.dev, one.l, tokd, yd, first, last, scale);
+        else {
+            snprintf(err, errlen, "the table has dim %d, which the row kernel does not read", dim);
+            return -1;
+        }
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "embedding row launch", e);
+    }
+    return 0;
+}
+
 static int rmsnorm_dev(const float *xd, const float *wd, float *yd, int rows, int width, float eps,
                        char *err, size_t errlen) {
     const int threads = 256;
@@ -2137,9 +2244,9 @@ static int mul_dev(const float *xd, const float *wd, float *od, size_t n, char *
     return 0;
 }
 
-static int rope_dev(float *xd, int heads, int head_dim, int pos, const float *invd, char *err,
-                    size_t errlen) {
-    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(xd, heads, head_dim, pos, invd);
+static int rope_dev_p(float *xd, int heads, int head_dim, const int32_t *posd, const float *invd,
+                      char *err, size_t errlen) {
+    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(xd, heads, head_dim, posd, invd);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "chain rope launch", e);
     return 0;
@@ -2210,17 +2317,20 @@ static int moe_reduce_dev(const float *dd, const float *wd, float *outd, int k, 
     return 0;
 }
 
-static int kv_put_dev(gm4_kv *kv, int pos, const float *kd, const float *vd, char *err,
-                      size_t errlen) {
+static int kv_put_dev(gm4_kv *kv, int pos, const int32_t *posd, const float *kd, const float *vd,
+                      char *err, size_t errlen) {
     if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
         snprintf(err, errlen, "chain kv position %d outside the %s cache's %d positions", pos,
                  kv->ring ? "ring" : "appending", kv->cap);
         return -1;
     }
-    const int slot = kv->ring ? pos % kv->cap : pos;
+    if (!posd) {
+        snprintf(err, errlen, "the cache write needs the position on the device");
+        return -1;
+    }
     const int block = 128;
     kv_put_kernel<<<(kv->per + block - 1) / block, block>>>(kv->keys, kv->values, kd, vd, kv->per,
-                                                           slot);
+                                                           posd, kv->cap, kv->ring);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "chain kv put launch", e);
     return 0;
@@ -2237,21 +2347,36 @@ static int kv_put_dev(gm4_kv *kv, int pos, const float *kd, const float *vd, cha
  * costs (two block-wide reductions) outweigh the parallelism it buys. */
 #define ATN_BLOCKS 64
 #define ATN_MIN_RUN 64
+
+/* The run count per head for a window of `nwin` positions. Factored out of the
+ * launcher so a capture can size the scratch for its bucket's upper bound
+ * before any kernel is recorded (the engine's rule,
+ * /data/ds4-dfm-rs/ds4_ds41_graph.inc:205-209: nothing may allocate under
+ * capture). */
+static int attn_splits(int heads, int nwin) {
+    int splits = ATN_BLOCKS / heads; /* runs per head to reach 64 blocks */
+    if (splits < 1) splits = 1;
+    while (splits > 1 && nwin / splits < ATN_MIN_RUN) splits >>= 1;
+    if (splits > 64) splits = 64; /* the combine's shared weight table */
+    return splits;
+}
+
 static int attention_dev(gm4_gpu *g, const float *qd, const __half *kd, const __half *vd,
-                         int heads, int kv_heads, int head_dim, int first, int nwin,
+                         int heads, int kv_heads, int head_dim, const int32_t *posd, int window,
                          int kv_cap, int kv_ring, float *outd, char *err, size_t errlen) {
-    if (nwin <= 0 || head_dim <= 0 || head_dim % 2 || heads <= 0 || kv_heads <= 0
+    if (window <= 0 || head_dim <= 0 || head_dim % 2 || heads <= 0 || kv_heads <= 0
         || heads % kv_heads) {
         snprintf(err, errlen, "attention needs a positive window, an even head width and heads "
                  "divisible by kv heads");
         return -1;
     }
-    int splits = ATN_BLOCKS / heads; /* runs per head to reach 64 blocks */
-    if (splits < 1) splits = 1;
-    while (splits > 1 && nwin / splits < ATN_MIN_RUN) splits >>= 1;
-    if (splits > 64) splits = 64; /* the combine's shared weight table */
+    if (!posd) {
+        snprintf(err, errlen, "attention needs the position on the device");
+        return -1;
+    }
+    const int splits = attn_splits(heads, window);
     const int blocks = heads * splits;
-    const int chunk = (nwin + splits - 1) / splits;
+    const int chunk = (window + splits - 1) / splits;
     if (ensure_float(&g->ascores, &g->ascorescap, (size_t) blocks * (size_t) chunk, err, errlen)
         != 0)
         return -1;
@@ -2261,7 +2386,7 @@ static int attention_dev(gm4_gpu *g, const float *qd, const __half *kd, const __
     if (ensure_float(&g->apm, &g->apmcap, (size_t) blocks, err, errlen) != 0) return -1;
     if (ensure_float(&g->apl, &g->aplcap, (size_t) blocks, err, errlen) != 0) return -1;
     attn_split_kernel<<<(unsigned) blocks, 256, 32 * sizeof(float)>>>(
-        qd, kd, vd, g->ascores, g->apart, g->apm, g->apl, heads, kv_heads, head_dim, first, nwin,
+        qd, kd, vd, g->ascores, g->apart, g->apm, g->apl, heads, kv_heads, head_dim, posd, window,
         splits, chunk, kv_cap, kv_ring);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "attention split launch", e);
@@ -2273,7 +2398,8 @@ static int attention_dev(gm4_gpu *g, const float *qd, const __half *kd, const __
 }
 
 static int attention_ring_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int heads, int pos,
-                              float *outd, char *err, size_t errlen) {
+                              const int32_t *posd, int reserve, float *outd, char *err,
+                              size_t errlen) {
     if (heads % kv->kv_heads) {
         snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads,
                  kv->kv_heads);
@@ -2283,11 +2409,29 @@ static int attention_ring_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int heads
         snprintf(err, errlen, "chain position %d past the appending cache's %d", pos, kv->cap);
         return -1;
     }
-    const int positions = pos + 1;
-    const int nwin = kv->ring && positions > kv->cap ? kv->cap : positions;
-    const int first = positions - nwin;
-    return attention_dev(g, qd, kv->keys, kv->values, heads, kv->kv_heads, kv->head_dim, first,
-                         nwin, kv->cap, kv->ring, outd, err, errlen);
+    /* The grid is sized for the widest window this cache can hold - the window
+     * for a ring, `reserve` for an appending cache, which is the capture's
+     * bucket bound - while the kernel takes the true window from posd. A
+     * direct call passes the current position, so its grid is exactly the
+     * window it reads. */
+    const int bound = kv->ring ? kv->cap : (reserve > pos + 1 ? reserve : pos + 1);
+    return attention_dev(g, qd, kv->keys, kv->values, heads, kv->kv_heads, kv->head_dim, posd,
+                         bound, kv->cap, kv->ring, outd, err, errlen);
+}
+
+/* One int on the device, for the host entry points whose signature carries a
+ * position: the chain and the model read their step's position from their own
+ * device slot, but gm4_gpu_rope and gm4_gpu_attention are single calls that
+ * take it as an argument, so they stage it here. Blocking on purpose - these
+ * calls are not on the replay path, and 4 bytes is a few microseconds. */
+static int stage_pos(gm4_gpu *g, int pos, char *err, size_t errlen) {
+    if (!g->posone) {
+        cudaError_t e = cudaMalloc((void **) &g->posone, sizeof(int32_t));
+        if (e != cudaSuccess) return fail(err, errlen, "position slot cudaMalloc", e);
+    }
+    cudaError_t e = cudaMemcpy(g->posone, &pos, sizeof(int32_t), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "position slot upload", e);
+    return 0;
 }
 
 /* Apply one layer type's rotary frequencies to every head of `x` in place, at
@@ -2299,6 +2443,7 @@ int gm4_gpu_rope(gm4_gpu *g, float *x, int heads, int head_dim, int pos, const f
         snprintf(err, errlen, "rope needs an input, a table and a positive even head width");
         return -1;
     }
+    if (stage_pos(g, pos, err, errlen) != 0) return -1;
     const size_t n = (size_t) heads * (size_t) head_dim;
     if (ensure_float(&g->ax, &g->axcap, n, err, errlen) != 0) return -1;
     if (ensure_float(&g->ai, &g->aicap, (size_t) (head_dim / 2), err, errlen) != 0) return -1;
@@ -2306,7 +2451,8 @@ int gm4_gpu_rope(gm4_gpu *g, float *x, int heads, int head_dim, int pos, const f
     if (e != cudaSuccess) return fail(err, errlen, "rope x upload", e);
     e = cudaMemcpy(g->ai, inv, (size_t) (head_dim / 2) * sizeof(float), cudaMemcpyHostToDevice);
     if (e != cudaSuccess) return fail(err, errlen, "rope table upload", e);
-    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(g->ax, heads, head_dim, pos, g->ai);
+    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(g->ax, heads, head_dim, g->posone,
+                                                               g->ai);
     e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "rope launch", e);
     e = cudaDeviceSynchronize();
@@ -2332,7 +2478,6 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
         return -1;
     }
     const int nwin = window > 0 && positions > window ? window : positions;
-    const int first = positions - nwin;
     const size_t qn = (size_t) heads * (size_t) head_dim;
     const size_t kvn = (size_t) positions * (size_t) kv_heads * (size_t) head_dim;
     if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
@@ -2366,9 +2511,11 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
     if (e != cudaSuccess) return fail(err, errlen, "attention upload", e);
 
     /* The dense walk is the ring's slot rule with cap == positions and
-     * ring == 0, so both go through one launcher and the same schedule. */
-    if (attention_dev(g, g->aq, g->akv, g->akv + kvn, heads, kv_heads, head_dim, first, nwin,
-                      positions, 0, g->aout, err, errlen) != 0)
+     * ring == 0, so both go through one launcher and the same schedule. The
+     * position the kernels read is the last one this history holds. */
+    if (stage_pos(g, positions - 1, err, errlen) != 0) return -1;
+    if (attention_dev(g, g->aq, g->akv, g->akv + kvn, heads, kv_heads, head_dim, g->posone,
+                      window > 0 ? window : nwin, positions, 0, g->aout, err, errlen) != 0)
         return -1;
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "attention sync", e);
@@ -2496,10 +2643,11 @@ int gm4_gpu_kv_put(gm4_gpu *g, gm4_kv *kv, int pos, const float *k, const float 
         e = cudaMemcpy(g->kvu + kv->per, v, (size_t) kv->per * sizeof(float),
                        cudaMemcpyHostToDevice);
     if (e != cudaSuccess) return fail(err, errlen, "kv upload", e);
-    const int slot = kv->ring ? pos % kv->cap : pos;
+    if (stage_pos(g, pos, err, errlen) != 0) return -1;
     const int block = 128;
     kv_put_kernel<<<(kv->per + block - 1) / block, block>>>(kv->keys, kv->values, g->kvu,
-                                                            g->kvu + kv->per, kv->per, slot);
+                                                            g->kvu + kv->per, kv->per, g->posone,
+                                                            kv->cap, kv->ring);
     e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "kv put launch", e);
     e = cudaDeviceSynchronize();
@@ -2563,16 +2711,18 @@ int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, in
         return -1;
     }
     const int positions = pos + 1;
-    const int nwin = kv->ring && positions > kv->cap ? kv->cap : positions;
-    const int first = positions - nwin;
     const int head_dim = kv->head_dim;
     const size_t qn = (size_t) heads * (size_t) head_dim;
     if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
     if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
     cudaError_t e = cudaMemcpy(g->aq, q, qn * sizeof(float), cudaMemcpyHostToDevice);
     if (e != cudaSuccess) return fail(err, errlen, "ring attention upload", e);
-    if (attention_dev(g, g->aq, kv->keys, kv->values, heads, kv->kv_heads, head_dim, first, nwin,
-                      kv->cap, kv->ring, g->aout, err, errlen) != 0)
+    (void) positions;
+    if (stage_pos(g, pos, err, errlen) != 0) return -1;
+    /* The window is the cache's capacity for a ring and every position for an
+     * appending one; the kernel takes the true window from the position. */
+    if (attention_dev(g, g->aq, kv->keys, kv->values, heads, kv->kv_heads, head_dim, g->posone,
+                      kv->ring ? kv->cap : pos + 1, kv->cap, kv->ring, g->aout, err, errlen) != 0)
         return -1;
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "ring attention sync", e);
@@ -2670,12 +2820,14 @@ int gm4_gpu_layer_new(gm4_gpu *g, const gm4_layer_spec *spec, gm4_layer **out, c
     if (e == cudaSuccess)
         e = cudaMalloc((void **) &L->rl1, nex * 2 * nmoe * sizeof(uint32_t));
     if (e == cudaSuccess) e = cudaMalloc((void **) &L->rl2, nex * nh * sizeof(uint32_t));
+    if (e == cudaSuccess) e = cudaMalloc((void **) &L->posd, sizeof(int32_t));
     if (e != cudaSuccess) {
         if (L->small) cudaFree(L->small);
         if (L->arena) cudaFree(L->arena);
         if (L->picked) cudaFree(L->picked);
         if (L->rl1) cudaFree(L->rl1);
         if (L->rl2) cudaFree(L->rl2);
+        if (L->posd) cudaFree(L->posd);
         free(L);
         snprintf(err, errlen, "layer cudaMalloc failed: %s", cudaGetErrorString(e));
         return -1;
@@ -2793,6 +2945,7 @@ void gm4_gpu_layer_free(gm4_layer *L) {
     if (L->picked) cudaFree(L->picked);
     if (L->rl1) cudaFree(L->rl1);
     if (L->rl2) cudaFree(L->rl2);
+    if (L->posd) cudaFree(L->posd);
     free(L);
 }
 
@@ -2805,9 +2958,10 @@ size_t gm4_gpu_layer_bytes(const gm4_layer *L) {
                  * sizeof(uint32_t);
 }
 
-int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, int pos,
-                          float *out, char *err, size_t errlen) {
-    if (!g || !L || !kv || !x || !out) {
+static int layer_forward_dev(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *xd, int pos,
+                             const int32_t *posd, int reserve, float *outd, char *err,
+                             size_t errlen) {
+    if (!g || !L || !kv || !xd || !outd) {
         snprintf(err, errlen, "layer_forward needs a layer, a cache, an input and an output");
         return -1;
     }
@@ -2823,8 +2977,13 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     const int nh = L->hidden;
     const int nk = L->kv_heads * L->head_dim;
     mark(L, 0);
-    cudaError_t e = cudaMemcpy(L->xa, x, (size_t) nh * sizeof(float), cudaMemcpyHostToDevice);
-    if (e != cudaSuccess) return fail(err, errlen, "layer x upload", e);
+    /* The residual lives at L->xa for the whole chain; a caller that already
+     * has the activation on the device pays one 11 KiB copy, not a round trip
+     * through the host. */
+    cudaError_t e = cudaSuccess;
+    if (xd != L->xa)
+        e = cudaMemcpyAsync(L->xa, xd, (size_t) nh * sizeof(float), cudaMemcpyDeviceToDevice, cudaStreamPerThread);
+    if (e != cudaSuccess) return fail(err, errlen, "layer x copy", e);
 
     /* residual = x; h = input_norm(residual); q, k and v from h. */
     if (rmsnorm_dev(L->xa, L->in_norm, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
@@ -2834,25 +2993,28 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
         if (matvec_dev(g, L->v, L->hb, L->va, L->threads, err, errlen) != 0) return -1;
     } else {
         /* `value_states = key_states` before either norm (`:1258-1263`). */
-        e = cudaMemcpyAsync(L->va, L->ka, (size_t) nk * sizeof(float), cudaMemcpyDeviceToDevice, 0);
+        e = cudaMemcpyAsync(L->va, L->ka, (size_t) nk * sizeof(float), cudaMemcpyDeviceToDevice, cudaStreamPerThread);
         if (e != cudaSuccess) return fail(err, errlen, "layer k to v copy", e);
     }
     mark(L, 1);
 
-    /* The per-head norms, then rotary on q and k; v_norm has no weight. */
+    /* The per-head norms, then rotary on q and k; v_norm has no weight. The
+     * angle comes from posd, so a replayed capture rotates by the step's own
+     * position. */
     if (rmsnorm_dev(L->qa, L->q_norm, L->qb, L->heads, L->head_dim, L->eps, err, errlen) != 0)
         return -1;
-    if (rope_dev(L->qb, L->heads, L->head_dim, pos, L->rope_inv, err, errlen) != 0) return -1;
+    if (rope_dev_p(L->qb, L->heads, L->head_dim, posd, L->rope_inv, err, errlen) != 0) return -1;
     if (rmsnorm_dev(L->ka, L->k_norm, L->kb, L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
         return -1;
-    if (rope_dev(L->kb, L->kv_heads, L->head_dim, pos, L->rope_inv, err, errlen) != 0) return -1;
+    if (rope_dev_p(L->kb, L->kv_heads, L->head_dim, posd, L->rope_inv, err, errlen) != 0) return -1;
     if (rmsnorm_dev(L->va, NULL, L->vb, L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
         return -1;
 
     /* The cache takes this position first: the query sees its own key. */
-    if (kv_put_dev(kv, pos, L->kb, L->vb, err, errlen) != 0) return -1;
+    if (kv_put_dev(kv, pos, posd, L->kb, L->vb, err, errlen) != 0) return -1;
     mark(L, 2);
-    if (attention_ring_dev(g, kv, L->qb, L->heads, pos, L->attn, err, errlen) != 0) return -1;
+    if (attention_ring_dev(g, kv, L->qb, L->heads, pos, posd, reserve, L->attn, err, errlen) != 0)
+        return -1;
     mark(L, 3);
     /* The output projection is the last thing the CPU's attention does
      * (`layer.o.matvec(&out)`, forward.rs:462), so it is part of this step. */
@@ -2897,7 +3059,7 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     if (rowlist_dev(L->rl2, L->picked, L->top_k, nh, nh, err, errlen) != 0) return -1;
     /* One gather over all k experts and one weighted reduce: the down rows
      * are disjoint, so the launch is the concatenation of the k blocks. */
-    e = cudaMemsetAsync(L->d, 0, (size_t) L->top_k * (size_t) nh * sizeof(float), 0);
+    e = cudaMemsetAsync(L->d, 0, (size_t) L->top_k * (size_t) nh * sizeof(float), cudaStreamPerThread);
     if (e != cudaSuccess) return fail(err, errlen, "layer down clear", e);
     if (rows_dev(g, L->edn, L->rl2, L->top_k * nh, L->act, nh, (int) L->moe_ff, L->d, L->threads,
                  err, errlen) != 0)
@@ -2913,11 +3075,37 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
         return -1;
     mark(L, 10);
 
+    /* The output stays where the chain left it unless the caller asked for a
+     * copy: in a model step the next layer's activation is another device
+     * buffer, and the host is not involved at all. */
+    if (outd != L->outd) {
+        e = cudaMemcpyAsync(outd, L->outd, (size_t) nh * sizeof(float), cudaMemcpyDeviceToDevice,
+                            cudaStreamPerThread);
+        if (e != cudaSuccess) return fail(err, errlen, "layer output copy", e);
+    }
+    mark(L, 11);
+    return 0;
+}
+
+int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, int pos,
+                          float *out, char *err, size_t errlen) {
+    if (!g || !L || !kv || !x || !out) {
+        snprintf(err, errlen, "layer_forward needs a layer, a cache, an input and an output");
+        return -1;
+    }
+    const int nh = L->hidden;
+    cudaError_t e = cudaMemcpy(L->xa, x, (size_t) nh * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "layer x upload", e);
+    e = cudaMemcpy(L->posd, &pos, sizeof(int32_t), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "layer position upload", e);
+    /* A single layer call reads exactly the window its position implies, so the
+     * launch is sized for pos + 1 and the reservation is not needed. */
+    if (layer_forward_dev(g, L, kv, L->xa, pos, L->posd, pos + 1, L->outd, err, errlen) != 0)
+        return -1;
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "layer sync", e);
     e = cudaMemcpy(out, L->outd, (size_t) nh * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "layer download", e);
-    mark(L, 11);
     return 0;
 }
 
@@ -3005,6 +3193,385 @@ int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n) 
         if (names) names[i] = gm4_section_names[i];
     }
     return count;
+}
+
+/* ---- one token, whole model ----------------------------------------------
+ *
+ * A layer chain is one layer; this is all of them plus the two ends the CPU's
+ * step runs around the stack (`forward.rs:301-336`): the tied table read as
+ * one row and scaled by embed_scale, the final norm, the tied head over the
+ * whole vocabulary, and the softcap. The activation never leaves the device
+ * between those ends: two buffers alternate, so each layer's output is the
+ * next one's input, and a token synchronises once, at the logits download.
+ *
+ * The buffers, the norm table and the logits vector belong to the model
+ * handle; the layers and their caches belong to the caller, exactly as
+ * gm4_gpu_layer_forward's do. */
+/* Position buckets and graph slots. The width is the reference engine's
+ * (ds4_ds41_graph.inc:48, DGRAPH_BUCKET 1024): inside a bucket every grid the
+ * step launches is fixed, so one capture replays every step in it, and
+ * crossing the bucket re-captures. Eight slots hold eight buckets, which at
+ * this context bound is more than a session can reach. GM4_BUCKET overrides
+ * the width for a diagnosis (a width of 1 captures each position with its own
+ * grids, which separates the replay's dispatch cost from the bucket's). */
+#define GM4_BUCKET_DEFAULT 1024
+static int gm4_bucket_width(void) {
+    const char *v = getenv("GM4_BUCKET");
+    const int w = v ? atoi(v) : 0;
+    return w > 0 ? w : GM4_BUCKET_DEFAULT;
+}
+#define GM4_MAX_BUCKETS 8
+
+struct gm4_model {
+    gm4_layer **layers;
+    gm4_kv **kv;
+    int n;
+    int embed, head, hidden, vocab, threads;
+    float eps, embed_scale, softcap;
+    float *act[2];
+    float *fnorm;
+    float *logits;
+    /* The only host writes a step needs: the token and the position. The
+     * kernels read them from the device, so a captured step can be replayed at
+     * any token and any position inside its bucket (the "device position"
+     * convention, ds4_ds41_graph.inc:9-12). `staging` is pinned, so the 8-byte
+     * upload is a real asynchronous copy and not a staged one. */
+    int32_t *slots;   /* device: [0] token, [1] position */
+    int32_t *staging; /* pinned host mirror */
+    cudaGraphExec_t graphs[GM4_MAX_BUCKETS];
+    int32_t glo[GM4_MAX_BUCKETS], gcap[GM4_MAX_BUCKETS];
+    int ngraphs;
+    int ctx;        /* the appending caches' bound: the highest position a step may take */
+    int warm;       /* one direct step has run, the engine's precondition for a capture */
+    int graph_off;  /* a capture failed: walk direct from here on */
+    int captures;
+    /* The last step, split the way the reference engine accounts a decode
+     * step (/data/ds4-dfm-rs/ds4_ds41_graph.inc:106-113: submit, launch,
+     * wait): `submit` is the host time from entry to the last launch's
+     * return, `wait` is everything after it, the sync and the readback. One
+     * wall number hides which half the next change has to move. */
+    double t_submit, t_wait;
+};
+
+static double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
+}
+
+void gm4_gpu_model_free(gm4_model *m) {
+    if (!m) return;
+    for (int i = 0; i < m->ngraphs; i++)
+        if (m->graphs[i]) cudaGraphExecDestroy(m->graphs[i]);
+    if (m->slots) cudaFree(m->slots);
+    if (m->staging) cudaFreeHost(m->staging);
+    if (m->act[0]) cudaFree(m->act[0]);
+    if (m->act[1]) cudaFree(m->act[1]);
+    if (m->fnorm) cudaFree(m->fnorm);
+    if (m->logits) cudaFree(m->logits);
+    free(m->layers);
+    free(m->kv);
+    free(m);
+}
+
+int gm4_gpu_model_new(gm4_gpu *g, const gm4_model_spec *spec, gm4_model **out, char *err,
+                      size_t errlen) {
+    if (!g || !spec || !out) {
+        snprintf(err, errlen, "model_new needs a device handle, a spec and an out pointer");
+        return -1;
+    }
+    *out = NULL;
+    if (!spec->layers || !spec->kv || spec->n <= 0) {
+        snprintf(err, errlen, "model_new needs the layers and their caches");
+        return -1;
+    }
+    if (spec->hidden <= 0 || spec->vocab <= 0 || spec->softcap <= 0.0f || !spec->final_norm) {
+        snprintf(err, errlen, "model_new needs a hidden width, a vocabulary, a positive softcap "
+                              "and the final norm's weight");
+        return -1;
+    }
+    for (int i = 0; i < spec->n; i++) {
+        if (!spec->layers[i] || !spec->kv[i]) {
+            snprintf(err, errlen, "model layer %d is missing its chain or its cache", i);
+            return -1;
+        }
+        if (spec->layers[i]->hidden != spec->hidden) {
+            snprintf(err, errlen, "model layer %d is %d wide, the model is %d", i,
+                     spec->layers[i]->hidden, spec->hidden);
+            return -1;
+        }
+        if (spec->kv[i]->kv_heads != spec->layers[i]->kv_heads
+            || spec->kv[i]->head_dim != spec->layers[i]->head_dim) {
+            snprintf(err, errlen,
+                     "model layer %d's cache is %d kv heads of %d, the layer is %d of %d", i,
+                     spec->kv[i]->kv_heads, spec->kv[i]->head_dim, spec->layers[i]->kv_heads,
+                     spec->layers[i]->head_dim);
+            return -1;
+        }
+    }
+    if (spec->embed < 0 || spec->embed >= g->nt || spec->head < 0 || spec->head >= g->nt) {
+        snprintf(err, errlen, "model_new's tables are not in the residency");
+        return -1;
+    }
+    const Layout &E = g->ts[spec->embed].pays[0].l;
+    const Layout &H = g->ts[spec->head].pays[0].l;
+    if (E.rows != spec->vocab || E.cols != spec->hidden) {
+        snprintf(err, errlen, "the embedding table is %dx%d, the model is %dx%d", E.rows, E.cols,
+                 spec->vocab, spec->hidden);
+        return -1;
+    }
+    if (H.rows != spec->vocab || H.cols != spec->hidden) {
+        snprintf(err, errlen, "the head is %dx%d, the model is %dx%d", H.rows, H.cols, spec->vocab,
+                 spec->hidden);
+        return -1;
+    }
+
+    gm4_model *m = (gm4_model *) calloc(1, sizeof(gm4_model));
+    if (!m) {
+        snprintf(err, errlen, "out of host memory for the model handle");
+        return -1;
+    }
+    m->n = spec->n;
+    m->layers = (gm4_layer **) calloc((size_t) spec->n, sizeof(gm4_layer *));
+    m->kv = (gm4_kv **) calloc((size_t) spec->n, sizeof(gm4_kv *));
+    if (!m->layers || !m->kv) {
+        gm4_gpu_model_free(m);
+        snprintf(err, errlen, "out of host memory for the model's layer list");
+        return -1;
+    }
+    for (int i = 0; i < spec->n; i++) {
+        m->layers[i] = spec->layers[i];
+        m->kv[i] = spec->kv[i];
+    }
+    m->embed = spec->embed;
+    m->head = spec->head;
+    m->hidden = spec->hidden;
+    m->vocab = spec->vocab;
+    m->threads = spec->threads > 0 ? spec->threads : 256;
+    m->eps = spec->eps;
+    m->embed_scale = spec->embed_scale;
+    m->softcap = spec->softcap;
+
+    cudaError_t e = cudaMalloc((void **) &m->act[0], (size_t) spec->hidden * sizeof(float));
+    if (e == cudaSuccess)
+        e = cudaMalloc((void **) &m->act[1], (size_t) spec->hidden * sizeof(float));
+    if (e == cudaSuccess)
+        e = cudaMalloc((void **) &m->fnorm, (size_t) spec->hidden * sizeof(float));
+    if (e == cudaSuccess)
+        e = cudaMalloc((void **) &m->logits, (size_t) spec->vocab * sizeof(float));
+    if (e == cudaSuccess)
+        e = cudaMalloc((void **) &m->slots, 2 * sizeof(int32_t));
+    if (e == cudaSuccess)
+        e = cudaMallocHost((void **) &m->staging, 2 * sizeof(int32_t));
+    if (e == cudaSuccess)
+        e = cudaMemcpy(m->fnorm, spec->final_norm, (size_t) spec->hidden * sizeof(float),
+                       cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) {
+        gm4_gpu_model_free(m);
+        return fail(err, errlen, "model allocation", e);
+    }
+    /* The bound a step may reach: the appending caches' capacity, since they
+     * are the ones that run out (a ring layer wraps instead). */
+    m->ctx = INT32_MAX;
+    for (int i = 0; i < spec->n; i++)
+        if (!spec->kv[i]->ring && spec->kv[i]->cap < m->ctx) m->ctx = spec->kv[i]->cap;
+    if (m->ctx == INT32_MAX) m->ctx = gm4_bucket_width();
+    /* The graph path is built and gated, but it is off unless GM4_GRAPH asks
+     * for it: measured in one run on this card, a replayed step is 2 ms slower
+     * than the direct walk of the same kernels (17.93 vs 15.92 ms at position
+     * 26, host submit 0.02 ms against 4.74), because the 1350 launches submit
+     * at 3.6 us each while the device takes 11 us per kernel, so submission is
+     * already hidden under device work and the replay only adds its per-node
+     * dispatch. The reference engine is in the other regime: its step is larger
+     * than its submission cost, so the graph pays there
+     * (/data/ds4-dfm-rs/ds4_ds41_graph.inc:106-113). */
+    m->graph_off = getenv("GM4_GRAPH") ? 0 : 1;
+    *out = m;
+    return 0;
+}
+
+/* The model's whole device footprint: the chains, the caches and the model's
+ * own buffers, so a caller's VRAM account does not have to add them up. */
+size_t gm4_gpu_model_bytes(const gm4_model *m) {
+    if (!m) return 0;
+    size_t total = (2 * (size_t) m->hidden + (size_t) m->hidden + (size_t) m->vocab)
+                   * sizeof(float);
+    for (int i = 0; i < m->n; i++) {
+        total += gm4_gpu_layer_bytes(m->layers[i]);
+        total += gm4_gpu_kv_bytes(m->kv[i]);
+    }
+    return total;
+}
+
+/* One step's kernels, submitted in order and not synchronised: the two ends of
+ * `forward.rs:316-334` - the scaled embedding row, the 30 layers, the final
+ * norm, the tied head, the softcap. `cap` is the widest window this step's
+ * launch grids must cover, which is the direct step's own position and the
+ * capture's bucket bound. Everything it reads about the step itself (the
+ * token, the position) is already in the device slots. */
+static int model_body(gm4_gpu *g, gm4_model *m, int cap, char *err, size_t errlen) {
+    if (embed_row_dev(g, m->embed, m->slots, m->embed_scale, m->act[0], err, errlen) != 0)
+        return -1;
+    int cur = 0;
+    for (int i = 0; i < m->n; i++) {
+        if (layer_forward_dev(g, m->layers[i], m->kv[i], m->act[cur], (int) m->staging[1],
+                              m->slots + 1, cap, m->act[cur ^ 1], err, errlen) != 0)
+            return -1;
+        cur ^= 1;
+    }
+    /* In place: rmsnorm_kernel reads its own position before writing it, and
+     * no thread reads another thread's position. */
+    if (rmsnorm_dev(m->act[cur], m->fnorm, m->act[cur], 1, m->hidden, m->eps, err, errlen) != 0)
+        return -1;
+    if (matvec_dev(g, m->head, m->act[cur], m->logits, m->threads, err, errlen) != 0) return -1;
+    const unsigned threads = 256;
+    softcap_kernel<<<(unsigned) ((m->vocab + (int) threads - 1) / (int) threads), threads>>>(
+        m->logits, (size_t) m->vocab, m->softcap);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "model softcap launch", e);
+    return 0;
+}
+
+/* Grow every buffer a step can touch for a window bound of `cap`, before any
+ * capture: an allocation under capture is an unsafe call and voids it, which
+ * is the engine's own finding (/data/ds4-dfm-rs/ds4_ds41_graph.inc:205-209:
+ * "Grow every scratch the body can need BEFORE st->graph=1"). The attention
+ * buffers are the only ones a step allocates; matvec, the gathers and the
+ * normalisations all write into the caller's buffers. */
+static int model_reserve(gm4_gpu *g, gm4_model *m, int cap, char *err, size_t errlen) {
+    for (int i = 0; i < m->n; i++) {
+        const gm4_layer *L = m->layers[i];
+        const gm4_kv *kv = m->kv[i];
+        const int window = kv->ring && kv->cap < cap ? kv->cap : cap;
+        const int splits = attn_splits(L->heads, window);
+        const int blocks = L->heads * splits;
+        const int chunk = (window + splits - 1) / splits;
+        if (ensure_float(&g->ascores, &g->ascorescap, (size_t) blocks * (size_t) chunk, err,
+                         errlen) != 0)
+            return -1;
+        if (ensure_float(&g->apart, &g->apartcap, (size_t) blocks * (size_t) L->head_dim, err,
+                         errlen) != 0)
+            return -1;
+        if (ensure_float(&g->apm, &g->apmcap, (size_t) blocks, err, errlen) != 0) return -1;
+        if (ensure_float(&g->apl, &g->aplcap, (size_t) blocks, err, errlen) != 0) return -1;
+    }
+    return 0;
+}
+
+/* One step through this bucket's graph, capturing it on first use. Returns 1
+ * when a graph ran, 0 when the caller must walk direct (no graph allowed, the
+ * bucket table is full, or a capture failed), -1 on a real error. */
+static int model_graph(gm4_gpu *g, gm4_model *m, int bucket, int cap, char *err, size_t errlen) {
+    for (int i = 0; i < m->ngraphs; i++) {
+        if (m->glo[i] != bucket) continue;
+        cudaError_t e = cudaGraphLaunch(m->graphs[i], cudaStreamPerThread);
+        if (e != cudaSuccess) return fail(err, errlen, "model graph launch", e);
+        return 1;
+    }
+    if (m->ngraphs >= GM4_MAX_BUCKETS) return 0;
+    if (model_reserve(g, m, cap, err, errlen) != 0) return -1;
+    cudaError_t e = cudaStreamBeginCapture(cudaStreamPerThread, cudaStreamCaptureModeThreadLocal);
+    if (e != cudaSuccess) {
+        (void) cudaGetLastError();
+        m->graph_off = 1;
+        return 0;
+    }
+    const int built = model_body(g, m, cap, err, errlen) == 0;
+    cudaGraph_t graph = NULL;
+    e = cudaStreamEndCapture(cudaStreamPerThread, &graph);
+    if (!built || e != cudaSuccess || !graph) {
+        if (graph) cudaGraphDestroy(graph);
+        (void) cudaGetLastError();
+        m->graph_off = 1;   /* fail closed: this step and the later ones walk direct */
+        return 0;
+    }
+    cudaGraphExec_t exec = NULL;
+    e = cudaGraphInstantiate(&exec, graph, 0);
+    cudaGraphDestroy(graph);
+    if (e != cudaSuccess) {
+        (void) cudaGetLastError();
+        m->graph_off = 1;
+        return 0;
+    }
+    const int slot = m->ngraphs++;
+    m->graphs[slot] = exec;
+    m->glo[slot] = bucket;
+    m->gcap[slot] = cap;
+    m->captures++;
+    e = cudaGraphLaunch(exec, cudaStreamPerThread);
+    if (e != cudaSuccess) return fail(err, errlen, "model graph first launch", e);
+    return 1;
+}
+
+int gm4_gpu_model_step(gm4_gpu *g, gm4_model *m, int token, int pos, float *logits, char *err,
+                       size_t errlen) {
+    if (!g || !m || !logits) {
+        snprintf(err, errlen, "model_step needs a model and room for the logits");
+        return -1;
+    }
+    if (token < 0 || token >= m->vocab) {
+        snprintf(err, errlen, "token %d is outside the vocabulary of %d", token, m->vocab);
+        return -1;
+    }
+    if (pos < 0 || pos >= m->ctx) {
+        snprintf(err, errlen, "position %d is outside the model's %d", pos, m->ctx);
+        return -1;
+    }
+    const double t0 = now_sec();
+    /* The step's whole host input: two ints into the pinned mirror, then one
+     * asynchronous copy. Every kernel reads them from the device. */
+    m->staging[0] = token;
+    m->staging[1] = pos;
+    cudaError_t e = cudaMemcpyAsync(m->slots, m->staging, 2 * sizeof(int32_t),
+                                    cudaMemcpyHostToDevice, cudaStreamPerThread);
+    if (e != cudaSuccess) return fail(err, errlen, "model slot upload", e);
+    const int width = gm4_bucket_width();
+    const int bucket = pos / width;
+    int cap = (bucket + 1) * width - 1;
+    if (cap > m->ctx - 1) cap = m->ctx - 1;
+    int ran = 0;
+    if (!m->graph_off && m->warm) {
+        ran = model_graph(g, m, bucket, cap, err, errlen);
+        if (ran < 0) return -1;
+    }
+    if (!ran) {
+        if (model_body(g, m, pos + 1, err, errlen) != 0) return -1;
+        m->warm = 1;
+    }
+    m->t_submit = now_sec() - t0;
+    const double t1 = now_sec();
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "model sync", e);
+    e = cudaMemcpy(logits, m->logits, (size_t) m->vocab * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "model logits download", e);
+    m->t_wait = now_sec() - t1;
+    return 0;
+}
+
+/* How the steps ran: captures taken, and whether the graphs are off. */
+int gm4_gpu_model_graphs(const gm4_model *m, int *captures, int *off) {
+    if (!m) return -1;
+    if (captures) *captures = m->captures;
+    if (off) *off = m->graph_off;
+    return 0;
+}
+
+/* Turn the graph path on or off. A gate compares the two on the same step: the
+ * graph must be a pure replay of the kernels the direct walk submits, so the
+ * two must agree bit for bit. */
+int gm4_gpu_model_set_graph(gm4_model *m, int on) {
+    if (!m) return -1;
+    m->graph_off = on ? 0 : 1;
+    return 0;
+}
+
+/* The last step's split, in milliseconds: host submit and everything after
+ * the last launch (the sync and the 1 MiB logits readback). */
+int gm4_gpu_model_split(const gm4_model *m, double *submit, double *wait) {
+    if (!m) return -1;
+    if (submit) *submit = m->t_submit * 1e3;
+    if (wait) *wait = m->t_wait * 1e3;
+    return 0;
 }
 
 } /* extern "C" */

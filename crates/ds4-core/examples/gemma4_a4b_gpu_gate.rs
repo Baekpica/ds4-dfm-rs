@@ -38,7 +38,7 @@ use std::time::Instant;
 use ds4_core::f16_to_f32;
 use ds4_core::gemma4_a4b::{
     bf16_round, decode, gelu, normalize_heads, rms_norm, rope, softmax, top_k, Entry, Family,
-    LayerType, Matrix, Model, Role, Tensor,
+    LayerType, Matrix, Model, Role, Tensor, Tokenizer,
 };
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
@@ -98,6 +98,23 @@ struct LayerSpec {
     router_scale: *const f32,
     per_expert_scale: *const f32,
     rope_inv: *const f32,
+}
+
+/// Mirrors `gm4_model_spec`, field for field.
+#[repr(C)]
+struct ModelSpec {
+    layers: *const *mut c_void,
+    kv: *const *mut c_void,
+    n: i32,
+    embed: i32,
+    head: i32,
+    final_norm: *const f32,
+    hidden: i32,
+    vocab: i32,
+    threads: i32,
+    eps: f32,
+    embed_scale: f32,
+    softcap: f32,
 }
 
 extern "C" {
@@ -323,6 +340,27 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_model_new(
+        g: *mut c_void,
+        spec: *const ModelSpec,
+        out: *mut *mut c_void,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_model_free(m: *mut c_void);
+    fn gm4_gpu_model_bytes(m: *const c_void) -> usize;
+    fn gm4_gpu_model_split(m: *const c_void, submit: *mut f64, wait: *mut f64) -> i32;
+    fn gm4_gpu_model_graphs(m: *const c_void, captures: *mut i32, off: *mut i32) -> i32;
+    fn gm4_gpu_model_set_graph(m: *mut c_void, on: i32) -> i32;
+    fn gm4_gpu_model_step(
+        g: *mut c_void,
+        m: *mut c_void,
+        token: i32,
+        pos: i32,
+        logits: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -349,6 +387,9 @@ fn usage() -> &'static str {
   --skip-head        skip the embedding lookup and the logits head (step 8)
   --skip-ring        skip the per-layer KV cache (step 9a)
   --skip-layer       skip the chained layer (step 9b)
+  --tokenizer PATH   tokenizer.json for the whole-model step (step 9d); without
+                     it the model gate is skipped, since the gate is the
+                     greedy continuation of a prompt
   --help             this text"
 }
 
@@ -380,6 +421,7 @@ fn run() -> Result<(), String> {
     let mut head = true;
     let mut ring = true;
     let mut chain = true;
+    let mut tokenizer: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -419,6 +461,7 @@ fn run() -> Result<(), String> {
             "--skip-head" => head = false,
             "--skip-ring" => ring = false,
             "--skip-layer" => chain = false,
+            "--tokenizer" => tokenizer = Some(args.next().ok_or("--tokenizer needs a path")?.into()),
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -633,6 +676,10 @@ fn run() -> Result<(), String> {
     }
     if head {
         head_gate(&device, &family, &root, &encoded, &mut failed)?;
+    }
+    match &tokenizer {
+        Some(path) => model_gate(&device, &family, &root, &encoded, path, &mut failed)?,
+        None => println!("MODEL skipped: --tokenizer was not given (step 9d)"),
     }
     if failed {
         return Err("a kernel is past the gate".into());
@@ -1822,6 +1869,281 @@ fn layer_gate(
     Ok(())
 }
 
+/// Step 9d: the whole token, end to end, on the device.
+///
+/// The 30 chains, their caches and the tied table behind one call
+/// (`gm4_gpu_model_step`), gated against the CPU's own `Session::step` over the
+/// same ids: the last prompt position's logits (relL2, maxabs, the top-1 index)
+/// and then the greedy continuation from both, which is the gate the unit was
+/// handed. The CPU is the oracle, so it runs the prompt too; its per-token cost
+/// is printed because it is the number this unit exists to beat.
+fn model_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    tokenizer_path: &Path,
+    failed: &mut bool,
+) -> Result<(), String> {
+    const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
+    const STEPS: usize = 6;
+    let config = &family.config;
+    let vocab = config.vocab;
+
+    let tok = Tokenizer::open(tokenizer_path).map_err(|e| e.to_string())?;
+    let prompt = tok
+        .chat_prompt(&[("user".into(), QUESTION.into())], false)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "  PROMPT {} tokens: {:?}",
+        prompt.len(),
+        tok.decode(&prompt)
+    );
+
+    let embed_entry = &family.layout.embed;
+    let embed = encoded
+        .iter()
+        .position(|e| e.name == embed_entry.name)
+        .ok_or_else(|| format!("{}: not an encoded entry", embed_entry.name))?
+        as i32;
+    let final_norm = decode(root, &family.layout.final_norm)
+        .map_err(|e| e.to_string())?
+        .data;
+
+    let mut chains = Vec::with_capacity(config.layers);
+    let mut caches = Vec::with_capacity(config.layers);
+    for layer in 0..config.layers {
+        let (chain, cache) = build_chain(device, family, root, encoded, layer)?;
+        chains.push(chain);
+        caches.push(cache);
+    }
+    let layer_ptrs: Vec<*mut c_void> = chains.iter().map(|c| c.0).collect();
+    let kv_ptrs: Vec<*mut c_void> = caches.iter().map(|c| c.0).collect();
+    let chain_bytes: usize = chains
+        .iter()
+        .map(|c| unsafe { gm4_gpu_layer_bytes(c.0) })
+        .sum();
+    let cache_bytes: usize = caches
+        .iter()
+        .map(|c| unsafe { gm4_gpu_kv_bytes(c.0) })
+        .sum();
+    let spec = ModelSpec {
+        layers: layer_ptrs.as_ptr(),
+        kv: kv_ptrs.as_ptr(),
+        n: config.layers as i32,
+        embed,
+        // The checkpoint ties the head to the embedding
+        // (`Gemma4ForCausalLM._tied_weights_keys`), so one table serves both.
+        head: embed,
+        final_norm: final_norm.as_ptr(),
+        hidden: config.hidden as i32,
+        vocab: vocab as i32,
+        threads: 256,
+        eps: config.rms_eps,
+        embed_scale: bf16_round((config.hidden as f32).sqrt()),
+        softcap: config.logit_softcap,
+    };
+    let model = call_model_new(device, &spec)?;
+    let model_bytes = call_model_bytes(&model);
+    let mut acct = Account::default();
+    unsafe { gm4_gpu_account_of(device.0, &mut acct) };
+    let mib = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+    println!(
+        "MODEL {} layers + tied head {}x{}: chains {:.1} MiB, caches {:.1} MiB, model {:.1} MiB, residency {:.1} MiB, free {:.1} MiB",
+        config.layers,
+        vocab,
+        config.hidden,
+        mib(chain_bytes),
+        mib(cache_bytes),
+        mib(model_bytes),
+        mib(acct.device_bytes as usize),
+        mib(acct.device_free_after as usize)
+    );
+
+    // The oracle: the CPU forward's own step, token by token.
+    let reference = Model::open(root).map_err(|e| e.to_string())?;
+    let mut session = reference.session();
+    let mut logits_cpu = Vec::new();
+    let mut cpu_last = 0f64;
+    for (pos, &token) in prompt.iter().enumerate() {
+        let started = Instant::now();
+        logits_cpu = session
+            .step(token)
+            .map_err(|e| format!("cpu step {pos}: {e}"))?;
+        cpu_last = started.elapsed().as_secs_f64() * 1e3;
+    }
+    println!(
+        "  CPU prompt {} tokens, last step {:.0} ms",
+        prompt.len(),
+        cpu_last
+    );
+
+    let mut logits_gpu = vec![0f32; vocab];
+    for (pos, &token) in prompt.iter().enumerate() {
+        call_model_step(device, &model, token, pos, &mut logits_gpu)?;
+    }
+    let (rel, max, scale) = compare(&logits_cpu, &logits_gpu);
+    let top_cpu = argmax(&logits_cpu);
+    let top_gpu = argmax(&logits_gpu);
+    println!(
+        "  MODEL logits at the prompt's end: vs the CPU forward relL2 {rel:.3e} maxabs {max:.3e} scale {scale:.3e}"
+    );
+    println!(
+        "  TOP-1 cpu {top_cpu} ({:?}) gpu {top_gpu} ({:?})",
+        tok.token(top_cpu as u32),
+        tok.token(top_gpu as u32)
+    );
+    if top_cpu != top_gpu {
+        println!("  FAIL the device's top-1 is not the forward's");
+        *failed = true;
+    }
+
+    // The greedy continuation, each side on its own logits: the device runs
+    // first and alone, because interleaving the CPU oracle's 28 busy cores with
+    // a 14 ms device step measures the CPU's thermal effect on the card, not
+    // the graph. The two sequences are compared at the end, which is the gate.
+    let mut ids_gpu = vec![top_gpu as u32];
+    let mut best = f64::INFINITY;
+    let mut total = 0f64;
+    let mut steps = 0usize;
+    let mut current = top_gpu as u32;
+    while !tok.is_eos(current) && ids_gpu.len() < STEPS {
+        let pos = prompt.len() + steps;
+        let started = Instant::now();
+        call_model_step(device, &model, current, pos, &mut logits_gpu)?;
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        println!("    STEP pos {pos} {ms:.2} ms");
+        best = best.min(ms);
+        total += ms;
+        steps += 1;
+        current = argmax(&logits_gpu) as u32;
+        ids_gpu.push(current);
+    }
+
+    let mut ids_cpu = vec![top_cpu as u32];
+    let mut current = top_cpu as u32;
+    while !tok.is_eos(current) && ids_cpu.len() < ids_gpu.len() {
+        // One step per token: the logits `step` returns are those of the
+        // position after `current`, which is the token this loop then picks.
+        let logits = session
+            .step(current)
+            .map_err(|e| format!("cpu greedy step: {e}"))?;
+        current = argmax(&logits) as u32;
+        ids_cpu.push(current);
+    }
+
+    let text_gpu = tok.decode(&ids_gpu);
+    let text_cpu = tok.decode(&ids_cpu);
+    println!("  GREEDY device {text_gpu:?} ids {ids_gpu:?}");
+    println!("  GREEDY cpu    {text_cpu:?} ids {ids_cpu:?}");
+    if text_gpu != text_cpu || ids_gpu != ids_cpu {
+        println!("  FAIL the device's continuation is not the forward's");
+        *failed = true;
+    }
+    if total > 0.0 {
+        println!(
+            "  TIMING {} greedy steps at depth: best {best:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+            steps,
+            1000.0 / best,
+            total / steps as f64,
+            1000.0 / (total / steps as f64)
+        );
+    }
+    // The 1 MiB readback is part of every step. The two paths are INTERLEAVED,
+    // not run in blocks: this card's sustained rate drifts by up to 20 % between
+    // invocations (blocked runs of the same two paths measured +2.0 ms and
+    // -1.9 ms in opposite directions), so a sequential A-then-B comparison
+    // measures the clock state, not the code. Alternating every sample makes
+    // both paths see the same drift.
+    let (_, default_off) = call_model_graphs(&model);
+    let default_on = default_off == 0;
+    println!(
+        "  PATH default is the {} walk{}",
+        if default_on { "graph" } else { "direct" },
+        if default_on { "" } else { " (GM4_GRAPH=1 turns the graph path on)" }
+    );
+    const SAMPLES: usize = 12;
+    let at = prompt.len() + steps.saturating_sub(1);
+    let mut a_ms = Vec::with_capacity(SAMPLES);
+    let mut b_ms = Vec::with_capacity(SAMPLES);
+    let mut a_submit = 0f64;
+    let mut a_wait = 0f64;
+    let mut b_submit = 0f64;
+    let mut b_wait = 0f64;
+    let mut scratch = vec![0f32; vocab];
+    for _ in 0..SAMPLES {
+        let started = Instant::now();
+        call_model_step(device, &model, current, at, &mut logits_gpu)?;
+        a_ms.push(started.elapsed().as_secs_f64() * 1e3);
+        let (submit, wait) = call_model_split(&model);
+        a_submit += submit;
+        a_wait += wait;
+        call_model_set_graph(&model, !default_on)?;
+        let started = Instant::now();
+        call_model_step(device, &model, current, at, &mut scratch)?;
+        b_ms.push(started.elapsed().as_secs_f64() * 1e3);
+        let (submit, wait) = call_model_split(&model);
+        b_submit += submit;
+        b_wait += wait;
+        call_model_set_graph(&model, default_on)?;
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    let min = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
+    let (an, bn) = (
+        if default_on { "graph" } else { "direct" },
+        if default_on { "direct" } else { "graph" },
+    );
+    println!(
+        "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, {an} walk: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+        min(&a_ms),
+        1000.0 / min(&a_ms),
+        mean(&a_ms),
+        1000.0 / mean(&a_ms)
+    );
+    println!(
+        "    SPLIT mean host submit {:.2} ms, device wait {:.2} ms",
+        a_submit / SAMPLES as f64,
+        a_wait / SAMPLES as f64
+    );
+    println!(
+        "  TIMING one token at pos {at}, {SAMPLES} interleaved samples, {bn} walk: best {:.2} ms ({:.1} tok/s), mean {:.2} ms ({:.1} tok/s)",
+        min(&b_ms),
+        1000.0 / min(&b_ms),
+        mean(&b_ms),
+        1000.0 / mean(&b_ms)
+    );
+    println!(
+        "    SPLIT mean host submit {:.2} ms, device wait {:.2} ms",
+        b_submit / SAMPLES as f64,
+        b_wait / SAMPLES as f64
+    );
+
+    // The replayed step against the direct walk of the same step. Both submit
+    // the same kernels in the same order, so the logits must be identical: this
+    // is the gate that says the graph is a replay of the walk and not a
+    // different computation. Stepping the same position again rewrites the same
+    // cache slot with the same key and value, so the second walk starts from
+    // the state the first one left.
+    let mut direct = vec![0f32; vocab];
+    let mut replay = vec![0f32; vocab];
+    call_model_set_graph(&model, true)?;
+    call_model_step(device, &model, current, at, &mut replay)?;
+    call_model_set_graph(&model, false)?;
+    call_model_step(device, &model, current, at, &mut direct)?;
+    call_model_set_graph(&model, default_on)?;
+    let (grel, gmax, _gscale) = compare(&direct, &replay);
+    let (captures, off) = call_model_graphs(&model);
+    println!(
+        "    GRAPH replay vs direct at pos {at}: relL2 {grel:.3e} maxabs {gmax:.3e}, {captures} bucket(s) captured, graph path {}",
+        if off == 0 { "on" } else { "off" }
+    );
+    if grel > 1e-7 || gmax > 1e-6 {
+        println!("  FAIL the replayed step is not the direct walk's arithmetic");
+        *failed = true;
+    }
+    Ok(())
+}
+
 /// Step 8: the two ends of the model, both on the same 262144 x 2816 matrix
 /// because the embeddings are tied.
 ///
@@ -2495,6 +2817,200 @@ fn call_layer_sections(chain: &Chain) -> Result<Vec<(String, f64)>, String> {
         out.push((name.to_string_lossy().into_owned(), ms[i]));
     }
     Ok(out)
+}
+
+/// The model handle: every layer's chain, its cache, and the two ends.
+struct DeviceModel(*mut c_void);
+
+impl Drop for DeviceModel {
+    fn drop(&mut self) {
+        unsafe { gm4_gpu_model_free(self.0) }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_model_new(device: &Residency, spec: &ModelSpec) -> Result<DeviceModel, String> {
+    let mut err = [0i8; 512];
+    let mut out: *mut c_void = std::ptr::null_mut();
+    let rc = unsafe { gm4_gpu_model_new(device.0, spec, &mut out, err.as_mut_ptr(), err.len()) };
+    if rc != 0 {
+        return Err(format!("model_new: {}", message(&err)));
+    }
+    Ok(DeviceModel(out))
+}
+
+fn call_model_bytes(model: &DeviceModel) -> usize {
+    unsafe { gm4_gpu_model_bytes(model.0) }
+}
+
+/// The last step split host submit / device wait, the engine's account.
+fn call_model_split(model: &DeviceModel) -> (f64, f64) {
+    let mut submit = 0f64;
+    let mut wait = 0f64;
+    unsafe { gm4_gpu_model_split(model.0, &mut submit, &mut wait) };
+    (submit, wait)
+}
+
+fn call_model_graphs(model: &DeviceModel) -> (i32, i32) {
+    let mut captures = 0i32;
+    let mut off = 0i32;
+    unsafe { gm4_gpu_model_graphs(model.0, &mut captures, &mut off) };
+    (captures, off)
+}
+
+fn call_model_set_graph(model: &DeviceModel, on: bool) -> Result<(), String> {
+    if unsafe { gm4_gpu_model_set_graph(model.0, i32::from(on)) } != 0 {
+        return Err("model_set_graph: the handle was refused".to_string());
+    }
+    Ok(())
+}
+
+fn call_model_step(
+    device: &Residency,
+    model: &DeviceModel,
+    token: u32,
+    pos: usize,
+    logits: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_model_step(
+            device.0,
+            model.0,
+            token as i32,
+            pos as i32,
+            logits.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("model_step token {token} at {pos}: {}", message(&err)));
+    }
+    Ok(())
+}
+
+/// One layer's chain and cache, built from the release's own layout: the small
+/// vectors are uploaded by `gm4_gpu_layer_new`, so nothing here outlives the
+/// call. The cache is sized the way the CPU session sizes its own
+/// (`forward.rs:194-225`): the window for a ring layer, and a bound for a full
+/// one, since allocating the checkpoint's 262144 positions would be 5 GB.
+fn build_chain(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    layer: usize,
+) -> Result<(Chain, Cache), String> {
+    let config = &family.config;
+    let spec = &family.layout.layers[layer];
+    let kind = spec.kind;
+    let head_dim = config.head_dim_of(kind);
+    let kv_heads = config.kv_heads_of(kind);
+    let window = match kind {
+        LayerType::Sliding => config.sliding_window as i32,
+        LayerType::Full => 0,
+    };
+    let cap = match kind {
+        LayerType::Sliding => config.sliding_window,
+        LayerType::Full => 1024,
+    };
+
+    let tensor = |role: Role| -> Result<i32, String> {
+        let entry = spec.get(role).map_err(|e| e.to_string())?;
+        encoded
+            .iter()
+            .position(|e| e.name == entry.name)
+            .map(|i| i as i32)
+            .ok_or_else(|| format!("{}: not an encoded entry", entry.name))
+    };
+    let vector = |role: Role| -> Result<Vec<f32>, String> {
+        Ok(decode(root, spec.get(role).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+            .data)
+    };
+
+    let q = tensor(Role::QProj)?;
+    let k = tensor(Role::KProj)?;
+    let v = match config.has_v_proj(kind) {
+        true => tensor(Role::VProj)?,
+        false => -1,
+    };
+    let o = tensor(Role::OProj)?;
+    let dense_gate = tensor(Role::DenseGate)?;
+    let dense_up = tensor(Role::DenseUp)?;
+    let dense_down = tensor(Role::DenseDown)?;
+    let router = tensor(Role::RouterProj)?;
+    let expert_gate_up = tensor(Role::ExpertGateUp)?;
+    let expert_down = tensor(Role::ExpertDown)?;
+    let input_norm = vector(Role::InputNorm)?;
+    let post_attn_norm = vector(Role::PostAttentionNorm)?;
+    let pre_ffn_norm = vector(Role::PreFfnNorm)?;
+    let post_ffn_norm = vector(Role::PostFfnNorm)?;
+    let pre_ffn_norm2 = vector(Role::PreFfnNorm2)?;
+    let post_ffn_norm1 = vector(Role::PostFfnNorm1)?;
+    let post_ffn_norm2 = vector(Role::PostFfnNorm2)?;
+    let q_norm = vector(Role::QNorm)?;
+    let k_norm = vector(Role::KNorm)?;
+    let router_scale = vector(Role::RouterScale)?;
+    let per_expert_scale = vector(Role::RouterPerExpertScale)?;
+    let scalar = decode(
+        root,
+        spec.get(Role::LayerScalar).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?
+    .data[0];
+    let rope_inv = config.rope_inv(kind);
+
+    let lspec = LayerSpec {
+        q,
+        k,
+        v,
+        o,
+        dense_gate,
+        dense_up,
+        dense_down,
+        router,
+        expert_gate_up,
+        expert_down,
+        heads: config.heads as i32,
+        kv_heads: kv_heads as i32,
+        head_dim: head_dim as i32,
+        hidden: config.hidden as i32,
+        dense_ff: config.dense_ff as i32,
+        moe_ff: config.moe_ff as i32,
+        experts: config.experts as i32,
+        top_k: config.top_k as i32,
+        threads: 256,
+        eps: config.rms_eps,
+        layer_scalar: scalar,
+        input_norm: input_norm.as_ptr(),
+        post_attn_norm: post_attn_norm.as_ptr(),
+        pre_ffn_norm: pre_ffn_norm.as_ptr(),
+        post_ffn_norm: post_ffn_norm.as_ptr(),
+        pre_ffn_norm2: pre_ffn_norm2.as_ptr(),
+        post_ffn_norm1: post_ffn_norm1.as_ptr(),
+        post_ffn_norm2: post_ffn_norm2.as_ptr(),
+        q_norm: q_norm.as_ptr(),
+        k_norm: k_norm.as_ptr(),
+        router_scale: router_scale.as_ptr(),
+        per_expert_scale: per_expert_scale.as_ptr(),
+        rope_inv: rope_inv.as_ptr(),
+    };
+    let chain = call_layer_new(device, &lspec)?;
+    let kv = call_kv_new(device, kv_heads, head_dim, window, cap)?;
+    Ok((chain, kv))
+}
+
+/// `torch.topk`'s own rule: the highest value, and the lower index on a tie.
+fn argmax(values: &[f32]) -> usize {
+    let mut best = 0usize;
+    for (i, &v) in values.iter().enumerate().skip(1) {
+        if v > values[best] {
+            best = i;
+        }
+    }
+    best
 }
 
 /// A deterministic vector in [-scale, scale], distinct from the other probes.
