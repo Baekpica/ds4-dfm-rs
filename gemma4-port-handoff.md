@@ -215,12 +215,18 @@ Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 
 6. Risks that must stay visible
 
-- Quality is unmeasured and this host cannot measure it. The 26B checkpoint
-  is ~52 GB in BF16 against 31 GB of RAM, so the logits gate needs the GB10
-  box (128 GB) or an equivalent host. Until it runs, "it serves" is a
-  plumbing claim, not a model claim. The artifact's own experts measure
-  39.05-39.73 percent relL2, and the published families pair that geometry
-  with an 8-bit residual this artifact does not have.
+- Quality is unmeasured. The reference checkpoint is 48.07 GiB on disk
+  (51.6 GB), not the 7.29 GiB artifact: 42.54 GiB of it is experts, 5.53 GiB
+  everything else (attention 2.33, dense FFN 1.75, embedding 1.38, norms and
+  routers 0.07; measured from the two safetensors headers, 1013 tensors).
+  The experts are stored as 128 separate tensors per layer and projection,
+  so the active path of one token is only top-8 of 128: about 8.19 GiB.
+  A paged reference forward therefore looks feasible inside this host's
+  31 GB, but it is UNTESTED; the GB10 (128 GB) is the safe host. Until the
+  gate runs, "it serves" is a plumbing claim, not a model claim. The
+  artifact's own experts measure 39.05-39.73 percent relL2, and the
+  published families pair that geometry with an 8-bit residual this artifact
+  does not have.
 - Context: the model's own maximum is 262144. f16 KV at that length does not
   fit the 12 GiB card beside the trunk; the qualified context must be
   measured by --serving-check, never advertised from metadata.
