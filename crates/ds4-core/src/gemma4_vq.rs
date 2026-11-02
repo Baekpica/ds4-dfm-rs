@@ -355,7 +355,13 @@ fn part_metadata(g: &GgufFile) -> Result<()> {
     let mut keys = HashSet::new();
     for entry in g.kv_entries() {
         let key = g.key_bytes(entry);
-        if !keys.insert(key) || !(key.starts_with(b"general.") || key.starts_with(NAMESPACE)) {
+        // `tokenizer.*` is GGUF's own namespace, not a foreign key: the trunk
+        // part carries the vocabulary, the merges and the chat template there.
+        if !keys.insert(key)
+            || !(key.starts_with(b"general.")
+                || key.starts_with(NAMESPACE)
+                || key.starts_with(b"tokenizer."))
+        {
             return Err(fail("duplicate/foreign metadata"));
         }
     }
