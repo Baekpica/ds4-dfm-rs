@@ -29,7 +29,7 @@ fn f16(f: f32) -> u16 {
 /// Subnormal halves must decode exactly: the codebook of a real artifact
 /// carries them, and the device converts them with the hardware instruction.
 /// The value 0x0361 is the one the 2026-11-02 device gate found the CPU
-/// oracle halving (`/data/VQ_Tools/crates/vq-format/src/lib.rs:86-108`).
+/// oracle halving (`/data/VQ_tools/crates/vq-format/src/lib.rs:86-108`).
 #[test]
 fn half_subnormals_are_exact() {
     assert_eq!(f16_to_f32(0x0361), 5.155_801_8e-5);

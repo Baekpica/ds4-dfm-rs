@@ -83,7 +83,7 @@ int gm4_gpu_rows(gm4_gpu *g, int tensor, const uint32_t *rows, int nrows,
 int gm4_gpu_variant(const gm4_gpu *g, int tensor);
 
 /* Tiled prefill, the VQ tools' f16 tensor-core path
- * (/data/VQ_Tools/c/gpu/decode-gpu.cu:320-520). xT is the transposed
+ * (/data/VQ_tools/c/gpu/decode-gpu.cu:320-520). xT is the transposed
  * activation matrix [cols][ntok] and y is [ntok][rows], both host f32; y is
  * cleared and then filled with every payload's contribution, so the caller
  * reads the complete result and need not zero it.
@@ -217,6 +217,13 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
  * 20 comb, 21 comb2, 22 outd, 23 gu, 24 act, 25 d. `n` is the caller's width
  * for the value and must fit the buffer. */
 int gm4_gpu_layer_probe(gm4_layer *L, int which, float *out, int n, char *err, size_t errlen);
+
+/* Diagnostic: turn the chain's nine section records on, then read the last
+ * forward's spans in milliseconds with gm4_gpu_layer_sections. The records are
+ * stream-ordered timestamps, not waits, so turning them on does not serialise
+ * the chain; the arithmetic and the launch order are unchanged either way. */
+int gm4_gpu_layer_timing(gm4_layer *L, int on);
+int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n);
 
 /* out = x * w over n values: the router's per-dimension scale. */
 int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,

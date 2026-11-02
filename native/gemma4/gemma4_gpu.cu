@@ -6,11 +6,11 @@
  * containers, and a projection reads indices, codebook words and gains.
  *
  * Sources read first-hand before this file was written:
- * - /data/VQ_Tools/c/gpu/decode-gpu.cu: the DQV3 block kernel (gemv_v3blk,
+ * - /data/VQ_tools/c/gpu/decode-gpu.cu: the DQV3 block kernel (gemv_v3blk,
  *   :285-333 with v3_rounds at :246-283), the dim-4 fast path (gemv_warp4,
  *   :199-237), the generic warp kernel (:619-656), the index reader
  *   (rd_idx_fmt, :110-133) and the selection rule (v3_blk_ok, :66-68).
- * - /data/VQ_Tools/crates/vq-format/src/lib.rs:314-361, :426-507: the tools'
+ * - /data/VQ_tools/crates/vq-format/src/lib.rs:314-361, :426-507: the tools'
  *   payload header and the min(nbit, 12)-bit row stream with its 13th-bit
  *   plane, which is the layout the artifact carries.
  * - crates/ds4-core/src/vq.rs (this worktree) and gemma4_a4b/decode.rs: the
@@ -53,6 +53,15 @@ constexpr size_t PAYLOAD_AT = 256;   /* device alignment of each payload */
 struct Layout {
     int dim, nc, rows, cols, nbit, v3;
     int row0, nrows;
+    /* A gather whose input differs per row block: row `lo` reads the
+     * activation at (lo / xrows) * xcols rather than at the one x pointer.
+     * Zero means one input for every row, which is every case but the routed
+     * mixture's down projection, where each expert has its own activation. */
+    int xrows, xcols;
+    /* The first stage of a tensor assigns its row instead of accumulating into
+     * it, so the caller does not have to clear the output first. Parsed
+     * layouts leave it 0 (accumulate). */
+    int first;
     unsigned mask;
     size_t cb_off, gain_off, stream_off, nidx, nidx_row;
     size_t mrow, prow;
@@ -93,7 +102,7 @@ size_t align_to(size_t value, size_t a) { return (value + a - 1) / a * a; }
 /* ---- the reference kernels, ported ------------------------------------
  *
  * `layout`/`rd_idx`/`rd_idx_fmt`/`v3blk`/`v3_sel3`/`v3_blk_load`/`v3_rounds`
- * are the VQ tools' code (/data/VQ_Tools/c/gpu/decode-gpu.cu:86-333). The
+ * are the VQ tools' code (/data/VQ_tools/c/gpu/decode-gpu.cu:86-333). The
  * row walk, the funnel shifts and the gain-after-the-sum are unchanged; the
  * only edits are the struct name and a comment pointing at the source.
  */
@@ -189,6 +198,16 @@ __device__ __forceinline__ size_t row_of(const Layout &L, uint32_t lo, const uin
     return rl ? (size_t) rl[lo] : (size_t) L.row0 + (size_t) lo;
 }
 
+/* The activation a row reads. Every matvec and every single-input gather
+ * reads the one x pointer; the routed mixture's down projection is the case
+ * where each expert block of rows has an activation of its own, which the
+ * caller declares with xrows (rows per block) and xcols (elements to skip
+ * between blocks). */
+__device__ __forceinline__ const float *row_x(const float *x, const Layout &L, uint32_t lo) {
+    if (L.xrows <= 0) return x;
+    return x + (size_t) (lo / (uint32_t) L.xrows) * (size_t) L.xcols;
+}
+
 /* One warp per row, the three 128-byte lines of the next block issued before
  * this one computes (the reference's cross-block pipeline). */
 template <int DIM, int EXT>
@@ -221,11 +240,16 @@ __global__ void gemv_v3blk_kernel(const uint8_t *p, const Layout L, const uint32
         }
         const uint32_t rem = R - b * 8u;
         v3_rounds<DIM, EXT>(cur, rem < 8u ? rem : 8u, a, sh,
-                            x + (size_t) b * 256u * (DIM > 0 ? DIM : L.dim), cb, L.dim, acc);
+                            row_x(x, L, lo) + (size_t) b * 256u * (DIM > 0 ? DIM : L.dim), cb,
+                            L.dim, acc);
         cur = nxt;
     }
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
-    if (lane == 0) y[lo] += acc * __half2float(gr[r]);
+    if (lane == 0) {
+        const float v = acc * __half2float(gr[r]);
+        if (L.first) y[lo] = v;
+        else y[lo] += v;
+    }
 }
 
 /* dim-4 fast path: one 8-byte codebook load and one half2 pair of conversions
@@ -243,7 +267,8 @@ __global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const uint32
     const uint2 *cb = (const uint2 *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
     const uint8_t *st = p + L.stream_off;
-    const float4 *x4 = (const float4 *) x;
+    const float *xr = row_x(x, L, (uint32_t) lo);
+    const float4 *x4 = (const float4 *) xr;
 
     float acc = 0.0f;
     int i = lane;
@@ -267,14 +292,18 @@ __global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const uint32
         acc += a.x * xv.x + a.y * xv.y + b.x * xv.z + b.y * xv.w;
     }
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
-    if (lane == 0) y[lo] += acc * __half2float(gr[r]);
+    if (lane == 0) {
+        const float v = acc * __half2float(gr[r]);
+        if (L.first) y[lo] = v;
+        else y[lo] += v;
+    }
 }
 
 /* One warp per row, no shared codebook: the 64 KB table stays in L1. The
  * fallback for any dim and any index width. */
 template <int DIM>
 __global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
-                                 const float *x, float *y) {
+                                 const float *xin, float *y) {
     const int lo = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int lane = threadIdx.x & 31;
     if (lo >= L.nrows) return;
@@ -283,6 +312,7 @@ __global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_
     const __half *cb = (const __half *) (p + L.cb_off);
     const __half *gr = (const __half *) (p + L.gain_off);
     const uint8_t *st = p + L.stream_off;
+    const float *x = row_x(xin, L, (uint32_t) lo);
 
     float acc = 0.0f;
     for (int i = lane; i < nidx_row; i += 32) {
@@ -311,12 +341,16 @@ __global__ void gemv_warp_kernel(const uint8_t *p, const Layout L, const uint32_
         }
     }
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
-    if (lane == 0) y[lo] += acc * __half2float(gr[r]);
+    if (lane == 0) {
+        const float v = acc * __half2float(gr[r]);
+        if (L.first) y[lo] = v;
+        else y[lo] += v;
+    }
 }
 
 /* ==== Tiled prefill: f16 tensor cores =====================================
  *
- * Ported from /data/VQ_Tools/c/gpu/decode-gpu.cu:320-520 (the tiled kernel),
+ * Ported from /data/VQ_tools/c/gpu/decode-gpu.cu:320-520 (the tiled kernel),
  * :588-612 (the legacy one-thread-per-(row, token) kernel), :531-560 (the
  * shared-memory account and the geometry gate) and :1010-1160 (the entry
  * points). The structure is the reference's, unchanged:
@@ -589,6 +623,34 @@ __global__ void gelu_mul_kernel(const float *gate, const float *up, float *act, 
     act[i] = 0.5f * x * (1.0f + tanhf(k * (x + 0.044715f * x * x * x))) * up[i];
 }
 
+/* gelu(gate) * up for every expert block of a routed layer in one launch: the
+ * stack holds each expert's gate rows then its up rows, `ff` apart, so block
+ * b's activation is gelu(gu[b*2ff + j]) * gu[b*2ff + ff + j] for j < ff. The
+ * same arithmetic as gelu_mul_kernel, strided by the expert block. */
+__global__ void gelu_mul_blocks_kernel(const float *gu, float *act, int ff) {
+    const int b = blockIdx.y;
+    const size_t base = (size_t) b * 2 * (size_t) ff;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < ff; j += gridDim.x * blockDim.x) {
+        const float x = gu[base + j];
+        const float k = 0.7978846f; /* sqrt(2/pi) */
+        act[(size_t) b * ff + j] = 0.5f * x * (1.0f + tanhf(k * (x + 0.044715f * x * x * x)))
+                                   * gu[base + ff + j];
+    }
+}
+
+/* The routed mixture's accumulation: the k experts' down projections sit in
+ * one buffer, block i at i*n, and the layer's feed-forward output is their
+ * selection-weighted sum. The k adds are the order the per-expert axpys made
+ * them in, so this is the same sum with the buffer read once per thread
+ * instead of k times. */
+__global__ void moe_reduce_kernel(const float *d, const float *w, float *out, int k, int n) {
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n; j += gridDim.x * blockDim.x) {
+        float acc = 0.0f;
+        for (int i = 0; i < k; i++) acc += w[i] * d[(size_t) i * (size_t) n + j];
+        out[j] = acc;
+    }
+}
+
 /* out = (x + add) * scale, with add optional: the residual add and the layer
  * scalar the forward applies as two separate loops. */
 __global__ void residual_scale_kernel(const float *x, const float *add, float *out, size_t n,
@@ -684,58 +746,121 @@ __device__ __forceinline__ size_t kv_slot(int p, int cap, int ring) {
     return ring ? (size_t) (p % cap) : (size_t) p;
 }
 
-/* One query token against a K/V history. Grid is one block per head; a warp
- * takes every nwarps-th position in the window for the score pass, the whole
- * block shares the softmax, and the value pass is one thread per dimension
- * with no reduction at all. K and V are f16, which is finer than the
- * reference's bf16 activations. The history is either dense (kv_ring == 0) or
- * a ring of `kv_cap` positions (kv_ring == 1), in which case every access goes
- * through kv_slot; the walk itself is always in position order, so the ring
- * changes addresses, never arithmetic. */
-__global__ void attn_decode_kernel(const float *q, const __half *k, const __half *v,
-                                   float *scores, float *out, int heads, int kv_heads,
-                                   int head_dim, int positions, int first, int nwin,
-                                   int kv_cap, int kv_ring) {
+/* Split-position decode attention, in the flash-decoding shape: one block per
+ * (head, run of the window), then one small combine.
+ *
+ * The single-block-per-head kernel this replaces left the card mostly idle -
+ * 16 heads is 16 blocks of 56 SMs - and its value pass was one thread per
+ * dimension walking the window in one dependent ~1000-iteration chain, which
+ * measured 17 GB/s against the 130 the card does. The split gives every SM a
+ * run of the window instead.
+ *
+ * The split is arithmetic-neutral by construction: a run is a contiguous
+ * segment of the one ascending position walk, so each block sums its segment
+ * in the same order the unsplit kernel would have, and the combine is the
+ * standard max-rescale
+ *
+ *   out = sum_s exp(m_s - M) o_s  /  sum_s exp(m_s - M) l_s,   M = max_s m_s
+ *
+ * over the runs' (max, sum of exponentials, weighted value sum). The schedule
+ * depends only on the head count and the window, so the dense walk and the
+ * ring walk of the same history pick the same runs; the ring gate's check
+ * that the two are bit-identical therefore still holds exactly. */
+__global__ void attn_split_kernel(const float *q, const __half *k, const __half *v, float *scores,
+                                  float *part, float *pm, float *pl, int heads, int kv_heads,
+                                  int head_dim, int first, int nwin, int splits, int chunk,
+                                  int kv_cap, int kv_ring) {
     extern __shared__ float red[];
-    const int h = blockIdx.x;
+    const int block = blockIdx.x;
+    const int h = block / splits;
+    const int s = block - h * splits;
     const int group = heads / kv_heads;
     const int kv_head = h / group;
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     const int nwarps = blockDim.x >> 5;
-    const float *qh = q + (size_t) h * (size_t) head_dim;
-    float *sc = scores + (size_t) h * (size_t) nwin;
     const size_t kv_stride = (size_t) kv_heads * (size_t) head_dim;
+    const float *qh = q + (size_t) h * (size_t) head_dim;
+    float *sc = scores + (size_t) block * (size_t) chunk;
+    float *outp = part + (size_t) block * (size_t) head_dim;
+    const int lo = s * chunk;
+    const int hi = lo + chunk < nwin ? lo + chunk : nwin;
+    const int n = hi > lo ? hi - lo : 0;
 
-    for (int p = first + warp; p < positions; p += nwarps) {
-        const size_t ks = kv_slot(p, kv_cap, kv_ring);
+    /* The score pass: a warp takes every nwarps-th position of the run, two
+     * dimensions per lane as one half2, one warp reduction per position. */
+    for (int p = lo + warp; p < hi; p += nwarps) {
+        const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
         const __half *kp = k + ks * kv_stride + (size_t) kv_head * head_dim;
-        float s = 0.0f;
-        for (int d = lane; d < head_dim; d += 32) s += qh[d] * __half2float(kp[d]);
-        for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xffffffffu, s, off);
-        if (lane == 0) sc[p - first] = s; /* scaling is 1.0 */
+        float acc = 0.0f;
+        for (int d = lane * 2; d < head_dim; d += 64) {
+            const float2 qq = *(const float2 *) (qh + d);
+            const float2 kk = __half22float2(*(const __half2 *) (kp + d));
+            acc += qq.x * kk.x + qq.y * kk.y;
+        }
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) sc[p - lo] = acc; /* scaling is 1.0 */
     }
     __syncthreads();
 
-    /* fp32 softmax, as the reference upcasts it (`:846`). */
+    /* The run's softmax in fp32, as the reference upcasts it (`:846`). The
+     * exponential stays unnormalised: the combine divides once. */
     float mx = -INFINITY;
-    for (int i = threadIdx.x; i < nwin; i += blockDim.x) mx = fmaxf(mx, sc[i]);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) mx = fmaxf(mx, sc[i]);
     mx = block_max(mx, red);
     float sum = 0.0f;
-    for (int i = threadIdx.x; i < nwin; i += blockDim.x) {
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
         const float e = expf(sc[i] - mx);
         sc[i] = e;
         sum += e;
     }
     sum = block_sum(sum, red);
 
+    /* The value pass: two dimensions per thread as one half2, over the run in
+     * position order. The dimensions are disjoint, so there is no reduction. */
+    for (int d = threadIdx.x * 2; d < head_dim; d += blockDim.x * 2) {
+        float2 acc = make_float2(0.0f, 0.0f);
+        for (int i = 0; i < n; i++) {
+            const size_t ks = kv_slot(first + lo + i, kv_cap, kv_ring);
+            const float pr = sc[i];
+            const float2 vv = __half22float2(
+                *(const __half2 *) (v + ks * kv_stride + (size_t) kv_head * head_dim + d));
+            acc.x = fmaf(pr, vv.x, acc.x);
+            acc.y = fmaf(pr, vv.y, acc.y);
+        }
+        outp[d] = acc.x;
+        outp[d + 1] = acc.y;
+    }
+    if (threadIdx.x == 0) {
+        pm[block] = n ? mx : -INFINITY;
+        pl[block] = n ? sum : 0.0f;
+    }
+}
+
+/* The combine: heads blocks, one per query head, over its runs. A block's
+ * weight on its own value sum is exp(m_s - M) / sum_t exp(m_t - M) l_t, which
+ * thread 0 computes once into shared for the block's 256 threads to multiply
+ * with. Runs that hold no position carry m = -INFINITY and l = 0. */
+__global__ void attn_combine_kernel(const float *part, const float *pm, const float *pl, float *out,
+                                    int heads, int head_dim, int splits) {
+    __shared__ float w[66];
+    const int h = blockIdx.x;
+    if (threadIdx.x == 0) {
+        float M = -INFINITY;
+        for (int s = 0; s < splits; s++) M = fmaxf(M, pm[h * splits + s]);
+        float denom = 0.0f;
+        for (int s = 0; s < splits; s++) {
+            const float e = expf(pm[h * splits + s] - M);
+            w[s] = e;
+            denom += e * pl[h * splits + s];
+        }
+        for (int s = 0; s < splits; s++) w[s] = denom > 0.0f ? w[s] / denom : 0.0f;
+    }
+    __syncthreads();
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
         float acc = 0.0f;
-        for (int p = 0; p < nwin; p++) {
-            const size_t ks = kv_slot(first + p, kv_cap, kv_ring);
-            acc += (sc[p] / sum)
-                   * __half2float(v[ks * kv_stride + (size_t) kv_head * head_dim + d]);
-        }
-        out[(size_t) h * (size_t) head_dim + d] = acc;
+        for (int s = 0; s < splits; s++)
+            acc += w[s] * part[(size_t) (h * splits + s) * head_dim + d];
+        out[(size_t) h * head_dim + d] = acc;
     }
 }
 
@@ -810,25 +935,50 @@ __global__ void router_topk_kernel(const float *scores, const float *per_expert_
     for (int i = t; i < experts; i += blockDim.x) probs[i] /= sum;
     __syncthreads();
 
-    if (t != 0) return;
-    float picked = 0.0f;
+    /* The selection is k rounds of a warp-wide argmax, not a serial scan on
+     * one thread: the rule is the CPU's `top_k`
+     * (crates/ds4-core/src/gemma4_a4b/forward.rs:80-88) - the highest
+     * probability first, an exact tie to the lower index - and the compare
+     * below is that order, candidate by candidate. Every lane scans its own
+     * strided slice, the warp reduces the pair, and the winner is broadcast
+     * so all lanes agree on the picked list. */
+    if (threadIdx.x >= 32) return;
+    int *pick = (int *) red;
+    const int lane = threadIdx.x;
+    const int per_lane = (experts + 31) / 32;
     for (int j = 0; j < k; j++) {
-        int best = -1;
-        float best_prob = -1.0f;
-        for (int i = 0; i < experts; i++) {
+        float bp = -INFINITY;
+        int bi = -1;
+        for (int s = 0; s < per_lane; s++) {
+            const int i = lane + s * 32;
+            if (i >= experts) break;
             bool taken = false;
-            for (int q = 0; q < j && !taken; q++) taken = indices[q] == i;
+            for (int q = 0; q < j; q++) taken = taken || pick[q] == i;
             if (taken) continue;
-            if (probs[i] > best_prob) {
-                best_prob = probs[i];
-                best = i;
+            const float p = probs[i];
+            if (p > bp) { /* ascending i keeps the lower index on a tie */
+                bp = p;
+                bi = i;
             }
         }
-        indices[j] = best;
-        picked += probs[best];
+        for (int off = 16; off > 0; off >>= 1) {
+            const float op = __shfl_down_sync(0xffffffffu, bp, off);
+            const int oi = __shfl_down_sync(0xffffffffu, bi, off);
+            if (op > bp || (op == bp && oi >= 0 && (bi < 0 || oi < bi))) {
+                bp = op;
+                bi = oi;
+            }
+        }
+        bi = __shfl_sync(0xffffffffu, bi, 0);
+        pick[j] = bi;
+        if (lane == 0) indices[j] = bi;
     }
+
+    float picked = 0.0f;
+    for (int j = 0; j < k; j++) picked += probs[pick[j]];
+    if (lane != 0) return;
     for (int j = 0; j < k; j++) {
-        const int expert = indices[j];
+        const int expert = pick[j];
         weights[j] = probs[expert] / picked
                    * (per_expert_scale ? per_expert_scale[expert] : 1.0f);
     }
@@ -1156,6 +1306,8 @@ struct gm4_gpu {
     size_t ewcap[6];
     float *aq, *ax, *ai, *ascores, *aout; /* attention's and RoPE's operands */
     size_t aqcap, axcap, aicap, ascorescap, aoutcap;
+    float *apart, *apm, *apl; /* the split attention's per-run partials */
+    size_t apartcap, apmcap, aplcap;
     __half *akv;
     size_t akvcap;
     float *kvu; /* one position's k and v, on their way into a ring slot */
@@ -1199,13 +1351,35 @@ struct gm4_layer {
     float *gu, *act, *d;
     int *picked;
     uint32_t *rl1, *rl2;
+    /* Opt-in section timing: nine boundaries of the chain, recorded on stream
+     * 0 only when gm4_gpu_layer_timing has turned them on. A record costs a
+     * few hundred nanoseconds and never stalls the stream, so the spans are
+     * the chain's own timeline and not a sequence of forced waits. */
+    cudaEvent_t ev[12];
+    int timed;
 };
+
+/* The section boundaries, in order, matching the event indices the forward
+ * records. */
+#define GM4_SECTIONS 11
+static const char *const gm4_section_names[GM4_SECTIONS] = {
+    "input norm + qkv", "qkv norms + rope + cache", "attention",
+    "o_proj + residual", "dense feed-forward", "router norm + scale",
+    "router matvec", "router top-k", "routed experts", "close",
+    "sync + download"};
 
 static float *arena_cut(gm4_layer *L, int k, size_t n) {
     float *p = L->arena + L->used;
     L->used += n;
     L->w[k] = n;
     return p;
+}
+
+/* One section boundary. A record is a stream-ordered timestamp, not a wait, so
+ * the recorded spans are the chain's own timeline; nothing here changes the
+ * order or the arithmetic of a launch. */
+static inline void mark(gm4_layer *L, int i) {
+    if (L->timed) cudaEventRecord(L->ev[i], 0);
 }
 
 extern "C" {
@@ -1289,6 +1463,9 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->ax) cudaFree(g->ax);
     if (g->ai) cudaFree(g->ai);
     if (g->ascores) cudaFree(g->ascores);
+    if (g->apart) cudaFree(g->apart);
+    if (g->apm) cudaFree(g->apm);
+    if (g->apl) cudaFree(g->apl);
     if (g->aout) cudaFree(g->aout);
     if (g->akv) cudaFree(g->akv);
     if (g->kvu) cudaFree(g->kvu);
@@ -1776,32 +1953,36 @@ static int matvec_dev(gm4_gpu *g, int tensor, const float *xd, float *yd, int th
     }
     const Tensor *t = &g->ts[tensor];
     const Layout &L = t->pays[0].l;
-    /* The kernels accumulate, so the stage sum starts from zero. */
-    cudaError_t e = cudaMemsetAsync(yd, 0, (size_t) L.rows * sizeof(float), 0);
-    if (e != cudaSuccess) return fail(err, errlen, "chain y clear", e);
+    /* Each tensor here carries two stages. The first one assigns the row
+     * instead of accumulating into it, so the output needs no clear: the chain
+     * is the only writer of these buffers and it rewrites every row it reads. */
     for (int p = 0; p < t->npay; p++) {
-        launch_payload(t->pays[p], NULL, xd, yd, threads);
-        e = cudaGetLastError();
+        Payload one = t->pays[p];
+        one.l.first = p == 0;
+        one.l.nrows = (int) L.rows;
+        launch_payload(one, NULL, xd, yd, threads);
+        cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) return fail(err, errlen, "chain matvec launch", e);
     }
     return 0;
 }
 
 static int rows_dev(gm4_gpu *g, int tensor, const uint32_t *rld, int nrows, const float *xd,
-                    float *yd, int threads, char *err, size_t errlen) {
+                    int xrows, int xcols, float *yd, int threads, char *err, size_t errlen) {
     if (tensor < 0 || tensor >= g->nt) {
         snprintf(err, errlen, "tensor %d is not in the residency", tensor);
         return -1;
     }
     const Tensor *t = &g->ts[tensor];
-    cudaError_t e = cudaMemsetAsync(yd, 0, (size_t) nrows * sizeof(float), 0);
-    if (e != cudaSuccess) return fail(err, errlen, "chain gather y clear", e);
     for (int p = 0; p < t->npay; p++) {
         Payload one = t->pays[p];
         one.l.row0 = 0;
+        one.l.first = p == 0;
         one.l.nrows = nrows;
+        one.l.xrows = xrows;
+        one.l.xcols = xcols;
         launch_payload(one, rld, xd, yd, threads);
-        e = cudaGetLastError();
+        cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) return fail(err, errlen, "chain gather launch", e);
     }
     return 0;
@@ -1888,6 +2069,35 @@ static int axpy_dev(float *yd, const float *xd, const float *scaled, size_t n, c
     return 0;
 }
 
+static int gelu_blocks_dev(const float *gud, float *actd, int ff, int blocks, char *err,
+                           size_t errlen) {
+    const unsigned threads = 256;
+    if (ff <= 0 || blocks <= 0) {
+        snprintf(err, errlen, "gelu blocks needs a positive width and block count");
+        return -1;
+    }
+    const unsigned x = (unsigned) ((ff + threads - 1) / threads);
+    const dim3 grid(x, (unsigned) blocks);
+    gelu_mul_blocks_kernel<<<grid, threads>>>(gud, actd, ff);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain gelu blocks launch", e);
+    return 0;
+}
+
+static int moe_reduce_dev(const float *dd, const float *wd, float *outd, int k, int n, char *err,
+                          size_t errlen) {
+    const unsigned threads = 256;
+    if (k <= 0 || n <= 0) {
+        snprintf(err, errlen, "moe reduce needs a positive k and width");
+        return -1;
+    }
+    const unsigned blocks = (unsigned) ((n + threads - 1) / threads);
+    moe_reduce_kernel<<<blocks, threads>>>(dd, wd, outd, k, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain moe reduce launch", e);
+    return 0;
+}
+
 static int kv_put_dev(gm4_kv *kv, int pos, const float *kd, const float *vd, char *err,
                       size_t errlen) {
     if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
@@ -1901,6 +2111,52 @@ static int kv_put_dev(gm4_kv *kv, int pos, const float *kd, const float *vd, cha
                                                            slot);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return fail(err, errlen, "chain kv put launch", e);
+    return 0;
+}
+
+/* One query token's attention, in the split shape. `nwin` positions starting
+ * at position `first` of the history `k`/`v`, every access through kv_slot so
+ * a ring and a dense walk differ only in addresses.
+ *
+ * The number of runs per head is chosen for the card, not fixed: 64 blocks is
+ * enough to fill 56 SMs, so a 16-head layer takes four runs each and a 2-head
+ * full layer takes as many as the window allows. A run is at least 64
+ * positions before the split doubles, because below that the block's fixed
+ * costs (two block-wide reductions) outweigh the parallelism it buys. */
+#define ATN_BLOCKS 64
+#define ATN_MIN_RUN 64
+static int attention_dev(gm4_gpu *g, const float *qd, const __half *kd, const __half *vd,
+                         int heads, int kv_heads, int head_dim, int first, int nwin,
+                         int kv_cap, int kv_ring, float *outd, char *err, size_t errlen) {
+    if (nwin <= 0 || head_dim <= 0 || head_dim % 2 || heads <= 0 || kv_heads <= 0
+        || heads % kv_heads) {
+        snprintf(err, errlen, "attention needs a positive window, an even head width and heads "
+                 "divisible by kv heads");
+        return -1;
+    }
+    int splits = ATN_BLOCKS / heads; /* runs per head to reach 64 blocks */
+    if (splits < 1) splits = 1;
+    while (splits > 1 && nwin / splits < ATN_MIN_RUN) splits >>= 1;
+    if (splits > 64) splits = 64; /* the combine's shared weight table */
+    const int blocks = heads * splits;
+    const int chunk = (nwin + splits - 1) / splits;
+    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) blocks * (size_t) chunk, err, errlen)
+        != 0)
+        return -1;
+    if (ensure_float(&g->apart, &g->apartcap, (size_t) blocks * (size_t) head_dim, err, errlen)
+        != 0)
+        return -1;
+    if (ensure_float(&g->apm, &g->apmcap, (size_t) blocks, err, errlen) != 0) return -1;
+    if (ensure_float(&g->apl, &g->aplcap, (size_t) blocks, err, errlen) != 0) return -1;
+    attn_split_kernel<<<(unsigned) blocks, 256, 32 * sizeof(float)>>>(
+        qd, kd, vd, g->ascores, g->apart, g->apm, g->apl, heads, kv_heads, head_dim, first, nwin,
+        splits, chunk, kv_cap, kv_ring);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "attention split launch", e);
+    attn_combine_kernel<<<(unsigned) heads, 256>>>(g->apart, g->apm, g->apl, outd, heads,
+                                                   head_dim, splits);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "attention combine launch", e);
     return 0;
 }
 
@@ -1918,14 +2174,8 @@ static int attention_ring_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int heads
     const int positions = pos + 1;
     const int nwin = kv->ring && positions > kv->cap ? kv->cap : positions;
     const int first = positions - nwin;
-    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
-        return -1;
-    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
-        qd, kv->keys, kv->values, g->ascores, outd, heads, kv->kv_heads, kv->head_dim, positions,
-        first, nwin, kv->cap, kv->ring);
-    cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) return fail(err, errlen, "chain attention launch", e);
-    return 0;
+    return attention_dev(g, qd, kv->keys, kv->values, heads, kv->kv_heads, kv->head_dim, first,
+                         nwin, kv->cap, kv->ring, outd, err, errlen);
 }
 
 /* Apply one layer type's rotary frequencies to every head of `x` in place, at
@@ -1975,8 +2225,6 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
     const size_t kvn = (size_t) positions * (size_t) kv_heads * (size_t) head_dim;
     if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
     if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
-    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
-        return -1;
     if (kvn * 2 > g->akvcap) {
         __half *next = NULL;
         cudaError_t e = cudaMalloc((void **) &next, kvn * 2 * sizeof(__half));
@@ -2005,11 +2253,11 @@ int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v
     free(host_kv);
     if (e != cudaSuccess) return fail(err, errlen, "attention upload", e);
 
-    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
-        g->aq, g->akv, g->akv + kvn, g->ascores, g->aout, heads, kv_heads, head_dim, positions,
-        first, nwin, positions, 0);
-    e = cudaGetLastError();
-    if (e != cudaSuccess) return fail(err, errlen, "attention launch", e);
+    /* The dense walk is the ring's slot rule with cap == positions and
+     * ring == 0, so both go through one launcher and the same schedule. */
+    if (attention_dev(g, g->aq, g->akv, g->akv + kvn, heads, kv_heads, head_dim, first, nwin,
+                      positions, 0, g->aout, err, errlen) != 0)
+        return -1;
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "attention sync", e);
     e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
@@ -2209,15 +2457,11 @@ int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, in
     const size_t qn = (size_t) heads * (size_t) head_dim;
     if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
     if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
-    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
-        return -1;
     cudaError_t e = cudaMemcpy(g->aq, q, qn * sizeof(float), cudaMemcpyHostToDevice);
     if (e != cudaSuccess) return fail(err, errlen, "ring attention upload", e);
-    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
-        g->aq, kv->keys, kv->values, g->ascores, g->aout, heads, kv->kv_heads, head_dim, positions,
-        first, nwin, kv->cap, kv->ring);
-    e = cudaGetLastError();
-    if (e != cudaSuccess) return fail(err, errlen, "ring attention launch", e);
+    if (attention_dev(g, g->aq, kv->keys, kv->values, heads, kv->kv_heads, head_dim, first, nwin,
+                      kv->cap, kv->ring, g->aout, err, errlen) != 0)
+        return -1;
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "ring attention sync", e);
     e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
@@ -2415,12 +2659,23 @@ int gm4_gpu_layer_new(gm4_gpu *g, const gm4_layer_spec *spec, gm4_layer **out, c
         snprintf(err, errlen, "the layer arena is short by %zu floats", L->used - narena);
         return -1;
     }
+    /* The section events exist from the start; only the records are opt-in. */
+    for (int i = 0; i < 12; i++) {
+        e = cudaEventCreate(&L->ev[i]);
+        if (e != cudaSuccess) {
+            gm4_gpu_layer_free(L);
+            return fail(err, errlen, "layer event create", e);
+        }
+    }
+    L->timed = 0;
     *out = L;
     return 0;
 }
 
 void gm4_gpu_layer_free(gm4_layer *L) {
     if (!L) return;
+    for (int i = 0; i < 12; i++)
+        if (L->ev[i]) cudaEventDestroy(L->ev[i]);
     if (L->small) cudaFree(L->small);
     if (L->arena) cudaFree(L->arena);
     if (L->picked) cudaFree(L->picked);
@@ -2455,6 +2710,7 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     }
     const int nh = L->hidden;
     const int nk = L->kv_heads * L->head_dim;
+    mark(L, 0);
     cudaError_t e = cudaMemcpy(L->xa, x, (size_t) nh * sizeof(float), cudaMemcpyHostToDevice);
     if (e != cudaSuccess) return fail(err, errlen, "layer x upload", e);
 
@@ -2469,6 +2725,7 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
         e = cudaMemcpyAsync(L->va, L->ka, (size_t) nk * sizeof(float), cudaMemcpyDeviceToDevice, 0);
         if (e != cudaSuccess) return fail(err, errlen, "layer k to v copy", e);
     }
+    mark(L, 1);
 
     /* The per-head norms, then rotary on q and k; v_norm has no weight. */
     if (rmsnorm_dev(L->qa, L->q_norm, L->qb, L->heads, L->head_dim, L->eps, err, errlen) != 0)
@@ -2482,12 +2739,15 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
 
     /* The cache takes this position first: the query sees its own key. */
     if (kv_put_dev(kv, pos, L->kb, L->vb, err, errlen) != 0) return -1;
+    mark(L, 2);
     if (attention_ring_dev(g, kv, L->qb, L->heads, pos, L->attn, err, errlen) != 0) return -1;
+    mark(L, 3);
     /* The output projection is the last thing the CPU's attention does
      * (`layer.o.matvec(&out)`, forward.rs:462), so it is part of this step. */
     if (matvec_dev(g, L->o, L->attn, L->attn2, L->threads, err, errlen) != 0) return -1;
     if (rmsnorm_dev(L->attn2, L->post_attn, L->attn, 1, nh, L->eps, err, errlen) != 0) return -1;
     if (residual_dev(L->xa, L->attn, L->xb, (size_t) nh, 1.0f, err, errlen) != 0) return -1;
+    mark(L, 4);
 
     /* The dense feed-forward, which reads the post-attention residual. */
     if (rmsnorm_dev(L->xb, L->pre_ffn, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
@@ -2496,15 +2756,19 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     if (gelu_mul_dev(L->dg, L->du, L->dact, (size_t) L->dense_ff, err, errlen) != 0) return -1;
     if (matvec_dev(g, L->dd_t, L->dact, L->dd, L->threads, err, errlen) != 0) return -1;
     if (rmsnorm_dev(L->dd, L->post_ffn1, L->dense, 1, nh, L->eps, err, errlen) != 0) return -1;
+    mark(L, 5);
 
     /* The router: the weightless norm, the folded scale, the projection, the
      * selection. The picks and the weights stay on the device from here. */
     if (rmsnorm_dev(L->xb, NULL, L->r, 1, nh, L->eps, err, errlen) != 0) return -1;
     if (mul_dev(L->r, L->router_scale, L->moe2, (size_t) nh, err, errlen) != 0) return -1;
+    mark(L, 6);
     if (matvec_dev(g, L->rt, L->moe2, L->scores, L->threads, err, errlen) != 0) return -1;
+    mark(L, 7);
     if (router_topk_dev(L->scores, L->pes, L->experts, L->top_k, L->probs, L->picked, L->wsel,
                         err, errlen) != 0)
         return -1;
+    mark(L, 8);
 
     /* The experts: one gate_up gather for all k, one gelu per expert, then a
      * down gather and a weighted accumulate per expert, as forward.rs:376-388
@@ -2513,24 +2777,21 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     const size_t gn = (size_t) L->top_k * (size_t) gcount;
     if (rmsnorm_dev(L->xb, L->pre_ffn2, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
     if (rowlist_dev(L->rl1, L->picked, L->top_k, gcount, gcount, err, errlen) != 0) return -1;
-    if (rows_dev(g, L->egu, L->rl1, (int) gn, L->hb, L->gu, L->threads, err, errlen) != 0)
+    if (rows_dev(g, L->egu, L->rl1, (int) gn, L->hb, 0, 0, L->gu, L->threads, err, errlen) != 0)
         return -1;
-    for (int i = 0; i < L->top_k; i++) {
-        const float *gu = L->gu + (size_t) i * (size_t) gcount;
-        float *act = L->act + (size_t) i * (size_t) L->moe_ff;
-        if (gelu_mul_dev(gu, gu + L->moe_ff, act, (size_t) L->moe_ff, err, errlen) != 0) return -1;
-    }
+    /* One gelu over all k blocks: the same arithmetic as k launches, with the
+     * expert's stride instead of the caller's loop. */
+    if (gelu_blocks_dev(L->gu, L->act, (int) L->moe_ff, L->top_k, err, errlen) != 0) return -1;
     if (rowlist_dev(L->rl2, L->picked, L->top_k, nh, nh, err, errlen) != 0) return -1;
-    e = cudaMemsetAsync(L->moe, 0, (size_t) nh * sizeof(float), 0);
-    if (e != cudaSuccess) return fail(err, errlen, "layer moe clear", e);
-    for (int i = 0; i < L->top_k; i++) {
-        const float *act = L->act + (size_t) i * (size_t) L->moe_ff;
-        float *d = L->d + (size_t) i * (size_t) nh;
-        if (rows_dev(g, L->edn, L->rl2 + (size_t) i * (size_t) nh, nh, act, d, L->threads, err,
-                     errlen) != 0)
-            return -1;
-        if (axpy_dev(L->moe, d, L->wsel + i, (size_t) nh, err, errlen) != 0) return -1;
-    }
+    /* One gather over all k experts and one weighted reduce: the down rows
+     * are disjoint, so the launch is the concatenation of the k blocks. */
+    e = cudaMemsetAsync(L->d, 0, (size_t) L->top_k * (size_t) nh * sizeof(float), 0);
+    if (e != cudaSuccess) return fail(err, errlen, "layer down clear", e);
+    if (rows_dev(g, L->edn, L->rl2, L->top_k * nh, L->act, nh, (int) L->moe_ff, L->d, L->threads,
+                 err, errlen) != 0)
+        return -1;
+    if (moe_reduce_dev(L->d, L->wsel, L->moe, L->top_k, nh, err, errlen) != 0) return -1;
+    mark(L, 9);
 
     /* The close: moe norm, dense + moe, the pair norm, the residual, scalar. */
     if (rmsnorm_dev(L->moe, L->post_ffn2, L->moe2, 1, nh, L->eps, err, errlen) != 0) return -1;
@@ -2538,11 +2799,13 @@ int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, 
     if (rmsnorm_dev(L->comb, L->post_ffn, L->comb2, 1, nh, L->eps, err, errlen) != 0) return -1;
     if (residual_dev(L->xb, L->comb2, L->outd, (size_t) nh, L->scalar, err, errlen) != 0)
         return -1;
+    mark(L, 10);
 
     e = cudaDeviceSynchronize();
     if (e != cudaSuccess) return fail(err, errlen, "layer sync", e);
     e = cudaMemcpy(out, L->outd, (size_t) nh * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "layer download", e);
+    mark(L, 11);
     return 0;
 }
 
@@ -2599,6 +2862,37 @@ int gm4_gpu_layer_probe(gm4_layer *L, int which, float *out, int n, char *err, s
     cudaError_t e = cudaMemcpy(out, src, (size_t) n * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "layer probe", e);
     return 0;
+}
+
+/* Turn the section records on or off. Timing is diagnostic: a run with it on
+ * costs nine stream-ordered event records and one sync the forward already
+ * does, so the numbers are the chain's own timeline rather than a guess split
+ * of the per-layer total. */
+int gm4_gpu_layer_timing(gm4_layer *L, int on) {
+    if (!L) return -1;
+    L->timed = on != 0;
+    return 0;
+}
+
+/* Copy the last forward's section spans in milliseconds and their names. The
+ * caller passes room for GM4_SECTIONS (9) entries; a shorter `n` gets a
+ * prefix. Returns the count written, or -1 when the layer has not been timed.
+ * The forward's own sync and download are the last section, so a caller that
+ * adds this call to a loop is not timing its own wait twice. */
+int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n) {
+    if (!L || !ms || n <= 0) return -1;
+    if (!L->timed) return -1;
+    cudaError_t e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return -1;
+    const int count = n < GM4_SECTIONS ? n : GM4_SECTIONS;
+    for (int i = 0; i < count; i++) {
+        float span = 0.0f;
+        e = cudaEventElapsedTime(&span, L->ev[i], L->ev[i + 1]);
+        if (e != cudaSuccess) return -1;
+        ms[i] = (double) span;
+        if (names) names[i] = gm4_section_names[i];
+    }
+    return count;
 }
 
 } /* extern "C" */

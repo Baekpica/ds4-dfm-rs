@@ -304,6 +304,13 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_layer_timing(l: *mut c_void, on: i32) -> i32;
+    fn gm4_gpu_layer_sections(
+        l: *mut c_void,
+        ms: *mut f64,
+        names: *mut *const c_char,
+        n: i32,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn gm4_gpu_layer_forward(
         g: *mut c_void,
@@ -1761,17 +1768,30 @@ fn layer_gate(
         if timing > 0 {
             let x = shift_probe(&elementwise_probe(hidden, 1.0), last);
             call_layer_forward(device, &chain, &kv, &x, last, &mut got)?;
+            call_layer_timing(&chain, true)?;
             let mut best = f64::INFINITY;
+            let mut best_sections: Vec<(String, f64)> = Vec::new();
             for _ in 0..timing {
                 let t = Instant::now();
                 call_layer_forward(device, &chain, &kv, &x, last, &mut got)?;
-                best = best.min(t.elapsed().as_secs_f64());
+                let span = t.elapsed().as_secs_f64();
+                let sections = call_layer_sections(&chain)?;
+                if span < best {
+                    best = span;
+                    best_sections = sections;
+                }
             }
+            call_layer_timing(&chain, false)?;
             println!(
                 "  TIMING layer {layer} {kind:?} {:.3} ms for one token (chain state {:.0} KiB)",
                 best * 1e3,
                 bytes as f64 / 1024.0
             );
+            // The spans are what the per-layer total is made of, so the next
+            // shape change has an evidence base instead of an assumption.
+            for (name, ms) in &best_sections {
+                println!("    SECTION {name:<26} {:.3} ms", ms);
+            }
             per_kind.push((kind, best * 1e3));
         }
     }
@@ -2433,6 +2453,37 @@ fn call_layer_probe(chain: &Chain, which: i32, n: usize) -> Result<Vec<f32>, Str
     };
     if rc != 0 {
         return Err(format!("layer_probe {which}: {}", message(&err)));
+    }
+    Ok(out)
+}
+
+fn call_layer_timing(chain: &Chain, on: bool) -> Result<(), String> {
+    if unsafe { gm4_gpu_layer_timing(chain.0, i32::from(on)) } != 0 {
+        return Err("layer_timing: the handle was refused".to_string());
+    }
+    Ok(())
+}
+
+/// The last forward's nine section spans, in the module's own order.
+fn call_layer_sections(chain: &Chain) -> Result<Vec<(String, f64)>, String> {
+    const SECTIONS: usize = 11;
+    let mut ms = [0f64; SECTIONS];
+    let mut names = [std::ptr::null(); SECTIONS];
+    let rc = unsafe {
+        gm4_gpu_layer_sections(
+            chain.0,
+            ms.as_mut_ptr(),
+            names.as_mut_ptr(),
+            SECTIONS as i32,
+        )
+    };
+    if rc < 0 {
+        return Err("layer_sections: the layer was not timed".to_string());
+    }
+    let mut out = Vec::with_capacity(rc as usize);
+    for i in 0..rc as usize {
+        let name = unsafe { std::ffi::CStr::from_ptr(names[i]) };
+        out.push((name.to_string_lossy().into_owned(), ms[i]));
     }
     Ok(out)
 }

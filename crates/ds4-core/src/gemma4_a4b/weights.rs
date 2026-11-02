@@ -8,7 +8,7 @@
 //! The arithmetic is not new: every entry point here builds the same
 //! [`VqMatrix`] the decode gate used and calls its row dot, so the value rule
 //! and the stage sum keep the one implementation
-//! (`/data/VQ_Tools/crates/vq-format/src/lib.rs:445-478`).
+//! (`/data/VQ_tools/crates/vq-format/src/lib.rs:445-478`).
 //!
 //! The mapping is read-only and private; the page cache is the only copy, so
 //! the nine-gigabyte artifact can be walked on a host that cannot hold its

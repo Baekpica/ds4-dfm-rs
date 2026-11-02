@@ -124,7 +124,7 @@ fn u64_le(b: &[u8], off: usize) -> u64 {
 /// Half to float, subnormals included.
 ///
 /// The reference is the producer's decoder,
-/// `/data/VQ_Tools/crates/vq-format/src/lib.rs:86-108`, which starts the
+/// `/data/VQ_tools/crates/vq-format/src/lib.rs:86-108`, which starts the
 /// normalization exponent at 113 and decrements once per left shift. A
 /// transcription of ds4's C copy (`ds41_vq_fmt.h:37-43`, `ds4vq_f16`) had it
 /// at 112, which makes every subnormal half decode at half its value: the
@@ -673,7 +673,7 @@ impl<'a> VqMatrix<'a> {
     /// This is the shape a forward pass needs: a 360448 x 2816 expert stack
     /// is 4 GB decoded, so the activation is dotted against one row while the
     /// row is still indices. The arithmetic mirrors the tools'
-    /// `Stage::dot_row_local` (`/data/VQ_Tools/crates/vq-format/src/lib.rs:468-478`)
+    /// `Stage::dot_row_local` (`/data/VQ_tools/crates/vq-format/src/lib.rs:468-478`)
     /// exactly: one f32 accumulator, indices in order, each codeword summed in
     /// dim order, and the row gain applied **after** the sum, not folded into
     /// the terms.

@@ -11,7 +11,7 @@ Decode materialises a whole tensor. That is fine for `q_proj`
 never needs the matrix: it needs the activation dotted with one row, gathered
 codebook word by codeword. Both producers already ship that shape -- the
 engine as `v41_vq_row_dot`, the tools as `Stage::dot_row_local`
-(`/data/VQ_Tools/crates/vq-format/src/lib.rs:468-478`) -- and this unit
+(`/data/VQ_tools/crates/vq-format/src/lib.rs:468-478`) -- and this unit
 mirrors the tools' function rather than inventing one.
 
 ## What landed
