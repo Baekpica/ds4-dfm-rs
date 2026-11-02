@@ -2367,6 +2367,14 @@ int ds4_mmq_moe_impl(
                         M, K, ne_get_rows, n_experts, s01, s02, stream);
                 }
             }
+            if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+                if (worklist_rc == -1 && policy == MoePolicy::GlmIq2) {
+                    worklist_rc = ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                        tag, *ctx, W, (const int *)src1_q8_1.get(),
+                        ids_dst.get(), expert_bounds.get(), out_f32,
+                        M, K, ne_get_rows, n_experts, s01, s02, stream);
+                }
+            }
             if (worklist_rc == -1 && (type != GGML_TYPE_Q2_K || glm_q2)) {
                 worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                     tag, *ctx, W, (const int *)src1_q8_1.get(),
@@ -2739,7 +2747,8 @@ int ds4_mmq_moe_pair_impl(
         /* See ds4_mmq_moe_impl: family D2R engagement floor (0 = policy). */
         int64_t         d2r_ncols_floor = 0,
         /* Raw GLM cache slots may include whole-quant-block padding. */
-        int64_t         expert_stride = 0) {
+        int64_t         expert_stride = 0,
+        MoePolicy       policy = MoePolicy::Generic) {
 
     const bool direct_gateup_q8 =
         fused_down != nullptr && fused_down->direct_gateup_q8;
@@ -3340,15 +3349,21 @@ int ds4_mmq_moe_pair_impl(
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0 ||
                       type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
                       type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
-            pair_a_rc = ds4_mmq_moe_worklist_launch<type>(
-                tag, *ctx, W_a, (const int *)src1_q8_1,
-                ids_dst, expert_bounds, out_a,
-                M, K, ne_get_rows, n_experts, s01, s02, stream);
-            if (pair_a_rc == 0) {
-                pair_b_rc = ds4_mmq_moe_worklist_launch<type>(
-                    tag, *ctx, W_b, (const int *)src1_q8_1,
-                    ids_dst, expert_bounds, out_b,
+            auto launch = [&](const void *W, float *out) {
+                if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+                    if (policy == MoePolicy::GlmIq2) {
+                        return ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                            tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
+                            M, K, ne_get_rows, n_experts, s01, s02, stream);
+                    }
+                }
+                return ds4_mmq_moe_worklist_launch<type>(
+                    tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
                     M, K, ne_get_rows, n_experts, s01, s02, stream);
+            };
+            pair_a_rc = launch(W_a, out_a);
+            if (pair_a_rc == 0) {
+                pair_b_rc = launch(W_b, out_b);
             }
         }
         if (pair_a_rc == 0 && pair_b_rc == 0) {
@@ -4489,7 +4504,9 @@ int ds4_mmq_moe_vec_impl(
         int             n_experts,
         int             n_expert_used,
         cudaStream_t    stream,
-        int64_t         expert_stride = 0) {
+        int64_t         expert_stride = 0,
+        /* false: every consumer zeroes non-finite values at read. */
+        bool            sanitize_out = true) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -4657,7 +4674,7 @@ int ds4_mmq_moe_vec_impl(
         }
     }
 
-    if (ds4_mmq_keep_vec_sanitize(type)) {
+    if (sanitize_out && ds4_mmq_keep_vec_sanitize(type)) {
         ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used, stream);
     }
     return 0;
@@ -5755,6 +5772,21 @@ extern "C" int ds4_mmq_iq2_xs_moe_vec(
         n_tokens, n_experts, n_expert_used, stream);
 }
 
+/* GLM's IQ2 worklists run the pipelined 64-column tile throughout: the
+ * 128-wide tiles took the unpipelined K loop, so each layer's 1.95 GB of
+ * expert weights streamed in series with the MMAs (MoE time ~ a + b/rows
+ * with b matching the stream). More, shorter tiles reread some weights;
+ * the tile math is the same. DS4_GLM53_PIPE64=0 keeps the 128 tile. */
+template <ggml_type type>
+static MoePolicy glm_iq2_policy() {
+    if constexpr (type != GGML_TYPE_IQ2_XXS && type != GGML_TYPE_IQ2_XS) {
+        return MoePolicy::Generic;
+    }
+    const char *env = getenv("DS4_GLM53_PIPE64");
+    return (!env || strcmp(env, "0") != 0) && moe_worklist_pipe_enabled() &&
+        moe_worklist_tail64_enabled() ? MoePolicy::GlmIq2 : MoePolicy::Generic;
+}
+
 /* SSD slots keep a common padded byte stride across GLM's layer recipes. */
 template <ggml_type type>
 static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
@@ -5766,11 +5798,13 @@ static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
     }
     const int64_t blocks = (int64_t)(stride / block_bytes);
     if (tokens <= 8) {
+        // Decode: the same consumers guard non-finite values (126 scrubs per token).
+        const char *env = getenv("DS4_GLM53_VEC_SANITIZE");
         const int rc = ds4_mmq_moe_vec_impl<type>("glm-owned-vec", w, x, ids,
-            out, m, k, tokens, experts, used, stream, blocks);
+            out, m, k, tokens, experts, used, stream, blocks, env && env[0] == '1');
         if (rc == 0) { return rc; }
     }
-    MoePolicy policy = MoePolicy::Generic;
+    MoePolicy policy = glm_iq2_policy<type>();
     if constexpr (type == GGML_TYPE_Q2_K) {
         static_assert(GLM_Q2_SPARK_CC == GGML_CUDA_CC_DGX_SPARK &&
                       GLM_Q2_TYPE == GGML_TYPE_Q2_K, "GLM Q2 backend codes");
@@ -5781,10 +5815,12 @@ static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
                 m, k, tokens, experts, used, stride, MoeLayout::Raw);
         }
     }
-    /* The measured GLM raw-down schedule keeps D2S6/scatter/sanitize intact.
-     * Generic Q2 callers retain their existing rectangular launch policy. */
+    /* The measured GLM raw-down schedule keeps D2S6/scatter intact. Generic
+     * Q2 callers retain their existing rectangular launch policy. GLM's
+     * consumers (weighted SwiGLU, moe_sum) zero non-finite values at read,
+     * so the whole-buffer sanitize pass is skipped (0.5 s of an 8K prefill). */
     return ds4_mmq_moe_impl<type>("glm-owned-mmq", w, x, ids, out, m, k,
-        tokens, experts, used, stream, nullptr, 0, true, 0, 0, nullptr,
+        tokens, experts, used, stream, nullptr, 0, false, 0, 0, nullptr,
         SwiGLUOutput::F32, blocks, policy);
 }
 
@@ -5818,11 +5854,12 @@ static int glm_pair_strided(const void *gate, const void *up, const float *x,
         return -1;
     }
     // Keep the two-single-call assignment layout and rounding. Sharing only
-    // preparation makes the same-width supply contract byte exact.
+    // preparation makes the same-width supply contract byte exact. The
+    // weighted SwiGLU zeroes non-finite gate/up at read: no sanitize pass.
     return ds4_mmq_moe_pair_impl<type>("glm-raw-pair", gate, up, x, ids,
         gate_out, up_out, m, k, tokens, experts, used, stream,
-        nullptr, nullptr, 0, true, nullptr, (int64_t)tokens * used,
-        nullptr, 0, (int64_t)(stride / block));
+        nullptr, nullptr, 0, false, nullptr, (int64_t)tokens * used,
+        nullptr, 0, (int64_t)(stride / block), glm_iq2_policy<type>());
 }
 
 extern "C" int ds4_mmq_glm_pair(uint32_t type, const void *gate,
@@ -6980,6 +7017,13 @@ extern "C" int ds4_mmq_pq2_0_dense_vec(
         int M, int N, int K, cudaStream_t stream) {
     return ds4_mmq_dense_vec_impl<GGML_TYPE_PQ2_0>(
         "ds4_mmq_pq2_0_dense_vec", W, X, out, M, N, K, stream);
+}
+
+extern "C" int ds4_mmq_q4_K_dense_vec(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_vec_impl<GGML_TYPE_Q4_K>(
+        "ds4_mmq_q4_K_dense_vec", W, X, out, M, N, K, stream);
 }
 
 // Explicit instantiations. One per quant type the public API exposes.

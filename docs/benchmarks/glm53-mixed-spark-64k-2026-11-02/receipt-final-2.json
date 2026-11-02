@@ -1,0 +1,13 @@
+{
+ "name": "final-2",
+ "commit": "c3af8f97",
+ "binary_sha256": "838cdaaacfe261fb8b1dc3fc516c4d6cf82747eb1f44b08f453609af1daa42d9",
+ "args": "--ctx-start 2048 --ctx-max 65536 --step-incr 2048 --ctx-alloc 67584 --gen-tokens 128",
+ "busy_sm_mhz": [
+  2184,
+  2190
+ ],
+ "samples": 618,
+ "min_available_gib": 21.4,
+ "max_psi_full_avg10": 0.0
+}

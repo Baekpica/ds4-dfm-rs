@@ -1,0 +1,17 @@
+serving checklist: Glm53Flash (Glm53) ctx 8192 prompt 5536 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    present    works              kept 4096, top-1 17/17, exact
+  reuse     rewind    present    works              kept 4096, top-1 17/17, exact
+  reuse     continue  present    works              kept 5552, top-1 16/17 (prefill 15, decode-fed 16), near-tie 1 <= 0.829, max_abs 2.142e0; row 3: 374 +0.176 over prefill 71947 +0.566, decode-fed 154842 +0.797
+  disk      session   present    works              kept 5552, top-1 17/17, exact
+  snapshot  session   present    works              kept 5552, top-1 17/17, exact
+  banks     warm      present    works              kept 4096, tokens 16/16
+  banks     fork      present    works              kept 4096, tokens 16/16
+  banks     partial   present    works              kept 4096, tokens 16/16
+  banks     disk      present    works              kept 4096, tokens 16/16
+  banks     width     present    works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Both
+  context   limit                no check yet       declared max 1048576 qualified 2048
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)

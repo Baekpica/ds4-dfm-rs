@@ -18657,28 +18657,44 @@ __global__ static void sigmoid_topk_router_kernel(
     }
     __syncthreads();
 
-    if (tid == 0u) {
-        int32_t *ids = selected + (uint64_t)token * n_used;
-        float *out_weights = weights + (uint64_t)token * n_used;
-        float sum = 0.0f;
-        for (uint32_t slot = 0; slot < n_used; slot++) {
-            int32_t best = -1;
-            float best_score = -INFINITY;
-            for (uint32_t e = 0; e < n_expert; e++) {
-                if (score[e] > best_score) {
-                    best_score = score[e];
-                    best = (int32_t)e;
-                }
+    // Warp 0 selects. A lane scans its experts in ascending order (strict >
+    // keeps the lowest index of equal scores); the warp then keeps the higher
+    // score, or the lower index on a tie: the serial scan's choice, without
+    // its 2,304-step loop on one thread (16.7 us per decode layer).
+    if (tid >= 32u) { return; }
+    int32_t *ids = selected + (uint64_t)token * n_used;
+    float *out_weights = weights + (uint64_t)token * n_used;
+    float sum = 0.0f;
+    for (uint32_t slot = 0; slot < n_used; slot++) {
+        int32_t best = -1;
+        float best_score = -INFINITY;
+        for (uint32_t e = tid; e < n_expert; e += 32u) {
+            if (score[e] > best_score) {
+                best_score = score[e];
+                best = (int32_t)e;
             }
+        }
+        for (uint32_t offset = 16u; offset; offset >>= 1u) {
+            const float other_score = __shfl_xor_sync(0xffffffffu, best_score, offset);
+            const int32_t other = __shfl_xor_sync(0xffffffffu, best, offset);
+            if (other_score > best_score ||
+                (other_score == best_score && other >= 0 && (best < 0 || other < best))) {
+                best_score = other_score;
+                best = other;
+            }
+        }
+        if (tid == 0u) {
             ids[slot] = best;
             out_weights[slot] = prob[(uint32_t)best];
             sum += out_weights[slot];
             score[(uint32_t)best] = -INFINITY;
         }
-        sum = fmaxf(sum, 6.103515625e-5f);
-        for (uint32_t slot = 0; slot < n_used; slot++) {
-            out_weights[slot] = out_weights[slot] / sum * weight_scale;
-        }
+        __syncwarp();
+    }
+    if (tid != 0u) { return; }
+    sum = fmaxf(sum, 6.103515625e-5f);
+    for (uint32_t slot = 0; slot < n_used; slot++) {
+        out_weights[slot] = out_weights[slot] / sum * weight_scale;
     }
 }
 
