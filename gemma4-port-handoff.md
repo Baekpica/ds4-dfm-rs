@@ -363,13 +363,31 @@ The open item: prefill row-grouping moves the logits
       differs (4.125 at 237033).
     - the VQ expert tensor-core paths: DS4_GLMVQ_MMA=0 DS4_GLMVQ_MMA8=0 at
       chunk 2 gives the same 2.375 at 14067 as the defaults.
-  What is left to bisect: the per-row stage hashes (a full-row check rather
-  than four floats) for a 2-row batch against the same tokens alone, stage by
-  stage, to name the first stage that differs by more than one bf16 ULP. Then
-  decide between (a) routing Gemma-4's prefill through the row-count-invariant
-  kernels the GVQ runtime already documents as bit-identical
-  (ds4_gpu_gvq_q4_decode_many's contract), and (b) recording the spread as a
-  property of this geometry and teaching the checklist a family floor.
+  Bisect result (gemma4_row_hash, full-row FNV-1a, layer 0, token 818 at
+  position 1, 2-row batch against the same token computed alone):
+
+    q proj             9c136b29 == 9c136b29   identical
+    attn out           94840fc0 == 94840fc0   identical
+    cur after attn     80bd2527 != cfc77d3c   FIRST DIVERGENCE
+    dense down normed  f345fe48 != e76e25e2
+    router input       cb2a3235 != 2ad81edc
+    expert acc normed  f31e0919 != 8cfdb122
+    layer out          f5b9cd17 != f3d6ea31
+
+  So the first stage that moves is the o projection: attention matches, and the
+  residual after o_proj does not. o_proj is Q4_K with cols 4096 (16 blocks)
+  and q_proj is Q4_K with cols 2816 (11 blocks); both are computed by q4m at
+  two rows and by the SIMT dot at one row, and only the 16-block one lands on
+  a different sum order. That is ULP-level, not a wrong result - the layer-0
+  block output differs by 2 bf16 ULPs - which fits the measured nats-scale
+  spread only as amplification through the top-8 router.
+
+  Decision for the next unit: make the Q4_K projections row-count invariant
+  for this family first (the GVQ runtime already documents
+  ds4_gpu_gvq_q4_decode_many as bit-identical to its one-token call at the
+  same split, which is exactly the property the spread needs), then re-measure.
+  If a spread survives in the VQ expert sums, record it as a family property
+  with the measurement rather than claiming exactness.
 
 Next step, in order:
 

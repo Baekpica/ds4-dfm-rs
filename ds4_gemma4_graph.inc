@@ -312,6 +312,29 @@ static void gemma4_probe_row(const ds4_gpu_tensor *t, uint32_t il, const char *s
         (double)host[0], (double)host[1], (double)host[2], (double)host[3]);
 }
 
+/* Full-row fingerprint: a 32-bit FNV-1a over the row's bytes, so a whole row
+ * can be compared between two launch shapes without printing 2816 values. */
+static void gemma4_row_hash(const ds4_gpu_tensor *t, uint32_t il, const char *stage,
+        uint32_t row, uint32_t width) {
+    if (!getenv("DS4_GEMMA4_DEBUG") || !t || !width || width > 65536u) { return; }
+    float *host = (float *)malloc((size_t)width * sizeof(float));
+    if (!host) { return; }
+    if (!ds4_gpu_tensor_read(t, (uint64_t)row * width * sizeof(float), host,
+            (uint64_t)width * sizeof(float))) {
+        fprintf(stderr, "ds4: G4 L%u %s row %u: hash readback failed\n", il, stage, row);
+        free(host);
+        return;
+    }
+    const uint8_t *bytes = (const uint8_t *)host;
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < (size_t)width * sizeof(float); i++) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    fprintf(stderr, "ds4: G4 L%u %s row %u hash=%08x\n", il, stage, row, hash);
+    free(host);
+}
+
 /* One layer, reference order (semantics 3.6). Returns false on the first
  * failed launch, naming the step: the wrappers report the CUDA error, this
  * names which stage of the block produced it. */
@@ -354,6 +377,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     }
     gemma4_probe_at(g->q, il, "q proj");
     gemma4_probe_at(g->k, il, "k proj");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->q, il, "q proj", r, heads_width); } }
     if (il == 0 && rows > 1) {
         gemma4_probe_row(g->q, il, "q proj", rows - 1u, heads_width);
         gemma4_probe_row(g->k, il, "k proj", rows - 1u, kv_width);
@@ -382,6 +406,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
         first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring), "attention");
     gemma4_probe_at(g->attn, il, "attn out");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
     if (il == 0 && rows > 1) { gemma4_probe_row(g->attn, il, "attn out", rows - 1u, heads_width); }
     G4_STEP(ds4_gpu_gvq_linear(g->gvq, g->branch, gemma4_index(m, l->o), g->attn,
         rows, DS4_GVQ_BF16), "o projection");
@@ -391,6 +416,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         (uint32_t)((uint64_t)rows * G4_EMBED)), "attention residual");
     G4_STEP(ds4_gpu_gvq_round(g->cur, (uint64_t)rows * G4_EMBED), "attention round");
     gemma4_probe_at(g->cur, il, "cur after attn");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "cur after attn", r, G4_EMBED); } }
 
     /* Dense branch: pre-FFN norm, GELU(product), down (Q8_0 from the map),
      * then post_feedforward_layernorm_1 (list index 5). */
@@ -408,6 +434,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     }
     gemma4_probe_at(g->dense_mid, il, "dense mid");
     gemma4_probe_at(g->branch, il, "dense down normed");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->branch, il, "dense down normed", r, G4_EMBED); } }
 
     /* Router reads the post-attention residual, not the FFN input. */
     if (!ds4_gpu_g4_router_input(g->gvq, g->tmp, g->cur, gemma4_index(m, l->router_scale), rows, G4_EMBED, G4_RMS_EPS,
@@ -420,6 +447,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         return false;
     }
     gemma4_probe_at(g->tmp, il, "router input");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->tmp, il, "router input", r, G4_EMBED); } }
     gemma4_probe_at(g->router_logits, il, "router logits");
     if (il == 0 && getenv("DS4_GEMMA4_DEBUG")) {
         /* The route is discontinuous: a 1-ULP input change can swap an expert,
@@ -450,6 +478,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     }
     gemma4_probe_at(g->norm, il, "expert input");
     gemma4_probe_at(g->exp_acc, il, "expert acc normed");
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->exp_acc, il, "expert acc normed", r, G4_EMBED); } }
     if (!ds4_gpu_add_tensor(g->branch, g->branch, g->exp_acc,
             (uint32_t)((uint64_t)rows * G4_EMBED)) ||
         !ds4_gpu_g4_rms(g->gvq, g->branch, g->branch, gemma4_index(m, l->norm[3]), rows, G4_EMBED, G4_RMS_EPS) ||
@@ -495,6 +524,7 @@ static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         if (!gemma4_layer(g, m, w, il, rows, first)) { return false; }
         gemma4_probe_at(g->cur, il, "layer out");
     if (il == 0 && rows > 1) { gemma4_probe_row(g->cur, il, "layer out", rows - 1u, G4_EMBED); }
+    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "layer out", r, G4_EMBED); } }
     }
     if (!ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, w->output_norm),
             rows, G4_EMBED, G4_RMS_EPS)) {
