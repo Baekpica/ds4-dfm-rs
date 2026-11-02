@@ -33,9 +33,15 @@ __device__ __forceinline__ static float g4_gelu(float x) {
 
 /* RMSNorm: one block per row, float32 square sum, optional weight (3.2).
  * The reference computes pow(mean, -0.5) in float32; rsqrtf differs by ULPs,
- * which the golden tolerance absorbs. */
+ * which the golden tolerance absorbs.
+ *
+ * The weight is the container's BF16 tensor (input_layernorm.weight is
+ * type 30 in the artifact), so the kernel widens it per element. Reading it
+ * as float32 was the P6 nan: the first half of the row then looks plausible
+ * (a float whose high half is the bf16 weight) and the rest reads past the
+ * tensor into its neighbours. */
 template <unsigned BLOCK>
-__global__ static void g4_rms_kernel(float *out, const float *in, const float *weight,
+__global__ static void g4_rms_kernel(float *out, const float *in, const __nv_bfloat16 *weight,
         uint32_t rows, uint32_t width, float eps) {
     const uint32_t row = blockIdx.x;
     if (row >= rows) { return; }
@@ -57,16 +63,16 @@ __global__ static void g4_rms_kernel(float *out, const float *in, const float *w
     float *o = out + (uint64_t)row * width;
     for (uint32_t d = threadIdx.x; d < width; d += BLOCK) {
         float y = x[d] * inv;
-        if (weight) { y *= weight[d]; }
+        if (weight) { y *= __bfloat162float(weight[d]); }
         o[d] = g4_round(y);
     }
 }
 
 /* The router's input transform: RMS without a weight, then the per-dimension
  * router.scale (a bf16 product, so a rounding), then hidden_size**-0.5 in
- * float32 with one final rounding (3.8). */
+ * float32 with one final rounding (3.8). The scale is BF16 in the container. */
 template <unsigned BLOCK>
-__global__ static void g4_router_input_kernel(float *out, const float *in, const float *scale,
+__global__ static void g4_router_input_kernel(float *out, const float *in, const __nv_bfloat16 *scale,
         uint32_t rows, uint32_t width, float eps, float root) {
     const uint32_t row = blockIdx.x;
     if (row >= rows) { return; }
@@ -88,7 +94,7 @@ __global__ static void g4_router_input_kernel(float *out, const float *in, const
     float *o = out + (uint64_t)row * width;
     for (uint32_t d = threadIdx.x; d < width; d += BLOCK) {
         const float normed = g4_round(x[d] * inv);
-        const float scaled = g4_round(normed * scale[d]);
+        const float scaled = g4_round(normed * __bfloat162float(scale[d]));
         o[d] = g4_round(scaled * root);
     }
 }
@@ -149,9 +155,9 @@ __global__ static void g4_layer_scale_kernel(float *x, uint64_t count, float sca
 /* Router selection: one block per row with one thread per expert (128), so
  * the reductions are exact block scans. Softmax in float32 over the bf16
  * logits, top-k keeping the lower index on ties, renormalise, then
- * per_expert_scale (3.8). */
+ * per_expert_scale (3.8, a BF16 tensor in the container). */
 __global__ static void g4_router_kernel(uint32_t *selected, float *weights, const float *logits,
-        const float *per_expert, uint32_t rows, uint32_t experts, uint32_t k) {
+        const __nv_bfloat16 *per_expert, uint32_t rows, uint32_t experts, uint32_t k) {
     const uint32_t row = blockIdx.x;
     const uint32_t t = threadIdx.x;
     if (row >= rows || t >= experts) { return; }
@@ -193,7 +199,7 @@ __global__ static void g4_router_kernel(uint32_t *selected, float *weights, cons
         float *out_weight = weights + (uint64_t)row * k;
         for (uint32_t s = 0; s < k; s++) {
             out_index[s] = picked[s];
-            out_weight[s] = (p[picked[s]] / sum) * g4_round(per_expert[picked[s]]);
+            out_weight[s] = (p[picked[s]] / sum) * g4_round(__bfloat162float(per_expert[picked[s]]));
         }
     }
 }

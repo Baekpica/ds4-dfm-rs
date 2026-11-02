@@ -20,6 +20,15 @@ template<class T> static T *device(const std::vector<T>& x) {
     return p;
 }
 
+/* The container stores every norm/router weight as BF16, so the device arrays
+ * here are BF16 too and the reference sees the same rounded values: a float32
+ * array would test a shape the artifact never has (this is the P6 nan). */
+static __nv_bfloat16 *bf16_device(const std::vector<float>& x) {
+    std::vector<__nv_bfloat16> packed(x.size());
+    for (unsigned i=0;i<x.size();i++) { packed[i]=__float2bfloat16_rn(x[i]); }
+    return device(packed);
+}
+
 static float bf16_ulp(float x) {
     uint32_t bits; std::memcpy(&bits,&x,sizeof(bits));
     bits+=0x10000u;
@@ -85,9 +94,10 @@ static void rms_test() {
     const unsigned rows=3, width=G4_REF_EMBED;
     std::vector<float> in(rows*width),weight(width),expected(rows*width);
     for(unsigned i=0;i<in.size();i++) { in[i]=value(i)*1.7f; }
-    for(unsigned d=0;d<width;d++) { weight[d]=1.0f+0.25f*std::sin(d*0.017f); }
+    for(unsigned d=0;d<width;d++) { weight[d]=g4_ref_bf16(1.0f+0.25f*std::sin(d*0.017f)); }
     g4_ref_rms(expected.data(),in.data(),weight.data(),rows,width,1e-6f);
-    float *di=device(in),*dw=device(weight),*out;
+    float *di=device(in),*out;
+    __nv_bfloat16 *dw=bf16_device(weight);
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     g4_rms_kernel<256><<<rows,256>>>(out,di,dw,rows,width,1e-6f); CUDA_OK(cudaGetLastError());
     check_ulps("rms_weight",expected,out,1.0f);
@@ -109,9 +119,10 @@ static void router_input_test() {
     const float root=1.0f/std::sqrt((float)width);
     std::vector<float> in(rows*width),scale(width),expected(rows*width);
     for(unsigned i=0;i<in.size();i++) { in[i]=value(i)*2.3f; }
-    for(unsigned d=0;d<width;d++) { scale[d]=3.0f+0.02f*value(d); }
+    for(unsigned d=0;d<width;d++) { scale[d]=g4_ref_bf16(3.0f+0.02f*value(d)); }
     g4_ref_router_input(expected.data(),in.data(),scale.data(),rows,width,1e-6f,root);
-    float *di=device(in),*ds=device(scale),*out;
+    float *di=device(in),*out;
+    __nv_bfloat16 *ds=bf16_device(scale);
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     g4_router_input_kernel<256><<<rows,256>>>(out,di,ds,rows,width,1e-6f,root); CUDA_OK(cudaGetLastError());
     check_ulps("router_input",expected,out,2.0f);
@@ -218,7 +229,8 @@ static void router_test() {
         g4_ref_router(want_index.data()+r*k,want_weight.data()+r*k,logits.data()+r*experts,
             per_expert.data(),experts,k);
     }
-    float *dl=device(logits),*dp=device(per_expert);
+    float *dl=device(logits);
+    __nv_bfloat16 *dp=bf16_device(per_expert);
     uint32_t *di; float *dw;
     CUDA_OK(cudaMalloc(&di,rows*k*sizeof(uint32_t)));
     CUDA_OK(cudaMalloc(&dw,rows*k*sizeof(float)));

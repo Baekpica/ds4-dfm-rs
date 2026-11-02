@@ -57,15 +57,16 @@ extern "C" int ds4_gpu_g4_kv_store(ds4_gpu_tensor *dst, const ds4_gpu_tensor *sr
 /* -------------------------------------------------------------- primitives */
 
 /* `weight` is a plan index (DS4_GVQ_NO_LINK for the weightless forms); the
- * pointer comes from the GVQ source table, still owned by the plan. */
-static const float *g4_weight(const ds4_gvq_ctx *ctx, uint32_t index, uint64_t count) {
+ * pointer comes from the GVQ source table, still owned by the plan and stored
+ * BF16, so every consumer widens per element. */
+static const __nv_bfloat16 *g4_weight(const ds4_gvq_ctx *ctx, uint32_t index, uint64_t count) {
     if (!ctx || index == DS4_GVQ_NO_LINK) { return nullptr; }
-    return (const float *)gvq_weight(ctx, index, GVQ_TYPE_BF16, count);
+    return (const __nv_bfloat16 *)gvq_weight(ctx, index, GVQ_TYPE_BF16, count);
 }
 
 extern "C" int ds4_gpu_g4_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
         uint32_t weight, uint32_t rows, uint32_t width, float eps) {
-    const float *w = g4_weight(ctx, weight, width);
+    const __nv_bfloat16 *w = g4_weight(ctx, weight, width);
     if (!out || !in || !rows || !width || (weight != DS4_GVQ_NO_LINK && !w)) { return 0; }
     if (out->bytes < (uint64_t)rows * width * sizeof(float) ||
         in->bytes < (uint64_t)rows * width * sizeof(float)) { return 0; }
@@ -77,7 +78,7 @@ extern "C" int ds4_gpu_g4_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_g
 extern "C" int ds4_gpu_g4_router_input(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *in, uint32_t scale, uint32_t rows, uint32_t width, float eps,
         float root) {
-    const float *s = g4_weight(ctx, scale, width);
+    const __nv_bfloat16 *s = g4_weight(ctx, scale, width);
     if (!out || !in || !s || !rows || !width) { return 0; }
     if (out->bytes < (uint64_t)rows * width * sizeof(float) ||
         in->bytes < (uint64_t)rows * width * sizeof(float)) { return 0; }
@@ -102,7 +103,7 @@ extern "C" int ds4_gpu_g4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *position
 extern "C" int ds4_gpu_g4_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
         ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits, uint32_t per_expert,
         uint32_t rows) {
-    const float *scale = g4_weight(ctx, per_expert, G4_EXPERTS);
+    const __nv_bfloat16 *scale = g4_weight(ctx, per_expert, G4_EXPERTS);
     if (!selected || !weights || !logits || !scale || !rows) { return 0; }
     if (selected->bytes < (uint64_t)rows * G4_USED * sizeof(uint32_t) ||
         weights->bytes < (uint64_t)rows * G4_USED * sizeof(float) ||
