@@ -13,20 +13,26 @@
 //! - [`layout`] classifies those names into one role table per layer and
 //!   checks each shape against the configuration;
 //! - [`release`] checks every file's size and container header, and can
-//!   re-read every digest on a gate path.
+//!   re-read every digest on a gate path;
+//! - [`forward`] is the CPU reference executor: one token at a time, f32,
+//!   with the weights streamed through [`weights`] rather than decoded;
+//! - [`tokenizer`] is the checkpoint's own BPE plus the Gemma-4 chat template
+//!   and an incremental decoder.
 //!
-//! What this module does not do yet, named so it is not claimed: the forward
-//! pass (sliding and full attention, the RoPE split, the routed experts), the
-//! logits, the tokenizer and the token-grammar chat protocol, the vision
-//! sidecar and the OpenAI serving surface. Those are later units; this one
-//! ends when the folder opens the reference artifact and refuses every
-//! disagreement it can see without compute.
+//! What this module does not do yet, named so it is not claimed: a batched
+//! prefill, a device path (the native serving lanes still refuse this family),
+//! the vision sidecar, tool rendering and a logits-level reference gate. The
+//! OpenAI-compatible host is the separate `gemma4-server-rs` binary; it is not
+//! the native engine.
 
 mod config;
 mod decode;
+mod forward;
 mod layout;
 mod model;
 mod release;
+mod tokenizer;
+mod weights;
 
 use std::fmt;
 
@@ -50,6 +56,9 @@ impl std::error::Error for Error {}
 
 pub use config::{Config, LayerType};
 pub use decode::{decode, matvec, Tensor};
+pub use forward::{Model, Session};
 pub use layout::{Layer, Layout, Role};
 pub use model::{identify, is_release, Family, NAME_PREFIX};
 pub use release::{Codebook, Entry, Payload, Release, Totals};
+pub use tokenizer::{Decoder, Tokenizer};
+pub use weights::Matrix;

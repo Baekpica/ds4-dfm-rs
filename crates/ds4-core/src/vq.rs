@@ -670,7 +670,7 @@ impl<'a> VqMatrix<'a> {
     /// the terms.
     pub fn dot_row(&self, row: usize, x: &[f32]) -> f32 {
         let mut word = vec![0f32; usize::from(self.dim)];
-        self.dot_row_with(row, x, &mut word)
+        self.dot_row_scratch(row, x, &mut word)
     }
 
     /// Add every row's [`Self::dot_row`] into `acc` at `row0`, the accumulator
@@ -678,20 +678,66 @@ impl<'a> VqMatrix<'a> {
     pub fn add_dot_into(&self, x: &[f32], acc: &mut [f32], row0: usize) {
         let mut word = vec![0f32; usize::from(self.dim)];
         for r in 0..self.rows as usize {
-            acc[row0 + r] += self.dot_row_with(r, x, &mut word);
+            acc[row0 + r] += self.dot_row_scratch(r, x, &mut word);
         }
     }
 
-    /// `dot_row` with the caller's codeword buffer, so a matrix loop allocates
-    /// once.
-    fn dot_row_with(&self, row: usize, x: &[f32], word: &mut [f32]) -> f32 {
-        let dim = usize::from(self.dim);
+    /// [`Self::dot_row`] with the caller's codeword buffer, so a matrix loop
+    /// allocates once. A forward that gathers one row of a fused expert stack
+    /// per selected expert calls this directly.
+    pub fn dot_row_scratch(&self, row: usize, x: &[f32], word: &mut [f32]) -> f32 {        let dim = usize::from(self.dim);
         let nidx_row = self.nidx_row();
         let mut s = 0.0f32;
         for i in 0..nidx_row {
             self.codebook_word_into(self.index(row, i) as usize, word);
             for d in 0..dim {
                 s += word[d] * x[i * dim + d];
+            }
+        }
+        s * self.gain(row)
+    }
+
+    /// Add one row's dequantised values, gain included, into `out`, whose
+    /// length is the payload's `cols`. This is the single-row form of
+    /// [`Self::add_into`] a token-embedding lookup needs: the table is
+    /// 262144 rows and only one is read.
+    pub fn add_row_values(&self, row: usize, out: &mut [f32], word: &mut [f32]) {        let dim = usize::from(self.dim);
+        let nidx_row = self.nidx_row();
+        debug_assert_eq!(out.len(), self.cols as usize);
+        let gain = self.gain(row);
+        for i in 0..nidx_row {
+            self.codebook_word_into(self.index(row, i) as usize, word);
+            let o = &mut out[i * dim..][..dim];
+            for d in 0..dim {
+                o[d] += word[d] * gain;
+            }
+        }
+    }
+
+    /// The whole codebook as f32, in codeword order. A row walk over a large
+    /// matrix converts each codeword once instead of once per use.
+    pub fn codebook_f32(&self) -> Vec<f32> {
+        let dim = usize::from(self.dim);
+        let mut out = vec![0f32; self.nc as usize * dim];
+        for (idx, chunk) in out.chunks_exact_mut(dim).enumerate() {
+            self.codebook_word_into(idx, chunk);
+        }
+        out
+    }
+
+    /// [`Self::dot_row`] with the codebook already decoded to f32 by
+    /// [`Self::codebook_f32`]: the same arithmetic, without a per-index
+    /// f16-to-f32 conversion or a copy into a scratch word.
+    pub fn dot_row_codebook(&self, row: usize, x: &[f32], codebook: &[f32]) -> f32 {
+        let dim = usize::from(self.dim);
+        let nidx_row = self.nidx_row();
+        let mut s = 0.0f32;
+        for i in 0..nidx_row {
+            let idx = self.index(row, i) as usize;
+            let word = &codebook[idx * dim..idx * dim + dim];
+            let xw = &x[i * dim..i * dim + dim];
+            for d in 0..dim {
+                s += word[d] * xw[d];
             }
         }
         s * self.gain(row)

@@ -103,25 +103,97 @@ fn decode_sidecar(path: &Path, file: &[u8], entry: &Entry) -> Result<Tensor, Err
     Ok(Tensor { rows, cols, data })
 }
 
+/// The checked geometry of one `RQVQ` file: what a decode or a streaming dot
+/// needs to reach a payload, byte for byte.
+///
+/// Shared by the whole-tensor decode and by [`super::weights::Matrix`], so the
+/// header rules live in one place and a caller that never materialises the
+/// tensor cannot read a different layout.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Header {
+    pub dim: u16,
+    pub nc: u32,
+    pub rows: usize,
+    pub cols: usize,
+    pub stages: usize,
+    pub groups: usize,
+    pub cb_width: usize,
+    /// Bytes in one payload; equal for every payload of a container, because
+    /// the group row count is `rows / groups` for all of them.
+    pub per: usize,
+}
+
+impl Header {
+    pub(crate) fn count(&self) -> usize {
+        self.stages * self.groups
+    }
+
+    pub(crate) fn group_rows(&self) -> usize {
+        self.rows / self.groups
+    }
+}
+
 /// A byte-checked `RQVQ` container: the geometry a decode needs, with the file
 /// and the payload size each stage occupies.
 struct Container<'a> {
     file: &'a [u8],
-    dim: u16,
-    nc: u32,
-    rows: usize,
-    cols: usize,
-    stages: usize,
-    groups: usize,
-    cb_width: usize,
-    /// Bytes in one payload; equal for every payload of a container, because
-    /// the group row count is `rows / groups` for all of them.
-    per: usize,
+    h: Header,
 }
 
 impl<'a> Container<'a> {
     /// Read the 32-byte header and check it against the release's own record.
     fn open(path: &Path, file: &'a [u8], entry: &Entry) -> Result<Container<'a>, Error> {
+        Ok(Container {
+            file,
+            h: header(path, file, entry)?,
+        })
+    }
+
+    fn count(&self) -> usize {
+        self.h.count()
+    }
+
+    /// Payload `p`, in file order: stage-major, group-minor.
+    fn payload(&self, p: usize) -> &'a [u8] {
+        let at = 32 + p * self.h.per;
+        &self.file[at..at + self.h.per]
+    }
+
+    /// Checks the payload against the container and returns it opened.
+    fn matrix(&self, path: &Path, p: usize) -> Result<VqMatrix<'a>, Error> {
+        matrix_of(path, &self.h, self.payload(p), p)
+    }
+}
+
+/// Open payload `p` of `h`, checking that it agrees with the header.
+pub(crate) fn matrix_of<'a>(
+    path: &Path,
+    h: &Header,
+    payload: &'a [u8],
+    p: usize,
+) -> Result<VqMatrix<'a>, Error> {
+    let what = path.display();
+    let matrix = VqMatrix::from_payload(
+        payload,
+        h.cb_width,
+        h.dim,
+        h.group_rows() as u32,
+        h.cols as u32,
+    )
+    .map_err(|e| Error::new(format!("{what}: payload {p}: {e}")))?;
+    if matrix.nc != h.nc {
+        return Err(Error::new(format!(
+            "{what}: payload {p} states nc {}, header {}",
+            matrix.nc, h.nc
+        )));
+    }
+    Ok(matrix)
+}
+
+/// Read the 32-byte `RQVQ` header of `file` and check every field against the
+/// release's own record.
+pub(crate) fn header(path: &Path, file: &[u8], entry: &Entry) -> Result<Header, Error> {
+    {
         let what = path.display();
         if file.len() < 36 || &file[0..4] != RQVQ {
             return Err(Error::new(format!("{what}: not an RQVQ container")));
@@ -215,8 +287,7 @@ impl<'a> Container<'a> {
                 "{what}: {payload} payload bytes do not divide into {payloads} payloads"
             )));
         }
-        Ok(Container {
-            file,
+        Ok(Header {
             dim: dim as u16,
             nc,
             rows,
@@ -227,49 +298,19 @@ impl<'a> Container<'a> {
             per: payload / payloads,
         })
     }
-
-    fn count(&self) -> usize {
-        self.stages * self.groups
-    }
-
-    /// Payload `p`, in file order: stage-major, group-minor.
-    fn payload(&self, p: usize) -> &'a [u8] {
-        let at = 32 + p * self.per;
-        &self.file[at..at + self.per]
-    }
-
-    /// Checks the payload against the container and returns it opened.
-    fn matrix(&self, path: &Path, p: usize, group_rows: usize) -> Result<VqMatrix<'a>, Error> {
-        let what = path.display();
-        let matrix = VqMatrix::from_payload(
-            self.payload(p),
-            self.cb_width,
-            self.dim,
-            group_rows as u32,
-            self.cols as u32,
-        )
-        .map_err(|e| Error::new(format!("{what}: payload {p}: {e}")))?;
-        if matrix.nc != self.nc {
-            return Err(Error::new(format!(
-                "{what}: payload {p} states nc {}, header {}",
-                matrix.nc, self.nc
-            )));
-        }
-        Ok(matrix)
-    }
 }
 
 fn decode_container(path: &Path, file: &[u8], entry: &Entry) -> Result<Tensor, Error> {
     let container = Container::open(path, file, entry)?;
-    let group_rows = container.rows / container.groups;
-    let mut data = vec![0f32; container.rows * container.cols];
+    let group_rows = container.h.group_rows();
+    let mut data = vec![0f32; container.h.rows * container.h.cols];
     for p in 0..container.count() {
-        let matrix = container.matrix(path, p, group_rows)?;
-        matrix.add_into(&mut data, (p % container.groups) * group_rows);
+        let matrix = container.matrix(path, p)?;
+        matrix.add_into(&mut data, (p % container.h.groups) * group_rows);
     }
     Ok(Tensor {
-        rows: container.rows,
-        cols: container.cols,
+        rows: container.h.rows,
+        cols: container.h.cols,
         data,
     })
 }
@@ -302,19 +343,19 @@ pub fn matvec(dir: &Path, entry: &Entry, x: &[f32]) -> Result<Vec<f32>, Error> {
         return Ok(out);
     }
     let container = Container::open(&path, &file, entry)?;
-    if x.len() != container.cols {
+    if x.len() != container.h.cols {
         return Err(Error::new(format!(
             "{}: x has {} values, the tensor has {} columns",
             path.display(),
             x.len(),
-            container.cols
+            container.h.cols
         )));
     }
-    let group_rows = container.rows / container.groups;
-    let mut out = vec![0f32; container.rows];
+    let group_rows = container.h.group_rows();
+    let mut out = vec![0f32; container.h.rows];
     for p in 0..container.count() {
-        let matrix = container.matrix(&path, p, group_rows)?;
-        matrix.add_dot_into(x, &mut out, (p % container.groups) * group_rows);
+        let matrix = container.matrix(&path, p)?;
+        matrix.add_dot_into(x, &mut out, (p % container.h.groups) * group_rows);
     }
     Ok(out)
 }
