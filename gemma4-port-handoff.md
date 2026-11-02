@@ -2,10 +2,10 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 3530614f (all work is on top of 8c2068b5, unpushed)
+last_updated_commit: 04a2679b (all work is on top of 8c2068b5, unpushed)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T00:10:00+01:00
+handoff_written_at: 2026-11-03T00:45:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -25,10 +25,11 @@ the same contract every other family has:
                                  CPU execution lane for a VQ payload
   ds4 --serving-check            runs every declared lane on the artifact
 
-State at this handoff: it does not run yet. No session, no KV and no
-graph exist, so no request can reach the model. What exists is the artifact
-contract, the tokenizer and chat template (reference-checked), the native
-weight bind, and the reference semantics the engine must reproduce. The
+State at this handoff: the graph runs but produces nan. P6 is in progress:
+the serial session exists, the engine binds the plan, allocates the graph
+(KV 0.62 GiB at ctx 2048) and executes all 30 layers, and the logits come
+back non-finite. The embedding is finite and sane, so the break is inside
+layer 0. Section 4 records the exact evidence and the next probe. The
 commits below are unpushed.
 
   25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
@@ -43,14 +44,22 @@ commits below are unpushed.
   081bcbba  the device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the
             30-layer graph (ds4_gemma4_graph.inc); both units compile
   3530614f  handoff: engine state and the remaining sequence
-  (next)    docs/gemma4-port-plan.md: the phase plan P6..P10
+  15a6d9d0  docs: the phase plan P6..P10
+  1daaab87  fix(cuda): build for sm_89 again, guarding the Blackwell-only
+            instructions (e2m1x2, try_wait.parity, bulk prefetch)
+  04a2679b  feat(gemma4-vq): the serial session reaches the graph
+            (P6, gate open: graph line PASS, logits nan)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
-nvcc target emits sm_121-only instructions, so the tree failed to compile
-at all. .ds4-cuda-config.mk now records CUDA_ARCH := sm_89; use
-`make cuda CUDA_ARCH=sm_89` (or make cuda-generic).
+nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
+CUDA_ARCH := sm_89; use `make cuda CUDA_ARCH=sm_89`. Two things this host
+needs and did not have before 1daaab87: the sm_89 build itself (three
+Blackwell-only instruction families were unguarded in the GLM/Beam/MiniMax
+paths) and, for any run, DS4_LOCK_FILE — the default /tmp/ds4.lock is held
+by a live EmbeddingGemma ds4-server (pid 3321996, port 8098), which must
+not be disturbed.
 
-What the engine already does, none of it reachable from a session yet:
+What the engine does, reachable now through the serial session (P6):
 embedding gather scaled by bf16 53.0, the 30 layers in reference order with
 the seven norms, q/k/v (v copies k on the five full layers), per-head q/k
 norms, the weightless v norm, rope, KV store into a ring of window+chunk
@@ -258,6 +267,69 @@ W2, native skeleton and binding:
   artifact, and it asserts that a full layer's value projection is its own
   key projection (attention_k_eq_v).
 
+4b. P6, the serial session: what ran, what it proved, what is next
+
+What is in the tree now (04a2679b):
+
+  ds4.c               the family memory quote, prefill cap, session fit, the
+                      engine-load bind, context-memory arms, session create /
+                      lazy alloc / free / invalidate / rewind, sync and eval
+                      dispatch, the hidden-width arm, prewarm skip, eager
+                      residency, payload refusals.
+  ds4_gemma4_session.inc   sync (prefix resume, chunked prefill, head on the
+                      last chunk) and decode (one row, head every step),
+                      logits readback with a non-finite count.
+  ds4_gemma4_graph.inc     named step failures and the DS4_GEMMA4_DEBUG probe.
+  ds4_gemma4_plan.h        gemma4_activation_bytes, shared with the graph's
+                      own size, so graph and estimate cannot drift.
+  ds4_gemma4_bind.inc      gemma4_prefill_cap, gemma4_session_memory.
+
+Evidence, in the plan's gate order:
+
+1. graph line with KV bytes — PASS.
+   ds4: Gemma-4 graph ctx=2048 chunk=2048 KV=0.62 GiB activation=132.0 MiB
+2. first-token determinism — not reached.
+3. numeric bring-up — OPEN, and this is the next unit.
+   DS4_GEMMA4_DEBUG=1 prints after each stage managed by gemma4_forward:
+     ds4: G4 embed: 0.00139618 -0.0010376 0.0115967 0.00643921
+     ds4: G4 layer 0: nan nan nan nan
+     ... every layer and the final norm nan ...
+     ds4: Gemma-4 logits hold 262144 non-finite values of 262144
+   So: the embedding gather and its bf16 53.0 scale are right, the 30-layer
+   loop completes (every named stage reports success, and
+   gemma4_session_fail is only reached after forward returns true and the
+   readback refuses), and the nan is produced inside layer 0.
+4. ds4 --serving-check — not reached.
+
+Next step, in order:
+
+  a. Add probes inside gemma4_layer at six points and rerun with
+     DS4_GEMMA4_DEBUG=1: after the input norm, after q/k/v (+ the k->v copy
+     on a full layer), after attention, after o_proj + residual, after the
+     dense FFN, after the router, and inside the expert block (before the
+     gather, after each of gate/up/down for one expert, after the scatter).
+     The first nan names the stage.
+  b. The three stages with no reference check at real shapes are the
+     suspects, in this order: ds4_gpu_matmul_q8_0_tensor's (in_dim=2112,
+     out_dim=2816) argument pair on the dense down; the expert
+     gather/scatter in ds4_gpu_g4_moe_run (host grouping, bf16 accumulate,
+     and the `weights[pair]` indexing); and ds4_gpu_g4_router_input's
+     double-rounding order.
+  c. Cross-check each suspect against tests/test_gemma4_primitives.cu — the
+     rms, router input and router kernels are already gated there at their
+     own shapes, so a mismatch at 2048 rows and 2816 columns points at the
+     tensor-call wrapper, not the kernel.
+  d. Then the determinism gate (same ids twice) and ds4 --serving-check.
+
+Measured facts from these runs:
+
+  - The engine binds the plan: 12177 tensors, 6.71 GiB mapped, residency
+    eager; the graph allocates lazily at the session's ctx.
+  - The run needs DS4_LOCK_FILE because the default lock is held by the
+    EmbeddingGemma server; 11.3 GiB of the 12 GiB card was free, and the
+    graph plus the mapped weights fit.
+  - Wall time to the failure: about 45 s, most of it the weight registration.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -333,3 +405,10 @@ Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
+    # the P6 state, from the working tree
+    grep -n "4b. P6" gemma4-port-handoff.md
+    # the gate, one command
+    make cuda CUDA_ARCH=sm_89 && \
+      DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock DS4_GEMMA4_DEBUG=1 \
+      ./ds4 -m /data/vq-artifacts/gguf-family-it --cuda -c 2048 \
+      --token-ids 2,818,5279 --predict 2 --temp 0

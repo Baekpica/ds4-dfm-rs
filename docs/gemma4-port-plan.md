@@ -41,7 +41,14 @@ no extra memory).
 - P5 device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the 30-layer graph
   (ds4_gemma4_graph.inc); both units compile, no session reaches them yet.
 
-## P6: the serial session (next)
+## P6: the serial session (in progress, gate open)
+
+State at 2026-11-03: the engine binds the plan, the session allocates the
+graph (KV 0.62 GiB at ctx 2048) and runs all 30 layers, but layer 0 already
+emits nan and every logit is non-finite. The stage probe
+(DS4_GEMMA4_DEBUG=1) and the ordered suspects are section 4b of
+gemma4-port-handoff.md. Gate items 1 (graph line) is PASS; 2, 3 and 4 are
+open.
 
 Goal: one prompt in, one token out, deterministically, through the C engine.
 
