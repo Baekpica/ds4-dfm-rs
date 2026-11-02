@@ -34,15 +34,21 @@ commits below are unpushed.
   c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
   015287d7  handoff: the logits-gate risk sized from the checkpoint itself
   7aa7077a  handoff: state that nothing runs yet, engine corrected to CUDA
-  (next)    docs: the pinned reference semantics, every kernel cites it
+  ba2ef0bb  docs: the pinned reference semantics, every kernel cites it
+  1a2dbc17  primitives: norm, router input/selection, rope, gelu, softcap,
+            embedding scale, layer scalar - all gated
+  272d9118  attention: both geometries, sliding window, gated
+            (make test-gemma4-primitives; 0 failures)
 
-Next unit: the engine's first kernels. Read
-docs/gemma4-reference-semantics.md, then write ds4_gemma4_gpu.cuh and the
-cuda/gemma4_*.cuh set for what the shared runtime lacks (two-geometry
-attention with per-layer head_dim and 1.0 scale, the two rotary layouts,
-softcap 30, the 128-expert router with its two scale vectors, GELU, layer
-scaling), following ds4_ling31_gpu.cuh as the closest sibling, with golden
-vectors for each primitive before the 30-layer walk.
+Next unit, in this order:
+  1. the expert path: GVQ per-expert gate/up/down through the shared
+     ds4_gvq_record plan with the gelu product and the fp32 top-8 weights,
+     gated against a host expert reference on real artifact rows;
+  2. ds4_gemma4_gpu.cuh: the per-layer plan (seven norms, layer_scalar,
+     q/k/v/o, dense FFN, router, 128 experts) over the bound pointers;
+  3. ds4_gemma4_graph.inc: the 30-layer walk, embedding scale 53.0, final
+     norm, tied head, softcap 30; first-N-id determinism, then the logits
+     gate (section 6, risk 1).
 
 2. The standard this port follows (read, not assumed)
 
