@@ -90,6 +90,7 @@ struct h3d_context {
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
     int attention_mma;    /* 1 = tensor-core attention (default), 0 = byte-exact scalar */
+    int attention_pipe;   /* 1 = the eight-warp pipelined block instead of the four-warp one */
     struct h3d_vae_options vae;
 };
 
@@ -110,12 +111,26 @@ static int h3d_attention_scalar_from_env(void) {
     return 0;
 }
 
+/* Whether the four-warp block was asked for by name. The eight-warp pipelined
+ * block is the tensor-core default as of the unit that measured it
+ * bit-identical and 23.7% faster at the delivery shape, so `H3_DIT_ATTENTION`
+ * takes `four` to select the older shape; as with its neighbours the value is
+ * matched on its first letter. */
+static int h3d_attention_four_from_env(void) {
+    const char *mode = getenv("H3_DIT_ATTENTION");
+    return mode && (mode[0] == 'f' || mode[0] == 'F');
+}
+
 /* Select the attention per run. `scalar` nonzero asks for the byte-exact
  * kernel, which is the only path that carries the reference guarantee; zero is
- * the tensor-core default. Overrides the environment. */
+ * the tensor-core default, which is the pipelined block unless the environment
+ * named the four-warp one. A host chooses tensor-core or scalar; which of the
+ * two tensor-core blocks runs is the environment's, so `H3_DIT_ATTENTION=four`
+ * still reaches a host that sets the arm itself. */
 void h3d_set_attention(h3d_context *context, int scalar) {
     if (context) {
         context->attention_mma = !scalar;
+        context->attention_pipe = !scalar && !h3d_attention_four_from_env();
     }
 }
 
@@ -289,6 +304,7 @@ h3d_context *h3d_create(char *error, size_t error_size) {
      * choose with `h3d_set_attention`; the environment is read once here as the
      * default for callers that never call it, such as the reproducer. */
     context->attention_mma = !h3d_attention_scalar_from_env();
+    context->attention_pipe = context->attention_mma && !h3d_attention_four_from_env();
     context->vae = h3d_vae_options_from_env();
     h3d_lt_forget();
     return context;
@@ -3541,14 +3557,11 @@ __global__ static void h3d_attention_tiled_kernel(
 }
 
 /* ---------------------------------------------------------------------------
- * Tensor-core attention — a benchmark arm, OFF BY DEFAULT.
+ * Tensor-core attention — the default; the four-warp block below is its named
+ * alternative (`H3_DIT_ATTENTION=four`), and every other kernel in this family
+ * is measured against these two.
  *
- * `H3_DIT_ATTENTION_MMA` selects this twin of `h3d_attention_tiled_kernel`. It
- * exists to measure what the scalar path cannot reach: the operator asked for
- * it as a switch that can be turned on and off (2026-10-27), so it is a
- * measurement arm and never the path a gate reads.
- *
- * It is NOT bit-identical to the reference, by construction, and the three
+ * It is NOT bit-identical to the scalar path, by construction, and the three
  * deviations are named rather than hidden:
  *   - the scores accumulate through `mma` dot products, so the reduction tree
  *     replaces the reference's four-element lane partial and five-step shuffle;
@@ -3559,6 +3572,14 @@ __global__ static void h3d_attention_tiled_kernel(
  *     (`cuda/ds41_attn_mma.cuh:135-139`).
  * Scores, the running maximum/sum and the output accumulator stay FP32, so the
  * arithmetic is the reference's in kind, not in order.
+ *
+ * Both blocks run that arithmetic step for step, so they are bit-identical to
+ * each other and the choice between them is a timing choice:
+ *   - `h3d_attention_mma_pipe_kernel` (below): 8 warps, 128 query rows per CTA,
+ *     a 3-stage `cp.async` ring, 208 registers, one CTA per SM, 23.7% faster at
+ *     the delivery shape (`attention-pipeline-2026-11-02.md`);
+ *   - `h3d_attention_mma_kernel` (here): 4 warps, 64 rows per CTA, synchronous
+ *     staging, 171 registers, three CTAs per SM.
  *
  * Shape: one CTA covers H3D_MMA_ROWS query rows of one head and a warp owns
  * H3D_MMA_M of them with all H3D_MMA_HD key dimensions, so a row's softmax
@@ -4337,6 +4358,311 @@ __global__ static void h3d_attention_mma_kernel(
     }
 }
 
+/* --------------------------------------------------------------------------
+ * The pipelined block.
+ *
+ * The four-warp block above stages one 64-key tile with a load-then-barrier,
+ * so a warp waits out its CTA's global reads, and because a CTA covers only 64
+ * query rows the head's whole K and V is re-read once per 64 rows -- 677 GB
+ * per call at the delivery shape. Eight warps double the rows a CTA covers and
+ * halve that traffic, and a three-deep `cp.async` ring keeps the next tiles'
+ * copies in flight under this tile's math, so staging stops being a stall.
+ *
+ * The ring is dynamic shared memory (3 x 2 x 64 x 128 bf16 = 98,304 B), which
+ * is past the 48 KB static limit and has to be opted into; one CTA of 256
+ * threads then runs. What that buys besides the traffic is registers: 256
+ * threads leave room for 255 each, where the four-warp block's third CTA
+ * capped the kernel at 169 and left the compiler nothing to pipeline
+ * `ldmatrix` with.
+ *
+ * The arithmetic is the four-warp block's, step for step: the k16 mma order,
+ * the 64-key tile, the one maximum per tile and the BF16 P all stay, so the
+ * output is bit-identical and the shape is the only thing that moved.
+ * ------------------------------------------------------------------------ */
+enum {
+    H3D_PIPE_WARPS = 8,
+    H3D_PIPE_ROWS = H3D_MMA_M * H3D_PIPE_WARPS,   /* 128 query rows per CTA */
+    H3D_PIPE_STAGES = 3,                          /* one tile read, two in flight */
+    H3D_PIPE_PLANE = H3D_MMA_KEYS * H3D_MMA_ROW,  /* one stage's K or V, elements */
+    H3D_PIPE_SMEM = (int)(H3D_PIPE_STAGES) * 2 * H3D_PIPE_PLANE *
+                    (int)sizeof(__nv_bfloat16)
+};
+
+/* One stage's K (`matrix` 0) or V (`matrix` 1) plane. */
+__device__ __forceinline__ static __nv_bfloat16 *h3d_pipe_plane(
+        __nv_bfloat16 *ring, uint32_t stage, uint32_t matrix) {
+    return ring + ((size_t)stage * 2u + matrix) * (size_t)H3D_PIPE_PLANE;
+}
+
+/* A 16-byte global-to-shared copy that does not block the issuing warp;
+ * `bytes` under 16 zero-fills the rest, which stages a key row past the end of
+ * the sequence without a branch. */
+__device__ __forceinline__ static void h3d_pipe_copy(void *destination,
+                                                     const void *source,
+                                                     uint32_t bytes) {
+    const uint32_t at = (uint32_t)__cvta_generic_to_shared(destination);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(at),
+                 "l"(source), "r"(bytes));
+}
+
+__device__ __forceinline__ static void h3d_pipe_commit(void) {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+
+/* Waits until at most `pending` groups are outstanding. Each tile's staging is
+ * one group, so waiting for stages-1 leaves the tile being read complete. */
+template <uint32_t pending>
+__device__ __forceinline__ static void h3d_pipe_wait(void) {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(pending));
+}
+
+/* Stage one 64-key tile at `base` into `stage`, swizzled as the four-warp
+ * block swizzles its tile. Commit is the caller's, so a tile's K and V land as
+ * one group. */
+__device__ __forceinline__ static void h3d_pipe_stage(
+        __nv_bfloat16 *ring, uint32_t stage, const __nv_bfloat16 *key,
+        const __nv_bfloat16 *value, uint32_t head, uint32_t sequence,
+        uint32_t base) {
+    __nv_bfloat16 *const tile_key = h3d_pipe_plane(ring, stage, 0u);
+    __nv_bfloat16 *const tile_value = h3d_pipe_plane(ring, stage, 1u);
+    for (uint32_t index = threadIdx.x;
+         index < H3D_MMA_KEYS * H3D_MMA_CHUNKS;
+         index += H3D_PIPE_WARPS * 32u) {
+        const uint32_t row = index / H3D_MMA_CHUNKS;
+        const uint32_t chunk = index % H3D_MMA_CHUNKS;
+        const uint32_t source = base + row;
+        const uint32_t live = source < sequence ? 16u : 0u;
+        const size_t at = ((size_t)head * sequence +
+                           (live ? source : sequence - 1u)) *
+                                  H3D_MMA_HD +
+                          chunk * 8u;
+        const uint32_t slot = h3d_mma_slot(row, chunk);
+        h3d_pipe_copy(&tile_key[row * H3D_MMA_ROW + slot], key + at, live);
+        h3d_pipe_copy(&tile_value[row * H3D_MMA_ROW + slot], value + at, live);
+    }
+}
+
+__global__ __launch_bounds__(H3D_PIPE_WARPS * 32u, 1)
+static void h3d_attention_mma_pipe_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *query,
+        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        uint32_t sequence, uint32_t heads, float scale) {
+    extern __shared__ __align__(16) __nv_bfloat16 ring[];
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
+    const uint32_t column = (lane & 3u) * 2u;     /* first of its two columns */
+    const uint32_t matrix = lane >> 3u;           /* ldmatrix: which 8x8 quadrant */
+    const uint32_t head = blockIdx.y;
+    const uint32_t first_row = blockIdx.x * H3D_PIPE_ROWS + warp * H3D_MMA_M;
+    const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
+    const int live0 = row0 < sequence, live1 = row1 < sequence;
+    const uint32_t read0 = live0 ? row0 : sequence - 1u;
+    const uint32_t read1 = live1 ? row1 : sequence - 1u;
+    const __nv_bfloat16 *query0 =
+            query + ((size_t)head * sequence + read0) * H3D_MMA_HD;
+    const __nv_bfloat16 *query1 =
+            query + ((size_t)head * sequence + read1) * H3D_MMA_HD;
+
+    uint32_t a[H3D_MMA_KS][4];
+#pragma unroll
+    for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+        const uint32_t dim = step * 16u + column;
+        a[step][0] = h3d_mma_pair(__bfloat162float(query0[dim]),
+                                  __bfloat162float(query0[dim + 1u]));
+        a[step][1] = h3d_mma_pair(__bfloat162float(query1[dim]),
+                                  __bfloat162float(query1[dim + 1u]));
+        a[step][2] = h3d_mma_pair(__bfloat162float(query0[dim + 8u]),
+                                  __bfloat162float(query0[dim + 9u]));
+        a[step][3] = h3d_mma_pair(__bfloat162float(query1[dim + 8u]),
+                                  __bfloat162float(query1[dim + 9u]));
+    }
+
+    float maximum0 = -INFINITY, maximum1 = -INFINITY;
+    float denominator0 = 0.0f, denominator1 = 0.0f;
+    float result[H3D_MMA_DIMS][4];
+#pragma unroll
+    for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+        result[dim][0] = result[dim][1] = result[dim][2] = result[dim][3] = 0.0f;
+    }
+
+    /* Fill the ring, then issue one tile's copies per iteration so that the
+     * tile being read completed `stages - 1` tiles ago. */
+    h3d_pipe_stage(ring, 0u, key, value, head, sequence, 0u);
+    h3d_pipe_commit();
+    for (uint32_t ahead = 1; ahead + 1u < H3D_PIPE_STAGES; ahead++) {
+        const uint32_t base = ahead * H3D_MMA_KEYS;
+        if (base < sequence) {
+            h3d_pipe_stage(ring, ahead, key, value, head, sequence, base);
+        }
+        h3d_pipe_commit();
+    }
+
+    for (uint32_t tile = 0, base = 0; base < sequence;
+         tile++, base += H3D_MMA_KEYS) {
+        /* Tile `tile` is read this iteration; the prologue filled the ring with
+         * the `stages - 1` that follow it, so each iteration loads the tile
+         * `stages - 1` ahead, which is the stage this one leaves behind. */
+        const uint32_t next = base + (H3D_PIPE_STAGES - 1u) * H3D_MMA_KEYS;
+        const uint32_t current = tile % H3D_PIPE_STAGES;
+        if (next < sequence) {
+            h3d_pipe_stage(ring, (tile + H3D_PIPE_STAGES - 1u) % H3D_PIPE_STAGES,
+                           key, value, head, sequence, next);
+        }
+        /* An empty group keeps the ring's depth fixed, so the wait below is the
+         * same instruction on every tile, tail included. */
+        h3d_pipe_commit();
+        h3d_pipe_wait<H3D_PIPE_STAGES - 1>();
+        __syncthreads();   /* this tile's copies have landed for every warp */
+
+        const __nv_bfloat16 *const shared_key =
+                h3d_pipe_plane(ring, current, 0u);
+        const __nv_bfloat16 *const shared_value =
+                h3d_pipe_plane(ring, current, 1u);
+
+        /* Scores: S = Q * K^T over all H3D_MMA_KEYS staged keys. */
+        float score[H3D_MMA_NS][4];
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            score[slice][0] = score[slice][1] = 0.0f;
+            score[slice][2] = score[slice][3] = 0.0f;
+        }
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_KEYS / 16; part++) {
+                const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load(b, &shared_key[row * H3D_MMA_ROW +
+                                            h3d_mma_slot(row, col / 8u)]);
+                h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+            }
+        }
+
+        /* Scale, then mask the tail keys out of the softmax. */
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            const uint32_t first = slice * 8u + column;
+            score[slice][0] *= scale;
+            score[slice][1] *= scale;
+            score[slice][2] *= scale;
+            score[slice][3] *= scale;
+            if (base + first >= sequence) {
+                score[slice][0] = -INFINITY;
+                score[slice][2] = -INFINITY;
+            }
+            if (base + first + 1u >= sequence) {
+                score[slice][1] = -INFINITY;
+                score[slice][3] = -INFINITY;
+            }
+        }
+
+        /* One maximum per tile, reduced across the four lanes of a row. */
+        float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+            tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+        }
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+        const float next0 = fmaxf(maximum0, tile0);
+        const float next1 = fmaxf(maximum1, tile1);
+        const float rescale0 = expf(maximum0 - next0);
+        const float rescale1 = expf(maximum1 - next1);
+
+        float weight[H3D_MMA_NS][4];
+        float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            weight[slice][0] = expf(score[slice][0] - next0);
+            weight[slice][1] = expf(score[slice][1] - next0);
+            weight[slice][2] = expf(score[slice][2] - next1);
+            weight[slice][3] = expf(score[slice][3] - next1);
+            part0 += weight[slice][0] + weight[slice][1];
+            part1 += weight[slice][2] + weight[slice][3];
+        }
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+        denominator0 = denominator0 * rescale0 + part0;
+        denominator1 = denominator1 * rescale1 + part1;
+        maximum0 = next0;
+        maximum1 = next1;
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            result[dim][0] *= rescale0;
+            result[dim][1] *= rescale0;
+            result[dim][2] *= rescale1;
+            result[dim][3] *= rescale1;
+        }
+
+        /* O += P * V, P packed from the weights as the A fragments. */
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KEYS / 16; step++) {
+            uint32_t p[4];
+            p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+            p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+            p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                weight[2u * step + 1u][1]);
+            p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                weight[2u * step + 1u][3]);
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                const uint32_t row =
+                        step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load_trans(b, &shared_value[row * H3D_MMA_ROW +
+                                                   h3d_mma_slot(row, col / 8u)]);
+                h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+            }
+        }
+        __syncthreads();   /* every warp is done with this stage before it refills */
+    }
+
+    if (live0) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row0 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][0] / denominator0);
+            output[at + 1u] = __float2bfloat16(result[dim][1] / denominator0);
+        }
+    }
+    if (live1) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row1 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][2] / denominator1);
+            output[at + 1u] = __float2bfloat16(result[dim][3] / denominator1);
+        }
+    }
+}
+
+/* The pipelined block's shared-memory admission. Its ring is past the 48 KB
+ * every kernel gets without asking, so the CTA's ceiling has to be raised
+ * once; a refused request retires the arm rather than failing the launch.
+ * Returns 0 when the shape is admitted. */
+static int h3d_pipe_admit(void) {
+    static int refused = -1;
+    if (refused < 0) {
+        const cudaError_t status = cudaFuncSetAttribute(
+                (const void *)h3d_attention_mma_pipe_kernel,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, H3D_PIPE_SMEM);
+        refused = status == cudaSuccess ? 0 : 1;
+        if (refused) (void)cudaGetLastError();
+    }
+    return refused;
+}
+
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
              const h3d_tensor *query, const h3d_tensor *key,
              const h3d_tensor *value, uint32_t sequence, uint32_t heads,
@@ -4352,10 +4678,31 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    /* The benchmark arm: same tensors and scale, tensor-core arithmetic. Its
-     * kernel is the 128-wide one, so the 64-wide connector attention stays on
-     * the tiled path. */
+    /* Tensor-core arithmetic, on the eight-warp pipelined block unless the
+     * four-warp one was named. Both kernels are 128-wide, so the 64-wide
+     * connector attention stays on the tiled path. */
     if (context->attention_mma && head_dim == 128) {
+        if (context->attention_pipe) {
+            /* The ring is past the 48 KB static limit, so the CTA has to ask
+             * for it; the request is idempotent and its failure is not fatal,
+             * it only retires the arm for this context. */
+            if (h3d_pipe_admit() == 0) {
+                dim3 pipe_grid((sequence + H3D_PIPE_ROWS - 1) / H3D_PIPE_ROWS,
+                               heads);
+                h3d_attention_mma_pipe_kernel<<<pipe_grid,
+                                                H3D_PIPE_WARPS * 32u,
+                                                (size_t)H3D_PIPE_SMEM,
+                                                context->stream>>>(
+                    (__nv_bfloat16 *)output->data,
+                    (const __nv_bfloat16 *)query->data,
+                    (const __nv_bfloat16 *)key->data,
+                    (const __nv_bfloat16 *)value->data, sequence, heads,
+                    scale);
+                return h3d_launch_ok("BF16 attention (mma, pipelined)", error,
+                                     error_size);
+            }
+            context->attention_pipe = 0;
+        }
         dim3 mma_grid((sequence + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
         h3d_attention_mma_kernel<<<mma_grid, H3D_MMA_WARPS * 32u, 0,
                                    context->stream>>>(
