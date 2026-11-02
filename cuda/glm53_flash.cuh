@@ -2,6 +2,7 @@
 #define DS4_GLM53_FLASH_CUH
 
 #include "glm_vq_flash.cuh"
+#include "glm_vq_index.cuh"
 
 /* Tensor-core prefill paths of the compact (mixed-artifact) GLM-5.3 graph.
  *
@@ -233,6 +234,38 @@ extern "C" int ds4_gpu_glm53_q8_small_k(ds4_gpu_tensor *out, const ds4_gpu_tenso
         &zero, (float *)out->ptr, (int)out_dim), "GLM-5.3 small-K GEMM");
     (void)cublasSetStream(g_cublas, prior);
     return ok ? 1 : -1;
+}
+
+/* Pooled index scores at prefill widths. The reference runs one block per
+ * (pool, row) and re-reads the row's 32 x 128 F32 query for every pool:
+ * 18% of a 32K prefill (69 ms per 2,048-row call), growing with context.
+ * GLM VQ's fused tile scores 4 rows x 128 pools with m16n8k16 MMAs and
+ * folds the 32 heads in registers; here on the compact F16 pools. q rounds
+ * to F16; the 1/sqrt(128 * 32) scale splits into per-dot and per-weight
+ * factors and the head sum runs in another order. 1/0/-1 as above. */
+extern "C" int ds4_gpu_glm53_index_mma(ds4_gpu_tensor *scores, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *weights, const ds4_gpu_tensor *pool_cache, uint32_t n_pools,
+        uint32_t rows, uint32_t pos0, uint32_t heads) {
+    static int ready = -1;
+    if (ready < 0) {
+        const char *env = getenv("DS4_GLM53_INDEX_MMA");
+        ready = (!env || strcmp(env, "0") != 0) &&
+            cuda_ok(cudaFuncSetAttribute(glmvq_index_fused_f16,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDX_SMEM), "GLM-5.3 index smem");
+    }
+    if (!ready || ds4_capture_active() || rows < GLMVQ_IDX_ROWS || heads != GLMVQ_INDEX_HEADS ||
+        !n_pools || pos0 > UINT32_MAX - rows || n_pools != (pos0 + rows) / DS4_GLM53_POOL_SIZE ||
+        !glm53_compact_has(scores, (uint64_t)rows * n_pools, sizeof(float)) ||
+        !glm53_compact_has(q, (uint64_t)rows * heads * DS4_GLM53_POOL_DIM, sizeof(float)) ||
+        !glm53_compact_has(weights, (uint64_t)rows * heads, sizeof(float)) ||
+        !glm53_compact_has(pool_cache, (uint64_t)n_pools * DS4_GLM53_POOL_DIM, sizeof(__half))) {
+        return 0;
+    }
+    const dim3 grid((n_pools + GLMVQ_IDX_POOLS - 1) / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);
+    glmvq_index_fused_f16<<<grid, GLMVQ_IDX_THREADS, GLMVQ_IDX_SMEM, ds4_current_stream()>>>(
+        (float *)scores->ptr, (const float *)q->ptr, (const float *)weights->ptr,
+        (const __half *)pool_cache->ptr, n_pools, rows, pos0);
+    return cuda_ok(cudaGetLastError(), "GLM-5.3 fused index scores") ? 1 : -1;
 }
 
 #endif

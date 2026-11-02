@@ -70,6 +70,11 @@ int ds4_gpu_glm53_pool_score(ds4_gpu_tensor *scores,
         const ds4_gpu_tensor *q, const ds4_gpu_tensor *weights,
         const ds4_gpu_tensor *pool_cache, uint32_t n_pools, uint32_t rows,
         uint32_t pos0, uint32_t heads, float scale);
+/* Tensor-core pool scores for 4+ rows and 32 heads (the scale is fixed at
+ * 1/sqrt(32 * 128)); 1 done, 0 not covered (pool_score applies), -1 failed. */
+int ds4_gpu_glm53_index_mma(ds4_gpu_tensor *scores, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *weights, const ds4_gpu_tensor *pool_cache, uint32_t n_pools,
+        uint32_t rows, uint32_t pos0, uint32_t heads);
 int ds4_gpu_glm53_pool_expand(ds4_gpu_tensor *selected,
         const ds4_gpu_tensor *pool_selected, uint32_t rows, uint32_t pos0,
         uint32_t selected_pools, uint32_t index_topk, uint32_t out_width);

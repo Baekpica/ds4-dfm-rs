@@ -515,9 +515,11 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
         if (!plain_graph_matmul_tensor(g->idx_q, model, l->indexer_attn_q_b, DS4_N_LORA_Q,
                 (uint64_t)DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM, g->q_rank_norm, rows) ||
             !plain_graph_matmul_tensor(g->idx_weights, model, l->indexer_proj,
-                DS4_N_EMBD, DS4_N_INDEXER_HEAD, g->norm, rows) ||
-            !ds4_gpu_glm53_pool_score(g->idx_scores, g->idx_q, g->idx_weights,
-                g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD, scale) ||
+                DS4_N_EMBD, DS4_N_INDEXER_HEAD, g->norm, rows)) { return false; }
+        const int fused = ds4_gpu_glm53_index_mma(g->idx_scores, g->idx_q, g->idx_weights,
+            g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD);
+        if (fused < 0 || (!fused && !ds4_gpu_glm53_pool_score(g->idx_scores, g->idx_q, g->idx_weights,
+                g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD, scale)) ||
             !ds4_gpu_indexer_topk_tensor(g->idx_pools, g->idx_scores, pools, rows, topk, 0u, UINT32_MAX) ||
             !ds4_gpu_glm53_pool_expand(g->idx_selected, g->idx_pools, rows, pos0,
                 topk, DS4_GLM53_INDEX_TOPK, DS4_GLM53_MAX_SELECTED)) { return false; }

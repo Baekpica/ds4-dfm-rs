@@ -177,12 +177,37 @@ __device__ __forceinline__ void glmvq_idx_mma(float *d, const uint32_t *a, uint3
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-__global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *out,
-        const float *query, const float *weights, const __nv_bfloat16 *pool,
+// Pool element type: BF16 (GLM VQ) or F16 (the mixed artifact's compact
+// pools, whose reference marks invisible pools -INFINITY).
+template <typename T> struct glmvq_idx_elem;
+template <> struct glmvq_idx_elem<__nv_bfloat16> {
+    static constexpr float invisible = -FLT_MAX;
+    static __device__ __forceinline__ uint32_t pack(float lo, float hi) { return glmvq_idx_pack(lo, hi); }
+    static __device__ __forceinline__ void mma(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+        glmvq_idx_mma(d, a, b0, b1);
+    }
+};
+template <> struct glmvq_idx_elem<__half> {
+    static constexpr float invisible = -INFINITY;
+    static __device__ __forceinline__ uint32_t pack(float lo, float hi) {
+        const __half2 v = __floats2half2_rn(lo, hi);
+        return *(const uint32_t *)&v;
+    }
+    static __device__ __forceinline__ void mma(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+            "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+            : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+            : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+    }
+};
+
+template <typename T>
+__global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused_t(float *out,
+        const float *query, const float *weights, const T *pool,
         uint32_t pools, uint32_t rows, uint32_t first) {
     extern __shared__ __align__(16) uint8_t idx_shared[];
     // Rows padded by 8 BF16 (68 words): fragment loads hit distinct banks.
-    auto *qs = (__nv_bfloat16 *)idx_shared;
+    auto *qs = (T *)idx_shared;
     auto *ks = qs + GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS * GLMVQ_IDX_PITCH;
     auto *ws = (float *)(ks + GLMVQ_IDX_POOLS * GLMVQ_IDX_PITCH);
     constexpr uint32_t D = DS4_GLM53_POOL_DIM;
@@ -192,7 +217,7 @@ __global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *ou
         const uint32_t m = i / (D / 4), c = i % (D / 4) * 4, r = row0 + m / GLMVQ_INDEX_HEADS;
         const float4 v = r < rows ? *(const float4 *)(query + ((uint64_t)row0 * GLMVQ_INDEX_HEADS + m) * D + c)
                                   : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-        *(uint2 *)(qs + m * GLMVQ_IDX_PITCH + c) = make_uint2(glmvq_idx_pack(v.x, v.y), glmvq_idx_pack(v.z, v.w));
+        *(uint2 *)(qs + m * GLMVQ_IDX_PITCH + c) = make_uint2(glmvq_idx_elem<T>::pack(v.x, v.y), glmvq_idx_elem<T>::pack(v.z, v.w));
     }
     for (uint32_t i = tid; i < GLMVQ_IDX_POOLS * D / 8; i += blockDim.x) {
         const uint32_t n = i / (D / 8), c = i % (D / 8) * 8;
@@ -214,7 +239,7 @@ __global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *ou
         uint32_t a[2][4];
         #pragma unroll
         for (uint32_t m = 0; m < 2; m++) {
-            const __nv_bfloat16 *base = qs + (local * GLMVQ_INDEX_HEADS + m * 16 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
+            const T *base = qs + (local * GLMVQ_INDEX_HEADS + m * 16 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
             a[m][0] = *(const uint32_t *)base;
             a[m][1] = *(const uint32_t *)(base + 8 * GLMVQ_IDX_PITCH);
             a[m][2] = *(const uint32_t *)(base + 8);
@@ -222,10 +247,10 @@ __global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *ou
         }
         #pragma unroll
         for (uint32_t j = 0; j < 8; j++) {
-            const __nv_bfloat16 *base = ks + (nbase + j * 8 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
+            const T *base = ks + (nbase + j * 8 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
             const uint32_t b0 = *(const uint32_t *)base, b1 = *(const uint32_t *)(base + 8);
-            glmvq_idx_mma(c[0][j], a[0], b0, b1);
-            glmvq_idx_mma(c[1][j], a[1], b0, b1);
+            glmvq_idx_elem<T>::mma(c[0][j], a[0], b0, b1);
+            glmvq_idx_elem<T>::mma(c[1][j], a[1], b0, b1);
         }
     }
     const float q_scale = 1.0f / sqrtf((float)D);
@@ -248,9 +273,12 @@ __global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *ou
         #pragma unroll
         for (uint32_t e = 0; e < 2; e++) {
             const uint32_t p = pool0 + nbase + j * 8 + 2 * t + e;
-            if (p < pools) { out[(uint64_t)row * pools + p] = p < visible ? sum[e] : -FLT_MAX; }
+            if (p < pools) { out[(uint64_t)row * pools + p] = p < visible ? sum[e] : glmvq_idx_elem<T>::invisible; }
         }
     }
 }
+
+static constexpr auto glmvq_index_fused = glmvq_index_fused_t<__nv_bfloat16>;
+static constexpr auto glmvq_index_fused_f16 = glmvq_index_fused_t<__half>;
 
 #endif

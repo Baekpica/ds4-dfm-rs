@@ -45,6 +45,7 @@ static const char *glm53_compact_weight(const void *map, uint64_t size, uint64_t
     return offset <= size && bytes <= size - offset ? (const char *)map + offset : NULL;
 }
 #include "../cuda/glm53_low_attn.cuh"
+#include "../cuda/glm53_pool_score.cuh"
 #include "../cuda/glm53_flash.cuh"
 
 #define CHECK(x) do { if (!(x)) { \
@@ -308,7 +309,44 @@ static void check_small_k(uint32_t rows) {
     printf("GLM small-K: rows=%u output_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n", rows, rms, worst, worst / rms);
 }
 
+// Fused pool scores vs the production SIMT kernel, including invisible pools.
+static void check_index(uint32_t pos0, uint32_t rows) {
+    const uint32_t heads = 32u, pools = (pos0 + rows) / DS4_GLM53_POOL_SIZE;
+    std::vector<float> q((uint64_t)rows * heads * DS4_GLM53_POOL_DIM), w((uint64_t)rows * heads);
+    std::vector<__half> keys((uint64_t)pools * DS4_GLM53_POOL_DIM);
+    for (uint64_t i = 0; i < q.size(); i++) { q[i] = sinf((float)(i % 8191u) * 0.037f) * 1.5f; }
+    for (uint64_t i = 0; i < w.size(); i++) { w[i] = cosf((float)(i % 97u) * 0.41f); }
+    for (uint64_t i = 0; i < keys.size(); i++) { keys[i] = __float2half_rn(sinf((float)(i % 4093u) * 0.071f)); }
+    ds4_gpu_tensor dq = alloc(q.size() * 4), dw = alloc(w.size() * 4), dk = alloc(keys.size() * 2);
+    ds4_gpu_tensor ref = alloc((uint64_t)rows * pools * 4), got = alloc(ref.bytes);
+    CHECK(cuda_ok(cudaMemcpy(dq.ptr, q.data(), (size_t)dq.bytes, cudaMemcpyHostToDevice), "q"));
+    CHECK(cuda_ok(cudaMemcpy(dw.ptr, w.data(), (size_t)dw.bytes, cudaMemcpyHostToDevice), "w"));
+    CHECK(cuda_ok(cudaMemcpy(dk.ptr, keys.data(), (size_t)dk.bytes, cudaMemcpyHostToDevice), "k"));
+    CHECK(ds4_gpu_glm53_pool_score(&ref, &dq, &dw, &dk, pools, rows, pos0, heads, 1.0f / 64.0f));
+    CHECK(ds4_gpu_glm53_index_mma(&got, &dq, &dw, &dk, pools, rows, pos0, heads) == 1);
+    std::vector<float> a((uint64_t)rows * pools), b(a.size());
+    CHECK(cuda_ok(cudaMemcpy(a.data(), ref.ptr, (size_t)ref.bytes, cudaMemcpyDeviceToHost), "ref"));
+    CHECK(cuda_ok(cudaMemcpy(b.data(), got.ptr, (size_t)got.bytes, cudaMemcpyDeviceToHost), "got"));
+    double worst = 0.0, scale = 0.0;
+    uint64_t finite = 0;
+    for (uint64_t i = 0; i < a.size(); i++) {
+        CHECK(isinf(a[i]) == isinf(b[i]) && (!isinf(a[i]) || a[i] == b[i]));
+        if (isinf(a[i])) { continue; }
+        worst = fmax(worst, fabs((double)a[i] - (double)b[i]));
+        scale += (double)a[i] * a[i];
+        finite++;
+    }
+    const double rms = sqrt(scale / (double)finite);
+    CHECK(worst < 1.0e-2 * rms);  // F16 query rounding
+    CHECK(ds4_gpu_glm53_index_mma(&got, &dq, &dw, &dk, pools, GLMVQ_IDX_ROWS - 1u, pos0, heads) == 0);
+    cudaFree(got.ptr); cudaFree(ref.ptr); cudaFree(dk.ptr); cudaFree(dw.ptr); cudaFree(dq.ptr);
+    printf("GLM index: pos0=%u rows=%u pools=%u score_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n",
+        pos0, rows, pools, rms, worst, worst / rms);
+}
+
 int main(void) {
+    check_index(2050u, 130u);
+    check_index(8000u, 37u);
     CHECK(cublas_ok(cublasCreate(&g_cublas), "create"));
     CHECK(cublas_ok(cublasSetMathMode(g_cublas, CUBLAS_TF32_TENSOR_OP_MATH), "tf32"));
     g_cublas_ready = 1;
