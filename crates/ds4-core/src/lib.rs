@@ -16,6 +16,10 @@ mod bind;
 pub mod chat_template;
 mod dots3_mtp;
 mod engram;
+// The reader, the family variant and the dispatch land in the next unit; the
+// layout is transcribed from the emitted artifact first.
+#[allow(dead_code)]
+mod gemma4_vq;
 mod gguf;
 mod glm_mtp;
 mod glm_vq;
