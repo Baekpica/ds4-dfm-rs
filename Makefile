@@ -2285,7 +2285,7 @@ tests/bench_glm53_attention: tests/bench_glm53_attention.cu ds4_glm53_attn.h ds4
 
 tests/test_glm53_flash: tests/test_glm53_flash.cu ds4_glm53_attn.h ds4_glm53_compact.h cuda/glm53_low_attn.cuh \
 	cuda/glm53_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
-	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart -lcublas
 
 tests/bench_glm53_pool: tests/bench_glm53_pool.cu ds4_glm53_compact.h cuda/glm53_pool_score.cuh
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart

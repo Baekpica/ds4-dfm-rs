@@ -495,9 +495,7 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
             g->idx_k, g->idx_gate, model->map, model->size, l->indexer_k_norm->abs_offset,
             l->indexer_k_norm_b->abs_offset, l->indexer_compressor_ape->abs_offset,
             pos0, rows, g->ctx_cap, GLM53_POOL_EPS) ||
-        !ds4_gpu_glm53_store_low(g->layer_kv[il], g->kv_rank_norm, rows, pos0, g->ctx_cap, DS4_N_KV_LORA) ||
-        !ds4_gpu_glm53_absorb_q(g->low_q, g->q, model->map, model->size,
-            l->attn_k_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) {
+        !ds4_gpu_glm53_store_low(g->layer_kv[il], g->kv_rank_norm, rows, pos0, g->ctx_cap, DS4_N_KV_LORA)) {
         return false;
     }
     ds4_gpu_tensor *selected = NULL;
@@ -518,15 +516,22 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
         selected = g->idx_selected;
         stride = DS4_GLM53_MAX_SELECTED;
     }
-    const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->layer_kv[il], selected,
-        stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
-    if (flash < 0) { return false; }
-    return (flash > 0 || ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il], selected,
-            stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) &&
-        ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
-            l->attn_v_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_VALUE_MLA) &&
-        plain_graph_matmul_tensor(g->attn_out, model, l->attn_output,
-            qdim, DS4_N_EMBD, g->heads, rows);
+    // Prefill rows borrow the KDA chunk scratch (idle in DSA layers) for F16 K_b/V_b.
+    const int fused = ds4_gpu_glm53_flash(g->heads, g->q, g->low_q, g->low_out, g->kda_scratch,
+        g->layer_kv[il], selected, stride, model->map, model->size, l->attn_k_b->abs_offset,
+        l->attn_v_b->abs_offset, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+    if (fused < 0) { return false; }
+    if (!fused) {
+        if (!ds4_gpu_glm53_absorb_q(g->low_q, g->q, model->map, model->size,
+                l->attn_k_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) { return false; }
+        const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->layer_kv[il], selected,
+            stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+        if (flash < 0 || (!flash && !ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il],
+                selected, stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) ||
+            !ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
+                l->attn_v_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_VALUE_MLA)) { return false; }
+    }
+    return plain_graph_matmul_tensor(g->attn_out, model, l->attn_output, qdim, DS4_N_EMBD, g->heads, rows);
 }
 
 static bool glm53_graph_routed(ds4_glm53_gpu_graph *g, const ds4_model *model,

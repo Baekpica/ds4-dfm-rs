@@ -2,6 +2,7 @@
  * oracle and the production F32 reference kernel, at the model geometry. */
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cublas_v2.h>
 #include <stdint.h>
 #include <math.h>
 #include <stdio.h>
@@ -27,6 +28,20 @@ static bool glm53_compact_shape(uint32_t rows, uint32_t heads,
     return rows && rows <= 65535u && heads && heads <= 256u &&
         latent_dim && latent_dim <= GLM53_COMPACT_MAX_DIM && latent_dim % 32u == 0u &&
         head_dim && head_dim <= GLM53_COMPACT_MAX_DIM && head_dim % 32u == 0u;
+}
+enum { GLM53_COMPACT_Q8_BLOCK = 32, GLM53_COMPACT_Q8_BYTES = 34 };
+static cublasHandle_t g_cublas;
+static int g_cublas_ready;
+static bool cublas_ok(cublasStatus_t status, const char *label) {
+    if (status == CUBLAS_STATUS_SUCCESS) { return true; }
+    fprintf(stderr, "GLM flash %s: cuBLAS %d\n", label, (int)status);
+    return false;
+}
+static void cuda_cublas_ws_prep(cudaStream_t) {}
+// The model map is a device buffer here: offsets address it directly.
+static const char *glm53_compact_weight(const void *map, uint64_t size, uint64_t offset,
+        uint64_t bytes, const ds4_gpu_tensor *, const char *) {
+    return offset <= size && bytes <= size - offset ? (const char *)map + offset : NULL;
 }
 #include "../cuda/glm53_low_attn.cuh"
 #include "../cuda/glm53_flash.cuh"
@@ -152,7 +167,118 @@ static void check_case(uint32_t pos0, uint32_t rows, bool sparse) {
         pos0, rows, stride, worst, worst_ref);
 }
 
+enum { HEAD_DIM = 256 };
+
+// Q8_0 rows of `width` values with small scales, plus their exact F32 values.
+static void make_q8(std::vector<uint8_t> &raw, std::vector<float> &values, uint64_t count, uint32_t seed) {
+    raw.resize(count / 32u * 34u);
+    values.resize(count);
+    for (uint64_t b = 0; b < count / 32u; b++) {
+        const __half d = __float2half_rn(0.0015f + 0.0005f * (float)((b * 7u + seed) % 5u));
+        memcpy(&raw[b * 34u], &d, sizeof(d));
+        for (uint32_t i = 0; i < 32u; i++) {
+            const int8_t v = (int8_t)((int)((b * 131u + i * 29u + seed) % 255u) - 127);
+            raw[b * 34u + 2u + i] = (uint8_t)v;
+            values[b * 32u + i] = __half2float(d) * (float)v;
+        }
+    }
+}
+
+// q (F32) -> heads (F32) through F16 GEMMs and the flash tile vs an FP64 chain.
+static void check_chain(uint32_t pos0, uint32_t rows, bool sparse) {
+    const uint32_t cap = pos0 + rows, stride = sparse ? DS4_GLM53_MAX_SELECTED : 0u;
+    const uint64_t wcount = (uint64_t)HEADS * DIM * HEAD_DIM;
+    std::vector<uint8_t> kraw, vraw;
+    std::vector<float> kw, vw;
+    make_q8(kraw, kw, wcount, 3u);
+    make_q8(vraw, vw, wcount, 11u);
+    std::vector<__half> cache((uint64_t)cap * DIM);
+    for (uint64_t i = 0; i < cache.size(); i++) {
+        cache[i] = __float2half_rn(sinf((float)(i % 9973u) * 0.013f) * 0.7f);
+    }
+    std::vector<float> query((uint64_t)rows * HEADS * HEAD_DIM);
+    for (uint64_t i = 0; i < query.size(); i++) { query[i] = cosf((float)(i % 7919u) * 0.031f) * 0.6f; }
+    std::vector<uint32_t> selected((uint64_t)rows * stride);
+    for (uint32_t t = 0u; t < rows; t++) {
+        for (uint32_t s = 0u; s < stride; s++) {
+            const uint32_t visible = pos0 + t + 1u;
+            selected[(uint64_t)t * stride + s] = s >= stride - 2u ? UINT32_MAX : (s * 613u + t * 37u) % visible;
+        }
+    }
+    std::vector<uint8_t> map(kraw.size() + vraw.size());
+    memcpy(map.data(), kraw.data(), kraw.size());
+    memcpy(map.data() + kraw.size(), vraw.data(), vraw.size());
+    ds4_gpu_tensor dmap = alloc(map.size()), dcache = alloc(cache.size() * sizeof(__half));
+    ds4_gpu_tensor q = alloc(query.size() * sizeof(float)), out = alloc(q.bytes);
+    ds4_gpu_tensor low_q = alloc((uint64_t)rows * HEADS * DIM * sizeof(float)), low_out = alloc(low_q.bytes);
+    ds4_gpu_tensor wscratch = alloc(2u * wcount * sizeof(__half)), picked = {NULL, 0u};
+    CHECK(cuda_ok(cudaMemcpy(dmap.ptr, map.data(), map.size(), cudaMemcpyHostToDevice), "map"));
+    CHECK(cuda_ok(cudaMemcpy(dcache.ptr, cache.data(), (size_t)dcache.bytes, cudaMemcpyHostToDevice), "cache"));
+    CHECK(cuda_ok(cudaMemcpy(q.ptr, query.data(), (size_t)q.bytes, cudaMemcpyHostToDevice), "query"));
+    if (stride) {
+        picked = alloc(selected.size() * sizeof(uint32_t));
+        CHECK(cuda_ok(cudaMemcpy(picked.ptr, selected.data(), (size_t)picked.bytes, cudaMemcpyHostToDevice), "sel"));
+    }
+    CHECK(ds4_gpu_glm53_flash(&out, &q, &low_q, &low_out, &wscratch, &dcache, stride ? &picked : NULL, stride,
+        dmap.ptr, map.size(), 0u, kraw.size(), rows, pos0, cap, HEADS, DIM, HEAD_DIM) == 1);
+    std::vector<float> output(query.size());
+    CHECK(cuda_ok(cudaMemcpy(output.data(), out.ptr, (size_t)out.bytes, cudaMemcpyDeviceToHost), "out"));
+    double worst = 0.0, scale = 0.0;
+    uint64_t n = 0;
+    const uint32_t sample[] = {0u, rows / 3u, rows - 1u};
+    for (uint32_t t : sample) {
+        const uint32_t visible = pos0 + t + 1u, count = stride ? stride : visible;
+        for (uint32_t h = 0u; h < HEADS; h += 13u) {
+            std::vector<double> qlow(DIM, 0.0), low(DIM, 0.0), scores(count);
+            for (uint32_t j = 0u; j < DIM; j++) {
+                for (uint32_t d = 0u; d < HEAD_DIM; d++) {
+                    qlow[j] += (double)query[((uint64_t)t * HEADS + h) * HEAD_DIM + d] *
+                        (double)kw[((uint64_t)h * DIM + j) * HEAD_DIM + d];
+                }
+            }
+            double maximum = -INFINITY, denominator = 0.0;
+            for (uint32_t s = 0u; s < count; s++) {
+                const uint32_t r = stride ? selected[(uint64_t)t * stride + s] : s;
+                double dot = 0.0;
+                if (r < visible) {
+                    for (uint32_t j = 0u; j < DIM; j++) { dot += qlow[j] * (double)__half2float(cache[(uint64_t)r * DIM + j]); }
+                }
+                scores[s] = r < visible ? dot / 16.0 : -INFINITY;
+                maximum = fmax(maximum, scores[s]);
+            }
+            for (uint32_t s = 0u; s < count; s++) { scores[s] = exp(scores[s] - maximum); denominator += scores[s]; }
+            for (uint32_t s = 0u; s < count; s++) {
+                const uint32_t r = stride ? selected[(uint64_t)t * stride + s] : s;
+                if (r >= visible) { continue; }
+                for (uint32_t j = 0u; j < DIM; j++) { low[j] += scores[s] / denominator * (double)__half2float(cache[(uint64_t)r * DIM + j]); }
+            }
+            for (uint32_t d = 0u; d < HEAD_DIM; d++) {
+                double expected = 0.0;
+                for (uint32_t j = 0u; j < DIM; j++) { expected += low[j] * (double)vw[((uint64_t)h * HEAD_DIM + d) * DIM + j]; }
+                const float actual = output[((uint64_t)t * HEADS + h) * HEAD_DIM + d];
+                CHECK(isfinite(actual));
+                worst = fmax(worst, fabs((double)actual - expected));
+                scale += expected * expected;
+                n++;
+            }
+        }
+    }
+    const double rms = sqrt(scale / (double)n);
+    // F16 weights, query, absorbed query, P and latents: a few 1e-3 of the scale.
+    CHECK(worst < 1.0e-2 * rms);
+    CHECK(ds4_gpu_glm53_flash(&out, &q, &low_q, &low_out, &wscratch, &dcache, stride ? &picked : NULL, stride,
+        dmap.ptr, map.size(), 0u, kraw.size(), GLM53_GEMM_MIN_ROWS - 1u, pos0, cap, HEADS, DIM, HEAD_DIM) == 0);
+    cudaFree(picked.ptr); cudaFree(wscratch.ptr); cudaFree(low_out.ptr); cudaFree(low_q.ptr);
+    cudaFree(out.ptr); cudaFree(q.ptr); cudaFree(dcache.ptr); cudaFree(dmap.ptr);
+    printf("GLM absorbed chain: pos0=%u rows=%u selected=%u output_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n",
+        pos0, rows, stride, rms, worst, worst / rms);
+}
+
 int main(void) {
+    CHECK(cublas_ok(cublasCreate(&g_cublas), "create"));
+    g_cublas_ready = 1;
+    check_chain(0u, 300u, false);
+    check_chain(2051u, 64u, true);
     check_case(0u, 300u, false);     // dense causal prefix from the first key
     check_case(1400u, 640u, false);  // dense prefix that ends at the selection edge
     check_case(2051u, 96u, true);    // selected keys with masked and unused slots

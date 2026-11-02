@@ -32,13 +32,7 @@ __global__ static void glm53_positions_kernel(uint32_t *out, uint32_t pos0, uint
     if (i < rows) { out[i] = pos0 + i; }
 }
 
-/* low_q / low_out are [rows][heads][latent] F32 views; both are consumed as
- * F16 scratch on the way, so neither keeps its input. Returns 0 when the
- * geometry is not covered and the caller keeps the reference kernel. */
-extern "C" int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *low_q,
-        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected, uint32_t sel_stride,
-        uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
-        uint32_t head_dim) {
+static bool glm53_flash_ready(void) {
     static int ready = -1;
     if (ready < 0) {
         const char *env = getenv("DS4_GLM53_FLASH");
@@ -46,15 +40,42 @@ extern "C" int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *
             cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel_f16,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM-5.3 flash smem");
     }
+    return ready > 0;
+}
+
+static bool glm53_flash_shape(const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected,
+        uint32_t sel_stride, uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads,
+        uint32_t latent_dim, uint32_t head_dim) {
+    return glm53_flash_ready() && !ds4_capture_active() && rows >= GLM53_FLASH_MIN_ROWS &&
+        heads == GLMVQ_FA_HEADS && latent_dim == GLMVQ_FA_LATENT && head_dim &&
+        glm53_attn_frontier(rows, pos0, cap, sel_stride,
+            selected ? GLM53_ATTN_SELECTED : GLM53_ATTN_ALL) &&
+        glm53_compact_has(cache, (uint64_t)cap * latent_dim, sizeof(__half)) &&
+        (!selected || glm53_compact_has(selected, (uint64_t)rows * sel_stride, sizeof(uint32_t)));
+}
+
+// One CTA per row; `positions` is rows x u32 of scratch.
+static void glm53_flash_launch(__half *low, const __half *qlow, uint32_t *positions,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t head_dim, cudaStream_t stream) {
+    glm53_positions_kernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(positions, pos0, rows);
+    glmvq_fa_kernel_f16<<<dim3(rows, 1u), GLMVQ_FA_THREADS, GLMVQ_FA_SMEM, stream>>>(
+        low, nullptr, nullptr, qlow, (const __half *)cache->ptr, positions,
+        selected ? (const uint32_t *)selected->ptr : nullptr, selected ? sel_stride : 0u,
+        UINT32_MAX, 1.0f / sqrtf((float)head_dim));
+}
+
+/* low_q / low_out are [rows][heads][latent] F32 views; both are consumed as
+ * F16 scratch on the way, so neither keeps its input. Returns 0 when the
+ * geometry is not covered and the caller keeps the reference kernel. */
+extern "C" int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *low_q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
+        uint32_t head_dim) {
     const uint64_t count = (uint64_t)rows * heads * latent_dim;
-    if (!ready || ds4_capture_active() || rows < GLM53_FLASH_MIN_ROWS ||
-        heads != GLMVQ_FA_HEADS || latent_dim != GLMVQ_FA_LATENT || !head_dim ||
-        !glm53_attn_frontier(rows, pos0, cap, sel_stride,
-            selected ? GLM53_ATTN_SELECTED : GLM53_ATTN_ALL) ||
+    if (!glm53_flash_shape(cache, selected, sel_stride, rows, pos0, cap, heads, latent_dim, head_dim) ||
         !glm53_compact_has(low_out, count, sizeof(float)) ||
-        !glm53_compact_has(low_q, count, sizeof(float)) ||
-        !glm53_compact_has(cache, (uint64_t)cap * latent_dim, sizeof(__half)) ||
-        (selected && !glm53_compact_has(selected, (uint64_t)rows * sel_stride, sizeof(uint32_t)))) {
+        !glm53_compact_has(low_q, count, sizeof(float))) {
         return 0;
     }
     const cudaStream_t stream = ds4_current_stream();
@@ -63,13 +84,101 @@ extern "C" int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *
     __half *low = (__half *)low_q->ptr;
     const unsigned blocks = (unsigned)((count + 255u) / 256u);
     glm53_f32_f16_kernel<<<blocks, 256u, 0, stream>>>(qlow, (const float *)low_q->ptr, count);
-    glm53_positions_kernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(positions, pos0, rows);
-    glmvq_fa_kernel_f16<<<dim3(rows, 1u), GLMVQ_FA_THREADS, GLMVQ_FA_SMEM, stream>>>(
-        low, nullptr, nullptr, qlow, (const __half *)cache->ptr, positions,
-        selected ? (const uint32_t *)selected->ptr : nullptr, selected ? sel_stride : 0u,
-        UINT32_MAX, 1.0f / sqrtf((float)head_dim));
+    glm53_flash_launch(low, qlow, positions, cache, selected, sel_stride, rows, pos0, head_dim, stream);
     glm53_f16_f32_kernel<<<blocks, 256u, 0, stream>>>((float *)low_out->ptr, low, count);
     return cuda_ok(cudaGetLastError(), "GLM-5.3 flash latent attention") ? 1 : -1;
+}
+
+/* Prefill rows: the whole absorbed chain on tensor cores. The reference
+ * absorption and value projection re-read Q8_0 K_b/V_b per (row, head) on
+ * SIMT (7.3 of an 8K prefill's 22.6 s after flash). Here K_b/V_b widen to
+ * F16 once per call (16 MiB each, into `wscratch`) and both projections
+ * are 64-head strided-batched F16 GEMMs with F32 accumulation:
+ *
+ *   q (F32) -> q16 -> qlow16 = q16 K_b^T -> flash -> low16 -> heads = low16 V_b^T
+ *
+ * q16/qlow16 live in low_q and low16/positions in low_out (both F32 views
+ * with room to spare). Weights round to F16 (Q8_0 d*q needs up to 18
+ * mantissa bits); q, the absorbed query, P and low round to F16 as well.
+ * Returns 0 when not covered (decode and verify widths keep Q8_0 SIMT). */
+enum { GLM53_GEMM_MIN_ROWS = 16, GLM53_KB_ROW = 256 };
+static const uint64_t GLM53_WEIGHT_HALVES = (uint64_t)GLMVQ_FA_HEADS * GLMVQ_FA_LATENT * GLM53_KB_ROW;
+
+__global__ static void glm53_q8_f16_kernel(__half *out, const char *w, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const char *block = w + i / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES;
+    out[i] = __float2half_rn(__half2float(*(const __half *)block) *
+        (float)((const int8_t *)(block + sizeof(__half)))[i % GLM53_COMPACT_Q8_BLOCK]);
+}
+
+static bool glm53_gemm_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_GLM53_ABSORB_GEMM");
+        on = !env || strcmp(env, "0") != 0;
+    }
+    return on > 0;
+}
+
+extern "C" int ds4_gpu_glm53_flash(ds4_gpu_tensor *heads_out, const ds4_gpu_tensor *q,
+        ds4_gpu_tensor *low_q, ds4_gpu_tensor *low_out, ds4_gpu_tensor *wscratch,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        const void *model_map, uint64_t model_size, uint64_t k_b_offset, uint64_t v_b_offset,
+        uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
+        uint32_t head_dim) {
+    const uint64_t qn = (uint64_t)rows * heads * head_dim, ln = (uint64_t)rows * heads * latent_dim;
+    if (!glm53_gemm_on() || !g_cublas_ready || rows < GLM53_GEMM_MIN_ROWS || head_dim != GLM53_KB_ROW ||
+        !glm53_flash_shape(cache, selected, sel_stride, rows, pos0, cap, heads, latent_dim, head_dim) ||
+        !glm53_compact_has(heads_out, qn, sizeof(float)) || !glm53_compact_has(q, qn, sizeof(float)) ||
+        // low_q: q16 + qlow16; low_out: low16 + positions.
+        !glm53_compact_has(low_q, (qn + ln) * sizeof(__half), 1u) ||
+        !glm53_compact_has(low_out, ln * sizeof(__half) + rows * sizeof(uint32_t), 1u) ||
+        !glm53_compact_has(wscratch, 2u * GLM53_WEIGHT_HALVES, sizeof(__half))) {
+        return 0;
+    }
+    const uint64_t wbytes = GLM53_WEIGHT_HALVES / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES;
+    const char *kb = glm53_compact_weight(model_map, model_size, k_b_offset, wbytes, heads_out,
+        "GLM-5.3 compact K-b Q8_0");
+    const char *vb = glm53_compact_weight(model_map, model_size, v_b_offset, wbytes, heads_out,
+        "GLM-5.3 compact V-b Q8_0");
+    if (!kb || !vb) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    __half *wk = (__half *)wscratch->ptr, *wv = wk + GLM53_WEIGHT_HALVES;
+    __half *q16 = (__half *)low_q->ptr, *qlow = q16 + qn;
+    __half *low = (__half *)low_out->ptr;
+    uint32_t *positions = (uint32_t *)(low + ln);
+    const unsigned wblocks = (unsigned)((GLM53_WEIGHT_HALVES + 255u) / 256u);
+    glm53_q8_f16_kernel<<<wblocks, 256u, 0, stream>>>(wk, kb, GLM53_WEIGHT_HALVES);
+    glm53_q8_f16_kernel<<<wblocks, 256u, 0, stream>>>(wv, vb, GLM53_WEIGHT_HALVES);
+    glm53_f32_f16_kernel<<<(unsigned)((qn + 255u) / 256u), 256u, 0, stream>>>(q16, (const float *)q->ptr, qn);
+    if (!cuda_ok(cudaGetLastError(), "GLM-5.3 absorbed GEMM inputs")) { return -1; }
+
+    // Per head h (batch): qlow[r][h][:] = W_k[h] (512 x 256, row-major) q[r][h][:].
+    cudaStream_t prior = 0;
+    (void)cublasGetStream(g_cublas, &prior);
+    (void)cublasSetStream(g_cublas, stream);
+    const float one = 1.0f, zero = 0.0f;
+    const long long wstride = (long long)latent_dim * head_dim;
+    cuda_cublas_ws_prep(stream);
+    bool ok = cublas_ok(cublasGemmStridedBatchedEx(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+        (int)latent_dim, (int)rows, (int)head_dim, &one, wk, CUDA_R_16F, (int)head_dim, wstride,
+        q16, CUDA_R_16F, (int)(heads * head_dim), head_dim, &zero,
+        qlow, CUDA_R_16F, (int)(heads * latent_dim), latent_dim, (int)heads,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM-5.3 Q absorption GEMM");
+    if (ok) {
+        glm53_flash_launch(low, qlow, positions, cache, selected, sel_stride, rows, pos0, head_dim, stream);
+        ok = cuda_ok(cudaGetLastError(), "GLM-5.3 flash latent attention");
+    }
+    // heads[r][h][:] = W_v[h] (256 x 512, row-major) low[r][h][:], F32 out.
+    cuda_cublas_ws_prep(stream);
+    ok = ok && cublas_ok(cublasGemmStridedBatchedEx(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+        (int)head_dim, (int)rows, (int)latent_dim, &one, wv, CUDA_R_16F, (int)latent_dim, wstride,
+        low, CUDA_R_16F, (int)(heads * latent_dim), latent_dim, &zero,
+        heads_out->ptr, CUDA_R_32F, (int)(heads * head_dim), head_dim, (int)heads,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM-5.3 V projection GEMM");
+    (void)cublasSetStream(g_cublas, prior);
+    return ok ? 1 : -1;
 }
 
 #endif
