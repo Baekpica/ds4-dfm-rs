@@ -102,6 +102,7 @@ pub use layout::{
 };
 pub use ling31_vq::Feature as Ling31Feature;
 
+pub use gemma4_vq::Gemma4VqFeature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -1487,6 +1488,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => Mimo2VqFeature::Mtp,
         };
         TensorInventory::open_mimo2_vq(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::Gemma4Vq {
+        let feature = match parts {
+            ProbeParts::Trunk => Gemma4VqFeature::Trunk,
+            ProbeParts::WithMtp => Gemma4VqFeature::Mtp,
+        };
+        TensorInventory::open_gemma4_vq(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }

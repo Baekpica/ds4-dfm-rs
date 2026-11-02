@@ -14,6 +14,7 @@ use crate::TokenBuffer;
 
 mod axk2;
 mod beam;
+mod gemma4;
 mod glm_vq;
 mod inkling;
 mod ling31;
@@ -282,6 +283,7 @@ impl Vocab {
                                     | ModelFamily::Mimo2
                                     | ModelFamily::NaiveN05
                                     | ModelFamily::IQuestQ1
+                                    | ModelFamily::Gemma4Vq
                             );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
@@ -372,14 +374,7 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
-            // The artifact carries no tokenizer metadata yet, so this family
-            // refuses at load rather than guessing special tokens. The
-            // tokenizer unit emits it from the checkpoint's tokenizer.json.
-            ModelFamily::Gemma4Vq => {
-                return Err(TokError::InvalidTokenizer(
-                    "gemma4_vq carries no tokenizer metadata",
-                ))
-            }
+            ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -701,6 +696,13 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("MiMo release metadata"))?;
             return Self::load_tables(&g, family, Some(mimo2::tables(path)?));
         }
+        // Gemma-4 carries its vocabulary in the trunk part, so a release
+        // directory is read for that part's metadata only.
+        if family == ModelFamily::Gemma4Vq && crate::gemma4_vq::is_release(path) {
+            let g = crate::gemma4_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Gemma-4 release metadata"))?;
+            return Self::load_tables(&g, family, None);
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -719,6 +721,7 @@ impl Vocab {
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Gemma4Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -771,6 +774,9 @@ impl Vocab {
             )),
             ModelFamily::Axk2Vq => Some(TokError::InvalidTokenizer(
                 "A.X-K2 VQ chat requires official Jinja",
+            )),
+            ModelFamily::Gemma4Vq => Some(TokError::InvalidTokenizer(
+                "Gemma-4 VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -897,7 +903,8 @@ impl Vocab {
             | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
-            | ModelFamily::IQuestQ1 => {
+            | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1100,7 +1107,8 @@ impl Vocab {
             | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
-            | ModelFamily::IQuestQ1 => {
+            | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1306,6 +1314,13 @@ impl Vocab {
             }
             ModelFamily::Dots3Note => {
                 self.dots3_endoftext_id >= 0 && token == self.dots3_endoftext_id
+            }
+            // generation_config.json eos_token_id is [1, 106, 50]:
+            // <eos>, <turn|> and <|tool_response>, the last handing the turn
+            // to the result the client returns.
+            ModelFamily::Gemma4Vq => {
+                (self.eot_id >= 0 && token == self.eot_id)
+                    || (self.tool_response_start_id >= 0 && token == self.tool_response_start_id)
             }
             _ => false,
         }
@@ -2419,10 +2434,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
-        // Unreachable: the vocabulary load refuses this family until the
-        // artifact carries its tokenizer. It encodes nothing rather than
-        // borrowing another family's pre-tokenizer.
-        ModelFamily::Gemma4Vq => {}
+        ModelFamily::Gemma4Vq => gemma4::encode(vocab, text, out),
     }
 }
 
@@ -2440,6 +2452,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq
     ) {
         return user_defined_at(vocab, p, 0);
     }

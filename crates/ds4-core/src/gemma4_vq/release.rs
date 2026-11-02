@@ -39,7 +39,7 @@ const CONTEXT: u64 = 262_144;
 
 /// Device-inventory features: the MTP drafter joins the trunk on request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Feature {
+pub enum Gemma4VqFeature {
     Trunk,
     Mtp,
 }
@@ -200,7 +200,7 @@ struct Part {
 
 /// The verified release entrypoint: the device-copied parts in release order
 /// (the trunk, and the MTP drafter on request) with the embedding part last.
-fn release_parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
+fn release_parts(root: &Path, feature: Gemma4VqFeature) -> Result<Vec<Part>> {
     let index = file_index(root)?;
     let bytes = json_bytes(&root.join(RELEASE))?;
     check_file(
@@ -257,11 +257,11 @@ fn release_parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
     if counts.get(&Role::Trunk) != Some(&1)
         || counts.get(&Role::Embedding) != Some(&1)
         || counts.get(&Role::Mtp).copied().unwrap_or(0) > 1
-        || (feature == Feature::Mtp && mtp.is_none())
+        || (feature == Gemma4VqFeature::Mtp && mtp.is_none())
     {
         return Err(fail("missing/duplicate release parts"));
     }
-    if feature == Feature::Mtp {
+    if feature == Gemma4VqFeature::Mtp {
         selected.extend(mtp);
     }
     selected.extend(embedding);
@@ -278,21 +278,21 @@ fn release_parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
     Ok(selected)
 }
 
-fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
+fn parts(root: &Path, feature: Gemma4VqFeature) -> Result<Vec<Part>> {
     release_parts(root, feature)
 }
 
 pub(super) fn first_part(root: &Path) -> Result<PathBuf> {
-    Ok(root.join(&parts(root, Feature::Trunk)?[0].name))
+    Ok(root.join(&parts(root, Gemma4VqFeature::Trunk)?[0].name))
 }
 
 pub(super) fn part_count(root: &Path) -> Result<u32> {
-    Ok(parts(root, Feature::Trunk)?.len() as u32)
+    Ok(parts(root, Gemma4VqFeature::Trunk)?.len() as u32)
 }
 
 /// On-disk bytes of the device-copied parts (trunk, and the MTP drafter with
-/// `Feature::Mtp`). Hashes are checked when the release opens, not here.
-pub(super) fn resident_bytes(root: &Path, feature: Feature) -> Result<u64> {
+/// `Gemma4VqFeature::Mtp`). Hashes are checked when the release opens, not here.
+pub(super) fn resident_bytes(root: &Path, feature: Gemma4VqFeature) -> Result<u64> {
     parts(root, feature)?
         .iter()
         .filter(|p| p.role != Role::Embedding)
@@ -314,7 +314,8 @@ type Stamp = Vec<(OsString, u64, SystemTime)>;
 /// Inventories already verified in this process, keyed by directory,
 /// feature and the size/mtime of every entry. Each load path (validation,
 /// binding, serving identity) reopens the directory; one check is enough.
-static VERIFIED: Mutex<Vec<(PathBuf, Feature, Stamp, TensorInventory)>> = Mutex::new(Vec::new());
+static VERIFIED: Mutex<Vec<(PathBuf, Gemma4VqFeature, Stamp, TensorInventory)>> =
+    Mutex::new(Vec::new());
 
 fn settled(stamp: &Stamp) -> bool {
     let Some(limit) = SystemTime::now().checked_sub(SETTLED) else {
@@ -338,7 +339,7 @@ fn stamp(root: &Path) -> Result<Stamp> {
     Ok(entries)
 }
 
-pub(super) fn open_dir(root: &Path, feature: Feature) -> Result<TensorInventory> {
+pub(super) fn open_dir(root: &Path, feature: Gemma4VqFeature) -> Result<TensorInventory> {
     let key = root.canonicalize().map_err(GgufError::Io)?;
     let before = stamp(root)?;
     let known = VERIFIED
@@ -530,7 +531,7 @@ fn drop_cache(path: &Path) {
 #[cfg(not(target_os = "linux"))]
 fn drop_cache(_: &Path) {}
 
-fn verify_dir(root: &Path, feature: Feature) -> Result<TensorInventory> {
+fn verify_dir(root: &Path, feature: Gemma4VqFeature) -> Result<TensorInventory> {
     let parts = parts(root, feature)?;
     let page = page_size();
     let mut result = TensorInventory {
@@ -671,8 +672,8 @@ mod tests {
         let id = crate::gemma4_vq::model::identify(root).expect("identify");
         assert_eq!(id.shape.variant, crate::Variant::Gemma4A4bVq);
         assert_eq!(id.split_count, 2);
-        let inventory = open_dir(root, Feature::Trunk).expect("open the release");
-        crate::gemma4_vq::validate_inventory(&inventory, Feature::Trunk).expect("layout");
+        let inventory = open_dir(root, Gemma4VqFeature::Trunk).expect("open the release");
+        crate::gemma4_vq::validate_inventory(&inventory, Gemma4VqFeature::Trunk).expect("layout");
         assert_eq!(inventory.tensors.len(), 12_177);
         assert_eq!(inventory.shards.len(), 2);
         // The embedding part is last, so native finds the token table there.
@@ -682,8 +683,9 @@ mod tests {
         );
         // The drafter, when this release ships it: 48 more tensors, its own
         // layout, and the trunk part still first.
-        if let Ok(with_mtp) = open_dir(root, Feature::Mtp) {
-            crate::gemma4_vq::validate_inventory(&with_mtp, Feature::Mtp).expect("mtp layout");
+        if let Ok(with_mtp) = open_dir(root, Gemma4VqFeature::Mtp) {
+            crate::gemma4_vq::validate_inventory(&with_mtp, Gemma4VqFeature::Mtp)
+                .expect("mtp layout");
             assert_eq!(with_mtp.tensors.len(), 12_177 + 48);
             assert_eq!(with_mtp.shards.len(), 3);
         }

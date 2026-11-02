@@ -2046,6 +2046,13 @@ pub fn validate_gguf(path: &std::path::Path) -> Result<Shape, ValidateError> {
         crate::ling31_vq::validate_inventory(&inventory)?;
         return Ok(id.shape);
     }
+    if path.is_dir() && crate::gemma4_vq::is_release(path) {
+        let id = crate::gemma4_vq::identify(path)?;
+        let inventory = TensorInventory::open(path)
+            .map_err(|e| ValidateError::TokenKey("Gemma-4 VQ inventory", e.token()))?;
+        crate::gemma4_vq::validate_inventory(&inventory, crate::Gemma4VqFeature::Trunk)?;
+        return Ok(id.shape);
+    }
     if path.is_dir() {
         let id = crate::glm_vq::identify(path)?;
         let inventory = TensorInventory::open(path)

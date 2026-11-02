@@ -404,6 +404,11 @@ impl TensorInventory {
             if crate::ling31_vq::is_release(path) {
                 return crate::ling31_vq::open_dir(path, crate::Ling31Feature::Trunk);
             }
+            // Gemma releases open their trunk; the drafter asks for
+            // `open_gemma4_vq` with the MTP feature.
+            if crate::gemma4_vq::is_release(path) {
+                return crate::gemma4_vq::open_dir(path, crate::Gemma4VqFeature::Trunk);
+            }
             return crate::glm_vq::open_dir(path);
         }
         let g = GgufFile::open(path)?;
@@ -423,6 +428,14 @@ impl TensorInventory {
     /// A MiniMax VQ release with the parts `feature` selects.
     pub fn open_minimax(path: &Path, feature: crate::MinimaxFeature) -> Result<Self, TensorError> {
         crate::minimax_vq::open_dir(path, feature)
+    }
+
+    /// A Gemma-4 VQ release with the parts `feature` selects.
+    pub fn open_gemma4_vq(
+        path: &Path,
+        feature: crate::Gemma4VqFeature,
+    ) -> Result<Self, TensorError> {
+        crate::gemma4_vq::open_dir(path, feature)
     }
 
     pub fn from_file(path: &Path, g: &GgufFile) -> Result<Self, TensorError> {

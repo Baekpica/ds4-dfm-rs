@@ -29,7 +29,7 @@ use crate::gguf::GgufFile;
 use crate::tensors::{TensorError, TensorInfo};
 
 pub use layout::EMBEDDING;
-pub use release::Feature;
+pub use release::Gemma4VqFeature;
 
 const ARCH: &[u8] = b"gemma4_vq";
 const NAMESPACE: &[u8] = b"gemma4_vq.";
@@ -87,7 +87,7 @@ fn q8_scale_finite(scale: &[u8]) -> bool {
 /// embedding part, whose rows the host reads per token, last.
 pub(super) fn open_dir(
     path: &std::path::Path,
-    feature: Feature,
+    feature: Gemma4VqFeature,
 ) -> Result<crate::tensors::TensorInventory> {
     release::open_dir(path, feature)
 }
@@ -112,8 +112,8 @@ pub(super) fn asset(root: &std::path::Path, name: &str) -> Result<Vec<u8>> {
 }
 
 /// Bytes of the device-resident parts (the embedding stays on SSD; the MTP
-/// part only with `Feature::Mtp`).
-pub(crate) fn resident_bytes(root: &std::path::Path, feature: Feature) -> Result<u64> {
+/// part only with `Gemma4VqFeature::Mtp`).
+pub(crate) fn resident_bytes(root: &std::path::Path, feature: Gemma4VqFeature) -> Result<u64> {
     release::resident_bytes(root, feature)
 }
 
@@ -136,10 +136,10 @@ pub(super) fn requested(g: &GgufFile) -> bool {
 /// drafter is its own part with its own tensor set.
 pub(super) fn validate_inventory(
     inventory: &crate::TensorInventory,
-    feature: Feature,
+    feature: Gemma4VqFeature,
 ) -> std::result::Result<(), crate::ValidateError> {
     let mut specs = layout::layouts();
-    if feature == Feature::Mtp {
+    if feature == Gemma4VqFeature::Mtp {
         specs.extend(layout::mtp_layouts());
     }
     let by_name: HashMap<&str, &crate::LayoutSpec> =

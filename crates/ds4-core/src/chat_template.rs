@@ -115,6 +115,13 @@ impl Template {
             let gguf = crate::ling31_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
         }
+        // Gemma's release ships no tokenizer_config.json: the trunk part
+        // carries the vocabulary and the official template verbatim under
+        // GGUF's own tokenizer.* namespace.
+        if path.is_dir() && crate::gemma4_vq::is_release(path) {
+            let gguf = crate::gemma4_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() {
             let gguf = crate::glm_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -129,7 +136,7 @@ impl Template {
         } else {
             path.parent().unwrap_or_else(|| Path::new("."))
         };
-        if path.is_dir() {
+        if path.is_dir() && !crate::gemma4_vq::is_release(path) {
             let beam = crate::beam_vq::is_release(path);
             let minimax = crate::minimax_vq::is_release(path);
             let axk2 = crate::axk2_vq::is_release(path);
