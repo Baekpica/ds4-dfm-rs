@@ -194,13 +194,13 @@ arm is still inside its bound, but it now spends half of it.
 
 | arm | result |
 | --- | --- |
-| direct | `RESULT PASS residency`, media identical between turns, 10.16 s per turn |
-| `--draft` | `RESULT PASS two-stage text_hit audio_frozen`, media identical, turn 2 = 27.5 s |
+| direct | `RESULT PASS residency`, media identical between turns, turn 2 = 8.32 s wall |
+| `--draft` | `RESULT PASS two-stage text_hit audio_frozen`, media identical, turn 2 = 29.27 s |
 
-The two-stage turn's own split (turn 2): draft 2.180 s, upscale 0.177 s,
-refine 1.131 s, load 19.286 s. The load is *two* loads there, and a repeat
-cannot hit: the engine holds one prepared graph and the two stages are two
-canvases, so what a repeat saves is the prompt encode, which it does.
+The two-stage turn's own split (turn 2): draft 2.218 s, upscale 0.153 s,
+refine 1.117 s, load 19.526 s, `evaluated=5`. The load is *two* loads there,
+and a repeat cannot hit: the engine holds one prepared graph and the two stages
+are two canvases, so what a repeat saves is the prompt encode, which it does.
 
 **Delivery clip**, 768 x 1344 x 141, 6 steps, seed 7, same prompt, one
 process each, `H3_VAE_GEMM`/`H3_VAE_ATTENTION` left at the environment's word
