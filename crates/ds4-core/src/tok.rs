@@ -135,6 +135,14 @@ pub struct Vocab {
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
+    /// tokenizer.json's `decoder` stage, run per token when text is emitted:
+    /// `decode_space` is the codepoint its Replace stage maps to U+0020
+    /// (Gemma-4: U+2581, its SentencePiece marker), 0 without such a stage;
+    /// `byte_fallback` turns a `<0xNN>` token into the byte NN, as the
+    /// ByteFallback stage does. Both come from the pinned tokenizer.json
+    /// (tok/gemma4.rs), never from a guess.
+    pub decode_space: u32,
+    pub byte_fallback: bool,
 }
 
 impl Vocab {
@@ -360,6 +368,8 @@ impl Vocab {
             dots3_endofsystem_id: -1,
             dots3_endofuser_id: -1,
             dots3_endoftext_id: -1,
+            decode_space: 0,
+            byte_fallback: false,
         };
         v.load_specials(g)?;
         Ok(v)
@@ -2809,11 +2819,30 @@ fn vocab_token_text(vocab: &Vocab, token: i32) -> Vec<u8> {
     if vocab_token_is_literal_special(s) {
         return s.clone();
     }
+    /* ByteFallback: the tokenizer.json byte token "<0xNN>" is the byte NN. */
+    if vocab.byte_fallback && s.len() == 6 && s.starts_with(b"<0x") && s[5] == b'>' {
+        let hex = |c: u8| -> Option<u8> {
+            match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            }
+        };
+        if let (Some(hi), Some(lo)) = (hex(s[3]), hex(s[4])) {
+            return vec![hi * 16 + lo];
+        }
+    }
     let mut out = Vec::with_capacity(s.len());
     let mut pos = 0usize;
     while pos < s.len() {
         let at = pos;
         let cp = utf8_decode_one(s, &mut pos);
+        /* Replace(U+2581 -> " "): the decoder's own space marker. */
+        if vocab.decode_space != 0 && cp == vocab.decode_space {
+            out.push(b' ');
+            continue;
+        }
         if let Some(b) = gpt2_codepoint_to_byte(cp) {
             out.push(b);
         } else {

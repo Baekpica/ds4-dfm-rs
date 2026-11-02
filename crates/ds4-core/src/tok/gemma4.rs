@@ -45,6 +45,10 @@ pub(super) fn specials(v: &mut Vocab, g: &GgufFile) -> Result<(), TokError> {
     v.tool_response_start_id = v.lookup("<|tool_response>")?;
     v.tool_response_end_id = v.lookup("<tool_response|>")?;
     v.dsml_id = -1;
+    /* The decoder stage, verbatim: Replace(U+2581 -> " "), ByteFallback, Fuse.
+     * Fuse only joins pieces, so these two flags are all the printer needs. */
+    v.decode_space = 0x2581;
+    v.byte_fallback = true;
     if (
         v.bos_id,
         v.eos_id,

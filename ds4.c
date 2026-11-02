@@ -37766,6 +37766,14 @@ struct ds4_vocab {
     uint32_t user_defined_max_len;
     bool user_defined_first[256];
     bool motif3_added_first[256];
+    /* tokenizer.json's `decoder` stage, which the piece printer runs on every
+     * token: `decode_space` is the codepoint its Replace stage maps to U+0020
+     * (Gemma-4: U+2581, its SentencePiece space marker), 0 when the vocabulary
+     * has no such stage; `byte_fallback` turns a `<0xNN>` token into one byte,
+     * as `ByteFallback` does. Both come from the pinned tokenizer.json, never
+     * from a guess (crates/ds4-core/src/tok/gemma4.rs). */
+    uint32_t decode_space;
+    bool byte_fallback;
 };
 
 #ifndef DS4_NO_GPU
@@ -39662,6 +39670,17 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         vocab->dsml_id = -1;
         return;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        /* The pinned tokenizer.json (revision 4d7ae498) declares a SentencePiece
+         * vocabulary behind a BPE model: normalizer Replace(" " -> U+2581),
+         * decoder Replace(U+2581 -> " ") then ByteFallback. The printer has to
+         * run that same decoder, or every space in the output is printed as the
+         * bare marker and a byte-fallback token as its literal "<0xNN>" text.
+         * The ids themselves come from tokenizer.ggml.*_token_id. */
+        vocab->decode_space = 0x2581;
+        vocab->byte_fallback = true;
+        return;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3) {
         if (!model_get_token_id(model, "tokenizer.ggml.bos_token_id", &vocab->bos_id))
             vocab->bos_id = vocab_lookup(vocab, "<|beginoftext|>");
@@ -40749,6 +40768,13 @@ static bool vocab_token_is_literal_special(ds4_str s) {
     return false;
 }
 
+static int hex_digit_value(unsigned char c) {
+    if (c >= '0' && c <= '9') return (int)(c - '0');
+    if (c >= 'a' && c <= 'f') return (int)(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (int)(c - 'A' + 10);
+    return -1;
+}
+
 static char *vocab_token_text(const ds4_vocab *vocab, int token, size_t *len) {
     if (token < 0 || token >= vocab->n_vocab) {
         if (len) *len = 0;
@@ -40758,6 +40784,18 @@ static char *vocab_token_text(const ds4_vocab *vocab, int token, size_t *len) {
     }
 
     ds4_str s = vocab->token[token];
+    /* ByteFallback: the tokenizer.json byte token "<0xNN>" is the byte NN. */
+    if (vocab->byte_fallback && s.len == 6 && s.ptr[0] == '<' && s.ptr[1] == '0' &&
+        s.ptr[2] == 'x' && s.ptr[5] == '>') {
+        const int hi = hex_digit_value(s.ptr[3]), lo = hex_digit_value(s.ptr[4]);
+        if (hi >= 0 && lo >= 0) {
+            char *out = xmalloc(2);
+            out[0] = (char)(hi * 16 + lo);
+            out[1] = '\0';
+            if (len) *len = 1;
+            return out;
+        }
+    }
     char *out = xmalloc((size_t)s.len + 1);
     if (vocab_token_is_literal_special(s)) {
         memcpy(out, s.ptr, (size_t)s.len);
@@ -40771,6 +40809,11 @@ static char *vocab_token_text(const ds4_vocab *vocab, int token, size_t *len) {
     while (pos < s.len) {
         const uint64_t at = pos;
         uint32_t cp = utf8_decode_one(s.ptr, s.len, &pos);
+        /* Replace(U+2581 -> " "): the decoder's own space marker. */
+        if (vocab->decode_space && cp == vocab->decode_space) {
+            out[n++] = ' ';
+            continue;
+        }
         int b = gpt2_codepoint_to_byte(cp);
         if (b >= 0) {
             out[n++] = (char)b;
