@@ -131,3 +131,7 @@ out. That is exactly the kind of inference the artifact contract exists to
 remove. The next template revision should either give the layouts distinct
 names in the release or reserve the magic properly, and the format page
 should warn that `DQV3` in the two repositories is not one format.
+
+The fused dot landed in `docs/gemma4-a4b-fused-dot-2026-11-02.md`; the
+"what this does not do" note above about materialising a whole tensor is
+what that unit solved.

@@ -659,6 +659,44 @@ impl<'a> VqMatrix<'a> {
         self.add_rows(out, row0, None);
     }
 
+    /// `x` dotted with one row, decoding the row's codewords on the way.
+    ///
+    /// This is the shape a forward pass needs: a 360448 x 2816 expert stack
+    /// is 4 GB decoded, so the activation is dotted against one row while the
+    /// row is still indices. The arithmetic mirrors the tools'
+    /// `Stage::dot_row_local` (`/data/VQ_Tools/crates/vq-format/src/lib.rs:468-478`)
+    /// exactly: one f32 accumulator, indices in order, each codeword summed in
+    /// dim order, and the row gain applied **after** the sum, not folded into
+    /// the terms.
+    pub fn dot_row(&self, row: usize, x: &[f32]) -> f32 {
+        let mut word = vec![0f32; usize::from(self.dim)];
+        self.dot_row_with(row, x, &mut word)
+    }
+
+    /// Add every row's [`Self::dot_row`] into `acc` at `row0`, the accumulator
+    /// contract of the tools' `dot_row_local` (`acc[row0 + r] +=`).
+    pub fn add_dot_into(&self, x: &[f32], acc: &mut [f32], row0: usize) {
+        let mut word = vec![0f32; usize::from(self.dim)];
+        for r in 0..self.rows as usize {
+            acc[row0 + r] += self.dot_row_with(r, x, &mut word);
+        }
+    }
+
+    /// `dot_row` with the caller's codeword buffer, so a matrix loop allocates
+    /// once.
+    fn dot_row_with(&self, row: usize, x: &[f32], word: &mut [f32]) -> f32 {
+        let dim = usize::from(self.dim);
+        let nidx_row = self.nidx_row();
+        let mut s = 0.0f32;
+        for i in 0..nidx_row {
+            self.codebook_word_into(self.index(row, i) as usize, word);
+            for d in 0..dim {
+                s += word[d] * x[i * dim + d];
+            }
+        }
+        s * self.gain(row)
+    }
+
     fn add_rows(&self, out: &mut [f32], row0: usize, gain_override: Option<&[f32]>) {
         let dim = usize::from(self.dim);
         let nidx_row = self.nidx_row();

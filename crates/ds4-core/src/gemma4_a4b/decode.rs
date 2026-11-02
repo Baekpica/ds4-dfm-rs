@@ -103,120 +103,218 @@ fn decode_sidecar(path: &Path, file: &[u8], entry: &Entry) -> Result<Tensor, Err
     Ok(Tensor { rows, cols, data })
 }
 
-fn decode_container(path: &Path, file: &[u8], entry: &Entry) -> Result<Tensor, Error> {
-    let what = path.display();
-    if file.len() < 36 || &file[0..4] != RQVQ {
-        return Err(Error::new(format!("{what}: not an RQVQ container")));
-    }
-    let dim = u16le(file, 4) as u32;
-    let nc = u16le(file, 6) as u32;
-    let stages = u16le(file, 8) as usize;
-    let groups = match u16le(file, 10) as usize {
-        0 | 1 => 1,
-        g => g,
-    };
-    let rows = u32le(file, 12) as usize;
-    let cols = u32le(file, 16) as usize;
-    let format = u32le(file, 20);
-    let payload = u64le(file, 24) as usize;
-    if rows != entry.rows || cols != entry.cols {
-        return Err(Error::new(format!(
-            "{what}: header is {rows}x{cols}, release says {}x{}",
-            entry.rows, entry.cols
-        )));
-    }
-    for (field, header, recorded) in [
-        ("dim", dim as usize, entry.dim),
-        ("nc", nc as usize, entry.nc),
-        ("stages", stages, entry.stages),
-        ("groups", groups, entry.groups),
-    ] {
-        if recorded != Some(header) {
+/// A byte-checked `RQVQ` container: the geometry a decode needs, with the file
+/// and the payload size each stage occupies.
+struct Container<'a> {
+    file: &'a [u8],
+    dim: u16,
+    nc: u32,
+    rows: usize,
+    cols: usize,
+    stages: usize,
+    groups: usize,
+    cb_width: usize,
+    /// Bytes in one payload; equal for every payload of a container, because
+    /// the group row count is `rows / groups` for all of them.
+    per: usize,
+}
+
+impl<'a> Container<'a> {
+    /// Read the 32-byte header and check it against the release's own record.
+    fn open(path: &Path, file: &'a [u8], entry: &Entry) -> Result<Container<'a>, Error> {
+        let what = path.display();
+        if file.len() < 36 || &file[0..4] != RQVQ {
+            return Err(Error::new(format!("{what}: not an RQVQ container")));
+        }
+        let dim = u16le(file, 4) as u32;
+        let nc = u16le(file, 6) as u32;
+        let stages = u16le(file, 8) as usize;
+        let groups = match u16le(file, 10) as usize {
+            0 | 1 => 1,
+            g => g,
+        };
+        let rows = u32le(file, 12) as usize;
+        let cols = u32le(file, 16) as usize;
+        let format = u32le(file, 20);
+        let payload = u64le(file, 24) as usize;
+        if rows != entry.rows || cols != entry.cols {
             return Err(Error::new(format!(
-                "{what}: header {field} is {header}, release says {recorded:?}"
+                "{what}: header is {rows}x{cols}, release says {}x{}",
+                entry.rows, entry.cols
             )));
         }
-    }
-    let cb_width = match format {
-        CB_F16 => 2,
-        CB_E4M3 => 1,
-        other => {
-            return Err(Error::new(format!(
-                "{what}: unknown codebook format {other:#010x}"
-            )))
+        for (field, header, recorded) in [
+            ("dim", dim as usize, entry.dim),
+            ("nc", nc as usize, entry.nc),
+            ("stages", stages, entry.stages),
+            ("groups", groups, entry.groups),
+        ] {
+            if recorded != Some(header) {
+                return Err(Error::new(format!(
+                    "{what}: header {field} is {header}, release says {recorded:?}"
+                )));
+            }
         }
-    };
-    let recorded = entry
-        .codebook
-        .ok_or_else(|| Error::new(format!("{what}: release records no codebook")))?;
-    let expected = if cb_width == 2 {
-        Codebook::F16
-    } else {
-        Codebook::E4M3
-    };
-    if recorded != expected {
-        return Err(Error::new(format!(
-            "{what}: header codebook {expected:?}, release says {recorded:?}"
-        )));
-    }
-    if dim == 0 || nc == 0 || stages == 0 || rows == 0 || cols == 0 {
-        return Err(Error::new(format!("{what}: header states a zero field")));
-    }
-    if rows % groups != 0 || cols % dim as usize != 0 {
-        return Err(Error::new(format!(
-            "{what}: {rows}x{cols} does not split into {groups} groups of dim {dim}"
-        )));
-    }
-    let kind = if &file[32..36] == DQV3 {
-        true
-    } else if &file[32..36] == DQVQ {
-        false
-    } else {
-        return Err(Error::new(format!(
-            "{what}: first payload is neither DQVQ nor DQV3"
-        )));
-    };
-    let recorded = entry
-        .payload
-        .ok_or_else(|| Error::new(format!("{what}: release records no payload kind")))?;
-    if recorded != if kind { Payload::V3 } else { Payload::V2 } {
-        return Err(Error::new(format!(
-            "{what}: payload kind {recorded:?} disagrees with the file"
-        )));
-    }
-    let payloads = stages * groups;
-    if file.len() != 32 + payload {
-        return Err(Error::new(format!(
-            "{what}: file is {} bytes, header says {}",
-            file.len(),
-            32 + payload
-        )));
-    }
-    if payload % payloads != 0 {
-        return Err(Error::new(format!(
-            "{what}: {payload} payload bytes do not divide into {payloads} payloads"
-        )));
-    }
-    let per = payload / payloads;
-    let group_rows = rows / groups;
-    let mut data = vec![0f32; rows * cols];
-    for p in 0..payloads {
-        let at = 32 + p * per;
-        let matrix = VqMatrix::from_payload(
-            &file[at..at + per],
+        let cb_width = match format {
+            CB_F16 => 2,
+            CB_E4M3 => 1,
+            other => {
+                return Err(Error::new(format!(
+                    "{what}: unknown codebook format {other:#010x}"
+                )))
+            }
+        };
+        let recorded = entry
+            .codebook
+            .ok_or_else(|| Error::new(format!("{what}: release records no codebook")))?;
+        let expected = if cb_width == 2 {
+            Codebook::F16
+        } else {
+            Codebook::E4M3
+        };
+        if recorded != expected {
+            return Err(Error::new(format!(
+                "{what}: header codebook {expected:?}, release says {recorded:?}"
+            )));
+        }
+        if dim == 0 || nc == 0 || stages == 0 || rows == 0 || cols == 0 {
+            return Err(Error::new(format!("{what}: header states a zero field")));
+        }
+        if rows % groups != 0 || cols % dim as usize != 0 {
+            return Err(Error::new(format!(
+                "{what}: {rows}x{cols} does not split into {groups} groups of dim {dim}"
+            )));
+        }
+        let kind = if &file[32..36] == DQV3 {
+            true
+        } else if &file[32..36] == DQVQ {
+            false
+        } else {
+            return Err(Error::new(format!(
+                "{what}: first payload is neither DQVQ nor DQV3"
+            )));
+        };
+        let recorded = entry
+            .payload
+            .ok_or_else(|| Error::new(format!("{what}: release records no payload kind")))?;
+        if recorded != if kind { Payload::V3 } else { Payload::V2 } {
+            return Err(Error::new(format!(
+                "{what}: payload kind {recorded:?} disagrees with the file"
+            )));
+        }
+        let payloads = stages * groups;
+        if file.len() != 32 + payload {
+            return Err(Error::new(format!(
+                "{what}: file is {} bytes, header says {}",
+                file.len(),
+                32 + payload
+            )));
+        }
+        if payload % payloads != 0 {
+            return Err(Error::new(format!(
+                "{what}: {payload} payload bytes do not divide into {payloads} payloads"
+            )));
+        }
+        Ok(Container {
+            file,
+            dim: dim as u16,
+            nc,
+            rows,
+            cols,
+            stages,
+            groups,
             cb_width,
-            dim as u16,
+            per: payload / payloads,
+        })
+    }
+
+    fn count(&self) -> usize {
+        self.stages * self.groups
+    }
+
+    /// Payload `p`, in file order: stage-major, group-minor.
+    fn payload(&self, p: usize) -> &'a [u8] {
+        let at = 32 + p * self.per;
+        &self.file[at..at + self.per]
+    }
+
+    /// Checks the payload against the container and returns it opened.
+    fn matrix(&self, path: &Path, p: usize, group_rows: usize) -> Result<VqMatrix<'a>, Error> {
+        let what = path.display();
+        let matrix = VqMatrix::from_payload(
+            self.payload(p),
+            self.cb_width,
+            self.dim,
             group_rows as u32,
-            cols as u32,
+            self.cols as u32,
         )
         .map_err(|e| Error::new(format!("{what}: payload {p}: {e}")))?;
-        if matrix.nc != nc {
+        if matrix.nc != self.nc {
             return Err(Error::new(format!(
-                "{what}: payload {p} states nc {}, header {nc}",
-                matrix.nc
+                "{what}: payload {p} states nc {}, header {}",
+                matrix.nc, self.nc
             )));
         }
-        matrix.add_into(&mut data, (p % groups) * group_rows);
+        Ok(matrix)
     }
-    Ok(Tensor { rows, cols, data })
+}
+
+fn decode_container(path: &Path, file: &[u8], entry: &Entry) -> Result<Tensor, Error> {
+    let container = Container::open(path, file, entry)?;
+    let group_rows = container.rows / container.groups;
+    let mut data = vec![0f32; container.rows * container.cols];
+    for p in 0..container.count() {
+        let matrix = container.matrix(path, p, group_rows)?;
+        matrix.add_into(&mut data, (p % container.groups) * group_rows);
+    }
+    Ok(Tensor {
+        rows: container.rows,
+        cols: container.cols,
+        data,
+    })
+}
+
+/// `x` dotted with every row of an entry without materialising the matrix:
+/// the sum over stages of each payload's fused dot, which is the shape a
+/// forward pass uses (a 360448 x 2816 expert stack is 4 GB decoded). A copied
+/// entry is dotted from its f32 sidecar.
+pub fn matvec(dir: &Path, entry: &Entry, x: &[f32]) -> Result<Vec<f32>, Error> {
+    let path = dir.join(format!("{}.bin", entry.name));
+    let file = std::fs::read(&path).map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
+    if !entry.encoded {
+        let tensor = decode_sidecar(&path, &file, entry)?;
+        if x.len() != tensor.cols {
+            return Err(Error::new(format!(
+                "{}: x has {} values, the tensor has {} columns",
+                path.display(),
+                x.len(),
+                tensor.cols
+            )));
+        }
+        let mut out = vec![0f32; tensor.rows];
+        for (row, slot) in out.iter_mut().enumerate() {
+            let mut s = 0.0f32;
+            for (col, value) in x.iter().enumerate() {
+                s += tensor.data[row * tensor.cols + col] * value;
+            }
+            *slot = s;
+        }
+        return Ok(out);
+    }
+    let container = Container::open(&path, &file, entry)?;
+    if x.len() != container.cols {
+        return Err(Error::new(format!(
+            "{}: x has {} values, the tensor has {} columns",
+            path.display(),
+            x.len(),
+            container.cols
+        )));
+    }
+    let group_rows = container.rows / container.groups;
+    let mut out = vec![0f32; container.rows];
+    for p in 0..container.count() {
+        let matrix = container.matrix(&path, p, group_rows)?;
+        matrix.add_dot_into(x, &mut out, (p % container.groups) * group_rows);
+    }
+    Ok(out)
 }

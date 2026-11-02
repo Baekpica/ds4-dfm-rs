@@ -8,7 +8,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ds4_core::gemma4_a4b::{decode, is_release, Codebook, Config, Entry, LayerType, Payload};
+use ds4_core::gemma4_a4b::{
+    decode, is_release, matvec, Codebook, Config, Entry, LayerType, Payload,
+};
 use ds4_core::{
     route_architecture, shape_for_variant, ArchRoute, HostNeed, ModelFamily, ReuseKind, Shape,
     SpecLane, Support, Variant,
@@ -476,6 +478,40 @@ fn a_copied_sidecar_is_read_as_f32() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn the_fused_dot_matches_the_decoded_row() {
+    let dir = scratch("dot");
+    let (file, _, _, _, _) = fixture();
+    let mut e = entry("model.language_model.layers.0.weight", 2, 8);
+    write_entry(&dir, &mut e, &file);
+    let per = (file.len() - 32) / 2;
+    let m0 = ds4_core::VqMatrix::from_payload(&file[32..32 + per], 2, 4, 2, 8).unwrap();
+    let m1 = ds4_core::VqMatrix::from_payload(&file[32 + per..], 2, 4, 2, 8).unwrap();
+    let t = decode(&dir, &e).unwrap();
+
+    let x = [0.5f32, -1.0, 2.0, 0.25, 1.5, -0.5, 0.75, 3.0];
+    for r in 0..2usize {
+        // The reference order: the decoded row, column by column.
+        let mut want = 0.0f32;
+        for (c, value) in x.iter().enumerate() {
+            want += t.at(r, c) * value;
+        }
+        let got = m0.dot_row(r, &x) + m1.dot_row(r, &x);
+        assert_eq!(got.to_bits(), want.to_bits(), "row {r}");
+    }
+
+    // The matrix form accumulates every payload at its group's first row.
+    let all = matvec(&dir, &e, &x).unwrap();
+    assert_eq!(all.len(), 2);
+    for r in 0..2usize {
+        assert_eq!(
+            all[r].to_bits(),
+            (m0.dot_row(r, &x) + m1.dot_row(r, &x)).to_bits()
+        );
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The builder's own relL2 column, in percent (`c/gpu/build-vq-gpu.c:544-552`).
 fn manifest_rel_l2(dir: &Path, name: &str) -> f64 {
     let text = fs::read_to_string(dir.join("manifest.txt")).unwrap();
@@ -549,6 +585,34 @@ fn the_reference_tensors_decode_to_the_source() {
         assert!(
             (rel - recorded).abs() < 0.01,
             "{name}: decoded relL2 {rel:.4}%, the builder recorded {recorded:.4}%"
+        );
+
+        // The fused dot must agree with the dot of the decoded row, because
+        // the forward never materialises a matrix. The two orders reassociate
+        // the sum (the gain is applied after the dot), so this is a measured
+        // bound, not bit equality; the fixture test proves bit equality where
+        // the values are exact.
+        let x: Vec<f32> = (0..got.cols)
+            .map(|c| ((c % 17) as f32 - 8.0) * 0.125)
+            .collect();
+        let fused = matvec(&dir, e, &x).unwrap();
+        let mut max_abs = 0f32;
+        let mut scale = 0f32;
+        for r in 0..got.rows {
+            let mut want = 0.0f32;
+            for (c, value) in x.iter().enumerate() {
+                want += got.at(r, c) * value;
+            }
+            scale = scale.max(want.abs());
+            max_abs = max_abs.max((fused[r] - want).abs());
+        }
+        println!(
+            "GEMMA4_MATVEC {name} rows={} max_abs={max_abs:e} scale={scale:e}",
+            got.rows
+        );
+        assert!(
+            max_abs <= 1e-4 * scale.max(1.0),
+            "{name}: fused dot differs by {max_abs:e}, row scale {scale:e}"
         );
         checked += 1;
     }
