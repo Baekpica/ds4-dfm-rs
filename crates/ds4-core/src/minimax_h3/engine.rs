@@ -468,7 +468,12 @@ impl Engine {
         };
         dit.denoise_with(&mut video, &mut audio, request.reuse, Some(&mut progress))
             .map_err(|error| EngineError::new(format!("denoise: {error}")))?;
-        let draft_seconds = denoise_started.elapsed().as_secs_f64();
+        // The whole pass when there is one stage, the draft's share when there
+        // are two: `draft_seconds` stays zero on the single pass so a log line
+        // never calls the whole denoise a draft.
+        let stage_seconds = denoise_started.elapsed().as_secs_f64();
+        let mut draft_seconds = 0.0;
+        let mut denoise_seconds = stage_seconds;
         let draft_audio_hash = fnv_f32(&audio);
         let mut refine_seconds = 0.0;
         let mut upscale_seconds = 0.0;
@@ -566,11 +571,12 @@ impl Engine {
             dit.denoise_refine(&mut latent, &audio)
                 .map_err(|error| EngineError::new(format!("refine: {error}")))?;
             refine_seconds = refine_started.elapsed().as_secs_f64();
+            draft_seconds = stage_seconds;
+            denoise_seconds = draft_seconds + refine_seconds;
             audio_frozen = fnv_f32(&audio) == draft_audio_hash;
             video = latent;
             evaluated += 1;
         }
-        let denoise_seconds = draft_seconds + refine_seconds;
 
         let video_hash = fnv_f32(&video);
         let audio_hash = fnv_f32(&audio);
