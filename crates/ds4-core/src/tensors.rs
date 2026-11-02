@@ -27,6 +27,7 @@ pub enum TensorError {
     MinimaxVq(&'static str),
     Axk2Vq(&'static str),
     Mimo2Vq(&'static str),
+    Gemma4Vq(&'static str),
 }
 
 impl TensorError {
@@ -47,6 +48,7 @@ impl TensorError {
             TensorError::MinimaxVq(reason) => format!("minimax-vq {reason}"),
             TensorError::Axk2Vq(reason) => format!("axk2-vq {reason}"),
             TensorError::Mimo2Vq(reason) => format!("mimo2-vq {reason}"),
+            TensorError::Gemma4Vq(reason) => format!("gemma4-vq {reason}"),
         }
     }
 }
@@ -318,7 +320,9 @@ fn parse_one(
     }
     // MiMo, A.X-K2, MiniMax and Beam parts carry GVQ1 tensors GLM's
     // validator would claim.
-    if crate::mimo2_vq::requested(g) {
+    if crate::gemma4_vq::requested(g) {
+        crate::gemma4_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::mimo2_vq::requested(g) {
         crate::mimo2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::axk2_vq::requested(g) {
         crate::axk2_vq::validate_part(g, &mut tensors, pos, data_pos)?;

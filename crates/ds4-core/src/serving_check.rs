@@ -1085,6 +1085,8 @@ mod tests {
             Variant::Axk2Vq,
             Variant::Mimo26FlashVq,
         ];
+        // Gemma-4 VQ has no forward in this tree yet and declares no serving
+        // lane; it joins this sweep when the engine lands.
         for v in &all {
             match v {
                 Variant::Flash
@@ -1109,7 +1111,8 @@ mod tests {
                 | Variant::BeamVq
                 | Variant::MinimaxVq
                 | Variant::Axk2Vq
-                | Variant::Mimo26FlashVq => {}
+                | Variant::Mimo26FlashVq
+                | Variant::Gemma4A4bVq => {}
             }
         }
         all

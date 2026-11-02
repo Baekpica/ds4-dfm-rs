@@ -970,6 +970,29 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
+        // gemma4_vq verifies, binds and refuses; it has no forward in this
+        // tree yet, so it declares nothing qualified and no speculative lane.
+        // Its MTP drafter is a second checkpoint, hence Sidecar.
+        ModelFamily::Gemma4Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::None,
+            reuse_support: Support::None,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(262_144),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         // Banks own their MSA index keys and NVFP4 K/V over graph 0's
         // scratch; the native 1M context leaves room for one. The release's
         // DSpark part (mapped only when drafting, as Ling-3.1's MTP part)
@@ -1644,6 +1667,7 @@ impl ServingCaps {
             Variant::BeamVq => "beam_vq",
             Variant::MinimaxVq => "minimax_m3_vq",
             Variant::Axk2Vq => "axk2_vq",
+            Variant::Gemma4A4bVq => "gemma4_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",

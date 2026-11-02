@@ -16,8 +16,8 @@ mod bind;
 pub mod chat_template;
 mod dots3_mtp;
 mod engram;
-// The reader, the family variant and the dispatch land in the next unit; the
-// layout is transcribed from the emitted artifact first.
+// Identity, layout, part verification and binding are live; the open path and
+// the forward land in the next units, so some entry points have no caller yet.
 #[allow(dead_code)]
 mod gemma4_vq;
 mod gguf;
@@ -1413,6 +1413,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
         (g, Vocab::load_path(path, shape.family))
     } else if shape.family == ModelFamily::Axk2Vq {
         let g = axk2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Gemma4Vq {
+        let g = gemma4_vq::metadata(path).map_err(|e| Error {
             code: 1,
             message: format!("metadata failed: {}", e.token()),
         })?;

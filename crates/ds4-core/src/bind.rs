@@ -998,6 +998,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::BeamVq => return layout_names(crate::beam_vq::layouts()),
         ModelFamily::MinimaxVq => return layout_names(crate::minimax_vq::layouts()),
         ModelFamily::Axk2Vq => return layout_names(crate::axk2_vq::layouts()),
+        ModelFamily::Gemma4Vq => return layout_names(crate::gemma4_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");

@@ -372,6 +372,14 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
+            // The artifact carries no tokenizer metadata yet, so this family
+            // refuses at load rather than guessing special tokens. The
+            // tokenizer unit emits it from the checkpoint's tokenizer.json.
+            ModelFamily::Gemma4Vq => {
+                return Err(TokError::InvalidTokenizer(
+                    "gemma4_vq carries no tokenizer metadata",
+                ))
+            }
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -2411,6 +2419,10 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
+        // Unreachable: the vocabulary load refuses this family until the
+        // artifact carries its tokenizer. It encodes nothing rather than
+        // borrowing another family's pre-tokenizer.
+        ModelFamily::Gemma4Vq => {}
     }
 }
 
