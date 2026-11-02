@@ -1,5 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
+GEMMA4_NATIVE_INCS := ds4_gemma4_plan.h ds4_gemma4_bind.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
@@ -826,7 +827,7 @@ rax.o: rax.c rax.h rax_malloc.h
 linenoise.o: linenoise.c linenoise.h
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ linenoise.c
 
-ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
+ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) $(GEMMA4_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4.c
 
 # Native checkpoint changes must reach incremental production/test builds.
@@ -1920,6 +1921,16 @@ test-glm-vq-mtp-mode: tests/test_glm_vq_mtp_mode
 .PHONY: test-glm-vq-bind
 test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
+
+# The Gemma-4 bind gate reads the artifact's own tensor directory: one
+# `name type dim0 [dim1 ...]` line per tensor, exactly what
+# `vq-gguf list --file <part>` prints, over every part of the release.
+tests/gemma4_bind: tests/gemma4_bind.c ds4_gemma4_bind.inc ds4_gemma4_plan.h
+	$(CC) $(CFLAGS) -o $@ tests/gemma4_bind.c $(LDLIBS)
+
+.PHONY: test-gemma4-bind
+test-gemma4-bind: tests/gemma4_bind
+	./tests/gemma4_bind "$(GEMMA4_INVENTORY)"
 
 tests/test_glm_vq_quote.o: tests/test_glm_vq_quote.c ds4.c
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<

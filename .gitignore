@@ -300,3 +300,6 @@ tests/naive_banks
 
 # Compiler-generated header dependencies.
 *.o.d
+
+# Gemma-4 native bind gate (make test-gemma4-bind)
+/tests/gemma4_bind

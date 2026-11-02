@@ -2,7 +2,7 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 48546032 (plus the tokenizer unit below, unpushed)
+last_updated_commit: 48546032 (W1 and W2 are on top of it, unpushed)
 sibling_repo: /data/VQ_tools branch dev
 handoff_written_at: 2026-11-02T23:30:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
@@ -72,11 +72,15 @@ W0 — artifact and Rust contract. DONE.
 
 W1 — Rust tokenizer and chat template. DONE this session (evidence below).
 
-W2 — native family skeleton and binding.
-  ds4_gemma4_plan.h, ds4_gemma4.h, ds4_gemma4_bind.inc; ds4.c include and
-  arch dispatch (`config_validate_gemma4_model`, `ds4_session_is_gemma4`,
-  weight bind, memory census); Makefile include lists and object deps.
-  Gate: ds4 opens the release, binds every role, prints the plan, no GPU.
+W2 — native family skeleton and binding. DONE this session (evidence below).
+  ds4_gemma4_plan.h (the two attention geometries as functions of the
+  layer, the KV/memory plan), ds4_gemma4_bind.inc (the pointer adapter over
+  the artifact's own HF names), ds4.c family and variant values, the shape
+  constant, the layer struct, the weights_bind arm, the host-shape arm, the
+  free, and the Makefile include list. The host shape bypasses
+  config_validate_model (ds4.c:73369-73378), so the family needs no C-side
+  metadata validation: Rust owns it.
+  Gate: tests/gemma4_bind.c (make test-gemma4-bind) over `vq-gguf list`.
 
 W3 — the CPU engine.
   ds4_gemma4_graph.inc: 30 layers, sliding-1024 attention on 25 layers and
@@ -155,6 +159,23 @@ W1, tokenizer and chat template:
   single turn, a system turn with thinking off, and a multi-turn chat.
   Ids are compared element for element against the HF pipeline, and chat
   text byte for byte against the official Jinja.
+
+W2, native skeleton and binding:
+
+  ds4_gemma4_plan.h, ds4_gemma4_bind.inc, tests/gemma4_bind.c, the ds4.c
+  family/variant/shape/struct/dispatch/free edits and the Makefile target.
+  Evidence:
+
+    make ds4_cpu.o                        (12 s, no errors)
+    make test-gemma4-bind \
+      GEMMA4_INVENTORY=/data/tmp/gemma4-release-inventory.txt
+    GEMMA4_BIND_PASS tensors=12177 layers=30 experts=128
+
+  The inventory is `vq-gguf list` over both parts (the embedding part first
+  in the file, 12177 lines); the gate parses the stored type and dims, so
+  every `tensor_expect_layout` check in the adapter runs against the
+  artifact, and it asserts that a full layer's value projection is its own
+  key projection (attention_k_eq_v).
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

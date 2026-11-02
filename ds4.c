@@ -45,6 +45,7 @@
 #include "ds4_ple.h"
 #include "cuda/qwen38_ple.h"
 #include "ds4_naive_plan.h"
+#include "ds4_gemma4_plan.h"
 #include "ds4_iquest_ref.h"
 
 #define STBI_NO_STDIO
@@ -391,6 +392,7 @@ typedef enum {
     DS4_MODEL_FAMILY_BEAM_VQ     = 16,
     DS4_MODEL_FAMILY_MINIMAX_VQ  = 17,
     DS4_MODEL_FAMILY_AXK2_VQ     = 18,
+    DS4_MODEL_FAMILY_GEMMA4      = 19,
 } ds4_model_family;
 
 typedef enum {
@@ -419,6 +421,8 @@ typedef enum {
     DS4_VARIANT_MINIMAX_VQ      = 20,
     DS4_VARIANT_AXK2_VQ         = 21,
     DS4_VARIANT_MIMO26_FLASH_VQ = 22,
+    /* Mirrors the Rust Variant::Gemma4A4bVq (crates/ds4-core/src/shape.rs). */
+    DS4_VARIANT_GEMMA4_A4B_VQ   = 23,
 } ds4_variant;
 
 typedef struct {
@@ -767,6 +771,28 @@ static const ds4_shape DS4_SHAPE_AXK2_VQ = {
     .rope_freq_base = 1000000.0f, .rope_scale_factor = 2.0f,
     .rope_yarn_beta_fast = 32.0f, .rope_yarn_beta_slow = 1.0f,
     .rope_orig_ctx = UINT64_C(131072),
+};
+
+/* Gemma-4 26B A4B VQ (crates/ds4-core/src/shape.rs SHAPE_GEMMA4_A4B_VQ):
+ * 30 layers, 25 sliding-window and 5 full. One struct cannot state both
+ * attention geometries, so the values below are the sliding majority and
+ * ds4_gemma4_plan.h carries the per-layer functions the runtime must use
+ * (full layers: head_dim 512, 2 KV heads, rope base 1e6, rotary 128 of 512). */
+static const ds4_shape DS4_SHAPE_GEMMA4_A4B_VQ = {
+    .name = "Gemma-4-26B-A4B-VQ",
+    .family = DS4_MODEL_FAMILY_GEMMA4,
+    .variant = DS4_VARIANT_GEMMA4_A4B_VQ,
+    .n_layer = G4_LAYERS,
+    .n_embd = G4_EMBED, .n_vocab = G4_VOCAB,
+    .n_head = G4_HEADS, .n_head_kv = G4_KV_HEADS,
+    .n_head_dim = G4_HEAD_DIM, .n_value_dim = G4_HEAD_DIM, .n_rot = G4_ROT,
+    .n_expert = G4_EXPERTS, .n_expert_used = G4_USED,
+    .n_ff_exp = G4_FF, .n_ff_dense = G4_DENSE,
+    .n_swa = G4_WINDOW, .n_full_attn_count = 5,
+    .use_rope = true, .use_qk_norm = true,
+    .rms_eps = 1e-6f,
+    .rope_freq_base = 1000000.0f, .rope_freq_base_swa = 10000.0f,
+    .rope_scale_factor = 1.0f,
 };
 
 /* release.json r13p8_layers: the twenty layers with the 8-bit residual stage. */
@@ -2992,6 +3018,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_AXK2_VQ:
         g_ds4_shape = DS4_SHAPE_AXK2_VQ;
+        break;
+    case DS4_VARIANT_GEMMA4_A4B_VQ:
+        g_ds4_shape = DS4_SHAPE_GEMMA4_A4B_VQ;
         break;
     case DS4_VARIANT_QWEN35_27B:
         g_ds4_shape = DS4_SHAPE_QWEN35;
@@ -5661,6 +5690,22 @@ typedef struct {
     uint32_t matrices[3 * DS4_MIMO2VQ_EXPERTS];
 } ds4_mimo2vq_layer;
 
+/* Gemma-4 VQ: per layer the seven RMSNorms in execution order, the
+ * post-norm scale, the two per-head norms, the router with its input and
+ * per-expert scales, one book per expert stack and the 128 x (gate, up,
+ * down) GVQ1 matrices. A full layer has no v_proj: v borrows k
+ * (attention_k_eq_v). */
+typedef struct {
+    ds4_tensor *norm[7];
+    ds4_tensor *layer_scalar;
+    ds4_tensor *q, *k, *v, *o;
+    ds4_tensor *attn_norm[2];
+    ds4_tensor *dense_gate, *dense_up, *dense_down;
+    ds4_tensor *router, *router_scale, *router_per_expert;
+    ds4_tensor *book_down, *book_gate_up;
+    ds4_tensor *gate[G4_EXPERTS], *up[G4_EXPERTS], *down[G4_EXPERTS];
+} ds4_gemma4_layer;
+
 /* A.X-K2: the gated RMSNorms' rank-16 gates and the routed experts with
  * their gate (4L), up (4L+3) and down (4L+2) books. */
 typedef struct {
@@ -5684,6 +5729,7 @@ typedef struct {
     ds4_minimax_draft *minimax_draft; /* MiniMax DSpark, when its part is mapped. */
     ds4_axk2_layer *axk2;       /* A.X-K2 VQ: gated-norm gates and layers 1-60's experts. */
     ds4_mimo2vq_layer *mimo2vq; /* MiMo VQ: layers 1-47's experts (index il - 1). */
+    ds4_gemma4_layer *gemma4;   /* Gemma-4 VQ: all 30 layers, experts included. */
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -10164,6 +10210,7 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
 #include "ds4_mimo2_plan.h"
 #include "ds4_mimo2_bind.inc"
 #include "ds4_mimo2vq_bind.inc"
+#include "ds4_gemma4_bind.inc"
 #include "ds4_naive_bind.inc"
 #include "ds4_iquest_bind.inc"
 
@@ -10435,6 +10482,11 @@ static void weights_bind(
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         naive_bind(w, m);
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        gemma4_bind(w, m);
         return;
     }
 
@@ -11109,6 +11161,7 @@ static void weights_free(ds4_weights *w) {
     free(w->minimax_draft);
     free(w->axk2);
     free(w->mimo2vq);
+    free(w->gemma4);
     memset(w, 0, sizeof(*w));
 }
 
