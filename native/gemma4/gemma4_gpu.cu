@@ -459,8 +459,20 @@ __global__ void expert_gu_persist_kernel(const Payload a, const Payload b, const
         const size_t base = (size_t) e * (size_t) stride + (size_t) r0;
         for (uint32_t j = 0; j < n; j++) {
             const size_t r = base + j;
-            const float g = v3blk_row_dot<DIM, 0>(a.dev, a.l, r, x);
-            const float v = v3blk_row_dot<DIM, 0>(b.dev, b.l, r + (size_t) ff, x);
+            /* A row of this container carries the two VQ stages, not gate and
+             * up: both payloads hold the tensor's 2*ff rows, with the gate at
+             * row j and the up half at row ff+j inside the expert's block. So
+             * one output row reads four rows of two payloads - gate stage 0
+             * plus gate stage 1, up stage 0 plus up stage 1 - and the order of
+             * the two terms is the legacy path's (stage 0 assigns, stage 1
+             * accumulates). Verified against the container bytes and the
+             * activation on the host: row 143616 of layer 0's gate_up is
+             * -0.4833564 (stage 0) plus -0.0456458 (stage 1), -0.5290022, the
+             * eight-launch value. */
+            const float g = v3blk_row_dot<DIM, 0>(a.dev, a.l, r, x)
+                          + v3blk_row_dot<DIM, 0>(b.dev, b.l, r, x);
+            const float v = v3blk_row_dot<DIM, 0>(a.dev, a.l, r + (size_t) ff, x)
+                          + v3blk_row_dot<DIM, 0>(b.dev, b.l, r + (size_t) ff, x);
             if (lane == 0) {
                 const float kk = 0.7978846f; /* sqrt(2/pi), gelu_mul_blocks_kernel */
                 act[(size_t) p * (size_t) ff + r0 + j] =

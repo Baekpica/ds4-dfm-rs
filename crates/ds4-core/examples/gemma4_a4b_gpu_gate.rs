@@ -2146,9 +2146,10 @@ fn model_gate(
     // The expert block: the engine's persistent walk against the eight-launch
     // path, at the same position and interleaved for the same reason. The two
     // paths compute the same rows with the same arithmetic, so the logits are
-    // compared first; only then is the time meaningful. The persistent walk is
-    // not the default yet (it fails this comparison), so the A/B runs only when
-    // GM4_EXPERT_PERSIST asks for it and the default gate stays green.
+    // compared first; only then is the time meaningful. They agree to the bit
+    // (0.000e0) and the walk is the slower of the two at this geometry, so it
+    // is not the default: the A/B runs only when GM4_EXPERT_PERSIST asks for
+    // it and the default gate stays the eight-launch path.
     if std::env::var_os("GM4_EXPERT_PERSIST").is_some() {
         let mut legacy = vec![0f32; vocab];
         let mut persistent = vec![0f32; vocab];

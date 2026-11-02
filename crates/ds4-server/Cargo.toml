@@ -20,7 +20,7 @@ path = "src/bin/h3-server-rs.rs"
 
 [[bin]]
 name = "gemma4-server-rs"
-path = "src/bin/gemma4-server-rs.rs"
+path = "src/bin/gemma4-server-rs/main.rs"
 required-features = ["gemma4-gpu"]
 
 [features]
