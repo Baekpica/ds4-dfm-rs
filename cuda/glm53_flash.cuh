@@ -4,6 +4,7 @@
 #include "glm_vq_flash.cuh"
 #include "glm_vq_index.cuh"
 #include "glm_vq_gemv.cuh"
+#include "glm_vq_kda.cuh"
 
 /* Fast paths of the compact (mixed-artifact) GLM-5.3 graph.
  *
@@ -304,6 +305,74 @@ extern "C" int ds4_gpu_glm53_hc_mix(ds4_gpu_tensor *mix, const ds4_gpu_tensor *r
             (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
     }
     return cuda_ok(cudaGetLastError(), "GLM-5.3 mHC mix") ? 1 : -1;
+}
+
+/* Chunked KDA prefill on tensor cores. The Solar F32 chunk kernels and the
+ * separate gated head norm were 1.64 of an 8K prefill's 11.3 s (the scan
+ * walks 32 chunks per head on SIMT). GLM VQ's local + scan kernels build
+ * 64-token chunk records with F16 MMAs and keep each head's state in
+ * registers; the scan also applies the gated RMS norm. State and conv tails
+ * keep the Solar layout ([head][key][value], [channel][4]) and the same
+ * decay/norm/beta algebra, so decode's recurrence continues from them.
+ * Arithmetic: the VQ recurrence's, i.e. q/k/v after conv and SiLU, beta and
+ * the output round to BF16 (the source model's boundaries); q and the
+ * records are F16. `scratch` takes the records (90.6 KiB per row) and a BF16
+ * copy of o_norm (exact: its values are BF16). 1/0/-1 as above. */
+__global__ static void glm53_f32_bf16_kernel(__nv_bfloat16 *out, const float *in, uint32_t count) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < count) { out[i] = __float2bfloat16_rn(in[i]); }
+}
+
+extern "C" int ds4_gpu_glm53_kda_mma(ds4_gpu_tensor *out, ds4_gpu_tensor *scratch,
+        ds4_gpu_tensor *state, ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+        const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight, const ds4_gpu_tensor *v_weight,
+        const ds4_gpu_tensor *a_log, const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *norm, uint32_t rows, uint32_t heads, float lower_bound, float eps) {
+    static int ready = -1;
+    if (ready < 0) {
+        const char *env = getenv("DS4_GLM53_KDA_MMA");
+        ready = (!env || strcmp(env, "0") != 0) &&
+            cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, float>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KLOCAL_SMEM), "GLM-5.3 KDA local smem") &&
+            cuda_ok(cudaFuncSetAttribute(glmvq_kda_scan<float, float>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KSCAN_SMEM), "GLM-5.3 KDA scan smem");
+    }
+    const uint64_t width = (uint64_t)heads * GLMVQ_KDA_DIM, count = (uint64_t)rows * width;
+    const uint64_t tail = width * GLMVQ_CONV;
+    const uint64_t records = (uint64_t)((rows + GLMVQ_KC - 1) / GLMVQ_KC) * heads * GLMVQ_KR_BYTES;
+    if (!ready || ds4_capture_active() || rows < GLMVQ_KC || !heads ||
+        !glm53_compact_has(out, count, sizeof(float)) || !glm53_compact_has(gate, count, sizeof(float)) ||
+        !glm53_compact_has(q, count, sizeof(float)) || !glm53_compact_has(k, count, sizeof(float)) ||
+        !glm53_compact_has(v, count, sizeof(float)) || !glm53_compact_has(forget, count, sizeof(float)) ||
+        !glm53_compact_has(beta, (uint64_t)rows * heads, sizeof(float)) ||
+        !glm53_compact_has(state, width * GLMVQ_KDA_DIM, sizeof(float)) ||
+        !glm53_compact_has(q_tail, tail, sizeof(float)) || !glm53_compact_has(k_tail, tail, sizeof(float)) ||
+        !glm53_compact_has(v_tail, tail, sizeof(float)) || !glm53_compact_has(q_weight, tail, sizeof(float)) ||
+        !glm53_compact_has(k_weight, tail, sizeof(float)) || !glm53_compact_has(v_weight, tail, sizeof(float)) ||
+        !glm53_compact_has(a_log, heads, sizeof(float)) || !glm53_compact_has(dt_bias, width, sizeof(float)) ||
+        !glm53_compact_has(norm, GLMVQ_KDA_DIM, sizeof(float)) ||
+        !glm53_compact_has(scratch, records + GLMVQ_KDA_DIM * sizeof(__nv_bfloat16), 1u)) {
+        return 0;
+    }
+    const cudaStream_t stream = ds4_current_stream();
+    uint8_t *rec = (uint8_t *)scratch->ptr;
+    __nv_bfloat16 *norm16 = (__nv_bfloat16 *)(rec + records);
+    glm53_f32_bf16_kernel<<<1, GLMVQ_KDA_DIM, 0, stream>>>(norm16, (const float *)norm->ptr, GLMVQ_KDA_DIM);
+    glmvq_kda_local<float, float><<<dim3((rows + GLMVQ_KC - 1) / GLMVQ_KC, heads), GLMVQ_KLOCAL,
+        GLMVQ_KLOCAL_SMEM, stream>>>(rec, (const float *)q_tail->ptr, (const float *)k_tail->ptr,
+        (const float *)v_tail->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        (const float *)forget->ptr, (const float *)beta->ptr, (const float *)q_weight->ptr,
+        (const float *)k_weight->ptr, (const float *)v_weight->ptr, (const float *)a_log->ptr,
+        (const float *)dt_bias->ptr, rows, heads, lower_bound);
+    // The first chunk read the previous tails; they advance only afterwards.
+    glmvq_kda_tail<float><<<(unsigned)((width + 255u) / 256u), 256u, 0, stream>>>(
+        (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
+        (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, rows, width);
+    glmvq_kda_scan<float, float><<<heads, GLMVQ_KSCAN, GLMVQ_KSCAN_SMEM, stream>>>(
+        (float *)out->ptr, (float *)state->ptr, rec, (const float *)gate->ptr, norm16, rows, heads, eps);
+    return cuda_ok(cudaGetLastError(), "GLM-5.3 tensor-core KDA") ? 1 : -1;
 }
 
 #endif

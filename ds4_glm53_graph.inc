@@ -443,6 +443,16 @@ static bool glm53_graph_kda(ds4_glm53_gpu_graph *g, const ds4_model *model,
         !glm53_graph_rank(g, g->ffn_gate, model, l->kda_g_b, projection, g->q_rank, rows)) {
         return false;
     }
+    // Prefill rows: tensor-core chunks with the gated head norm (forget -> heads).
+    const int mma = ds4_gpu_glm53_kda_mma(g->heads, g->kda_scratch, g->recurrent[il],
+        g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il], g->q, g->k, g->v,
+        g->heads, g->kv_rank, g->q_conv_weight[il], g->k_conv_weight[il], g->v_conv_weight[il],
+        g->decay_scale[il], g->dt_bias[il], g->ffn_gate, g->o_norm[il], rows, DS4_N_HEAD,
+        DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
+    if (mma < 0) { return false; }
+    if (mma > 0) {
+        return plain_graph_matmul_tensor(g->attn_out, model, l->kda_output, projection, DS4_N_EMBD, g->heads, rows);
+    }
     const bool recurrence = rows == 1u
         ? ds4_gpu_glm53_kda_decode_tensor(g->ffn_up, g->recurrent[il],
             g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],

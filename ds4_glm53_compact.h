@@ -62,6 +62,16 @@ int ds4_gpu_glm53_hc_mix(ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
         const void *model_map, uint64_t model_size, uint64_t fn_offset, uint32_t width,
         uint32_t outputs, uint32_t rows, float eps);
 
+/* Prefill KDA (64+ rows) on tensor cores with the gated head norm fused:
+ * `out` may alias `forget`. 1 done, 0 not covered, -1 failed. */
+int ds4_gpu_glm53_kda_mma(ds4_gpu_tensor *out, ds4_gpu_tensor *scratch,
+        ds4_gpu_tensor *state, ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+        const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight, const ds4_gpu_tensor *v_weight,
+        const ds4_gpu_tensor *a_log, const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *norm, uint32_t rows, uint32_t heads, float lower_bound, float eps);
+
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32
  * [4,128], addressed by absolute position % 4. Pool rows are FP16. */

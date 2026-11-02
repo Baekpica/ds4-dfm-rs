@@ -378,7 +378,130 @@ static void check_hc_mix(uint32_t rows) {
     printf("GLM mHC mix: rows=%u mix_rms=%.4g max_abs=%.3g (%.2e of rms) PASS\n", rows, rms, worst, worst / rms);
 }
 
+// Tensor-core KDA prefill vs an FP64 Solar-form recurrence (GLM decay, gated
+// head norm): output, final state and conv tails.
+static double bf16r(double x) { return (double)__bfloat162float(__float2bfloat16_rn((float)x)); }
+
+static void check_kda(uint32_t rows, uint32_t heads, bool bf16) {
+    auto rb = [&](double x) { return bf16 ? bf16r(x) : x; };
+    const uint32_t D = 128u, C = 4u;
+    const uint64_t width = (uint64_t)heads * D, count = (uint64_t)rows * width;
+    const float lower = -5.0f, eps = 1.0e-5f;
+    auto wave = [](uint64_t i, float a, float b) { return sinf((float)(i % 7919u) * a) * b; };
+    std::vector<float> q(count), k(count), v(count), f(count), gate(count), beta((uint64_t)rows * heads);
+    std::vector<float> state(width * D), tq(width * C), tk(width * C), tv(width * C);
+    std::vector<float> wq(width * C), wk(width * C), wv(width * C), alog(heads), dtb(width), norm(D);
+    for (uint64_t i = 0; i < count; i++) {
+        q[i] = wave(i, 0.013f, 1.1f); k[i] = wave(i + 11, 0.017f, 0.9f); v[i] = wave(i + 23, 0.019f, 1.3f);
+        f[i] = wave(i + 31, 0.007f, 2.0f); gate[i] = wave(i + 41, 0.023f, 1.5f);
+    }
+    for (uint64_t i = 0; i < beta.size(); i++) { beta[i] = wave(i + 5, 0.31f, 2.0f); }
+    for (uint64_t i = 0; i < state.size(); i++) { state[i] = wave(i + 7, 0.029f, 0.05f); }
+    for (uint64_t i = 0; i < tq.size(); i++) {
+        tq[i] = wave(i + 3, 0.11f, 1.0f); tk[i] = wave(i + 13, 0.12f, 1.0f); tv[i] = wave(i + 17, 0.13f, 1.0f);
+        wq[i] = wave(i + 19, 0.21f, 0.6f); wk[i] = wave(i + 29, 0.22f, 0.6f); wv[i] = wave(i + 37, 0.23f, 0.6f);
+    }
+    for (uint32_t h = 0; h < heads; h++) { alog[h] = -1.0f + 0.3f * (float)h; }
+    for (uint64_t i = 0; i < width; i++) { dtb[i] = wave(i + 43, 0.05f, 0.5f); }
+    for (uint32_t i = 0; i < D; i++) { norm[i] = __bfloat162float(__float2bfloat16_rn(0.8f + 0.003f * (float)i)); }
+
+    // FP64 reference in the Solar recurrence's order of operations.
+    std::vector<double> S(state.begin(), state.end()), out(count);
+    std::vector<double> cq(tq.begin(), tq.end()), ck(tk.begin(), tk.end()), cv(tv.begin(), tv.end());
+    for (uint32_t t = 0; t < rows; t++) {
+        for (uint32_t h = 0; h < heads; h++) {
+            double qv[128], kv[128], vv[128], qs = 0.0, ks = 0.0;
+            for (uint32_t d = 0; d < D; d++) {
+                const uint64_t ch = (uint64_t)h * D + d;
+                double *tails[3] = {&cq[ch * C], &ck[ch * C], &cv[ch * C]};
+                const float *raw[3] = {&q[0], &k[0], &v[0]};
+                const float *w[3] = {&wq[ch * C], &wk[ch * C], &wv[ch * C]};
+                double y[3];
+                for (int x = 0; x < 3; x++) {
+                    for (uint32_t tap = 0; tap + 1 < C; tap++) { tails[x][tap] = tails[x][tap + 1]; }
+                    tails[x][C - 1] = raw[x][(uint64_t)t * width + ch];
+                    double c = 0.0;
+                    for (uint32_t tap = 0; tap < C; tap++) { c += tails[x][tap] * w[x][tap]; }
+                    c = rb(c);
+                    y[x] = rb(c / (1.0 + exp(-c)));
+                }
+                qv[d] = y[0]; kv[d] = y[1]; vv[d] = y[2];
+                qs += y[0] * y[0]; ks += y[1] * y[1];
+            }
+            const double qi = 1.0 / sqrt(qs + 1.0e-6) / sqrt((double)D), ki = 1.0 / sqrt(ks + 1.0e-6);
+            const double b = rb(1.0 / (1.0 + exp(-(double)beta[(uint64_t)t * heads + h])));
+            double *sh = &S[(uint64_t)h * D * D];
+            for (uint32_t key = 0; key < D; key++) {
+                const uint64_t ch = (uint64_t)h * D + key;
+                const double a = exp((double)alog[h]);
+                const double g = (double)lower / (1.0 + exp(-a * ((double)f[(uint64_t)t * width + ch] + dtb[ch])));
+                for (uint32_t val = 0; val < D; val++) { sh[key * D + val] *= exp(g); }
+            }
+            double o[128], sq = 0.0;
+            for (uint32_t val = 0; val < D; val++) {
+                double mem = 0.0;
+                for (uint32_t key = 0; key < D; key++) { mem += sh[key * D + val] * kv[key] * ki; }
+                const double delta = (vv[val] - mem) * b;
+                double r = 0.0;
+                for (uint32_t key = 0; key < D; key++) {
+                    sh[key * D + val] += kv[key] * ki * delta;
+                    r += sh[key * D + val] * qv[key] * qi;
+                }
+                o[val] = rb(r); sq += o[val] * o[val];
+            }
+            const double inv = 1.0 / sqrt(sq / D + eps);
+            for (uint32_t val = 0; val < D; val++) {
+                const uint64_t at = (uint64_t)t * width + (uint64_t)h * D + val;
+                out[at] = rb(o[val] * inv * norm[val] / (1.0 + exp(-(double)gate[at])));
+            }
+        }
+    }
+    auto up = [&](const std::vector<float> &x) {
+        ds4_gpu_tensor d = alloc(x.size() * sizeof(float));
+        CHECK(cuda_ok(cudaMemcpy(d.ptr, x.data(), (size_t)d.bytes, cudaMemcpyHostToDevice), "kda up"));
+        return d;
+    };
+    ds4_gpu_tensor dq = up(q), dk = up(k), dv = up(v), dforget = up(f), dgate = up(gate), dbeta = up(beta);
+    ds4_gpu_tensor dstate = up(state), dtq = up(tq), dtk = up(tk), dtv = up(tv);
+    ds4_gpu_tensor dwq = up(wq), dwk = up(wk), dwv = up(wv), dalog = up(alog), ddt = up(dtb), dnorm = up(norm);
+    ds4_gpu_tensor scratch = alloc((uint64_t)((rows + 63) / 64) * heads * GLMVQ_KR_BYTES + 4096);
+    // Output aliases the forget rows, as in the graph.
+    CHECK(ds4_gpu_glm53_kda_mma(&dforget, &scratch, &dstate, &dtq, &dtk, &dtv, &dq, &dk, &dv, &dforget,
+        &dbeta, &dwq, &dwk, &dwv, &dalog, &ddt, &dgate, &dnorm, rows, heads, lower, eps) == 1);
+    std::vector<float> got(count), gstate(state.size()), gtq(tq.size()), gtk(tk.size()), gtv(tv.size());
+    CHECK(cuda_ok(cudaMemcpy(got.data(), dforget.ptr, (size_t)dforget.bytes, cudaMemcpyDeviceToHost), "kda out"));
+    CHECK(cuda_ok(cudaMemcpy(gstate.data(), dstate.ptr, (size_t)dstate.bytes, cudaMemcpyDeviceToHost), "kda state"));
+    CHECK(cuda_ok(cudaMemcpy(gtq.data(), dtq.ptr, (size_t)dtq.bytes, cudaMemcpyDeviceToHost), "kda tq"));
+    CHECK(cuda_ok(cudaMemcpy(gtk.data(), dtk.ptr, (size_t)dtk.bytes, cudaMemcpyDeviceToHost), "kda tk"));
+    CHECK(cuda_ok(cudaMemcpy(gtv.data(), dtv.ptr, (size_t)dtv.bytes, cudaMemcpyDeviceToHost), "kda tv"));
+    double oe = 0.0, os = 0.0, se = 0.0, ss = 0.0, ulps = 0.0;
+    for (uint64_t i = 0; i < count; i++) { os += out[i] * out[i]; }
+    for (uint64_t i = 0; i < count; i++) {
+        const double err = fabs(got[i] - out[i]);
+        oe = fmax(oe, err);
+        // In BF16 ULPs of the reference element (2^-7 relative), past a small floor.
+        ulps = fmax(ulps, err / fmax(fabs(out[i]) / 128.0, 1.0e-3 * sqrt(os / count)));
+    }
+    for (uint64_t i = 0; i < S.size(); i++) { se = fmax(se, fabs(gstate[i] - S[i])); ss += S[i] * S[i]; }
+    for (uint64_t i = 0; i < cq.size(); i++) {
+        CHECK(gtq[i] == (float)cq[i] && gtk[i] == (float)ck[i] && gtv[i] == (float)cv[i]);  // copies of raw rows
+    }
+    const double orms = sqrt(os / count), srms = sqrt(ss / S.size());
+    // Mirroring the BF16 boundaries leaves F16 records and F32 order: the state
+    // agrees to ~1e-3 and outputs to one BF16 step of each element (two at a
+    // binade edge). Against
+    // the F32 Solar form the boundaries add a few percent at worst.
+    printf("GLM KDA mma (%s reference): rows=%u heads=%u out max_abs=%.3g (%.2e of rms, %.2f BF16 ulps) state max_abs=%.3g (%.2e of rms) tails exact\n",
+        bf16 ? "BF16-boundary" : "F32 Solar", rows, heads, oe, oe / orms, ulps, se, se / srms);
+    CHECK(bf16 ? ulps <= 2.0 && se < 1.0e-2 * srms : oe < 6.0e-2 * orms && se < 6.0e-2 * srms);
+    for (ds4_gpu_tensor *d : {&dq, &dk, &dv, &dforget, &dgate, &dbeta, &dstate, &dtq, &dtk, &dtv, &dwq, &dwk,
+            &dwv, &dalog, &ddt, &dnorm, &scratch}) { cudaFree(d->ptr); }
+}
+
 int main(void) {
+    check_kda(130u, 2u, true);
+    check_kda(130u, 2u, false);
+    check_kda(64u, 3u, true);
     check_hc_mix(1u);
     check_hc_mix(70u);
     check_index(2050u, 130u);
