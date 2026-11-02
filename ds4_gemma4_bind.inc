@@ -113,3 +113,39 @@ static void gemma4_bind(ds4_weights *w, const ds4_model *m) {
         }
     }
 }
+
+#ifndef DS4_NO_GPU
+/* Prefill chunk: the sliding-window ring is sized to hold a whole chunk on
+ * top of the window, so the cap is the only knob. Default 2048 keeps the
+ * ring at 3072 rows per sliding layer. */
+static uint32_t gemma4_prefill_cap(uint32_t ctx) {
+    uint32_t cap = G4_PREFILL;
+    const char *value = getenv("DS4_GEMMA4_PREFILL_CHUNK");
+    if (value && *value) {
+        char *end = NULL;
+        const unsigned long parsed = strtoul(value, &end, 10);
+        if (end != value && !*end && parsed > 0u && parsed <= G4_PREFILL_MAX) {
+            cap = (uint32_t)parsed;
+        }
+    }
+    return cap < ctx ? cap : ctx;
+}
+
+/* The session's device footprint, term for term the graph's own allocation:
+ * `gemma4_activation_bytes` (shared with gemma4_graph_bytes), the KV layout
+ * from ds4_gemma4.h, the linear workspace and the routed-expert scratch. */
+static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap) {
+    ds4_context_memory m = {0};
+    if (!ctx || !cap || cap > ctx || ctx > G4_CONTEXT || cap > G4_PREFILL_MAX) {
+        return m;
+    }
+    m.prefill_cap = cap;
+    m.raw_cap = ctx;
+    m.raw_bytes = ds4_gemma4_kv_bytes(ctx, cap);
+    m.scratch_bytes = gemma4_activation_bytes(cap) +
+        ds4_gpu_gvq_workspace_linear(cap) + ds4_gpu_g4_moe_bytes(cap < 512u ? cap : 512u);
+    m.total_bytes = m.raw_bytes + m.scratch_bytes;
+    return m;
+}
+
+#endif

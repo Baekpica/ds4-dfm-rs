@@ -37274,6 +37274,10 @@ static uint64_t ling3vl_session_bytes(const ds4_engine *e, uint32_t ctx,
                                       uint32_t cap);
 static bool ling3vl_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                 ds4_session_graph_fit_quote *q);
+static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap);
+static uint32_t gemma4_prefill_cap(uint32_t ctx);
+static bool gemma4_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
+                               ds4_session_graph_fit_quote *q);
 
 ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size) {
     ds4_context_memory m = {0};
@@ -37284,6 +37288,9 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? ling31_memory(ctx, ling31_prefill_cap(ctx)) : m;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? gemma4_session_memory(ctx, gemma4_prefill_cap(ctx)) : m;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? beam_memory(ctx, beam_prefill_cap(ctx)) : m;
@@ -45716,6 +45723,10 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
         const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
         return ling31_memory(ctx, ling31_prefill_cap(ctx));
     }
+    /* Gemma-4 is a CUDA-only VQ family (no host graph, no CPU decoder). */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        return m;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
         const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
         return beam_memory(ctx, beam_prefill_cap(ctx));
@@ -48310,6 +48321,8 @@ struct ds4_session {
     bool minimax_graph_ready;
     ds4_axk2_graph axk2_graph;
     bool axk2_graph_ready;
+    ds4_gemma4_graph *gemma4_graph;
+    bool gemma4_graph_ready;
     ds4_naive_graph naive_graph;
     bool naive_graph_ready;
     ds4_inkling_graph inkling_graph;
@@ -53879,6 +53892,10 @@ static bool ds4_session_is_axk2(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ;
 }
 
+static bool ds4_session_is_gemma4(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4;
+}
+
 static bool ds4_session_is_naive(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE;
 }
@@ -53975,7 +53992,7 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -54448,7 +54465,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -54655,7 +54672,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -57107,6 +57124,13 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     const uint32_t payload_version = h[1];
 #ifndef DS4_NO_GPU
+    /* Gemma-4's KV is two layouts (a sliding ring and the full context) and
+     * its payload file lands in P7; until then a DeepSeek-shaped record must
+     * not be read into these rings. */
+    if (ds4_session_is_gemma4(s)) {
+        payload_set_err(err, errlen, "Gemma-4 disk KV restore is not implemented yet");
+        return 1;
+    }
     if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
     if (ds4_session_is_solar(s)) {
         return session_solar_load_payload(
@@ -60968,6 +60992,10 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         return e->backend == DS4_BACKEND_CUDA
             ? axk2_memory((uint32_t)ctx, axk2_prefill_cap((uint32_t)ctx)).total_bytes : 0;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        return e->backend == DS4_BACKEND_CUDA
+            ? gemma4_session_memory((uint32_t)ctx, gemma4_prefill_cap((uint32_t)ctx)).total_bytes : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return e->backend == DS4_BACKEND_CUDA
@@ -73242,7 +73270,8 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
     if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
     // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) { return; }
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) { return; }
     /* MiniMax's first prefill paid ~0.13 s of first-use module loads (MMQ,
      * cuBLAS) and its first decode its own kernels: warm a 300-row q4p chunk,
      * a 100-row MMQ chunk and two one-row steps in a throwaway session (the
@@ -73980,7 +74009,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) &&
+             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 ||
+             DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) &&
             res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
             fprintf(stderr, "ds4: VQ source pointer plans require eager weight residency\n");
             ds4_engine_close(e);
@@ -74518,6 +74548,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 &&
+            !gemma4_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: Gemma-4 source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ &&
             !beam_gpu_bind(&e->weights, &e->model)) {
             fprintf(stderr, "ds4: Beam source pointer binding failed\n");
@@ -74750,7 +74787,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -74770,7 +74808,8 @@ int ds4_engine_n_hc(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         return 1;
     }
     return (int)DS4_N_HC;
@@ -75154,6 +75193,30 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     return fits;
 }
 
+/* Fails closed like every VQ family: a CUDA backend and the whole quote in
+ * free memory plus the shared headroom. */
+static bool gemma4_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
+                               ds4_session_graph_fit_quote *q) {
+    const uint64_t need = gemma4_session_memory(ctx, cap).total_bytes;
+    if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
+    if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
+    uint64_t available = 0, total = 0;
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
+        if (q) { q->fits = 1; q->fail_open = 1; }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    const uint64_t margin = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;
+    const bool fits = available >= ask;
+    if (q) {
+        q->fits = fits; q->avail_bytes = available; q->headroom_bytes = margin;
+        q->deficit_bytes = fits ? 0 : ask - available;
+    }
+    return fits;
+}
+
 static uint32_t ling31_session_drafts(const ds4_engine *e) {
     if (!ds4_engine_has_mtp((ds4_engine *)e)) { return 0; }
     return e->mtp_draft_tokens < L31_MTP_DRAFTS ? (uint32_t)e->mtp_draft_tokens : L31_MTP_DRAFTS;
@@ -75408,6 +75471,26 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_gemma4(s)) {
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const uint64_t estimate = gemma4_session_memory(ctx, s->prefill_cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = gemma4_session_fit(e, ctx, s->prefill_cap, NULL) &&
+            (s->gemma4_graph = gemma4_graph_create(&e->model, &e->weights, ctx, s->prefill_cap)) != NULL;
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            gemma4_graph_release(s->gemma4_graph); s->gemma4_graph = NULL;
+            s->gemma4_graph_ready = false;
+            s->graph_alloc_bytes = 0; ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0); return 1;
+        }
+        s->gemma4_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_axk2(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
         s->prefill_cap = axk2_session_cap(e, ctx, s->prefill_cap);
@@ -75925,6 +76008,9 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
         return ling31_session_fit(e, (uint32_t)ctx_size, ling31_prefill_cap((uint32_t)ctx_size), q);
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        return gemma4_session_fit(e, (uint32_t)ctx_size, gemma4_prefill_cap((uint32_t)ctx_size), q);
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
         return beam_session_fit(e, (uint32_t)ctx_size, beam_prefill_cap((uint32_t)ctx_size), q);
     }
@@ -76080,6 +76166,22 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         ds4_session *s = xcalloc(1, sizeof(*s));
         s->engine = e; s->ctx_size = ctx_size; s->generation = 1;
         s->prefill_cap = ling31_prefill_cap((uint32_t)ctx_size);
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
+        if (ds4_session_lazy_graph_enabled()) { s->graph_pending = true; }
+        else if (ds4_session_alloc_graph(s) != 0) { free(s->logits); free(s); return 1; }
+        *out = s;
+        return 0;
+#endif
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+#ifdef DS4_NO_GPU
+        return 1;
+#else
+        if ((uint32_t)ctx_size > G4_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
+            !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE) { return 1; }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e; s->ctx_size = ctx_size; s->generation = 1;
+        s->prefill_cap = gemma4_prefill_cap((uint32_t)ctx_size);
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
         if (ds4_session_lazy_graph_enabled()) { s->graph_pending = true; }
         else if (ds4_session_alloc_graph(s) != 0) { free(s->logits); free(s); return 1; }
@@ -76524,6 +76626,10 @@ void ds4_session_free(ds4_session *s) {
         } else if (ds4_session_is_axk2(s)) {
             axk2_graph_free(&s->axk2_graph); s->axk2_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_gemma4(s)) {
+            gemma4_graph_release(s->gemma4_graph); s->gemma4_graph = NULL;
+            s->gemma4_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
         } else if (ds4_session_is_naive(s)) {
             naive_graph_free(&s->naive_graph); s->naive_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -76662,7 +76768,7 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -76701,7 +76807,7 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -76807,7 +76913,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -77527,6 +77633,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_naive_session.inc"
 #include "ds4_iquest_session.inc"
 #include "ds4_ling31_session.inc"
+#include "ds4_gemma4_session.inc"
 #include "ds4_beam_session.inc"
 #include "ds4_minimax_session.inc"
 #include "ds4_axk2_session.inc"
@@ -78197,6 +78304,7 @@ int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     if (ds4_session_is_solar(s)) { return (int)solar_sync_keep(s, &prompt); }
     if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
     if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_gemma4(s)) { return s->gemma4_graph_ready ? (int)gemma4_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
 #endif
     return -1;
@@ -78210,6 +78318,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) { return iquest_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_ling31(s)) { return ling31_session_sync(s, prompt, err, errlen); }
+    if (ds4_session_is_gemma4(s)) { return gemma4_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_beam(s)) { return beam_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_minimax(s)) { return minimax_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_axk2(s)) { return axk2_session_sync(s, prompt, err, errlen); }
@@ -79253,6 +79362,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) { return iquest_session_eval(s, token, err, errlen); }
     if (ds4_session_is_ling31(s)) { return ling31_session_eval(s, token, err, errlen); }
+    if (ds4_session_is_gemma4(s)) { return gemma4_session_eval(s, token, err, errlen); }
     if (ds4_session_is_beam(s)) { return beam_session_eval(s, token, err, errlen); }
     if (ds4_session_is_minimax(s)) { return minimax_session_eval(s, token, err, errlen); }
     if (ds4_session_is_axk2(s)) { return axk2_session_eval(s, token, err, errlen); }
@@ -81270,6 +81380,8 @@ void ds4_session_invalidate(ds4_session *s) {
         (void)minimax_graph_reset(&s->minimax_graph);
     } else if (ds4_session_is_axk2(s) && s->axk2_graph_ready) {
         (void)axk2_graph_reset(&s->axk2_graph);
+    } else if (ds4_session_is_gemma4(s) && s->gemma4_graph) {
+        (void)gemma4_graph_reset(s->gemma4_graph);
     } else if (ds4_session_is_naive(s) && s->naive_graph_ready) {
         (void)naive_reset(&s->naive_graph);
     } else if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
@@ -81344,6 +81456,12 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     } else if (ds4_session_is_axk2(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->axk2_graph_ready) { (void)axk2_graph_reset(&s->axk2_graph); }
+    } else if (ds4_session_is_gemma4(s) && pos != old_pos) {
+        /* Every KV row is position-indexed (the sliding layers through their
+         * ring), so the rewind drops the graph's frontier and the next sync
+         * writes the rows it reuses. */
+        s->checkpoint_valid = false;
+        if (s->gemma4_graph) { (void)gemma4_graph_reset(s->gemma4_graph); }
     } else if (ds4_session_is_naive(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->naive_graph_ready) { (void)naive_reset(&s->naive_graph); }

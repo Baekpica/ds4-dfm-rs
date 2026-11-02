@@ -1,6 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
-GEMMA4_NATIVE_INCS := ds4_gemma4_plan.h ds4_gemma4_bind.inc
+GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 

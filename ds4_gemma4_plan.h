@@ -73,6 +73,21 @@ typedef struct {
     uint64_t full, sliding, scratch;
 } ds4_gemma4_memory;
 
+/* The graph's activation set for one `cap`-row chunk: five hidden rows
+ * (cur, norm, branch, tmp, exp_acc), three dense-FF rows, the wide query and
+ * attention buffers (allocated at the full-layer width for every layer), the
+ * two KV row widths, the router scores and the top-8 selection, and the
+ * tied-table logits. The graph allocates exactly this and the estimator
+ * quotes the same number, so the two cannot drift. */
+static inline uint64_t gemma4_activation_bytes(unsigned cap) {
+    const uint64_t rows = (uint64_t)cap;
+    return rows * ((uint64_t)5u * G4_EMBED + 3u * G4_DENSE +
+        (uint64_t)G4_HEADS * G4_GLOBAL_HEAD_DIM + (uint64_t)G4_HEADS * G4_HEAD_DIM +
+        2u * G4_KV_HEADS * G4_HEAD_DIM + (uint64_t)G4_GLOBAL_KV_HEADS * G4_GLOBAL_HEAD_DIM +
+        G4_EXPERTS + 2u * G4_USED) * sizeof(float) +
+        (uint64_t)G4_VOCAB * sizeof(float);
+}
+
 /* A sliding layer keeps window-1 + prefill_cap rows; a full layer keeps the
  * whole context. K and V are counted separately here until the engine's
  * k=v sharing is measured; the plan stays the conservative bound. */

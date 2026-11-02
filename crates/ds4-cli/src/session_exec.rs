@@ -18,6 +18,7 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq
         | ModelFamily::Mimo2
         | ModelFamily::Inkling
         | ModelFamily::Qwen35
