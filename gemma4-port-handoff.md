@@ -4,7 +4,7 @@ branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
 last_updated_commit: 48546032 (W1 and W2 are on top of it, unpushed)
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-02T23:30:00+01:00
+handoff_written_at: 2026-11-03T00:10:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -19,8 +19,24 @@ the same contract every other family has:
   GET  /v1/models                lists the gemma4 model id
   POST /v1/chat/completions      returns a completion for a prompt
   the same request twice         identical ids and text
-  CPU lane and CUDA lane         the same first N ids
+  sm_89 CUDA (compute 8.9)       this family declares HostNeed::Cuda, as
+                                 every VQ family here does; there is no
+                                 CPU execution lane for a VQ payload
   ds4 --serving-check            runs every declared lane on the artifact
+
+State at this handoff: it does not run yet. No session, no KV and no
+graph exist, so no request can reach the model. What exists is the artifact
+contract, the tokenizer and chat template (reference-checked), and the
+native weight bind. The three commits below are unpushed.
+
+  25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
+  c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
+  015287d7  handoff: the logits-gate risk sized from the checkpoint itself
+
+Next unit: W3's first step in section 3 - pin transformers'
+modeling_gemma4.py and read the router, norms, partial rotary, softcap and
+drafter semantics out of it before writing a kernel. Nothing in this tree
+or on disk states them.
 
 2. The standard this port follows (read, not assumed)
 
@@ -82,49 +98,63 @@ W2 — native family skeleton and binding. DONE this session (evidence below).
   metadata validation: Rust owns it.
   Gate: tests/gemma4_bind.c (make test-gemma4-bind) over `vq-gguf list`.
 
-W3 — the CPU engine.
-  ds4_gemma4_graph.inc: 30 layers, sliding-1024 attention on 25 layers and
-  full attention on 5/11/17/23/29 (head_dim 512, 2 KV heads,
-  attention_k_eq_v so the full layers have no v_proj), partial rotary 0.25
-  with rope 1e6 on the full layers and 10000 on the sliding ones, seven
-  norms per layer plus layer_scalar, router top-8 of 128 over the GVQ1
-  experts with the shared dense FFN 2112, gelu pytorch_tanh, softcap 30,
-  tied embedding head.
-  Gate: determinism, CPU/CUDA parity later, and the logits gate against the
-  reference implementation on a host that can hold the 26B checkpoint (see
-  section 6, risk 1). This host cannot: 52 GB of BF16 against 31 GB of RAM.
+W3 — the engine, on CUDA. This is the standard for a VQ family and the
+  plan's earlier "CPU engine first" was a deviation: every VQ family in
+  this tree declares HostNeed::Cuda in serving_caps (Glm53Vq, Ling31Vq,
+  BeamVq, MinimaxVq, Axk2Vq, Mimo2Vq, NaiveN05, IQuestQ1 - checked in
+  crates/ds4-core/src/serving.rs), and there is no CPU GVQ decoder anywhere
+  in the tree: GVQ payloads execute through the shared ds4_gvq_record plan
+  (ds4_glmvq.h) and its kernels. Only Qwen35 and DeepSeek4 are HostNeed::Any,
+  and neither is a VQ family.
+  Files: ds4_gemma4_gpu.cuh + cuda/gemma4_*.cuh (what the shared runtime
+  lacks: two-geometry attention with per-layer head_dim, partial rotary,
+  softcap 30, the 128-expert router with its two scale vectors, layer
+  scaling), then ds4_gemma4_graph.inc (the 30-layer walk over the bound
+  plan), then ds4_gemma4_session.inc and its KV.
+  FIRST STEP, before any kernel: recover the reference semantics. The
+  checkpoint's HF repo carries no modeling code (api/models/google/
+  gemma-4-26B-A4B: config + safetensors + tokenizer only, model_type
+  "gemma4", 25,805,936,206 BF16 parameters), so the source of truth is
+  transformers' modeling_gemma4.py at a pinned revision. Read there, and
+  cite in the code: the router's exact order (input scale, projection,
+  softmax, top-8, renormalization, per-expert scale), where layer_scalar
+  multiplies, the RMSNorm placement around attention and both FFNs, the
+  full-layer partial rotary layout (which 128 of 512 dims rotate, and the
+  interleaved or half-split convention), the softcap formula, and the
+  drafter's pre/post projection and centroid routing.
+  Gate: first-N-id determinism, then the logits gate against the reference
+  (section 6, risk 1: 48.07 GiB checkpoint, 8.19 GiB active path, paged run
+  untested on this host).
 
-W4 — the CUDA lane on sm_89.
-  ds4_gemma4_gpu.cuh + cuda/gemma4_*.cuh: Q4_K/Q8_0 GEMM/GEMV, the shared
-  GVQ1 decode kernels (they carry no sm_121 dependency; the persist kernels
-  are the sm_89 path per cuda/ds41_vq_decode.cuh:333-337), sliding/full
-  attention, MoE gather, softcap.
-  Gate: first-N-id parity with the CPU lane, then decode throughput.
+W4 — state and serving surfaces.
+  Session, payload, banks, snapshots, disk KV (ds4_gemma4_session.inc,
+  _payload.inc, _batch.inc, _bank_payload.inc). The KV is dual: 25 sliding
+  rings of 1024 and 5 full caches; the embedding part stays host-read row by
+  row. Gate: `ds4 --serving-check` runs every declared item.
 
-W5 — state: session, payload, banks, snapshots, disk KV.
-  ds4_gemma4_session.inc, _payload.inc, _batch.inc, _bank_payload.inc.
-  The KV is dual: 25 sliding rings of 1024 and 5 full caches. The
-  embedding part stays host-read row by row.
-  Gate: `ds4 --serving-check` runs reuse, disk, snapshot and bank items.
-
-W6 — the drafter.
+W5 — the drafter.
   ds4_gemma4_mtp.inc for the 4-layer checkpoint (hidden 1024, shared KV,
   pre_projection [1024,5632], post_projection [2816,1024], 2048 centroids
   top-32, tied 262144x1024 embedding, 419,711,236 parameters), exposed as
   `--mtp-draft` on the serial lane.
   Gate: drafts never change the greedy output; verify rows equal the trunk.
 
-W7 — serving wiring.
+W6 — serving wiring.
   ds4-sys FFI, ds4-server family arm (Gemma channel/thinking/tool_call
   output parsing, model id, request admission), serving_host limits,
   ds4-cli gate example. Declared caps get qualified or removed by
   --serving-check.
   Gate: the four-part OpenAI gate in section 1.
 
-W8 — docs and release.
+W7 — docs and release.
   docs/gemma4-vq.md (format, execution, serving, memory table),
   docs/ds4-dfm-model-families.md row, docs/serving-capabilities.md
   regeneration, README, the Hugging Face release directory.
+
+Scope note: the checkpoint is image-text-to-text, but the VQ artifact
+carries no vision tensor (12177 text tensors + the drafter's 48); vision is
+a sidecar part in this tree's terms and is out of scope until a vision part
+exists. Nothing may encode the tower into the VQ payload.
 
 4. What landed this session, with evidence
 
