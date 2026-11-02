@@ -415,11 +415,15 @@ static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
     return fused >= 0 &&
         (fused > 0 || (ds4_gpu_rms_norm_plain_rows_tensor(g->hc_flat, residual_hc, hc_dim, rows, DS4_RMS_EPS) &&
             plain_graph_matmul_tensor(g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, rows))) &&
+        // One decode row fuses the split, weighted sum and RMS norm (same order).
+        (rows == 1u ? ds4_gpu_hc_split_weighted_sum_norm_tensor(g->cur, g->norm, g->hc_split, g->hc_mix,
+            residual_hc, model->map, model->size, scale->abs_offset, base->abs_offset,
+            norm_weight->abs_offset, DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, DS4_RMS_EPS) :
         ds4_gpu_hc_split_weighted_sum_tensor(g->cur, g->hc_split, g->hc_mix, residual_hc,
             model->map, model->size, scale->abs_offset, base->abs_offset,
             DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
         ds4_gpu_rms_norm_weight_rows_tensor(g->norm, g->cur, model->map, model->size,
-            norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS);
+            norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS));
 }
 
 // Q4_K decode rows take the GEMV; other widths keep the MMQ tile.

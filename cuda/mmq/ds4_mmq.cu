@@ -4504,7 +4504,9 @@ int ds4_mmq_moe_vec_impl(
         int             n_experts,
         int             n_expert_used,
         cudaStream_t    stream,
-        int64_t         expert_stride = 0) {
+        int64_t         expert_stride = 0,
+        /* false: every consumer zeroes non-finite values at read. */
+        bool            sanitize_out = true) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -4672,7 +4674,7 @@ int ds4_mmq_moe_vec_impl(
         }
     }
 
-    if (ds4_mmq_keep_vec_sanitize(type)) {
+    if (sanitize_out && ds4_mmq_keep_vec_sanitize(type)) {
         ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used, stream);
     }
     return 0;
@@ -5796,8 +5798,10 @@ static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
     }
     const int64_t blocks = (int64_t)(stride / block_bytes);
     if (tokens <= 8) {
+        // Decode: the same consumers guard non-finite values (126 scrubs per token).
+        const char *env = getenv("DS4_GLM53_VEC_SANITIZE");
         const int rc = ds4_mmq_moe_vec_impl<type>("glm-owned-vec", w, x, ids,
-            out, m, k, tokens, experts, used, stream, blocks);
+            out, m, k, tokens, experts, used, stream, blocks, env && env[0] == '1');
         if (rc == 0) { return rc; }
     }
     MoePolicy policy = glm_iq2_policy<type>();
