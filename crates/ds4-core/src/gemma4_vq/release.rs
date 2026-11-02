@@ -368,8 +368,11 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
     let path = root.join(&part.name);
     let g = GgufFile::open(&path)?;
     random_access(g.as_bytes());
-    if g.get_string("gemma4_vq.part_role") != Some(part.role.metadata()) {
-        return Err(fail("part role mismatch"));
+    if g.get_string("gemma4_vq.part_role") != Some(part.role.metadata())
+        || g.get_string("gemma4_vq.source_revision")
+            != Some(text(&part.entry, "source_revision")?.as_bytes())
+    {
+        return Err(fail("part role/source revision mismatch"));
     }
     let inv = super::streamed(|| TensorInventory::from_file(&path, &g))?;
     if inv.shards.len() != 1 || inv.alignment != ALIGN {
@@ -669,7 +672,7 @@ mod tests {
         assert_eq!(id.shape.variant, crate::Variant::Gemma4A4bVq);
         assert_eq!(id.split_count, 2);
         let inventory = open_dir(root, Feature::Trunk).expect("open the release");
-        crate::gemma4_vq::validate_inventory(&inventory).expect("layout");
+        crate::gemma4_vq::validate_inventory(&inventory, Feature::Trunk).expect("layout");
         assert_eq!(inventory.tensors.len(), 12_177);
         assert_eq!(inventory.shards.len(), 2);
         // The embedding part is last, so native finds the token table there.
@@ -677,5 +680,12 @@ mod tests {
             inventory.tensors.last().unwrap().name,
             crate::gemma4_vq::EMBEDDING
         );
+        // The drafter, when this release ships it: 48 more tensors, its own
+        // layout, and the trunk part still first.
+        if let Ok(with_mtp) = open_dir(root, Feature::Mtp) {
+            crate::gemma4_vq::validate_inventory(&with_mtp, Feature::Mtp).expect("mtp layout");
+            assert_eq!(with_mtp.tensors.len(), 12_177 + 48);
+            assert_eq!(with_mtp.shards.len(), 3);
+        }
     }
 }

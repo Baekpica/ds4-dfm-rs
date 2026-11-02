@@ -132,11 +132,16 @@ pub(super) fn requested(g: &GgufFile) -> bool {
 
 /// Every inventory tensor must be the layout's tensor, with the type and the
 /// dimensions the artifact stores. This is the check the family's bind plan
-/// would run; the layout is the contract, so it is compared directly.
+/// would run; the layout is the contract, so it is compared directly. The MTP
+/// drafter is its own part with its own tensor set.
 pub(super) fn validate_inventory(
     inventory: &crate::TensorInventory,
+    feature: Feature,
 ) -> std::result::Result<(), crate::ValidateError> {
-    let specs = layout::layouts();
+    let mut specs = layout::layouts();
+    if feature == Feature::Mtp {
+        specs.extend(layout::mtp_layouts());
+    }
     let by_name: HashMap<&str, &crate::LayoutSpec> =
         specs.iter().map(|s| (s.name.as_str(), s)).collect();
     let mut seen = HashSet::new();

@@ -171,6 +171,92 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     out
 }
 
+/// The MTP drafter (`gemma4_assistant`), which the family ships as its own
+/// part: four dense layers at hidden 1024 with no experts and no k/v
+/// projection (it borrows the trunk's), plus the projections into and out of
+/// the backbone width. Transcribed from the checkpoint's own tensor table.
+const MTP_LAYERS: u32 = 4;
+const MTP_EMBED: u64 = 1024;
+const MTP_FFN: u64 = 8192;
+const MTP_FULL: u32 = 3;
+
+pub(super) fn mtp_layouts() -> Vec<LayoutSpec> {
+    let mut out = Vec::new();
+    exact(
+        &mut out,
+        "mtp.model.embed_tokens.weight".into(),
+        BF16,
+        &[VOCAB, MTP_EMBED],
+    );
+    for il in 0..MTP_LAYERS {
+        let p = format!("mtp.model.layers.{il}");
+        for name in [
+            "input_layernorm",
+            "post_attention_layernorm",
+            "pre_feedforward_layernorm",
+            "post_feedforward_layernorm",
+        ] {
+            exact(&mut out, format!("{p}.{name}.weight"), BF16, &[MTP_EMBED]);
+        }
+        exact(&mut out, format!("{p}.layer_scalar"), BF16, &[1]);
+        for name in ["gate_proj", "up_proj"] {
+            exact(
+                &mut out,
+                format!("{p}.mlp.{name}.weight"),
+                Q4_K,
+                &[MTP_FFN, MTP_EMBED],
+            );
+        }
+        exact(
+            &mut out,
+            format!("{p}.mlp.down_proj.weight"),
+            Q4_K,
+            &[MTP_EMBED, MTP_FFN],
+        );
+        // The full-attention layer rotates and projects at 512; the other
+        // three are sliding at 256 (config.json `layer_types`).
+        let dim = if il == MTP_FULL {
+            GLOBAL_HEAD_DIM
+        } else {
+            HEAD_DIM
+        };
+        exact(
+            &mut out,
+            format!("{p}.self_attn.q_proj.weight"),
+            Q4_K,
+            &[HEADS * dim, MTP_EMBED],
+        );
+        exact(
+            &mut out,
+            format!("{p}.self_attn.o_proj.weight"),
+            Q4_K,
+            &[MTP_EMBED, HEADS * dim],
+        );
+        exact(
+            &mut out,
+            format!("{p}.self_attn.q_norm.weight"),
+            BF16,
+            &[dim],
+        );
+    }
+    exact(&mut out, "mtp.model.norm.weight".into(), BF16, &[MTP_EMBED]);
+    // Into the drafter from the trunk's hidden state and token row, and back
+    // out to the backbone width.
+    exact(
+        &mut out,
+        "mtp.pre_projection.weight".into(),
+        Q4_K,
+        &[MTP_EMBED, 2 * EMBED],
+    );
+    exact(
+        &mut out,
+        "mtp.post_projection.weight".into(),
+        Q4_K,
+        &[EMBED, MTP_EMBED],
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +310,22 @@ mod tests {
             find("model.layers.4.self_attn.o_proj.weight").dim[..2],
             [4096, 2816]
         );
+    }
+
+    /// The drafter's own tensor set, transcribed from the assistant
+    /// checkpoint's safetensors header: 48 tensors, 22 Q4_K and 26 BF16, no
+    /// experts and no k/v projection.
+    #[test]
+    fn mtp_layouts_cover_the_drafter() {
+        let all = mtp_layouts();
+        assert_eq!(all.len(), 48);
+        assert_eq!(of(&all, Q4_K), 22);
+        assert_eq!(of(&all, BF16), 26);
+        assert!(all.iter().all(|s| s.name.starts_with("mtp.")));
+        let mut names: Vec<_> = all.iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), all.len());
     }
 
     /// Binds the layout to a real artifact when the operator offers one:
