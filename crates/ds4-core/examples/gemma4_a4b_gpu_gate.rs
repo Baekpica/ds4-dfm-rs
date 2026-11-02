@@ -305,6 +305,7 @@ extern "C" {
         errlen: usize,
     ) -> i32;
     fn gm4_gpu_layer_timing(l: *mut c_void, on: i32) -> i32;
+    fn gm4_gpu_span(span: i32) -> i32;
     fn gm4_gpu_layer_sections(
         l: *mut c_void,
         ms: *mut f64,
@@ -339,6 +340,7 @@ fn usage() -> &'static str {
   --threads N        launch width for the warp-per-row kernels (default 256)
   --tensor NAME      tensor to gate; repeatable (default: q_proj and router)
   --timing N         best of N launches per shape, plus the effective GB/s
+  --span N           rows per warp in the span kernel (the short-row geometry)
   --skip-gather      skip the routed-expert gather (step 3)
   --skip-prefill     skip the tensor-core prefill (step 4)
   --skip-elementwise skip the norms and elementwise kernels (step 5)
@@ -401,6 +403,13 @@ fn run() -> Result<(), String> {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .ok_or("--timing needs a number")?
+            }
+            "--span" => {
+                let span: i32 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--span needs a number")?;
+                unsafe { gm4_gpu_span(span) };
             }
             "--skip-gather" => gather = false,
             "--skip-prefill" => prefill = false,

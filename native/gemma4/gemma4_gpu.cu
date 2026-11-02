@@ -299,6 +299,89 @@ __global__ void gemv_warp4_kernel(const uint8_t *p, const Layout L, const uint32
     }
 }
 
+/* A span of consecutive rows of one matrix, walked by one warp. This is the
+ * shape for a row too short to fill the block kernel's 8-round group: the
+ * expert down projection is 704 columns at dim 8, so a row is 88 indices -
+ * 2.75 rounds - and v3_blk_ok refuses it, which leaves the generic warp
+ * kernel at 73 GB/s against the block kernel's 128.
+ *
+ * The reference engine solved the same stall differently and says why: its
+ * persistent kernel reads a span of consecutive rows as ONE continuous
+ * bitstream so a row never restarts the stream at its head
+ * (/data/ds4-dfm-rs/cuda/ds41_vq_persist.cuh:46-56, :88-135), and that
+ * requires every row to be at least 8 rounds
+ * (docs/deepseek41-port-plan.md:708-711). Our row is 2.75 rounds and 88 % 32
+ * is 24, so a 32-index group would straddle two rows and the span cannot be
+ * read as one stream. What transfers is the span itself: one warp owns
+ * `span` consecutive rows, so their index reads and codebook gathers are
+ * independent and the scheduler can hide one row's head with the others'
+ * work, instead of each row paying that head alone.
+ *
+ * Per row this is the generic kernel's arithmetic exactly - lane l takes
+ * indices l, l+32, l+64 (skipping i >= nidx_row), the same shfl_down tree,
+ * the gain after the sum - so a gather through it is bit-identical to the
+ * generic path and the layer's bands cannot move. The index read drops from
+ * four bytes to three: a min(nbit,12)-bit field at byte offset b needs at
+ * most 19 bits, which is b[0..2]. A payload with a 13th-bit plane is left on
+ * the generic path, since the plane is a second bit array this kernel does
+ * not read. */
+template <int DIM>
+__global__ void gemv_rowspan_kernel(const uint8_t *p, const Layout L, const uint32_t *rl,
+                                    const float *x, float *y, int span) {
+    const int lo0 = ((blockIdx.x * blockDim.x + threadIdx.x) >> 5) * span;
+    const int lane = threadIdx.x & 31;
+    if (lo0 >= L.nrows) return;
+    const int nidx_row = L.cols / L.dim;
+    const int groups = (nidx_row + 31) / 32;
+    const __half *cb = (const __half *) (p + L.cb_off);
+    const __half *gr = (const __half *) (p + L.gain_off);
+    const uint8_t *st = p + L.stream_off;
+    const uint32_t mb = L.nbit > 12 ? 12u : (uint32_t) L.nbit;
+    const uint32_t imsk = (1u << mb) - 1u;
+
+    #pragma unroll 4
+    for (int s = 0; s < span; s++) {
+        const int lo = lo0 + s;
+        if (lo >= L.nrows) break;
+        const size_t r = row_of(L, (uint32_t) lo, rl);
+        const float *xr = row_x(x, L, (uint32_t) lo);
+        const uint8_t *row = st + r * (size_t) L.mrow;
+        float acc = 0.0f;
+        for (int g = 0; g < groups; g++) {
+            const int i = g * 32 + lane;
+            if (i >= nidx_row) break;
+            const uint32_t bit = (uint32_t) i * mb;
+            const uint8_t *q = row + (bit >> 3);
+            const uint32_t w = (uint32_t) q[0] | ((uint32_t) q[1] << 8) | ((uint32_t) q[2] << 16);
+            const uint32_t v = (w >> (bit & 7)) & imsk;
+            if (DIM == 4) {
+                const float4 xv = *(const float4 *) (xr + (size_t) i * 4u);
+                const uint2 c = __ldg((const uint2 *) cb + v);
+                const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c.x));
+                const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c.y));
+                acc += a.x * xv.x + a.y * xv.y + b.x * xv.z + b.y * xv.w;
+            } else {
+                const float4 x0 = *(const float4 *) (xr + (size_t) i * (size_t) DIM);
+                const float4 x1 = *(const float4 *) (xr + (size_t) i * (size_t) DIM + 4u);
+                const uint2 c0 = __ldg((const uint2 *) cb + (size_t) v * 2u);
+                const uint2 c1 = __ldg((const uint2 *) cb + (size_t) v * 2u + 1u);
+                const float2 a = __half22float2(*reinterpret_cast<const __half2 *> (&c0.x));
+                const float2 b = __half22float2(*reinterpret_cast<const __half2 *> (&c0.y));
+                const float2 c = __half22float2(*reinterpret_cast<const __half2 *> (&c1.x));
+                const float2 d = __half22float2(*reinterpret_cast<const __half2 *> (&c1.y));
+                acc += a.x * x0.x + a.y * x0.y + b.x * x0.z + b.y * x0.w
+                     + c.x * x1.x + c.y * x1.y + d.x * x1.z + d.y * x1.w;
+            }
+        }
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) {
+            const float v = acc * __half2float(gr[r]);
+            if (L.first) y[lo] = v;
+            else y[lo] += v;
+        }
+    }
+}
+
 /* One warp per row, no shared codebook: the 64 KB table stays in L1. The
  * fallback for any dim and any index width. */
 template <int DIM>
@@ -1085,6 +1168,10 @@ bool v3_blk_ok(const Layout &L) {
 
 int pick_variant(const Layout &L) {
     if (v3_blk_ok(L)) return 3;
+    /* A v3 row too short to be cut into whole 32-index groups: the tools'
+     * block kernel cannot describe it and its plane variant is a second bit
+     * array, so it takes the span kernel (see gemv_rowspan_kernel). */
+    if (L.v3 && L.dim == 8 && L.prow == 0 && L.nidx_row % 32 != 0) return 4;
     if (L.dim == 4) return 2;
     return 1;
 }
@@ -1270,9 +1357,24 @@ int upload(gm4_gpu *g, Tensor *t, const gm4_spec *spec, gm4_account *acct, char 
     return rc;
 }
 
+/* How many consecutive rows one warp walks in the span kernel. Four is the
+ * default because it gives four independent index streams and four
+ * accumulator chains per warp; the gate sweeps it. A diagnostic knob, in the
+ * same spirit as the engine's DS41_VQ_NO_PERSIST. */
+int g_span = 4;
+
 int launch_payload(const Payload &p, const uint32_t *rl, const float *x, float *y, int threads) {
     const int blocks = (p.l.nrows * 32 + threads - 1) / threads;
-    if (p.variant == 3) {
+    if (p.variant == 4) {
+        /* One warp per span of consecutive rows. The span is the ILP knob: a
+         * row of 88 indices is 2.75 rounds, so on its own it cannot hide its
+         * own head, and `span` rows of independent work can. */
+        const int span = g_span > 0 ? g_span : 4;
+        const int warps = (p.l.nrows + span - 1) / span;
+        const int sb = (warps * 32 + threads - 1) / threads;
+        if (p.l.dim == 8) gemv_rowspan_kernel<8><<<sb, threads>>>(p.dev, p.l, rl, x, y, span);
+        else gemv_rowspan_kernel<4><<<sb, threads>>>(p.dev, p.l, rl, x, y, span);
+    } else if (p.variant == 3) {
         if (p.l.dim == 8) gemv_v3blk_kernel<8, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
         else if (p.l.dim == 4) gemv_v3blk_kernel<4, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
         else gemv_v3blk_kernel<0, 0><<<blocks, threads>>>(p.dev, p.l, rl, x, y);
@@ -1473,6 +1575,16 @@ void gm4_gpu_close(gm4_gpu *g) {
 }
 
 void gm4_gpu_account_of(const gm4_gpu *g, gm4_account *out) { *out = g->acct; }
+
+/* Set the span kernel's rows per warp, returning the previous value. A
+ * diagnostic knob: it changes how much independent work one warp holds, not
+ * the arithmetic of any row, so the gate can sweep it against the same
+ * reference. */
+int gm4_gpu_span(int span) {
+    const int prev = g_span;
+    if (span > 0) g_span = span;
+    return prev;
+}
 
 const char *gm4_gpu_device_name(const gm4_gpu *g) { return g->devname; }
 

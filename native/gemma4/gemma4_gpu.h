@@ -225,6 +225,13 @@ int gm4_gpu_layer_probe(gm4_layer *L, int which, float *out, int n, char *err, s
 int gm4_gpu_layer_timing(gm4_layer *L, int on);
 int gm4_gpu_layer_sections(gm4_layer *L, double *ms, const char **names, int n);
 
+/* Rows per warp in the span kernel (the v3 geometry too short for the block
+ * kernel's whole 32-index groups: the expert and dense down projections).
+ * Default 4. Returns the previous value; a non-positive `span` leaves it
+ * unchanged. Diagnostic: it changes how much independent work one warp holds,
+ * never a row's arithmetic. */
+int gm4_gpu_span(int span);
+
 /* out = x * w over n values: the router's per-dimension scale. */
 int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
                 size_t errlen);
