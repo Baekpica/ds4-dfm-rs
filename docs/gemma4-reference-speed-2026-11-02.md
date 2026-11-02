@@ -149,8 +149,10 @@ changed, below threshold, payload mismatch, state replay), so an operator reads
 Named negatives to keep out: activations in shared, a shared-ring bitstream
 with cp.async, and — measured in this port today — the cross-row stream on this
 container. The stream is bit-exact (0.000e0 through 30 layers) and slower at
-every span tried: 14.52 at span 1 against 14.17, 15.43 at span 2, 15.54 at span
-3, 16.42 at span 8. The reason is occupancy, not the idea: one warp per row
+every span tried, against the block walk in the same interleaved run: 14.52
+against 14.17 at span 1, 15.43 against 15.15 at span 2, 15.54 against 15.27 at
+span 3, 16.15 against 15.28 at span 4, 16.42 against 14.15 at span 8. The
+reason is occupancy, not the idea: one warp per row
 gives 4096 warps, a span of 8 gives 512, and this geometry is latency-bound
 enough that the lost parallelism costs more than the amortized row head.
 
