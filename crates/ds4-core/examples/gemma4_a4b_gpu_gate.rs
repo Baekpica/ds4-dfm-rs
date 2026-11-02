@@ -595,6 +595,7 @@ fn run() -> Result<(), String> {
     let mut block_tokens = 1usize;
     let mut block_stages = false;
     let mut block_cross = false;
+    let mut block_nll = false;
     let mut block_text: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
@@ -725,6 +726,7 @@ fn run() -> Result<(), String> {
             }
             "--block-stages" => block_stages = true,
             "--block-cross" => block_cross = true,
+            "--block-nll" => block_nll = true,
             "--block-text" => {
                 let path = args.next().ok_or("--block-text needs a path")?;
                 block_text = Some(
@@ -987,6 +989,7 @@ fn run() -> Result<(), String> {
             block_tokens,
             block_stages,
             block_cross,
+            block_nll,
             block_text.clone(),
         );
     }
@@ -4656,6 +4659,65 @@ fn compare(cpu: &[f32], gpu: &[f32]) -> (f64, f64, f64) {
     (rel, max_abs, scale)
 }
 
+/// The reference engine's value-parity comparator (ds4-dfm-rs
+/// docs/prefill-decode-optimization-playbook.md:536-547): same argmax,
+/// top-10 overlap >= 8/10, KL <= 0.05, rel RMS <= 0.11. It is the bar used
+/// whenever two arithmetic shapes compute the same quantity - a chunk-size
+/// change, a different tier - and bit-identity is not required. The margins
+/// are returned too: a flipped argmax whose two candidates are 1e-6 apart is
+/// a near-tie under a shape change, while one with a wide margin is not.
+fn compare53(want: &[f32], got: &[f32]) -> (bool, usize, f64, f64, f32, f32) {
+    let top = |v: &[f32]| -> Vec<usize> {
+        let mut idx: Vec<usize> = (0..v.len()).collect();
+        idx.sort_unstable_by(|&a, &b| {
+            v[b].partial_cmp(&v[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        idx.truncate(10);
+        idx
+    };
+    let wi = top(want);
+    let gi = top(got);
+    let overlap = wi.iter().filter(|i| gi.contains(i)).count();
+    let soft = |v: &[f32]| -> (Vec<f64>, f64) {
+        let max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let p: Vec<f64> = v.iter().map(|&x| ((x as f64) - max).exp()).collect();
+        let z: f64 = p.iter().sum();
+        (p, z)
+    };
+    let (pw, zw) = soft(want);
+    let (pg, zg) = soft(got);
+    let mut kl = 0f64;
+    for (a, b) in pw.iter().zip(&pg) {
+        let p = a / zw;
+        let q = b / zg;
+        if p > 0.0 && q > 0.0 {
+            kl += p * (p / q).ln();
+        }
+    }
+    let (rel, _max, _scale) = compare(want, got);
+    let margin = |v: &[f32]| -> f32 {
+        let mut m1 = f32::NEG_INFINITY;
+        let mut m2 = f32::NEG_INFINITY;
+        for &x in v {
+            if x > m1 {
+                m2 = m1;
+                m1 = x;
+            } else if x > m2 {
+                m2 = x;
+            }
+        }
+        m1 - m2
+    };
+    (
+        argmax(want) == argmax(got),
+        overlap,
+        kl,
+        rel,
+        margin(want),
+        margin(got),
+    )
+}
+
 /// The decoded tensor dotted with `x` in f64: the reference both f32 paths
 /// approximate, computed from the same weights the artifact stores.
 fn f64_dots(tensor: &Tensor, x: &[f32]) -> Vec<f64> {
@@ -5429,6 +5491,7 @@ fn block_bisect(
     tokens_wanted: usize,
     stages: bool,
     cross: bool,
+    nll: bool,
     text: Option<String>,
 ) -> Result<(), String> {
     const QUESTION: &str = "What is the capital of Sweden? Answer in one word.";
@@ -5447,6 +5510,14 @@ fn block_bisect(
     let n = tokens_wanted.min(prompt.len());
     if n == 0 {
         return Err("--block-tokens is zero".into());
+    }
+    // The NLL mode's held-out continuation: teacher-forced after the prompt,
+    // so the gate scores tokens the prompt never contained.
+    const NLL_CONT: &str =
+        " The keeper closed the ledger, turned down the lamp and went up the stairs.";
+    let cont = if nll { tok.encode(NLL_CONT) } else { Vec::new() };
+    if nll && cont.is_empty() {
+        return Err("--block-nll continuation is empty".into());
     }
     if cross && n <= config.sliding_window {
         return Err(format!(
@@ -5467,8 +5538,14 @@ fn block_bisect(
     let mut chains = Vec::with_capacity(layers);
     let mut caches = Vec::with_capacity(layers);
     for layer in 0..layers {
+        // Both deep modes read and write positions past the sliding window, so
+        // a full layer's appending cache must be as long as the prompt (and,
+        // for the NLL mode, the continuation's steps after it). Sizing it to
+        // the window made the walk refuse its own 1025th position.
         let full_cap = if cross {
             n.max(config.sliding_window)
+        } else if nll {
+            n + cont.len()
         } else {
             config.sliding_window
         };
@@ -5502,6 +5579,9 @@ fn block_bisect(
 
     if cross {
         return block_cross(device, &model, &caches, &prompt, n, config);
+    }
+    if nll {
+        return block_nll(device, &model, &caches, &prompt, n, &cont, config);
     }
 
     let vocab = config.vocab;
@@ -5785,12 +5865,20 @@ fn block_cross(
         let mut got_a: Option<&Vec<f32>> = None;
         if let Some((_, got)) = blocked_a.iter().find(|(p, _)| *p == at) {
             let (rel, max, _scale) = compare(want, got);
+            let (same, ov, kl, rms, mw, mg) = compare53(want, got);
             println!(
                 "    CROSS A at {at} ({side}): block vs walk relL2 {rel:.3e} maxabs {max:.3e}, top-1 {tw} vs {}",
                 argmax(got)
             );
+            println!(
+                "      VALUE PARITY argmax same {same}, top-10 {ov}/10, KL {kl:.4}, rel RMS {rms:.4} (bar: same, 8/10, 0.05, 0.11), margin {mw:.3e} vs {mg:.3e}"
+            );
             if argmax(got) != tw {
                 println!("  FAIL plan A's top-1 at {at} is not the walk's");
+                failed = true;
+            }
+            if !same || ov < 8 || kl > 0.05 || rms > 0.11 {
+                println!("  FAIL plan A's value parity at {at} is outside the reference's band");
                 failed = true;
             }
             got_a = Some(got);
@@ -5824,5 +5912,134 @@ fn block_cross(
         return Err("the block path reads the ring's history incorrectly".into());
     }
     println!("PASS block-cross: both block plans match the walk and each other");
+    Ok(())
+}
+
+/// The continuation NLL. The reference engines gate a batched prefill on the
+/// likelihood of held-out tokens rather than on a relL2 band, because a block
+/// path legitimately sums in a different order and the question is whether the
+/// distribution moved, not whether every float matches. One prompt, one
+/// teacher-forced continuation, scored twice: by the token walk, and by the
+/// block prefill followed by steps - exactly the server's request path
+/// (gemma4_engine.rs `sync` then `eval`).
+///
+/// The gate's own bar is 1% of the walk's per-token NLL; it is a bar chosen
+/// here, not a number recovered from a reference, and the per-token table is
+/// the real output: it shows which continuation positions moved.
+fn block_nll(
+    device: &Residency,
+    model: &DeviceModel,
+    caches: &[Cache],
+    prompt: &[u32],
+    n: usize,
+    cont: &[u32],
+    config: &Config,
+) -> Result<(), String> {
+    let reset = |device: &Residency| -> Result<(), String> {
+        for cache in caches {
+            call_kv_reset(device, cache)?;
+        }
+        Ok(())
+    };
+    let vocab = config.vocab;
+    let mut logits = vec![0f32; vocab];
+
+    // -log p(token): log-sum-exp over the softcapped logits, in f64.
+    let nll_at = |logits: &[f32], token: u32| -> f64 {
+        let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let mut sum = 0f64;
+        for &v in logits {
+            sum += ((v as f64) - max).exp();
+        }
+        (max + sum.ln()) - logits[token as usize] as f64
+    };
+    let top1 = |logits: &[f32]| -> usize {
+        let mut best = 0usize;
+        for (i, &v) in logits.iter().enumerate() {
+            if v > logits[best] {
+                best = i;
+            }
+        }
+        best
+    };
+
+    // The walk: the prompt one token at a time, then the continuation.
+    reset(device)?;
+    let t0 = std::time::Instant::now();
+    for (pos, &token) in prompt[..n].iter().enumerate() {
+        call_model_step(device, model, token, pos, &mut logits)?;
+    }
+    let mut walk = Vec::with_capacity(cont.len());
+    let mut walk_top = Vec::with_capacity(cont.len());
+    for (i, &token) in cont.iter().enumerate() {
+        walk.push(nll_at(&logits, token));
+        walk_top.push(top1(&logits));
+        call_model_step(device, model, token, n + i, &mut logits)?;
+    }
+    let walk_ms = t0.elapsed().as_secs_f64() * 1e3;
+
+    // The block prefill in the server's own chunk size, then the same steps.
+    const PREFILL_MAX: usize = 1024; // GM4_PREFILL_MAX, gemma4_gpu.cu:6227
+    reset(device)?;
+    let t1 = std::time::Instant::now();
+    let mut pos0 = 0usize;
+    while pos0 < n {
+        let take = (n - pos0).min(PREFILL_MAX);
+        call_model_prefill(device, model, &prompt[pos0..pos0 + take], pos0, &mut logits)?;
+        pos0 += take;
+    }
+    let mut block = Vec::with_capacity(cont.len());
+    let mut block_top = Vec::with_capacity(cont.len());
+    for (i, &token) in cont.iter().enumerate() {
+        block.push(nll_at(&logits, token));
+        block_top.push(top1(&logits));
+        call_model_step(device, model, token, n + i, &mut logits)?;
+    }
+    let block_ms = t1.elapsed().as_secs_f64() * 1e3;
+
+    let sum_w: f64 = walk.iter().sum();
+    let sum_b: f64 = block.iter().sum();
+    let k = cont.len() as f64;
+    let top1_agree = walk_top.iter().zip(&block_top).filter(|(a, b)| a == b).count();
+    println!(
+        "BLOCK NLL {} token(s) after a {}-token prompt, top-1 agreement {}/{}",
+        cont.len(),
+        n,
+        top1_agree,
+        cont.len()
+    );
+    println!(
+        "  walk  {sum_w:.4} nats ({:.4}/token) in {walk_ms:.1} ms",
+        sum_w / k
+    );
+    println!(
+        "  block {sum_b:.4} nats ({:.4}/token) in {block_ms:.1} ms",
+        sum_b / k
+    );
+    println!(
+        "  delta {:+.4} nats ({:+.5}/token)",
+        sum_b - sum_w,
+        (sum_b - sum_w) / k
+    );
+    for i in 0..cont.len() {
+        println!(
+            "  {i:>3} token {:>6}: walk {:.4} (top {:>6}) block {:.4} (top {:>6}) delta {:+.4}{}",
+            cont[i],
+            walk[i],
+            walk_top[i],
+            block[i],
+            block_top[i],
+            block[i] - walk[i],
+            if block_top[i] == walk_top[i] { "" } else { "  TOP-1 DIFFERS" }
+        );
+    }
+    let per_token = (sum_b - sum_w) / k;
+    let bar = (sum_w / k).abs() * 0.01;
+    if per_token.abs() > bar {
+        return Err(format!(
+            "the block prefill moves the continuation NLL by {per_token:+.5}/token, past the gate's {bar:.5} bar"
+        ));
+    }
+    println!("PASS block-nll: the continuation NLL is within the gate's bar");
     Ok(())
 }

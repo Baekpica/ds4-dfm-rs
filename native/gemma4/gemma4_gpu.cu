@@ -2211,6 +2211,7 @@ struct gm4_gpu {
     size_t kvucap;
     int32_t *posone; /* the host entry points' staged position (gm4_gpu_rope, gm4_gpu_attention) */
     int expert_legacy; /* 1 = the eight-launch expert path, for the A/B gate */
+    int pf_f32; /* 1 = the block prefill keeps its activations in f32 */
     char devname[256];
     gm4_account acct;
 };
@@ -2419,6 +2420,18 @@ int gm4_gpu_expert_legacy(gm4_gpu *g, int legacy) {
     if (!g) return 0;
     const int prev = g->expert_legacy;
     g->expert_legacy = legacy ? 1 : 0;
+    return prev;
+}
+
+/* The block prefill's precision contract: `on` keeps every activation in f32
+ * (gemm_prefill_kernel), 0 lets the tiled kernel round its activation tile to
+ * f16 (:848-856). The f32 path is the parity contract the serving host uses
+ * and the tile is the speed option; both are the same arithmetic otherwise.
+ * Returns the previous value. */
+int gm4_gpu_prefill_f32(gm4_gpu *g, int on) {
+    if (!g) return 0;
+    const int prev = g->pf_f32;
+    g->pf_f32 = on ? 1 : 0;
     return prev;
 }
 
@@ -5790,7 +5803,11 @@ static int prefill_dev(gm4_gpu *g, int tensor, const float *xTd, int ntok, float
      * wiring error. The tile is the tools' kernel and rounds its activation
      * tile to f16 (:848-856), which the tools' own prefill gate accounts for by
      * comparing against a reference over f16-rounded activations. */
-    static const int legacy = getenv("GM4_PF_LEGACY") ? 1 : 0;
+    /* The switch has two entry points and they mean the same thing: the
+     * handle's own (gm4_gpu_prefill_f32, the serving path's contract) and the
+     * environment variable the gates already use. Either one selects the f32
+     * prefill; only when neither is set does the tile run. */
+    const int legacy = (g->pf_f32 || getenv("GM4_PF_LEGACY")) ? 1 : 0;
     const int tiled = !legacy && pre_ok(L, 64) ? 1 : 0;
     if (tiled) {
         char why[256];

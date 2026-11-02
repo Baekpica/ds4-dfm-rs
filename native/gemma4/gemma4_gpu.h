@@ -335,6 +335,15 @@ int gm4_gpu_stream(int span);
  * cuda/ds41_vq_decode.cuh:329-335. */
 int gm4_gpu_expert_legacy(gm4_gpu *g, int legacy);
 
+/* The block prefill's precision contract. `on` runs the f32-accumulating
+ * prefill (gemm_prefill_kernel, the parity contract the serving host uses);
+ * 0 lets the tiled kernel round its activation tile to f16, the speed
+ * option. Returns the previous value. Both are the same arithmetic, and the
+ * measured difference is in docs/gemma4-a4b-gpu-2026-11-02.md's precision
+ * table: 2.175e-4 (f32) against 5.702e-2 (tiled f16) at 25 tokens of the
+ * reference doc, top-1 same against differs. */
+int gm4_gpu_prefill_f32(gm4_gpu *g, int on);
+
 /* ---- one token, the whole model ------------------------------------------
  *
  * The layers above chained into 30 and bounded by the two ends the CPU's step

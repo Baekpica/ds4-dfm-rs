@@ -87,6 +87,13 @@ struct LayerSpec {
     router_scale: *const f32,
     per_expert_scale: *const f32,
     rope_inv: *const f32,
+    /// When both are set the layer writes and reads its K/V through the VQ
+    /// containers instead of the f16 cache (native/gemma4/gemma4_gpu.h:270-276).
+    /// The server keeps the f16 cache, so both are null here; leaving the
+    /// fields out of the mirror made the C side read whatever followed the
+    /// struct on the stack and take the VQ branch with garbage pointers.
+    kvq_k: *mut c_void,
+    kvq_v: *mut c_void,
 }
 
 /// Mirrors `gm4_model_spec`, field for field.
@@ -143,6 +150,7 @@ extern "C" {
     ) -> i32;
     fn gm4_gpu_model_free(m: *mut c_void);
     fn gm4_gpu_model_bytes(m: *const c_void) -> usize;
+    fn gm4_gpu_prefill_f32(g: *mut c_void, on: i32) -> i32;
     fn gm4_gpu_model_step(
         g: *mut c_void,
         m: *mut c_void,
@@ -152,7 +160,22 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_model_prefill(
+        g: *mut c_void,
+        m: *mut c_void,
+        tokens: *const i32,
+        n: i32,
+        pos0: i32,
+        logits: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
+
+/// The block size `gm4_gpu_model_prefill` accepts, 1..=GM4_PREFILL_MAX
+/// (native/gemma4/gemma4_gpu.cu:6227, :6248). A prompt longer than this is
+/// prefilled as consecutive blocks at pos0, 0, 1024, 2048, ...
+const PREFILL_MAX: usize = 1024;
 
 fn message(err: &[c_char]) -> String {
     unsafe { CStr::from_ptr(err.as_ptr()) }
@@ -255,6 +278,20 @@ impl GpuModel {
             account.device_bytes as f64 / (1024.0 * 1024.0)
         );
 
+        // The block prefill's precision is a contract, not a default that
+        // drifts: the f32 prefill is top-1 parity with the step at 25 tokens
+        // and still 2.4x the walk on a long prompt, while the tiled f16 tile
+        // is 5.702e-2 away with a different top-1 on the same prompt
+        // (docs/gemma4-a4b-gpu-2026-11-02.md, the precision table;
+        // native/gemma4/gemma4_gpu.h gm4_gpu_prefill_f32). GM4_SERVER_PF_F16=1
+        // opts into the tile.
+        let tile = std::env::var_os("GM4_SERVER_PF_F16").is_some();
+        unsafe { gm4_gpu_prefill_f32(gpu, if tile { 0 } else { 1 }) };
+        eprintln!(
+            "block prefill: {}",
+            if tile { "tiled f16 (GM4_SERVER_PF_F16)" } else { "f32" }
+        );
+
         let config = &family.config;
         let embed = tensor_index(&encoded, &family.layout.embed.name)?;
         let final_norm = decode(&root, &family.layout.final_norm)
@@ -344,6 +381,41 @@ impl GpuModel {
             return Err(format!("model_step at {}: {}", self.pos, message(&err)));
         }
         self.pos += 1;
+        Ok(())
+    }
+
+    /// One block of at most `PREFILL_MAX` tokens starting at `pos0`; leaves
+    /// the logits of the block's last position, which is the sample point the
+    /// walk reaches after its last step. The caches take every position in the
+    /// block (`gm4_gpu_model_prefill`, native/gemma4/gemma4_gpu.cu:6242-6312),
+    /// and a sliding layer stays correct at or past its ring because the block
+    /// is staged and committed after attention (gemma4_gpu.cu:6134-6142).
+    ///
+    /// A refusal (a geometry the expert item pass cannot run, a block or a
+    /// position outside the model's range) is returned as an error before the
+    /// block writes anything, so the caller can reset and take the walk.
+    pub fn prefill(&mut self, tokens: &[i32], pos0: usize) -> Result<(), String> {
+        let n = tokens.len();
+        if n == 0 || n > PREFILL_MAX {
+            return Err(format!("prefill block {n} is outside 1..={PREFILL_MAX}"));
+        }
+        let mut err = [0i8; 512];
+        let rc = unsafe {
+            gm4_gpu_model_prefill(
+                self.gpu,
+                self.model,
+                tokens.as_ptr(),
+                n as i32,
+                pos0 as i32,
+                self.logits.as_mut_ptr(),
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(format!("model_prefill at {pos0} ({n} tokens): {}", message(&err)));
+        }
+        self.pos = pos0 + n;
         Ok(())
     }
 
@@ -439,6 +511,10 @@ fn build_chain(
         router_scale: router_scale.as_ptr(),
         per_expert_scale: per_expert_scale.as_ptr(),
         rope_inv: rope_inv.as_ptr(),
+        // The f16 cache is this engine's KV (Phase B of the handoff); a VQ
+        // cache would put its two containers here.
+        kvq_k: std::ptr::null_mut(),
+        kvq_v: std::ptr::null_mut(),
     };
     let mut err = [0i8; 512];
     let mut chain: *mut c_void = std::ptr::null_mut();
@@ -497,6 +573,19 @@ impl Gemma4Engine {
             eos,
             end_turn,
         }
+    }
+
+    /// The prompt as consecutive blocks of at most `PREFILL_MAX` tokens. Each
+    /// block's logits overwrite the previous one's, so the last block leaves
+    /// the sample point, exactly as the walk's last step does.
+    fn prefill_blocks(&mut self, tokens: &[i32]) -> Result<(), String> {
+        let mut at = 0usize;
+        while at < tokens.len() {
+            let take = (tokens.len() - at).min(PREFILL_MAX);
+            self.model.prefill(&tokens[at..at + take], at)?;
+            at += take;
+        }
+        Ok(())
     }
 }
 
@@ -613,9 +702,42 @@ impl DecodeIo for Gemma4Engine {
                 self.tok.decode(&ids)
             );
         }
+        // The block prefill is not bit-equivalent to the walk. On a 2813-token
+        // prompt the two differ by relL2 2.4e-2 to 8.8e-2 in logits, KL up to
+        // 2.47 at one checkpoint, one top-1 flip at 1536, and the continuation
+        // NLL moves by 0.166 nats/token (docs/gemma4-a4b-gpu-2026-11-02.md).
+        // The walk is therefore the served path; GM4_SERVER_BLOCKS=1 opts into
+        // the blocks for measurement, and the two paths should diverge no more
+        // once they share one arithmetic order.
+        let blocks = std::env::var_os("GM4_SERVER_BLOCKS").is_some();
+        let started = std::time::Instant::now();
         self.model.reset().map_err(generate_err)?;
-        for &token in tokens {
-            self.model.step(token as u32).map_err(generate_err)?;
+        let mut prefilled = false;
+        if blocks {
+            match self.prefill_blocks(tokens) {
+                Ok(()) => prefilled = true,
+                Err(reason) => {
+                    // The refusal is a geometry the item pass cannot run, not a
+                    // quality verdict: the block path is the forward the gate
+                    // checks against the walk (--block-cross). Reset because an
+                    // earlier block may already have written its caches.
+                    eprintln!("prefill: {reason}; falling back to the token walk");
+                    self.model.reset().map_err(generate_err)?;
+                }
+            }
+        }
+        if !prefilled {
+            for &token in tokens {
+                self.model.step(token as u32).map_err(generate_err)?;
+            }
+        }
+        if std::env::var_os("GM4_SERVER_TIMING").is_some() {
+            eprintln!(
+                "sync: {} tokens, {}, {:.1} ms",
+                tokens.len(),
+                if prefilled { "blocks" } else { "walk" },
+                started.elapsed().as_secs_f64() * 1000.0
+            );
         }
         self.generation += 1;
         Ok(())
