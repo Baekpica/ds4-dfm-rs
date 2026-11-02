@@ -26,17 +26,23 @@ the same contract every other family has:
 
 State at this handoff: it does not run yet. No session, no KV and no
 graph exist, so no request can reach the model. What exists is the artifact
-contract, the tokenizer and chat template (reference-checked), and the
-native weight bind. The three commits below are unpushed.
+contract, the tokenizer and chat template (reference-checked), the native
+weight bind, and the reference semantics the engine must reproduce. The
+commits below are unpushed.
 
   25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
   c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
   015287d7  handoff: the logits-gate risk sized from the checkpoint itself
+  7aa7077a  handoff: state that nothing runs yet, engine corrected to CUDA
+  (next)    docs: the pinned reference semantics, every kernel cites it
 
-Next unit: W3's first step in section 3 - pin transformers'
-modeling_gemma4.py and read the router, norms, partial rotary, softcap and
-drafter semantics out of it before writing a kernel. Nothing in this tree
-or on disk states them.
+Next unit: the engine's first kernels. Read
+docs/gemma4-reference-semantics.md, then write ds4_gemma4_gpu.cuh and the
+cuda/gemma4_*.cuh set for what the shared runtime lacks (two-geometry
+attention with per-layer head_dim and 1.0 scale, the two rotary layouts,
+softcap 30, the 128-expert router with its two scale vectors, GELU, layer
+scaling), following ds4_ling31_gpu.cuh as the closest sibling, with golden
+vectors for each primitive before the 30-layer walk.
 
 2. The standard this port follows (read, not assumed)
 
@@ -111,17 +117,16 @@ W3 — the engine, on CUDA. This is the standard for a VQ family and the
   softcap 30, the 128-expert router with its two scale vectors, layer
   scaling), then ds4_gemma4_graph.inc (the 30-layer walk over the bound
   plan), then ds4_gemma4_session.inc and its KV.
-  FIRST STEP, before any kernel: recover the reference semantics. The
-  checkpoint's HF repo carries no modeling code (api/models/google/
-  gemma-4-26B-A4B: config + safetensors + tokenizer only, model_type
-  "gemma4", 25,805,936,206 BF16 parameters), so the source of truth is
-  transformers' modeling_gemma4.py at a pinned revision. Read there, and
-  cite in the code: the router's exact order (input scale, projection,
-  softmax, top-8, renormalization, per-expert scale), where layer_scalar
-  multiplies, the RMSNorm placement around attention and both FFNs, the
-  full-layer partial rotary layout (which 128 of 512 dims rotate, and the
-  interleaved or half-split convention), the softcap formula, and the
-  drafter's pre/post projection and centroid routing.
+  FIRST STEP, before any kernel: recover the reference semantics. DONE, in
+  docs/gemma4-reference-semantics.md. The checkpoint's HF repo carries no
+  modeling code, so the source of truth is transformers at the pinned commit
+  cc1451df3b5b218295bc16803569256c53c9d6e2 (2026-11-02), and that file
+  records the router order, where layer_scalar multiplies, the RMSNorm
+  placement, the two rotary geometries with their exact inv_freq formulas,
+  the softcap, the activation, and the drafter's real behaviour - with the
+  file hashes, the config values, the measured constants and the list of
+  things the engine must not do. Read it before writing a kernel; the
+  kernel comments cite it by section.
   Gate: first-N-id determinism, then the logits gate against the reference
   (section 6, risk 1: 48.07 GiB checkpoint, 8.19 GiB active path, paged run
   untested on this host).
@@ -133,10 +138,15 @@ W4 — state and serving surfaces.
   row. Gate: `ds4 --serving-check` runs every declared item.
 
 W5 — the drafter.
-  ds4_gemma4_mtp.inc for the 4-layer checkpoint (hidden 1024, shared KV,
-  pre_projection [1024,5632], post_projection [2816,1024], 2048 centroids
-  top-32, tied 262144x1024 embedding, 419,711,236 parameters), exposed as
-  `--mtp-draft` on the serial lane.
+  ds4_gemma4_mtp.inc for the 4-layer checkpoint (hidden 1024, FF 8192,
+  every layer consumes trunk KV, pre_projection [1024,5632],
+  post_projection [2816,1024], tied 262144x1024 embedding, 419,711,236
+  parameters), exposed as `--mtp-draft` on the serial lane. The centroid
+  masked-embedding path is NOT part of this checkpoint:
+  use_ordered_embeddings is false, so the drafter's logits are a plain head
+  over its own table (docs/gemma4-reference-semantics.md section 4). The
+  trunk must publish the K/V of layers 28 (last sliding) and 29 (last full)
+  at full length when drafting is on.
   Gate: drafts never change the greedy output; verify rows equal the trunk.
 
 W6 — serving wiring.
