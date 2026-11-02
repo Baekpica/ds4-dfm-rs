@@ -30,7 +30,36 @@ struct h3d_tensor {
     void *data;
     size_t elements;
     int dtype;
+    /* The stream the allocation was made on, so `h3d_free` can hand the block
+     * back to that stream's pool instead of synchronizing the device. */
+    cudaStream_t stream;
 };
+
+/* The streams of the live contexts, so a free can tell whether the stream a
+ * tensor was allocated on still exists. One entry per context and one context
+ * per process in every host this port has; a context that finds no slot simply
+ * allocates from the pool and frees with the plain call. */
+#define H3D_LIVE_STREAMS 16
+static cudaStream_t h3d_live_streams[H3D_LIVE_STREAMS];
+
+static int h3d_stream_live(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (h3d_live_streams[slot] == stream) return 1;
+    return 0;
+}
+
+static void h3d_stream_register(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (!h3d_live_streams[slot]) {
+            h3d_live_streams[slot] = stream;
+            return;
+        }
+}
+
+static void h3d_stream_unregister(cudaStream_t stream) {
+    for (int slot = 0; slot < H3D_LIVE_STREAMS; slot++)
+        if (h3d_live_streams[slot] == stream) h3d_live_streams[slot] = NULL;
+}
 
 /* The video VAE decoder's bench options. Every field defaults to the path the
  * H3 campaign measured before, so a job that sets nothing is unchanged, and
@@ -55,11 +84,28 @@ struct h3d_vae_options {
 struct h3d_context {
     cudaStream_t stream;
     cublasLtHandle_t blas;
+    void *lt_workspace;   /* cuBLASLt split-K scratch, grown to fit a choice */
+    size_t lt_workspace_bytes;
     void *stage;          /* pinned upload staging, allocated on first use */
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
     int attention_mma;    /* 1 = tensor-core attention (default), 0 = byte-exact scalar */
+    int attention_warps;  /* the pipelined block's warps per CTA; 0 = the four-warp block */
     struct h3d_vae_options vae;
+};
+
+/* The pipelined attention block's shapes, as warps per CTA: 16 query rows each,
+ * so the width is also the row count and the register ceiling `__launch_bounds__`
+ * hands ptxas -- 256 threads leave the block's own 208 registers alone, 384 cap
+ * them at 170, and 512 at 128, which is the only width that could ever fit a
+ * second CTA. Every width shares the same three-stage ring, because the ring is
+ * measured in key tiles and not in rows; what the width buys is half the K/V
+ * traffic per 64 extra rows, and what it costs is registers. */
+enum {
+    H3D_ATTN_FOUR = 0,
+    H3D_ATTN_PIPE8 = 8,
+    H3D_ATTN_PIPE12 = 12,
+    H3D_ATTN_PIPE16 = 16
 };
 
 /* Whether the byte-exact scalar attention was asked for, from the environment.
@@ -79,12 +125,33 @@ static int h3d_attention_scalar_from_env(void) {
     return 0;
 }
 
+/* Which pipelined width, or the four-warp block, was asked for by name. The
+ * eight-warp block is the tensor-core default as of the unit that measured it
+ * bit-identical and 23.7% faster at the delivery shape; `four` names the older
+ * synchronous one and `pipe12`/`pipe16` the wider rows-per-CTA shapes, whose
+ * digits are matched anywhere in the value so `pipe12`, `12` and `w12` agree.
+ * A value with no width in it stays on the default rather than guessing. */
+static int h3d_attention_warps_from_env(void) {
+    const char *mode = getenv("H3_DIT_ATTENTION");
+    if (!mode) return H3D_ATTN_PIPE8;
+    if (mode[0] == 'f' || mode[0] == 'F') return H3D_ATTN_FOUR;
+    for (const char *at = mode; at[0] != '\0'; at++) {
+        if (at[0] == '1' && at[1] == '2') return H3D_ATTN_PIPE12;
+        if (at[0] == '1' && at[1] == '6') return H3D_ATTN_PIPE16;
+    }
+    return H3D_ATTN_PIPE8;
+}
+
 /* Select the attention per run. `scalar` nonzero asks for the byte-exact
  * kernel, which is the only path that carries the reference guarantee; zero is
- * the tensor-core default. Overrides the environment. */
+ * the tensor-core default, which is the pipelined block unless the environment
+ * named another shape. A host chooses tensor-core or scalar; which tensor-core
+ * shape runs is the environment's, so `H3_DIT_ATTENTION=four` and `=pipe16`
+ * still reach a host that sets the arm itself. */
 void h3d_set_attention(h3d_context *context, int scalar) {
     if (context) {
         context->attention_mma = !scalar;
+        context->attention_warps = scalar ? 0 : h3d_attention_warps_from_env();
     }
 }
 
@@ -189,10 +256,9 @@ static int h3d_blas_ok(cublasStatus_t status, const char *operation,
 static size_t h3d_dtype_size(int dtype) {
     switch (dtype) {
         case H3D_F32:
-        case H3D_U32:
-        case H3D_I32: return sizeof(uint32_t);
-        case H3D_FP8:
-        case H3D_I8: return 1;
+        case H3D_U32: return sizeof(uint32_t);
+        case H3D_FP8: return 1;
+        case H3D_F16: return sizeof(__half);
         default: return sizeof(__nv_bfloat16);
     }
 }
@@ -218,6 +284,11 @@ __device__ static __nv_bfloat16 h3d_store(float value) {
     return __float2bfloat16(value);
 }
 
+/* The cuBLASLt algorithm table, defined beside the GEMM it serves; a newly
+ * created context starts from an empty table so a reused address can never
+ * inherit another context's choice. */
+static void h3d_lt_forget(void);
+
 h3d_context *h3d_create(char *error, size_t error_size) {
     h3d_context *context = (h3d_context *)calloc(1, sizeof(*context));
     if (!context) {
@@ -230,6 +301,16 @@ h3d_context *h3d_create(char *error, size_t error_size) {
         h3d_destroy(context);
         return NULL;
     }
+    /* The default pool keeps a freed block for the next caller instead of
+     * returning it to the driver, which is what makes stream-ordered reuse
+     * cheap: the threshold is the amount the pool may hold, not a cache hint. */
+    cudaMemPool_t pool = NULL;
+    if (cudaDeviceGetDefaultMemPool(&pool, 0) == cudaSuccess && pool) {
+        unsigned long long threshold = (unsigned long long)12 << 30;
+        cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold,
+                                &threshold);
+    }
+    h3d_stream_register(context->stream);
     cublasStatus_t blas = cublasLtCreate(&context->blas);
     if (blas != CUBLAS_STATUS_SUCCESS) {
         h3d_set_error(error, error_size, "create cuBLASLt handle: status %d",
@@ -242,15 +323,22 @@ h3d_context *h3d_create(char *error, size_t error_size) {
      * choose with `h3d_set_attention`; the environment is read once here as the
      * default for callers that never call it, such as the reproducer. */
     context->attention_mma = !h3d_attention_scalar_from_env();
+    context->attention_warps =
+            context->attention_mma ? h3d_attention_warps_from_env() : 0;
     context->vae = h3d_vae_options_from_env();
+    h3d_lt_forget();
     return context;
 }
 
 void h3d_destroy(h3d_context *context) {
     if (!context) return;
+    if (context->lt_workspace) cudaFree(context->lt_workspace);
     if (context->stage_done) cudaEventDestroy(context->stage_done);
     if (context->stage) cudaFreeHost(context->stage);
-    if (context->stream) cudaStreamDestroy(context->stream);
+    if (context->stream) {
+        h3d_stream_unregister(context->stream);
+        cudaStreamDestroy(context->stream);
+    }
     if (context->blas) cublasLtDestroy(context->blas);
     free(context);
 }
@@ -259,7 +347,7 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
                       char *error, size_t error_size) {
     if (!context || (dtype != H3D_BF16 && dtype != H3D_F32 &&
                      dtype != H3D_U32 && dtype != H3D_FP8 &&
-                     dtype != H3D_I8 && dtype != H3D_I32)) {
+                     dtype != H3D_F16)) {
         h3d_set_error(error, error_size, "unknown DiT dtype %d", dtype);
         return NULL;
     }
@@ -276,18 +364,38 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
     tensor->dtype = dtype;
     if (elements) {
         size_t bytes = elements * h3d_dtype_size(dtype);
-        if (!h3d_cuda_ok(cudaMalloc(&tensor->data, bytes), "allocate tensor",
-                         error, error_size)) {
+        /* Stream-ordered allocation: `cudaMalloc` and `cudaFree` synchronize
+         * the device, and the resizer allocates and frees a 500 MB buffer five
+         * or six times per block. nsys charged 910 frees 2.27 s and 910
+         * mallocs 1.29 s of host time on a quarter-size volume, as gaps the
+         * kernels could not fill. The default pool keeps the block for the next
+         * caller (`h3d_create` raises its release threshold), so a free costs a
+         * push on the stream. */
+        if (!h3d_cuda_ok(cudaMallocAsync(&tensor->data, bytes, context->stream),
+                         "allocate tensor", error, error_size)) {
             free(tensor);
             return NULL;
         }
+        tensor->stream = context->stream;
     }
     return tensor;
 }
 
 void h3d_free(h3d_tensor *tensor) {
     if (!tensor) return;
-    if (tensor->data) cudaFree(tensor->data);
+    if (tensor->data) {
+        /* An ordered free is only valid while the stream it was made on is
+         * alive, and a caller may drop the context first: a Rust struct frees
+         * its fields in declaration order, and every holder of a context keeps
+         * it above the tensors it was used to make. So the free asks the live
+         * table, and a tensor whose stream is gone takes the plain free, which
+         * is what the driver needs to reclaim a pool block anyway. */
+        if (!tensor->stream || !h3d_stream_live(tensor->stream) ||
+            cudaFreeAsync(tensor->data, tensor->stream) != cudaSuccess) {
+            cudaFree(tensor->data);
+        }
+        cudaGetLastError();
+    }
     free(tensor);
 }
 
@@ -447,6 +555,260 @@ int h3d_read(h3d_context *context, void *host, const h3d_tensor *tensor,
                        "read tensor sync", error, error_size);
 }
 
+/* ---- the cuBLASLt algorithm: chosen once per shape, then named ----
+ *
+ * A NULL algorithm asks cuBLASLt to run its heuristic on every call and to
+ * take whatever comes back, and that answer is not stable: this stage answered
+ * the row-major problem with `magma_sgemmEx_kernel`, a SIMT SGEMM, in one build
+ * and with `cutlass_80_tensorop_*` in the next, from byte-identical source. So
+ * the algorithm is asked for once per shape and arm, kept, and passed
+ * explicitly. Three things follow: a recorded timing stops depending on which
+ * kernel a future build happens to pick, the heuristic stops running once per
+ * tile, and the chose algorithm can be named beside the timing.
+ *
+ * One preference departs from cuBLASLt's default in a way that matters: the
+ * default workspace ceiling is zero bytes, which excludes every split-K and
+ * stream-K variant before the search starts. 64 MiB is offered instead, and
+ * the buffer itself is allocated only when a chosen algorithm asks for it.
+ *
+ * `H3D_LT_ALGO=<i>` selects the i-th heuristic candidate (0, the default, is
+ * the heuristic's own first choice) so candidates can be compared without a
+ * rebuild; `H3D_LT_ALGO_TRACE=1` prints each choice to stderr as it is made. */
+#define H3D_LT_SLOTS 64
+#define H3D_LT_CANDIDATES 8
+#define H3D_LT_WORKSPACE_BYTES ((uint64_t)64 << 20)
+
+struct h3d_lt_choice {
+    h3d_context *owner;
+    uint32_t rows;
+    uint32_t input_dim;
+    uint32_t output_dim;
+    cudaDataType_t type;
+    cudaDataType_t result;
+    cublasComputeType_t compute;
+    int columns;
+    int candidate;   /* index within the heuristic's list, -1 when none ran */
+    int id;
+    int tile;
+    int stages;
+    int splitk;
+    size_t workspace;
+    cublasLtMatmulAlgo_t algo;
+};
+
+static struct h3d_lt_choice h3d_lt_choices[H3D_LT_SLOTS];
+static int h3d_lt_count = 0;
+static int h3d_lt_next = 0;
+
+static void h3d_lt_forget(void) {
+    memset(h3d_lt_choices, 0, sizeof(h3d_lt_choices));
+    h3d_lt_count = 0;
+    h3d_lt_next = 0;
+}
+
+static const char *h3d_lt_type_name(cudaDataType_t type) {
+    switch (type) {
+        case CUDA_R_16F: return "f16";
+        case CUDA_R_16BF: return "bf16";
+        case CUDA_R_32F: return "f32";
+        default: return "other";
+    }
+}
+
+static const char *h3d_lt_compute_name(cublasComputeType_t compute) {
+    return compute == CUBLAS_COMPUTE_32F_FAST_TF32 ? "tf32" : "fp32";
+}
+
+static int h3d_lt_attr(const cublasLtMatmulAlgo_t *algo,
+                       cublasLtMatmulAlgoConfigAttributes_t attribute) {
+    int value = -1;
+    size_t written = 0;
+    if (cublasLtMatmulAlgoConfigGetAttribute(algo, attribute, &value,
+                                             sizeof(value),
+                                             &written) != CUBLAS_STATUS_SUCCESS) {
+        return -1;
+    }
+    return value;
+}
+
+/* Ask for the algorithm for this shape, or answer from the table. Fills `algo`
+ * and `workspace` (bytes the algorithm needs; the buffer itself lives on the
+ * context). Returns 0 when no candidate could be used, in which case the
+ * caller passes NULL as it did before. */
+static int h3d_lt_pick(h3d_context *context, cublasLtMatmulDesc_t operation,
+                       cublasLtMatrixLayout_t a_layout,
+                       cublasLtMatrixLayout_t b_layout,
+                       cublasLtMatrixLayout_t output_layout, uint32_t rows,
+                       uint32_t input_dim, uint32_t output_dim,
+                       cudaDataType_t type, cudaDataType_t result,
+                       cublasComputeType_t compute,
+                       int columns, cublasLtMatmulAlgo_t *algo,
+                       size_t *workspace) {
+    *workspace = 0;
+    memset(algo, 0, sizeof(*algo));
+    for (int slot = 0; slot < h3d_lt_count; slot++) {
+        const struct h3d_lt_choice *choice = &h3d_lt_choices[slot];
+        if (choice->owner == context && choice->rows == rows &&
+            choice->input_dim == input_dim &&
+            choice->output_dim == output_dim && choice->type == type &&
+            choice->result == result && choice->compute == compute &&
+            choice->columns == columns) {
+            if (choice->candidate < 0) return 0;
+            *algo = choice->algo;
+            *workspace = choice->workspace;
+            return 1;
+        }
+    }
+
+    cublasLtMatmulPreference_t preference = NULL;
+    cublasLtMatmulHeuristicResult_t results[H3D_LT_CANDIDATES];
+    memset(results, 0, sizeof(results));
+    uint64_t ceiling = H3D_LT_WORKSPACE_BYTES;
+    uint32_t search = CUBLASLT_SEARCH_BEST_FIT;
+    int found = 0;
+    if (cublasLtMatmulPreferenceCreate(&preference) != CUBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    cublasLtMatmulPreferenceSetAttribute(
+        preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ceiling,
+        sizeof(ceiling));
+    cublasLtMatmulPreferenceSetAttribute(
+        preference, CUBLASLT_MATMUL_PREF_SEARCH_MODE, &search, sizeof(search));
+    cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(
+        context->blas, operation, a_layout, b_layout, output_layout,
+        output_layout, preference, H3D_LT_CANDIDATES, results, &found);
+    cublasLtMatmulPreferenceDestroy(preference);
+    if (status != CUBLAS_STATUS_SUCCESS) found = 0;
+    if (getenv("H3D_LT_ALGO_TRACE")) {
+        fprintf(stderr, "lt-heuristic %ux%ux%u %s %s %s status=%d found=%d",
+                rows, input_dim, output_dim, h3d_lt_type_name(type),
+                h3d_lt_compute_name(compute), columns ? "columns" : "rows",
+                (int)status, found);
+        for (int index = 0; index < found; index++) {
+            fprintf(stderr, " [%d state=%d wk=%zu]", index,
+                    (int)results[index].state, results[index].workspaceSize);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    int want = 0;
+    const char *requested = getenv("H3D_LT_ALGO");
+    if (requested && requested[0]) {
+        want = atoi(requested);
+        if (want < 0 || want >= found) want = 0;
+    }
+    int chosen = -1;
+    /* The requested candidate first, then any earlier one, so a candidate that
+     * a build no longer offers still leaves a working algorithm. A candidate
+     * that cannot fit the workspace ceiling is skipped rather than ending the
+     * search: the heuristic's first choice for a tall 512x512 product was a
+     * split-K needing 129 MB, and the honest answer is the next candidate, not
+     * the NULL default. */
+    for (int pass = 0; pass < 2 && chosen < 0; pass++) {
+        int first = pass ? 0 : want;
+        int last = pass ? want : found;
+        for (int index = first; index < last; index++) {
+            if (results[index].state != CUBLAS_STATUS_SUCCESS) continue;
+            if (results[index].workspaceSize > H3D_LT_WORKSPACE_BYTES) continue;
+            chosen = index;
+            break;
+        }
+    }
+
+    struct h3d_lt_choice entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.owner = context;
+    entry.rows = rows;
+    entry.input_dim = input_dim;
+    entry.output_dim = output_dim;
+    entry.type = type;
+    entry.result = result;
+    entry.compute = compute;
+    entry.columns = columns;
+    entry.candidate = -1;
+    entry.id = -1;
+    entry.tile = -1;
+    entry.stages = -1;
+    entry.splitk = -1;
+    int usable = 0;
+    if (chosen >= 0) {
+        size_t needed = results[chosen].workspaceSize;
+        /* Grow the buffer to fit; a cudaFree here is safe because the buffer
+         * was last written by work on this same stream and the free orders
+         * after it. Nothing above 64 MiB is ever granted. */
+        if (needed <= H3D_LT_WORKSPACE_BYTES && needed > context->lt_workspace_bytes) {
+            if (context->lt_workspace) cudaFree(context->lt_workspace);
+            context->lt_workspace = NULL;
+            context->lt_workspace_bytes = 0;
+            if (cudaMalloc(&context->lt_workspace, needed) == cudaSuccess) {
+                context->lt_workspace_bytes = needed;
+            }
+        }
+        if (needed <= context->lt_workspace_bytes) {
+            entry.candidate = chosen;
+            entry.algo = results[chosen].algo;
+            entry.workspace = needed;
+            entry.id = h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_ID);
+            entry.tile = h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_TILE_ID);
+            entry.stages =
+                h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_STAGES_ID);
+            entry.splitk =
+                h3d_lt_attr(&entry.algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM);
+            usable = 1;
+        }
+    }
+    if (h3d_lt_count < H3D_LT_SLOTS) {
+        h3d_lt_choices[h3d_lt_count++] = entry;
+    } else {
+        /* The DiT alone presents more shapes than the table holds, so a full
+         * table takes the next slot round-robin: a repeated question costs one
+         * more heuristic call and answers the same algorithm, since the
+         * heuristic is a function of the shapes it is given. */
+        h3d_lt_choices[h3d_lt_next++ % H3D_LT_SLOTS] = entry;
+    }
+    if (getenv("H3D_LT_ALGO_TRACE")) {
+        fprintf(stderr,
+                "lt %ux%ux%u %s %s %s cand=%d id=%d tile=%d stages=%d "
+                "splitk=%d wk=%zu\n",
+                rows, input_dim, output_dim, h3d_lt_type_name(type),
+                h3d_lt_compute_name(compute), columns ? "columns" : "rows",
+                entry.candidate, entry.id, entry.tile, entry.stages,
+                entry.splitk, entry.workspace);
+    }
+    if (!usable) return 0;
+    *algo = entry.algo;
+    *workspace = entry.workspace;
+    return 1;
+}
+
+/* The algorithms this run dispatched, one entry per shape in first-seen order,
+ * `rows x k x n type compute layout cand=.. id=.. tile=.. stages=.. splitk=..
+ * wk=..` separated by "; ". Returns the length written. */
+int h3d_lt_algo_report(char *text, size_t size) {
+    if (!text || size < 2) return 0;
+    text[0] = '\0';
+    size_t used = 0;
+    for (int slot = 0; slot < h3d_lt_count; slot++) {
+        const struct h3d_lt_choice *choice = &h3d_lt_choices[slot];
+        int written = snprintf(
+            text + used, size - used,
+            "%s%ux%ux%u %s %s %s cand=%d id=%d tile=%d stages=%d splitk=%d "
+            "wk=%zu",
+            slot ? "; " : "", choice->rows, choice->input_dim,
+            choice->output_dim, h3d_lt_type_name(choice->type),
+            h3d_lt_compute_name(choice->compute),
+            choice->columns ? "columns" : "rows", choice->candidate,
+            choice->id, choice->tile, choice->stages, choice->splitk,
+            choice->workspace);
+        if (written < 0 || (size_t)written >= size - used) {
+            text[used] = '\0';
+            break;
+        }
+        used += (size_t)written;
+    }
+    return (int)used;
+}
+
 /* `h3_linear_lt` (`h3_gpu_cuda.cu:733-779`), byte for byte: row-major
  * layouts, TRANSB, F32 compute, alpha 1 and beta 0. `compute` carries this
  * port's video VAE decoder compute-mode option; the plain `h3d_linear_lt`
@@ -455,6 +817,7 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
                                  const void *input, const void *weight,
                                  uint32_t rows, uint32_t input_dim,
                                  uint32_t output_dim, cudaDataType_t type,
+                                 cudaDataType_t result,
                                  cublasComputeType_t compute, char *error,
                                  size_t error_size) {
     cublasLtMatmulDesc_t operation = NULL;
@@ -481,7 +844,7 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
                                             input_dim, input_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&output_layout, type, rows,
+        status = cublasLtMatrixLayoutCreate(&output_layout, result, rows,
                                             output_dim, output_dim);
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
@@ -500,10 +863,17 @@ static int h3d_linear_lt_compute(h3d_context *context, void *output,
             sizeof(row_major));
     }
     if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatmul(context->blas, operation, &alpha, input,
-                                input_layout, weight, weight_layout, &beta,
-                                output, output_layout, output, output_layout,
-                                NULL, NULL, 0, context->stream);
+        cublasLtMatmulAlgo_t algo;
+        size_t workspace = 0;
+        int pinned = h3d_lt_pick(context, operation, input_layout,
+                                 weight_layout, output_layout, rows, input_dim,
+                                 output_dim, type, result, compute, 0, &algo,
+                                 &workspace);
+        status = cublasLtMatmul(
+            context->blas, operation, &alpha, input, input_layout, weight,
+            weight_layout, &beta, output, output_layout, output, output_layout,
+            pinned ? &algo : NULL, workspace ? context->lt_workspace : NULL,
+            workspace, context->stream);
     }
     if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
     if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
@@ -518,8 +888,71 @@ static int h3d_linear_lt(h3d_context *context, void *output, const void *input,
                          uint32_t output_dim, cudaDataType_t type,
                          char *error, size_t error_size) {
     return h3d_linear_lt_compute(context, output, input, weight, rows,
-                                 input_dim, output_dim, type, CUBLAS_COMPUTE_32F,
-                                 error, error_size);
+                                 input_dim, output_dim, type, type,
+                                 CUBLAS_COMPUTE_32F, error, error_size);
+}
+
+/* The same product with the matrix on the other side: `C[rows, dim] =
+ * input[rows, k] * weight[dim, k]^T` is, byte for byte, the column-major
+ * product `C'[dim, rows] = weight[dim, k] * input[rows, k]^T`, because a
+ * column-major [dim, rows] buffer read row-major is [rows, dim]. cuBLASLt's
+ * heuristic answers a row-major problem with TRANSB by picking a SIMT SGEMM
+ * (`magma_sgemmEx_kernel`, 69.5% of this stage's device time), and this asks
+ * it the transposed question instead: no layout attribute at all, TRANSA on
+ * the weight, and the output written straight into the caller's row-major
+ * buffer. */
+static int h3d_linear_lt_columns(h3d_context *context, void *output,
+                                 const void *input, const void *weight,
+                                 uint32_t rows, uint32_t input_dim,
+                                 uint32_t output_dim, cudaDataType_t type,
+                                 cudaDataType_t result,
+                                 cublasComputeType_t compute, char *error,
+                                 size_t error_size) {
+    cublasLtMatmulDesc_t operation = NULL;
+    cublasLtMatrixLayout_t input_layout = NULL;
+    cublasLtMatrixLayout_t weight_layout = NULL;
+    cublasLtMatrixLayout_t output_layout = NULL;
+    cublasOperation_t transpose = CUBLAS_OP_T;
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    cublasStatus_t status = cublasLtMatmulDescCreate(&operation, compute,
+                                                     CUDA_R_32F);
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatmulDescSetAttribute(
+            operation, CUBLASLT_MATMUL_DESC_TRANSA, &transpose,
+            sizeof(transpose));
+    }
+    // The weight's rows are its output channels; transposed it is [dim, k].
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&weight_layout, type, input_dim,
+                                            output_dim, input_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&input_layout, type, input_dim,
+                                            rows, input_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        status = cublasLtMatrixLayoutCreate(&output_layout, result, output_dim,
+                                            rows, output_dim);
+    }
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        cublasLtMatmulAlgo_t algo;
+        size_t workspace = 0;
+        int pinned = h3d_lt_pick(context, operation, weight_layout,
+                                 input_layout, output_layout, rows, input_dim,
+                                 output_dim, type, result, compute, 1, &algo,
+                                 &workspace);
+        status = cublasLtMatmul(
+            context->blas, operation, &alpha, weight, weight_layout, input,
+            input_layout, &beta, output, output_layout, output, output_layout,
+            pinned ? &algo : NULL, workspace ? context->lt_workspace : NULL,
+            workspace, context->stream);
+    }
+    if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
+    if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
+    if (input_layout) cublasLtMatrixLayoutDestroy(input_layout);
+    if (operation) cublasLtMatmulDescDestroy(operation);
+    return h3d_blas_ok(status, "cuBLASLt column linear", error, error_size);
 }
 
 /* `h3_linear_bias_kernel` (`:783-791`): the bias is added to the already
@@ -984,1199 +1417,6 @@ int h3d_linear_e4m3_raw(h3d_context *context, h3d_tensor *output,
                                    input_dim, output_dim, error, error_size);
 }
 
-/* ---- the Gemma4 encoder's INT8 convrot route ----
- *
- * The reference is `comfy-kitchen` 0.2.26, unpacked read-only at
- * `/data/refs/comfy-kitchen-v0.2.26`; the release calls it through
- * `runtime/cache_ops/int8_policy.py:58-107` (`DevInt8ConvRotLinear`), which
- * passes `convrot=True`, the layer's `convrot_groupsize` and a BF16 output
- * dtype code. Five steps, each cited where it is implemented:
- *
- *   1. grouped Hadamard rotation of the activation   `tensor/int8_utils.py:55-70`
- *   2. row-wise absmax and scale                     `backends/eager/quantization.py:857-871`
- *   3. row-wise INT8 quantization in the operand's dtype   (same lines)
- *   4. int8 x int8 -> int32 accumulation             `:749-781`
- *   5. F32 scale epilogue, BF16 cast, bias last      `:1006-1051`
- *
- * The Hadamard matrix is stored as sign bits rather than as BF16 values. That
- * is exact and not an approximation: `_build_hadamard` divides the Kronecker
- * power of `h4` by `sqrt(size)` (`tensor/int8_utils.py:10-38`) and `size` is a
- * power of 4, so every entry is exactly +/- 2^-k; adding `+x` or `-x` and
- * applying one power-of-two scale at the end is the same arithmetic the
- * reference's dense matmul does, term for term and rounding for rounding. The
- * gate checks the sign bits against a host Kronecker build. */
-#define H3D_INT8_MAX 127.0f
-#define H3D_INT8_MIN_SCALE 1e-30f
-/* `torch.finfo(torch.bfloat16).tiny`, the `_int8_scale_for_math` floor
- * (`:815-817`). It cannot fire here - the scale is clamped at `1e-30` first -
- * but the reference's guard is kept rather than argued away. */
-#define H3D_INT8_TINY_BF16 1.1754943508222875e-38f
-#define H3D_INT8_THREADS 256
-
-/* `kron(h4, h4, ...)`: for `size = 4^k` every entry is the product of `h4`'s
- * own entries over the base-4 digits of its two indices, and `h4[i][j]` is -1
- * exactly when `i + j == 3` (`tensor/int8_utils.py:24-27`). One bit per entry,
- * set for +1. */
-__global__ static void h3d_int8_hadamard_kernel(uint32_t *words,
-                                                uint32_t size,
-                                                uint32_t words_per_row) {
-    size_t total = (size_t)size * words_per_row;
-    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-         index < total; index += (size_t)gridDim.x * blockDim.x) {
-        uint32_t row = (uint32_t)(index / words_per_row);
-        uint32_t first = (uint32_t)(index % words_per_row) * 32u;
-        uint32_t packed = 0;
-        for (uint32_t lane = 0; lane < 32; ++lane) {
-            uint32_t column = first + lane;
-            if (column >= size) break;
-            uint32_t negative = 0;
-            for (uint32_t step = size / 4;; step /= 4) {
-                if ((row / step) % 4 + (column / step) % 4 == 3) {
-                    negative ^= 1u;
-                }
-                if (step <= 1) break;
-            }
-            if (!negative) packed |= 1u << lane;
-        }
-        words[index] = packed;
-    }
-}
-
-/* `_rotate_activation` (`tensor/int8_utils.py:55-70`): the last dimension is
- * reshaped into groups of `group_size` and each group is multiplied by the
- * matrix, `out[j] = sum_i in[i] * h[i][j]`. One block per (row, group); every
- * thread owns one output column and walks the inputs in index order, so the
- * accumulation is a single F32 register and the two-or-three-rounding drift a
- * cuBLAS tile order would add is absent. The reference accumulates the same
- * sum in F32; its own tile order is not pinned, which the gate measures. */
-__global__ static void h3d_int8_rotate_kernel(__nv_bfloat16 *output,
-                                              const __nv_bfloat16 *input,
-                                              const uint32_t *words,
-                                              uint32_t group,
-                                              uint32_t words_per_row,
-                                              float recip) {
-    __shared__ __nv_bfloat16 column[H3D_INT8_GROUP_MAX];
-    const uint32_t row = blockIdx.x, index = blockIdx.y;
-    const uint32_t groups = gridDim.y;
-    const uint32_t columns = groups * group;
-    const __nv_bfloat16 *in = input + (size_t)row * columns + (size_t)index * group;
-    __nv_bfloat16 *out = output + (size_t)row * columns + (size_t)index * group;
-    for (uint32_t i = threadIdx.x; i < group; i += blockDim.x) column[i] = in[i];
-    __syncthreads();
-    float sum = 0.0f;
-    for (uint32_t i = 0; i < group; ++i) {
-        /* The sign bit is a broadcast read: every thread of a warp wants the
-         * same word, since the word index moves once per 32 columns. */
-        uint32_t word = __ldg(&words[i * words_per_row + (threadIdx.x >> 5)]);
-        sum += ((word >> (threadIdx.x & 31u)) & 1u) ? __bfloat162float(column[i])
-                                                    : -__bfloat162float(column[i]);
-    }
-    out[threadIdx.x] = __float2bfloat16(sum * recip);
-}
-
-/* `abs_max = x.abs().amax(dim=-1, keepdim=True)` (`:870`) and
- * `scale = (abs_max.float() / 127.0).clamp(min=1e-30)` (`:871`). The
- * reduction is the FP8 route's own per-row amax, which is the same maximum of
- * the same absolute values; only the divisor below differs. */
-__global__ static void h3d_int8_scale_rows_kernel(float *scales, size_t rows) {
-    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= rows) return;
-    scales[index] = fmaxf(scales[index] / H3D_INT8_MAX, H3D_INT8_MIN_SCALE);
-}
-
-/* `_round_int8(x / _int8_scale_for_math(scale, x))` (`:820-826`, `:857-871`).
- * The divisor is the scale rounded to the operand's dtype, because the
- * reference divides a BF16 tensor by a BF16 scale; the quotient is rounded to
- * BF16 for the same reason before `round_` (half to even) and the clamp. The
- * value is integral after the round, so the cast to int8 only reinterprets. */
-__global__ static void h3d_int8_quantize_rows_kernel(int8_t *output,
-                                                     const __nv_bfloat16 *input,
-                                                     const float *scales,
-                                                     size_t columns) {
-    __nv_bfloat16 rounded = __float2bfloat16(scales[blockIdx.x]);
-    if (__bfloat162float(rounded) == 0.0f) {
-        rounded = __float2bfloat16(H3D_INT8_TINY_BF16);
-    }
-    const float divisor = __bfloat162float(rounded);
-    for (size_t index = threadIdx.x; index < columns; index += blockDim.x) {
-        size_t at = (size_t)blockIdx.x * columns + index;
-        float value = __bfloat162float(input[at]) / divisor;
-        value = __bfloat162float(__float2bfloat16(value));
-        value = rintf(value);
-        value = fminf(fmaxf(value, -128.0f), H3D_INT8_MAX);
-        output[at] = (int8_t)value;
-    }
-}
-
-/* `torch._int_mm(x_8, weight.T.contiguous())` (`:749-781`, `:1021`): int8 x
- * int8 into an int32 accumulator, row-major and TRANSB as the BF16 and FP8
- * routes are laid out. The reference zero-pads M, K and N to cuBLASLt's
- * alignments before the call; padding a dimension with zeros cannot change the
- * accumulator, so the port instead requires the alignments the artifacts
- * already satisfy (K and N multiples of 8) and pads only M, which costs the
- * caller nothing but a wider scratch. */
-static int h3d_linear_int8_compute(h3d_context *context, void *output,
-                                   const void *input, const void *weight,
-                                   uint32_t rows, uint32_t input_dim,
-                                   uint32_t output_dim, char *error,
-                                   size_t error_size) {
-    cublasLtMatmulDesc_t operation = NULL;
-    cublasLtMatrixLayout_t input_layout = NULL;
-    cublasLtMatrixLayout_t weight_layout = NULL;
-    cublasLtMatrixLayout_t output_layout = NULL;
-    cublasOperation_t transpose = CUBLAS_OP_T;
-    cublasLtOrder_t row_major = CUBLASLT_ORDER_ROW;
-    int32_t alpha = 1, beta = 0;
-    cublasStatus_t status = cublasLtMatmulDescCreate(&operation,
-                                                     CUBLAS_COMPUTE_32I,
-                                                     CUDA_R_32I);
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatmulDescSetAttribute(
-            operation, CUBLASLT_MATMUL_DESC_TRANSB, &transpose,
-            sizeof(transpose));
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&input_layout, CUDA_R_8I, rows,
-                                            input_dim, input_dim);
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&weight_layout, CUDA_R_8I,
-                                            output_dim, input_dim, input_dim);
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutCreate(&output_layout, CUDA_R_32I, rows,
-                                            output_dim, output_dim);
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutSetAttribute(
-            input_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &row_major,
-            sizeof(row_major));
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutSetAttribute(
-            weight_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &row_major,
-            sizeof(row_major));
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatrixLayoutSetAttribute(
-            output_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &row_major,
-            sizeof(row_major));
-    }
-    if (status == CUBLAS_STATUS_SUCCESS) {
-        status = cublasLtMatmul(context->blas, operation, &alpha, input,
-                                input_layout, weight, weight_layout, &beta,
-                                output, output_layout, output, output_layout,
-                                NULL, NULL, 0, context->stream);
-    }
-    if (output_layout) cublasLtMatrixLayoutDestroy(output_layout);
-    if (weight_layout) cublasLtMatrixLayoutDestroy(weight_layout);
-    if (input_layout) cublasLtMatrixLayoutDestroy(input_layout);
-    if (operation) cublasLtMatmulDescDestroy(operation);
-    return h3d_blas_ok(status, "cuBLASLt INT8 linear", error, error_size);
-}
-
-/* `chunk.float() * (x_scale * weight_scale)` then `.to(bf16)` (`:1035-1040`):
- * the two F32 multiplies in the reference's own association, the row scale and
- * the column scale multiplied first and the F32 accumulator scaled by that
- * product, with one BF16 rounding. `h3d_linear_bias_kernel` adds the bias
- * afterwards in BF16, which is the reference's own `result + bias` (`:1047`). */
-__global__ static void h3d_int8_scale_epilogue_kernel(
-    __nv_bfloat16 *output, const int32_t *accumulator, const float *row_scale,
-    const float *column_scale, size_t columns) {
-    const size_t row = blockIdx.x;
-    const float row_factor = row_scale[row];
-    const int32_t *in = accumulator + row * columns;
-    __nv_bfloat16 *out = output + row * columns;
-    for (size_t index = threadIdx.x; index < columns; index += blockDim.x) {
-        out[index] = __float2bfloat16((float)in[index] *
-                                      (row_factor * column_scale[index]));
-    }
-}
-
-/* `size` is a power of 4, so `sqrt(size)` is a power of two and the reciprocal
- * is exact in F32; no libm call is needed on either side. */
-static float h3d_int8_reciprocal(uint32_t size) {
-    float root = 1.0f;
-    while (root * root < (float)size) root *= 2.0f;
-    return 1.0f / root;
-}
-
-static int h3d_int8_check_group(uint32_t group_size, char *error,
-                                size_t error_size) {
-    if (group_size < 4 || group_size > H3D_INT8_GROUP_MAX ||
-        (group_size & (group_size - 1)) != 0) {
-        return h3d_set_error(error, error_size,
-                             "INT8 convrot group %u is not a power of two in "
-                             "[4, %d]",
-                             group_size, (int)H3D_INT8_GROUP_MAX);
-    }
-    float root = 1.0f;
-    while (root * root < (float)group_size) root *= 2.0f;
-    if (root * root != (float)group_size) {
-        return h3d_set_error(error, error_size,
-                             "INT8 convrot group %u is not a power of 4",
-                             group_size);
-    }
-    return 1;
-}
-
-int h3d_int8_hadamard(h3d_context *context, h3d_tensor *words,
-                      uint32_t group_size, char *error, size_t error_size) {
-    size_t per_row = (group_size + 31) / 32, total = 0;
-    if (!context || !h3d_int8_check_group(group_size, error, error_size) ||
-        !h3d_mul_size(group_size, per_row, &total) ||
-        !h3d_is(words, H3D_U32, total)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 Hadamard tensors or group");
-    }
-    unsigned blocks = (unsigned)((total + H3D_INT8_THREADS - 1) / H3D_INT8_THREADS);
-    if (blocks > H3D_FP8_MAX_BLOCKS) blocks = H3D_FP8_MAX_BLOCKS;
-    h3d_int8_hadamard_kernel<<<blocks, H3D_INT8_THREADS, 0, context->stream>>>(
-        (uint32_t *)words->data, group_size, (uint32_t)per_row);
-    return h3d_launch_ok("INT8 Hadamard", error, error_size);
-}
-
-int h3d_int8_rotate(h3d_context *context, h3d_tensor *output,
-                    const h3d_tensor *words, const h3d_tensor *input,
-                    uint32_t rows, uint32_t columns, uint32_t group_size,
-                    char *error, size_t error_size) {
-    size_t elements = 0, total = 0;
-    if (!context || !rows || !columns || !h3d_mul_size(rows, columns, &elements) ||
-        !h3d_int8_check_group(group_size, error, error_size) ||
-        columns % group_size != 0 ||
-        !h3d_is(input, H3D_BF16, elements) ||
-        !h3d_is(output, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 rotation tensors or shape");
-    }
-    size_t per_row = (group_size + 31) / 32;
-    if (!h3d_mul_size(group_size, per_row, &total) ||
-        !h3d_is(words, H3D_U32, total)) {
-        return h3d_set_error(error, error_size, "invalid INT8 Hadamard tensor");
-    }
-    uint32_t groups = columns / group_size;
-    if (groups > 65535) {
-        return h3d_set_error(error, error_size,
-                             "INT8 rotation needs %u groups, at most 65535",
-                             groups);
-    }
-    dim3 grid(rows, groups);
-    h3d_int8_rotate_kernel<<<grid, group_size, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        (const uint32_t *)words->data, group_size, (uint32_t)per_row,
-        h3d_int8_reciprocal(group_size));
-    return h3d_launch_ok("INT8 rotate", error, error_size);
-}
-
-int h3d_int8_scale_rows(h3d_context *context, h3d_tensor *scales,
-                        const h3d_tensor *input, uint32_t rows,
-                        uint32_t columns, char *error, size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !columns ||
-        !h3d_mul_size(rows, columns, &elements) ||
-        !h3d_is(scales, H3D_F32, rows) || !h3d_is(input, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 row scale tensors");
-    }
-    h3d_fp8_amax_rows_kernel<<<rows, H3D_FP8_THREADS, 0, context->stream>>>(
-        (const __nv_bfloat16 *)input->data, (float *)scales->data, columns);
-    if (!h3d_launch_ok("INT8 row amax", error, error_size)) return 0;
-    unsigned blocks = (unsigned)((rows + H3D_INT8_THREADS - 1) / H3D_INT8_THREADS);
-    h3d_int8_scale_rows_kernel<<<blocks, H3D_INT8_THREADS, 0,
-                                 context->stream>>>((float *)scales->data, rows);
-    return h3d_launch_ok("INT8 row scale", error, error_size);
-}
-
-int h3d_int8_quantize_rows(h3d_context *context, h3d_tensor *output,
-                           const h3d_tensor *scales, const h3d_tensor *input,
-                           uint32_t rows, uint32_t columns, char *error,
-                           size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !columns ||
-        !h3d_mul_size(rows, columns, &elements) ||
-        !h3d_is(scales, H3D_F32, rows) || !h3d_is(input, H3D_BF16, elements) ||
-        !h3d_is(output, H3D_I8, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 row quantize tensors");
-    }
-    h3d_int8_quantize_rows_kernel<<<rows, H3D_INT8_THREADS, 0,
-                                    context->stream>>>(
-        (int8_t *)output->data, (const __nv_bfloat16 *)input->data,
-        (const float *)scales->data, columns);
-    return h3d_launch_ok("INT8 row quantize", error, error_size);
-}
-
-int h3d_linear_int8_raw(h3d_context *context, h3d_tensor *accumulator,
-                        const h3d_tensor *input, const h3d_tensor *weight,
-                        uint32_t rows, uint32_t input_dim, uint32_t output_dim,
-                        char *error, size_t error_size) {
-    size_t inputs = 0, weights = 0, outputs = 0;
-    if (!context || !rows || !input_dim || !output_dim ||
-        !h3d_mul_size(rows, input_dim, &inputs) ||
-        !h3d_mul_size(output_dim, input_dim, &weights) ||
-        !h3d_mul_size(rows, output_dim, &outputs) ||
-        !h3d_is(input, H3D_I8, inputs) || !h3d_is(weight, H3D_I8, weights) ||
-        !h3d_is(accumulator, H3D_I32, outputs) ||
-        (input_dim % 8) || (output_dim % 8)) {
-        return h3d_set_error(error, error_size,
-                             "invalid raw INT8 linear tensors or shape");
-    }
-    return h3d_linear_int8_compute(context, accumulator->data, input->data,
-                                   weight->data, rows, input_dim, output_dim,
-                                   error, error_size);
-}
-
-int h3d_int8_scale_epilogue(h3d_context *context, h3d_tensor *output,
-                            const h3d_tensor *accumulator,
-                            const h3d_tensor *row_scale,
-                            const h3d_tensor *column_scale, uint32_t rows,
-                            uint32_t columns, char *error, size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !columns ||
-        !h3d_mul_size(rows, columns, &elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(accumulator, H3D_I32, elements) ||
-        !h3d_is(row_scale, H3D_F32, rows) ||
-        !h3d_is(column_scale, H3D_F32, columns)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 scale epilogue tensors");
-    }
-    h3d_int8_scale_epilogue_kernel<<<rows, H3D_INT8_THREADS, 0,
-                                     context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const int32_t *)accumulator->data,
-        (const float *)row_scale->data, (const float *)column_scale->data,
-        columns);
-    return h3d_launch_ok("INT8 scale epilogue", error, error_size);
-}
-
-/* `max(rows, 32)` rounded up to 32: the reference's own M padding for CUDA
- * (`_int8_matmul_accumulate`, `:762-765`), so a short prompt's row count is
- * legal. Padding a row with zeros cannot change an int32 accumulator, and the
- * epilogue reads only the real rows, so the extra rows do not need zeroing. */
-uint32_t h3d_int8_pad_rows(uint32_t rows) {
-    uint32_t padded = rows < 32 ? 32 : rows;
-    return (padded + 31u) & ~31u;
-}
-
-int h3d_linear_int8_convrot(h3d_context *context, h3d_tensor *output,
-                            const h3d_tensor *input, const h3d_tensor *weight,
-                            const h3d_tensor *weight_scale,
-                            const h3d_tensor *bias, uint32_t rows,
-                            uint32_t input_dim, uint32_t output_dim,
-                            uint32_t group_size,
-                            const struct h3d_int8_plan *plan, char *error,
-                            size_t error_size) {
-    size_t inputs = 0, weights = 0, outputs = 0;
-    uint32_t padded = h3d_int8_pad_rows(rows);
-    if (!context || !rows || !input_dim || !output_dim || !plan ||
-        !h3d_mul_size(rows, input_dim, &inputs) ||
-        !h3d_mul_size(output_dim, input_dim, &weights) ||
-        !h3d_mul_size(rows, output_dim, &outputs) ||
-        !h3d_is(input, H3D_BF16, inputs) || !h3d_is(weight, H3D_I8, weights) ||
-        !h3d_is(weight_scale, H3D_F32, output_dim) ||
-        !h3d_is(output, H3D_BF16, outputs) ||
-        (bias && !h3d_is(bias, H3D_BF16, output_dim)) ||
-        !h3d_int8_check_group(group_size, error, error_size)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 convrot linear tensors or shape");
-    }
-    if (!plan->rotated || !plan->quantized || !plan->row_scales ||
-        !plan->accumulator || !plan->words ||
-        !h3d_is(plan->rotated, H3D_BF16, inputs) ||
-        !h3d_is(plan->quantized, H3D_I8, (size_t)padded * input_dim) ||
-        !h3d_is(plan->row_scales, H3D_F32, padded) ||
-        !h3d_is(plan->accumulator, H3D_I32, (size_t)padded * output_dim)) {
-        return h3d_set_error(error, error_size,
-                             "invalid INT8 convrot plan tensors");
-    }
-    if (!h3d_int8_rotate(context, plan->rotated, plan->words, input, rows,
-                         input_dim, group_size, error, error_size) ||
-        !h3d_int8_scale_rows(context, plan->row_scales, plan->rotated, rows,
-                             input_dim, error, error_size) ||
-        !h3d_int8_quantize_rows(context, plan->quantized, plan->row_scales,
-                                plan->rotated, rows, input_dim, error,
-                                error_size) ||
-        !h3d_linear_int8_raw(context, plan->accumulator, plan->quantized,
-                             weight, padded, input_dim, output_dim, error,
-                             error_size) ||
-        !h3d_int8_scale_epilogue(context, output, plan->accumulator,
-                                 plan->row_scales, weight_scale, rows,
-                                 output_dim, error, error_size)) {
-        return 0;
-    }
-    if (!bias) return 1;
-    unsigned blocks = (unsigned)((outputs + 255) / 256);
-    h3d_linear_bias_kernel<<<blocks, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)bias->data,
-        outputs, output_dim);
-    return h3d_launch_ok("INT8 convrot bias", error, error_size);
-}
-
-/* ---- the Gemma4 text tower's own primitives ----
- *
- * Source: `/data/refs/transformers-5.14.1/transformers/models/gemma4/
- * modeling_gemma4.py` (`Gemma4TextModel.forward` `:1650-1740` carries the
- * graph) plus the two PyTorch expressions the tower's numerics rest on, read at
- * `/data/refs/torch-2.13.0-aten`. Every kernel below is BF16 in and out with an
- * F32 intermediate, one reference expression each, with the reference's own
- * rounding structure: torch's elementwise ops on a half type compute in float
- * and round once, so a chain of two multiplies and an add rounds three times
- * and the port reproduces that rather than keeping one wide accumulator.
- *
- * The reduction orders are this port's, and they are the deviation the tower's
- * gate measures - no reference tree is reproducible here. */
-
-/* `finfo(bfloat16).min`, the fill `eager_mask` writes for a masked position
- * (`masking_utils.py:608-610` with `dtype = inputs_embeds.dtype`, BF16). Finite
- * by construction, which is what makes a fully masked row softmax to uniform
- * rather than to NaN. */
-#define H3D_GEMMA_MASK_FILL (-3.3895313892515355e+38f)
-enum { H3D_GEMMA_WARPS = 8, H3D_GEMMA_THREADS = H3D_GEMMA_WARPS * 32 };
-
-/* `embed_tokens(input_ids) * embed_scale.to(weight.dtype)`
- * (`modeling_gemma4.py:1476-1477`): one row gather, one BF16 product in float,
- * one rounding. `scale` is the caller's already-rounded BF16 value widened. */
-__global__ static void h3d_embedding_kernel(__nv_bfloat16 *output,
-                                            const __nv_bfloat16 *table,
-                                            const uint32_t *ids, uint32_t width,
-                                            float scale) {
-    const uint32_t row = blockIdx.x;
-    const __nv_bfloat16 *source = table + (size_t)ids[row] * width;
-    __nv_bfloat16 *destination = output + (size_t)row * width;
-    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
-        destination[column] = __float2bfloat16(
-            __bfloat162float(source[column]) * scale);
-    }
-}
-
-/* ATen's tanh gelu (`ActivationGeluKernel.cu:21-31`), the constants as its own
- * `constexpr` product so the compiler folds the same value, and `tanhf` for
- * `c10::cuda::compat::tanh` (`CUDAMathCompat.h:136-137`). `gpu_kernel`'s
- * functor returns a `scalar_t`, so the expression rounds once, at the end. */
-__global__ static void h3d_gelu_tanh_kernel(__nv_bfloat16 *output,
-                                            const __nv_bfloat16 *input,
-                                            size_t elements) {
-    constexpr float beta = 1.41421356237309504880f * 1.12837916709551257390f *
-                           0.5f;
-    constexpr float kappa = 0.044715f;
-    const size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= elements) return;
-    const float x = __bfloat162float(input[index]);
-    const float cube = x * x * x;
-    const float inner = beta * (x + kappa * cube);
-    output[index] = __float2bfloat16(0.5f * x * (1.0f + tanhf(inner)));
-}
-
-/* `act_fn(gate_proj(x)) * up_proj(x)` (`modeling_gemma4.py:1089`). */
-__global__ static void h3d_mul_kernel(__nv_bfloat16 *output,
-                                      const __nv_bfloat16 *left,
-                                      const __nv_bfloat16 *right,
-                                      size_t elements) {
-    const size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= elements) return;
-    output[index] = __float2bfloat16(__bfloat162float(left[index]) *
-                                     __bfloat162float(right[index]));
-}
-
-/* `hidden_states *= self.layer_scalar` (`:1462`), the scalar a BF16 `[1]`. */
-__global__ static void h3d_scale_bf16_kernel(__nv_bfloat16 *output,
-                                             const __nv_bfloat16 *input,
-                                             const __nv_bfloat16 *scalar,
-                                             size_t elements) {
-    const size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= elements) return;
-    output[index] = __float2bfloat16(__bfloat162float(input[index]) *
-                                     __bfloat162float(*scalar));
-}
-
-/* `x * cos + rotate_half(x) * sin` (`:793-811`): `rotate_half` (`:786-791`)
- * pairs an index with its half-shifted partner and negates the first half's
- * partner, and the two products and the sum each round to BF16 as torch's
- * elementwise ops do. The row is snapshotted in shared memory first because
- * the partner of dimension d is written by the same block: without the
- * snapshot, thread d's write races thread d +/- half's read, and the rotation
- * reads a half-updated row. One thread per output dimension; the launch is
- * exactly `head_dim` threads, so no thread is inactive across the barrier. */
-__global__ static void h3d_gemma_rope_kernel(__nv_bfloat16 *x,
-                                             const __nv_bfloat16 *cos,
-                                             const __nv_bfloat16 *sin,
-                                             uint32_t rows, uint32_t heads,
-                                             uint32_t head_dim) {
-    __shared__ float staged[H3D_GEMMA_HEAD_DIM_MAX];
-    const uint32_t row = blockIdx.x, head = blockIdx.y;
-    const uint32_t dimension = threadIdx.x;
-    const size_t base = ((size_t)row * heads + head) * head_dim;
-    staged[dimension] = __bfloat162float(x[base + dimension]);
-    __syncthreads();
-    const uint32_t half = head_dim / 2;
-    const uint32_t partner =
-        dimension < half ? dimension + half : dimension - half;
-    const float rotated =
-        dimension < half ? -staged[partner] : staged[partner];
-    const size_t table = (size_t)row * head_dim + dimension;
-    const float turned = __bfloat162float(
-        __float2bfloat16(staged[dimension] * __bfloat162float(cos[table])));
-    const float spin = __bfloat162float(
-        __float2bfloat16(rotated * __bfloat162float(sin[table])));
-    x[base + dimension] = __float2bfloat16(turned + spin);
-}
-
-/* `eager_mask`'s keep rule (`masking_utils.py:608-610`), the sliding overlay
- * included (`:92-100`), and the padding mask (`:168-179`) which intersects on
- * the KEY index only. */
-__global__ static void h3d_gemma_mask_kernel(__nv_bfloat16 *output,
-                                             const uint32_t *padding,
-                                             uint32_t rows, uint32_t window) {
-    const uint32_t query_index = blockIdx.x;
-    for (uint32_t key_index = threadIdx.x; key_index < rows;
-         key_index += blockDim.x) {
-        int keep = key_index <= query_index;
-        if (keep && window) {
-            keep = (int64_t)key_index > (int64_t)query_index - (int64_t)window;
-        }
-        if (keep && padding) keep = padding[key_index] != 0;
-        output[(size_t)query_index * rows + key_index] =
-            keep ? __float2bfloat16(0.0f)
-                 : __float2bfloat16(H3D_GEMMA_MASK_FILL);
-    }
-}
-
-/* `eager_attention_forward` (`modeling_gemma4.py:824-858`) at `scaling = 1.0`.
- * One block per (query row, head); eight warps.
- *
- *   scores: one warp per key stride, the 32 lanes covering the head and one
- *           shuffle tree per key; the dot rounds to BF16 before the mask is
- *           added, and the sum rounds again - torch's elementwise add.
- *   softmax: F32 over the BF16-rounded scores, the max and the sum each a
- *           block reduction with this port's tree.
- *   output: all eight warps walk the keys, one 1/8 of the head per warp, the
- *           normalised weight rounded to BF16 before each product, and one
- *           rounding at the end.
- *
- * The layouts are the port's: Q and the output `[rows][heads][head_dim]`, K and
- * V `[rows][kv_heads][head_dim]`. */
-__global__ static void h3d_gemma_attention_kernel(
-        __nv_bfloat16 *output, const __nv_bfloat16 *query,
-        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
-        const __nv_bfloat16 *mask, uint32_t rows, uint32_t heads,
-        uint32_t kv_heads, uint32_t head_dim, float scale) {
-    __shared__ float qv[H3D_GEMMA_HEAD_DIM_MAX];
-    __shared__ float score[H3D_GEMMA_ROWS_MAX];
-    __shared__ float partial[H3D_GEMMA_THREADS];
-
-    const uint32_t row = blockIdx.x, head = blockIdx.y;
-    const uint32_t source = head / (heads / kv_heads);
-    const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
-    const __nv_bfloat16 *q_row =
-        query + ((size_t)row * heads + head) * head_dim;
-
-    for (uint32_t i = threadIdx.x; i < head_dim; i += blockDim.x) {
-        qv[i] = __bfloat162float(q_row[i]);
-    }
-    __syncthreads();
-
-    for (uint32_t k = warp; k < rows; k += H3D_GEMMA_WARPS) {
-        const __nv_bfloat16 *k_row =
-            key + ((size_t)k * kv_heads + source) * head_dim;
-        float dot = 0.0f;
-        for (uint32_t i = lane; i < head_dim; i += 32) {
-            dot = fmaf(qv[i], __bfloat162float(k_row[i]), dot);
-        }
-        for (uint32_t offset = 16; offset; offset >>= 1) {
-            dot += __shfl_down_sync(0xffffffffu, dot, offset);
-        }
-        if (lane == 0) {
-            float weighted = __bfloat162float(__float2bfloat16(dot * scale));
-            if (mask) {
-                weighted = __bfloat162float(__float2bfloat16(
-                    weighted + __bfloat162float(mask[(size_t)row * rows + k])));
-            }
-            score[k] = weighted;
-        }
-    }
-    __syncthreads();
-
-    float maximum = -INFINITY;
-    for (uint32_t k = threadIdx.x; k < rows; k += blockDim.x) {
-        maximum = fmaxf(maximum, score[k]);
-    }
-    partial[threadIdx.x] = maximum;
-    __syncthreads();
-    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            partial[threadIdx.x] =
-                fmaxf(partial[threadIdx.x], partial[threadIdx.x + stride]);
-        }
-        __syncthreads();
-    }
-    maximum = partial[0];
-    /* `partial` is reused for the sum below, so every thread must have read the
-     * maximum before any thread overwrites its own slot: without this barrier a
-     * warp that reaches its (empty) sum loop ahead of another warp's read lets
-     * that read pick up the sum instead of the maximum. It is timing-dependent,
-     * which is why the gate's repeated runs - and sm_121 - caught it. */
-    __syncthreads();
-
-    float total = 0.0f;
-    for (uint32_t k = threadIdx.x; k < rows; k += blockDim.x) {
-        const float weight = expf(score[k] - maximum);
-        score[k] = weight;
-        total += weight;
-    }
-    partial[threadIdx.x] = total;
-    __syncthreads();
-    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            partial[threadIdx.x] += partial[threadIdx.x + stride];
-        }
-        __syncthreads();
-    }
-    const float inverse = 1.0f / partial[0];
-
-    const uint32_t per_lane = head_dim / H3D_GEMMA_THREADS;
-    const uint32_t begin =
-        warp * (head_dim / H3D_GEMMA_WARPS) + lane * per_lane;
-    float accumulator[2] = {0.0f, 0.0f};
-    for (uint32_t k = 0; k < rows; ++k) {
-        const float weight =
-            __bfloat162float(__float2bfloat16(score[k] * inverse));
-        const __nv_bfloat16 *v_row =
-            value + ((size_t)k * kv_heads + source) * head_dim;
-        for (uint32_t e = 0; e < per_lane; ++e) {
-            accumulator[e] =
-                fmaf(weight, __bfloat162float(v_row[begin + e]),
-                     accumulator[e]);
-        }
-    }
-
-    __nv_bfloat16 *out_row = output + ((size_t)row * heads + head) * head_dim;
-    for (uint32_t e = 0; e < per_lane; ++e) {
-        out_row[begin + e] = __float2bfloat16(accumulator[e]);
-    }
-}
-
-int h3d_embedding(h3d_context *context, h3d_tensor *output,
-                  const h3d_tensor *table, const h3d_tensor *ids,
-                  uint32_t rows, uint32_t width, float scale, char *error,
-                  size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !width || !h3d_mul_size(rows, width, &elements) ||
-        !h3d_is(ids, H3D_U32, rows) || !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(table, H3D_BF16, table->elements) ||
-        table->elements % width != 0) {
-        return h3d_set_error(error, error_size,
-                             "invalid Gemma embedding tensors or shape");
-    }
-    h3d_embedding_kernel<<<rows, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)table->data,
-        (const uint32_t *)ids->data, width, scale);
-    return h3d_launch_ok("Gemma embedding", error, error_size);
-}
-
-int h3d_gelu_tanh(h3d_context *context, h3d_tensor *output,
-                  const h3d_tensor *input, size_t elements, char *error,
-                  size_t error_size) {
-    if (!context || !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size, "invalid Gemma GELU tensors");
-    }
-    if (!elements) return 1;
-    h3d_gelu_tanh_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
-                           context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        elements);
-    return h3d_launch_ok("Gemma tanh GELU", error, error_size);
-}
-
-int h3d_mul(h3d_context *context, h3d_tensor *output, const h3d_tensor *left,
-            const h3d_tensor *right, size_t elements, char *error,
-            size_t error_size) {
-    if (!context || !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(left, H3D_BF16, elements) ||
-        !h3d_is(right, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid BF16 multiply tensors");
-    }
-    if (!elements) return 1;
-    h3d_mul_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
-                     context->stream>>>((__nv_bfloat16 *)output->data,
-                                        (const __nv_bfloat16 *)left->data,
-                                        (const __nv_bfloat16 *)right->data,
-                                        elements);
-    return h3d_launch_ok("BF16 multiply", error, error_size);
-}
-
-int h3d_scale_bf16(h3d_context *context, h3d_tensor *output,
-                   const h3d_tensor *input, const h3d_tensor *scalar,
-                   size_t elements, char *error, size_t error_size) {
-    if (!context || !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements) || !h3d_is(scalar, H3D_BF16, 1)) {
-        return h3d_set_error(error, error_size, "invalid BF16 scale tensors");
-    }
-    if (!elements) return 1;
-    h3d_scale_bf16_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
-                            context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        (const __nv_bfloat16 *)scalar->data, elements);
-    return h3d_launch_ok("BF16 scale", error, error_size);
-}
-
-int h3d_gemma_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
-                   const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
-                   uint32_t heads, uint32_t kv_heads, uint32_t head_dim,
-                   char *error, size_t error_size) {
-    size_t query_elements = 0, key_elements = 0, table_elements = 0;
-    if (!context || !rows || !heads || !kv_heads || !head_dim ||
-        head_dim > H3D_GEMMA_HEAD_DIM_MAX || (head_dim % 2) ||
-        !h3d_mul_size((size_t)rows * heads, head_dim, &query_elements) ||
-        !h3d_mul_size((size_t)rows * kv_heads, head_dim, &key_elements) ||
-        !h3d_mul_size(rows, head_dim, &table_elements) ||
-        !h3d_is(query, H3D_BF16, query_elements) ||
-        !h3d_is(key, H3D_BF16, key_elements) ||
-        !h3d_is(cos, H3D_BF16, table_elements) ||
-        !h3d_is(sin, H3D_BF16, table_elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid Gemma RoPE tensors or shape");
-    }
-    dim3 query_grid(rows, heads), key_grid(rows, kv_heads);
-    h3d_gemma_rope_kernel<<<query_grid, head_dim, 0, context->stream>>>(
-        (__nv_bfloat16 *)query->data, (const __nv_bfloat16 *)cos->data,
-        (const __nv_bfloat16 *)sin->data, rows, heads, head_dim);
-    if (!h3d_launch_ok("Gemma RoPE query", error, error_size)) return 0;
-    h3d_gemma_rope_kernel<<<key_grid, head_dim, 0, context->stream>>>(
-        (__nv_bfloat16 *)key->data, (const __nv_bfloat16 *)cos->data,
-        (const __nv_bfloat16 *)sin->data, rows, kv_heads, head_dim);
-    return h3d_launch_ok("Gemma RoPE key", error, error_size);
-}
-
-/* `Gemma4TextRotaryEmbedding.forward` (`modeling_gemma4.py:1164-1181`): one
- * thread per (position, dimension) of the `[rows, dim]` pair tables. The
- * exponent is `2 * angle / dim` (`:1159`, `arange(0, dim, 2) / dim`), the
- * frequency `1 / base ** exponent`, the angle its product with the position,
- * and `cat(freqs, freqs)` is the `dimension % (dim / 2)` fold. Frequencies past
- * `angles` are zero, which is the identity pair. */
-__global__ static void h3d_gemma_rope_table_kernel(__nv_bfloat16 *cos,
-                                                   __nv_bfloat16 *sin,
-                                                   uint32_t rows, uint32_t dim,
-                                                   uint32_t angles,
-                                                   float base) {
-    const uint32_t position = blockIdx.y;
-    const uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
-    if (position >= rows || dimension >= dim) return;
-    const uint32_t angle =
-        dimension < dim / 2 ? dimension : dimension - dim / 2;
-    float frequency = 0.0f;
-    if (angle < angles) {
-        frequency = 1.0f / powf(base, 2.0f * (float)angle / (float)dim);
-    }
-    const float value = frequency * (float)position;
-    const size_t at = (size_t)position * dim + dimension;
-    cos[at] = __float2bfloat16(cosf(value));
-    sin[at] = __float2bfloat16(sinf(value));
-}
-
-int h3d_gemma_rope_table(h3d_context *context, h3d_tensor *cos,
-                         h3d_tensor *sin, uint32_t rows, uint32_t dim,
-                         uint32_t angles, float base, char *error,
-                         size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !dim || !h3d_mul_size(rows, dim, &elements) ||
-        angles > dim / 2 || !(base > 0.0f) ||
-        !h3d_is(cos, H3D_BF16, elements) ||
-        !h3d_is(sin, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid Gemma RoPE table arguments");
-    }
-    dim3 grid((dim + 255) / 256, rows);
-    h3d_gemma_rope_table_kernel<<<grid, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)cos->data, (__nv_bfloat16 *)sin->data, rows, dim,
-        angles, base);
-    return h3d_launch_ok("Gemma RoPE table", error, error_size);
-}
-
-int h3d_gemma_mask(h3d_context *context, h3d_tensor *output, uint32_t rows,
-                   uint32_t window, const h3d_tensor *padding, char *error,
-                   size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !h3d_mul_size(rows, rows, &elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        (padding && !h3d_is(padding, H3D_U32, rows))) {
-        return h3d_set_error(error, error_size, "invalid Gemma mask tensors");
-    }
-    h3d_gemma_mask_kernel<<<rows, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data,
-        padding ? (const uint32_t *)padding->data : NULL, rows, window);
-    return h3d_launch_ok("Gemma mask", error, error_size);
-}
-
-int h3d_gemma_attention(h3d_context *context, h3d_tensor *output,
-                        const h3d_tensor *query, const h3d_tensor *key,
-                        const h3d_tensor *value, const h3d_tensor *mask,
-                        uint32_t rows, uint32_t heads, uint32_t kv_heads,
-                        uint32_t head_dim, float scale, char *error,
-                        size_t error_size) {
-    size_t query_elements = 0, key_elements = 0, mask_elements = 0;
-    if (!context || !rows || !heads || !kv_heads || !head_dim ||
-        rows > H3D_GEMMA_ROWS_MAX || head_dim > H3D_GEMMA_HEAD_DIM_MAX ||
-        heads % kv_heads || head_dim % H3D_GEMMA_THREADS ||
-        !h3d_mul_size((size_t)rows * heads, head_dim, &query_elements) ||
-        !h3d_mul_size((size_t)rows * kv_heads, head_dim, &key_elements) ||
-        !h3d_mul_size(rows, rows, &mask_elements) ||
-        !h3d_is(query, H3D_BF16, query_elements) ||
-        !h3d_is(key, H3D_BF16, key_elements) ||
-        !h3d_is(value, H3D_BF16, key_elements) ||
-        !h3d_is(output, H3D_BF16, query_elements) ||
-        (mask && !h3d_is(mask, H3D_BF16, mask_elements))) {
-        return h3d_set_error(error, error_size,
-                             "invalid Gemma attention tensors or shape");
-    }
-    dim3 grid(rows, heads);
-    h3d_gemma_attention_kernel<<<grid, H3D_GEMMA_THREADS, 0,
-                                 context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
-        (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
-        mask ? (const __nv_bfloat16 *)mask->data : NULL, rows, heads, kv_heads,
-        head_dim, scale);
-    return h3d_launch_ok("Gemma attention", error, error_size);
-}
-
-/* ---- the AV connector and its feature extractor ----
- *
- * The conditioning the refiner consumes is Gemma-4-12B hidden states through
- * the upstream 1D connector (`ltx-core/src/ltx_core/text_encoders/gemma/
- * embeddings_connector.py`, `feature_extractor.py`, `embeddings_processor.py`,
- * read at `/data/ltx2-pin/packages`). Those three files build their blocks
- * from the upstream's transformer primitives - `rms_norm`, `Attention`, `FeedForward`,
- * the split RoPE and the per-head gate - which is the same machinery the
- * refiner itself needs, so the kernels below are the text side's first entry
- * points in this file and the refiner will reuse them.
- *
- * Six kernels. The connector's own norms, linears, SDPA, GELU and residual
- * adds are the generic `h3d_rms_norm`, `h3d_linear`, `h3d_sdpa`,
- * `h3d_gelu_tanh` and `h3d_add` above; what is left is the feature extractor's
- * per-(token, layer) RMS, the interleaved scatter that RMS's output needs, the
- * right-pad gather, the learnable-register fill, the split RoPE and the gate.
- * The RoPE tables are built on the host (`gemma_connector.rs`): the reference
- * builds its frequency grid in float64 numpy and casts (`rope.py:113-131`),
- * which has no device counterpart worth writing. */
-
-/* `norm_and_concat_per_token_rms` (`feature_extractor.py:48-64`) up to the
- * rsqrt. One block per (row, layer) of the `[layers, rows, width]` stack: the
- * reference squares in BF16 *before* it accumulates (`:60`), sums in float,
- * divides by `width`, adds `1e-6` and rsqrts in torch's half-precision path,
- * so each of those four steps rounds to BF16. 256 partials and a halving tree
- * is this port's reduction order - the one deviation, and it is the order, not
- * the arithmetic. */
-__global__ static void h3d_connector_scale_kernel(__nv_bfloat16 *scales,
-                                                  const __nv_bfloat16 *stacked,
-                                                  uint32_t rows,
-                                                  uint32_t width) {
-    __shared__ float partial[256];
-    const uint32_t row = blockIdx.x, index = blockIdx.y;
-    const __nv_bfloat16 *source =
-        stacked + ((size_t)index * rows + row) * width;
-    float total = 0.0f;
-    for (uint32_t column = threadIdx.x; column < width; column += 256) {
-        const float value = __bfloat162float(source[column]);
-        total += __bfloat162float(__float2bfloat16(value * value));
-    }
-    partial[threadIdx.x] = total;
-    __syncthreads();
-    for (uint32_t stride = 128; stride; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            partial[threadIdx.x] += partial[threadIdx.x + stride];
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0) {
-        const float mean = __bfloat162float(
-            __float2bfloat16(partial[0] / (float)width));
-        const float shifted =
-            __bfloat162float(__float2bfloat16(mean + 1e-6f));
-        scales[(size_t)row * gridDim.y + index] =
-            __float2bfloat16(rsqrtf(shifted));
-    }
-}
-
-/* The extractor's `normed.reshape(B, T, D * L)` (`:62`): the `[layers, rows,
- * width]` stack is written `[rows, width, layers]`, so the flattened column a
- * row's aggregate embed reads is `d * layers + l`, not `l * width + d`. A
- * block per (row, width tile) stages the tile in shared memory layer-major
- * (coalesced loads) and writes it output-major (coalesced stores); the layer's
- * scale multiplies on the way in. The tile's stride is padded to 66 so the
- * output-major walk does not put all 49 layers on one bank. */
-__global__ static void h3d_connector_interleave_kernel(
-        __nv_bfloat16 *output, const __nv_bfloat16 *stacked,
-        const __nv_bfloat16 *scales, uint32_t rows, uint32_t width,
-        uint32_t layers) {
-    extern __shared__ __align__(16) __nv_bfloat16 connector_tile[];
-    const uint32_t row = blockIdx.y, begin = blockIdx.x * 64;
-    const uint32_t count = begin + 64 <= width ? 64 : width - begin;
-    const uint32_t total = count * layers;
-
-    for (uint32_t i = threadIdx.x; i < total; i += blockDim.x) {
-        const uint32_t l = i / count, d = i - l * count;
-        const __nv_bfloat16 *source =
-            stacked + ((size_t)l * rows + row) * width + begin;
-        const float scale = __bfloat162float(scales[(size_t)row * layers + l]);
-        connector_tile[l * 66 + d] =
-            __float2bfloat16(__bfloat162float(source[d]) * scale);
-    }
-    __syncthreads();
-
-    __nv_bfloat16 *destination =
-        output + (size_t)row * width * layers + (size_t)begin * layers;
-    for (uint32_t i = threadIdx.x; i < total; i += blockDim.x) {
-        const uint32_t d = i / layers, l = i - d * layers;
-        destination[i] = connector_tile[l * 66 + d];
-    }
-}
-
-/* `_apply_right_pad_order` (`embeddings_processor.py:40-42`): `torch.gather`
- * along the sequence, the permutation `_compute_right_pad_order` (`:23-38`)
- * derives from the mask. The permutation itself is a stable argsort of 1024
- * keys, so it is computed on the host and uploaded. */
-__global__ static void h3d_gather_rows_kernel(__nv_bfloat16 *output,
-                                              const __nv_bfloat16 *input,
-                                              const uint32_t *indices,
-                                              uint32_t width) {
-    const uint32_t row = blockIdx.x;
-    const __nv_bfloat16 *source = input + (size_t)indices[row] * width;
-    __nv_bfloat16 *destination = output + (size_t)row * width;
-    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
-        destination[column] = source[column];
-    }
-}
-
-/* `_replace_padded_with_learnable_registers`
- * (`embeddings_connector.py:139-151`): `binary * hidden + (1 - binary) *
- * registers`, the register tiled `seq // count` times. The additive mask the
- * reference hands the blocks afterwards is `zeros_like` (`:151`), i.e. every
- * key valid, so the connector's attention needs no mask at all. */
-__global__ static void h3d_register_fill_kernel(__nv_bfloat16 *output,
-                                                const __nv_bfloat16 *input,
-                                                const uint32_t *binary,
-                                                const __nv_bfloat16 *registers,
-                                                uint32_t width,
-                                                uint32_t count) {
-    const uint32_t row = blockIdx.x;
-    const __nv_bfloat16 *source =
-        binary[row] ? input + (size_t)row * width
-                    : registers + (size_t)(row % count) * width;
-    __nv_bfloat16 *destination = output + (size_t)row * width;
-    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
-        destination[column] = source[column];
-    }
-}
-
-/* `apply_split_rotary_emb` (`rope.py:42-85`) with `cos`/`sin` `[rows, heads,
- * half]` (`split_freqs_cis` `:163-184`). The two halves of each head rotate
- * against each other: `first * cos - second * sin` and `second * cos +
- * first * sin`. The reference materialises `split * cos` as its own BF16
- * tensor (`:70`) and then `addcmul_`s in float, so each half rounds twice;
- * this keeps that order and takes the float add as the fused multiply-add it
- * compiles to. */
-__device__ static void h3d_text_rotate(__nv_bfloat16 *x, size_t base,
-                                      uint32_t half, uint32_t d, float c,
-                                      float s) {
-    const float first = __bfloat162float(x[base + d]);
-    const float second = __bfloat162float(x[base + half + d]);
-    const float turned_first = __bfloat162float(__float2bfloat16(first * c));
-    const float turned_second = __bfloat162float(__float2bfloat16(second * c));
-    x[base + d] = __float2bfloat16(fmaf(-s, second, turned_first));
-    x[base + half + d] = __float2bfloat16(fmaf(s, first, turned_second));
-}
-
-__global__ static void h3d_text_rope_kernel(__nv_bfloat16 *query,
-                                           __nv_bfloat16 *key,
-                                           const __nv_bfloat16 *cos,
-                                           const __nv_bfloat16 *sin,
-                                           uint32_t rows, uint32_t heads,
-                                           uint32_t head_dim) {
-    const uint32_t row = blockIdx.x, head = blockIdx.y;
-    const uint32_t half = head_dim / 2;
-    const size_t base = ((size_t)row * heads + head) * head_dim;
-    const size_t table = ((size_t)row * heads + head) * half;
-    for (uint32_t d = threadIdx.x; d < half; d += blockDim.x) {
-        const float c = __bfloat162float(cos[table + d]);
-        const float s = __bfloat162float(sin[table + d]);
-        h3d_text_rotate(query, base, half, d, c, s);
-        h3d_text_rotate(key, base, half, d, c, s);
-    }
-}
-
-/* `PytorchGatedAttention` (`ops.py:94-106`): `gates = 2 * sigmoid(logits)`
- * taken from the block's own input, broadcast over each head's dimensions and
- * applied to the attention output before `to_out`. The reference rounds
- * `2 * sigmoid` to BF16 as its own tensor (`:104`) and then each product. */
-__global__ static void h3d_per_head_gate_kernel(__nv_bfloat16 *output,
-                                                const __nv_bfloat16 *input,
-                                                const __nv_bfloat16 *logits,
-                                                uint32_t heads,
-                                                uint32_t head_dim) {
-    const uint32_t row = blockIdx.x, head = blockIdx.y;
-    const float logit = __bfloat162float(logits[(size_t)row * heads + head]);
-    const float gate = __bfloat162float(
-        __float2bfloat16(2.0f * (1.0f / (1.0f + expf(-logit)))));
-    const size_t base = ((size_t)row * heads + head) * head_dim;
-    for (uint32_t d = threadIdx.x; d < head_dim; d += blockDim.x) {
-        output[base + d] =
-            __float2bfloat16(__bfloat162float(input[base + d]) * gate);
-    }
-}
-
-/* `_rescale_norm` (`feature_extractor.py:68-69`): `x * sqrt(target / source)`
- * with the root a Python float, so the multiplier is the F32 value and the
- * product rounds once to BF16 - not a BF16-rounded scalar. */
-__global__ static void h3d_scale_constant_kernel(__nv_bfloat16 *output,
-                                                 const __nv_bfloat16 *input,
-                                                 float factor, size_t elements) {
-    const size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= elements) return;
-    output[index] =
-        __float2bfloat16(__bfloat162float(input[index]) * factor);
-}
-
-int h3d_scale_constant(h3d_context *context, h3d_tensor *output,
-                       const h3d_tensor *input, float factor,
-                       size_t elements, char *error, size_t error_size) {
-    if (!context || !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid BF16 constant-scale tensors");
-    }
-    if (!elements) return 1;
-    h3d_scale_constant_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
-                               context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        factor, elements);
-    return h3d_launch_ok("BF16 constant scale", error, error_size);
-}
-
-int h3d_connector_stack_scale(h3d_context *context, h3d_tensor *scales,
-                              const h3d_tensor *stacked, uint32_t rows,
-                              uint32_t width, uint32_t layers, char *error,
-                              size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !width || !layers ||
-        !h3d_mul_size((size_t)rows * layers, width, &elements) ||
-        !h3d_is(scales, H3D_BF16, (size_t)rows * layers) ||
-        !h3d_is(stacked, H3D_BF16, elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid connector stack-scale tensors");
-    }
-    dim3 grid(rows, layers);
-    h3d_connector_scale_kernel<<<grid, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)scales->data, (const __nv_bfloat16 *)stacked->data,
-        rows, width);
-    return h3d_launch_ok("connector stack scale", error, error_size);
-}
-
-int h3d_connector_interleave(h3d_context *context, h3d_tensor *output,
-                             const h3d_tensor *stacked,
-                             const h3d_tensor *scales, uint32_t rows,
-                             uint32_t width, uint32_t layers, char *error,
-                             size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !width || !layers ||
-        !h3d_mul_size((size_t)rows * width, layers, &elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(stacked, H3D_BF16, elements) ||
-        !h3d_is(scales, H3D_BF16, (size_t)rows * layers)) {
-        return h3d_set_error(error, error_size,
-                             "invalid connector interleave tensors");
-    }
-    dim3 grid((width + 63) / 64, rows);
-    const size_t shared = (size_t)layers * 66 * sizeof(__nv_bfloat16);
-    h3d_connector_interleave_kernel<<<grid, 256, shared, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)stacked->data,
-        (const __nv_bfloat16 *)scales->data, rows, width, layers);
-    return h3d_launch_ok("connector interleave", error, error_size);
-}
-
-int h3d_gather_rows(h3d_context *context, h3d_tensor *output,
-                    const h3d_tensor *input, const h3d_tensor *indices,
-                    uint32_t rows, uint32_t width, char *error,
-                    size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !width ||
-        !h3d_mul_size(rows, width, &elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements) ||
-        !h3d_is(indices, H3D_U32, rows)) {
-        return h3d_set_error(error, error_size, "invalid row gather tensors");
-    }
-    h3d_gather_rows_kernel<<<rows, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        (const uint32_t *)indices->data, width);
-    return h3d_launch_ok("row gather", error, error_size);
-}
-
-int h3d_register_fill(h3d_context *context, h3d_tensor *output,
-                      const h3d_tensor *input, const h3d_tensor *binary,
-                      const h3d_tensor *registers, uint32_t rows,
-                      uint32_t width, uint32_t count, char *error,
-                      size_t error_size) {
-    size_t elements = 0, register_elements = 0;
-    if (!context || !rows || !width || !count ||
-        !h3d_mul_size(rows, width, &elements) ||
-        !h3d_mul_size(count, width, &register_elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements) ||
-        !h3d_is(binary, H3D_U32, rows) ||
-        !h3d_is(registers, H3D_BF16, register_elements)) {
-        return h3d_set_error(error, error_size,
-                             "invalid register-fill tensors");
-    }
-    h3d_register_fill_kernel<<<rows, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        (const uint32_t *)binary->data,
-        (const __nv_bfloat16 *)registers->data, width, count);
-    return h3d_launch_ok("register fill", error, error_size);
-}
-
-int h3d_text_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
-                 const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
-                 uint32_t heads, uint32_t head_dim, char *error,
-                 size_t error_size) {
-    size_t elements = 0, table_elements = 0;
-    if (!context || !rows || !heads || !head_dim || (head_dim % 2) ||
-        !h3d_mul_size((size_t)rows * heads, head_dim, &elements) ||
-        !h3d_mul_size((size_t)rows * heads, head_dim / 2, &table_elements) ||
-        !h3d_is(query, H3D_BF16, elements) ||
-        !h3d_is(key, H3D_BF16, elements) ||
-        !h3d_is(cos, H3D_BF16, table_elements) ||
-        !h3d_is(sin, H3D_BF16, table_elements)) {
-        return h3d_set_error(error, error_size, "invalid RoPE tensors");
-    }
-    dim3 grid(rows, heads);
-    h3d_text_rope_kernel<<<grid, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)query->data, (__nv_bfloat16 *)key->data,
-        (const __nv_bfloat16 *)cos->data, (const __nv_bfloat16 *)sin->data,
-        rows, heads, head_dim);
-    return h3d_launch_ok("RoPE", error, error_size);
-}
-
-int h3d_per_head_gate(h3d_context *context, h3d_tensor *output,
-                      const h3d_tensor *input, const h3d_tensor *logits,
-                      uint32_t rows, uint32_t heads, uint32_t head_dim,
-                      char *error, size_t error_size) {
-    size_t elements = 0;
-    if (!context || !rows || !heads || !head_dim ||
-        !h3d_mul_size((size_t)rows * heads, head_dim, &elements) ||
-        !h3d_is(output, H3D_BF16, elements) ||
-        !h3d_is(input, H3D_BF16, elements) ||
-        !h3d_is(logits, H3D_BF16, (size_t)rows * heads)) {
-        return h3d_set_error(error, error_size,
-                             "invalid per-head gate tensors");
-    }
-    dim3 grid(rows, heads);
-    h3d_per_head_gate_kernel<<<grid, 256, 0, context->stream>>>(
-        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
-        (const __nv_bfloat16 *)logits->data, heads, head_dim);
-    return h3d_launch_ok("per-head gate", error, error_size);
-}
-
 /* The video VAE decoder's F32 linear: the reference's `h3_gpu_linear_f32`
  * (`:832-870`) with this port's compute-mode option applied. Only the decoder
  * calls it (`minimax_h3::vae_video`), so `H3_VAE_GEMM` cannot reach the video
@@ -2215,7 +1455,8 @@ int h3d_vae_linear(h3d_context *context, h3d_tensor *output,
     }
     if (!h3d_linear_lt_compute(context, output->data, input->data,
                                weight->data, rows, input_dim, output_dim,
-                               CUDA_R_32F, compute, error, error_size)) {
+                               CUDA_R_32F, CUDA_R_32F, compute, error,
+                               error_size)) {
         return 0;
     }
     if (!bias) return 1;
@@ -2254,8 +1495,8 @@ int h3d_vae_linear_bf16(h3d_context *context, h3d_tensor *output,
     }
     return h3d_linear_lt_compute(context, output->data, input->data,
                                  weight->data, rows, input_dim, output_dim,
-                                 CUDA_R_16BF, CUBLAS_COMPUTE_32F, error,
-                                 error_size);
+                                 CUDA_R_16BF, CUDA_R_16BF, CUBLAS_COMPUTE_32F,
+                                 error, error_size);
 }
 
 int h3d_patch_linear(h3d_context *context, h3d_tensor *output,
@@ -2711,9 +1952,9 @@ int h3d_token_expand(h3d_context *context, h3d_tensor *output,
 }
 
 /* `h3_rms_norm_bf16_kernel` (`:2462-2489`): 256 threads, a strided fmaf sum,
- * a shared-memory tree, then `value * inverse * weight`. The DiT always passes
- * a weight; Gemma's `v_norm` is built `with_scale=False` and passes NULL, which
- * is the reference's own missing `* weight` branch. */
+ * a shared-memory tree, then `value * inverse * weight`. The DiT passes a
+ * weight; `weight == NULL` is the reference's own missing `* weight` branch,
+ * the weightless norm a `with_scale=False` build uses. */
 __global__ static void h3d_rms_norm_kernel(__nv_bfloat16 *output,
                                            const __nv_bfloat16 *input,
                                            const __nv_bfloat16 *weight,
@@ -3142,14 +2383,11 @@ __global__ static void h3d_attention_tiled_kernel(
 }
 
 /* ---------------------------------------------------------------------------
- * Tensor-core attention — a benchmark arm, OFF BY DEFAULT.
+ * Tensor-core attention — the default; the four-warp block below is its named
+ * alternative (`H3_DIT_ATTENTION=four`), and every other kernel in this family
+ * is measured against these two.
  *
- * `H3_DIT_ATTENTION_MMA` selects this twin of `h3d_attention_tiled_kernel`. It
- * exists to measure what the scalar path cannot reach: the operator asked for
- * it as a switch that can be turned on and off (2026-10-27), so it is a
- * measurement arm and never the path a gate reads.
- *
- * It is NOT bit-identical to the reference, by construction, and the three
+ * It is NOT bit-identical to the scalar path, by construction, and the three
  * deviations are named rather than hidden:
  *   - the scores accumulate through `mma` dot products, so the reduction tree
  *     replaces the reference's four-element lane partial and five-step shuffle;
@@ -3160,6 +2398,14 @@ __global__ static void h3d_attention_tiled_kernel(
  *     (`cuda/ds41_attn_mma.cuh:135-139`).
  * Scores, the running maximum/sum and the output accumulator stay FP32, so the
  * arithmetic is the reference's in kind, not in order.
+ *
+ * Both blocks run that arithmetic step for step, so they are bit-identical to
+ * each other and the choice between them is a timing choice:
+ *   - `h3d_attention_mma_pipe_kernel` (below): 8 warps, 128 query rows per CTA,
+ *     a 3-stage `cp.async` ring, 208 registers, one CTA per SM, 23.7% faster at
+ *     the delivery shape (`attention-pipeline-2026-11-02.md`);
+ *   - `h3d_attention_mma_kernel` (here): 4 warps, 64 rows per CTA, synchronous
+ *     staging, 171 registers, three CTAs per SM.
  *
  * Shape: one CTA covers H3D_MMA_ROWS query rows of one head and a warp owns
  * H3D_MMA_M of them with all H3D_MMA_HD key dimensions, so a row's softmax
@@ -3717,15 +2963,32 @@ enum {
     H3D_MMA_DIMS = H3D_MMA_HD / 8,    /* n8 slices of the output */
     H3D_MMA_KS = H3D_MMA_HD / 16,     /* k16 steps over the head dimension */
     H3D_MMA_NS = H3D_MMA_KEYS / 8,    /* n8 slices of the scores */
-    H3D_MMA_CHUNKS = H3D_MMA_HD / 8   /* 16-byte copies in one staged row */
+    H3D_MMA_CHUNKS = H3D_MMA_HD / 8,  /* 16-byte copies in one staged row */
+    /* The tile row carries no padding: the +8 bf16 of `H3D_MMA_LD` is spent on
+     * bank rotation instead, as a XOR swizzle over the row's 16-byte chunks.
+     * That matters because it is the binding resource, not the registers: two
+     * CTAs of the padded row take 69,632 B of the 102,400 B an SM offers and a
+     * third would take 104,448, so the kernel ran 2 CTAs / 8 warps. Unpadded
+     * rows are 32,768 B, three CTAs are 98,304 B, and the register file has
+     * room for three (3 x 169 x 128 = 64,896 of 65,536). */
+    H3D_MMA_ROW = H3D_MMA_HD
 };
+
+/* Row-major tile slot of one 16-byte chunk. Eight consecutive rows of a chunk
+ * column land in eight distinct bank groups, which is what the padded stride
+ * bought before; `ldmatrix` reads eight rows of one column at a time, so this
+ * is the only access the swizzle has to serve. */
+__device__ __forceinline__ static uint32_t h3d_mma_slot(uint32_t row,
+                                                        uint32_t chunk) {
+    return (chunk ^ (row & 7u)) * 8u;
+}
 
 __global__ static void h3d_attention_mma_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t sequence, uint32_t heads, float scale) {
-    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_LD];
-    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_LD];
+    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_ROW];
+    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_ROW];
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t warp = threadIdx.x >> 5u;
     const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
@@ -3782,14 +3045,16 @@ __global__ static void h3d_attention_mma_kernel(
                 const size_t at =
                         ((size_t)head * sequence + source) * H3D_MMA_HD +
                         chunk * 8u;
-                *(uint4 *)&shared_key[row][chunk * 8u] =
+                const uint32_t slot = h3d_mma_slot(row, chunk);
+                *(uint4 *)&shared_key[row][slot] =
                         *(const uint4 *)(key + at);
-                *(uint4 *)&shared_value[row][chunk * 8u] =
+                *(uint4 *)&shared_value[row][slot] =
                         *(const uint4 *)(value + at);
             } else {
                 const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
-                *(uint4 *)&shared_key[row][chunk * 8u] = zero;
-                *(uint4 *)&shared_value[row][chunk * 8u] = zero;
+                const uint32_t slot = h3d_mma_slot(row, chunk);
+                *(uint4 *)&shared_key[row][slot] = zero;
+                *(uint4 *)&shared_value[row][slot] = zero;
             }
         }
         __syncthreads();
@@ -3808,7 +3073,7 @@ __global__ static void h3d_attention_mma_kernel(
                 const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
                 const uint32_t col = step * 16u + (matrix & 1u) * 8u;
                 uint32_t b[4];
-                h3d_mma_load(b, &shared_key[row][col]);
+                h3d_mma_load(b, &shared_key[row][h3d_mma_slot(row, col / 8u)]);
                 h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
                 h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
             }
@@ -3891,7 +3156,7 @@ __global__ static void h3d_attention_mma_kernel(
                         step * 16u + (matrix & 1u) * 8u + (lane & 7u);
                 const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
                 uint32_t b[4];
-                h3d_mma_load_trans(b, &shared_value[row][col]);
+                h3d_mma_load_trans(b, &shared_value[row][h3d_mma_slot(row, col / 8u)]);
                 h3d_mma_step(result[2u * part], p, b[0], b[1]);
                 h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
             }
@@ -3919,6 +3184,347 @@ __global__ static void h3d_attention_mma_kernel(
     }
 }
 
+/* --------------------------------------------------------------------------
+ * The pipelined block.
+ *
+ * The four-warp block above stages one 64-key tile with a load-then-barrier,
+ * so a warp waits out its CTA's global reads, and because a CTA covers only 64
+ * query rows the head's whole K and V is re-read once per 64 rows -- 677 GB
+ * per call at the delivery shape. Sixteen query rows per warp and a three-deep
+ * `cp.async` ring answer both: the ring keeps the next tiles' copies in flight
+ * under this tile's math, so staging stops being a stall, and the width divides
+ * that traffic.
+ *
+ * The width is a template parameter because it is the one knob that trades the
+ * two costs against each other. The ring is 3 x 2 x 64 x 128 bf16 = 98,304 B
+ * at every width -- it is measured in key tiles, not rows -- so those 98,304 B
+ * are one CTA's whole shared-memory budget whatever the width, and a second CTA
+ * cannot fit beside them (2 x 98,304 against the 102,400 B an SM holds). What
+ * the width does move is registers: `__launch_bounds__` takes the thread count,
+ * so eight warps may use the block's 208, twelve are capped at 170 and sixteen
+ * at 128. That is why the wider shapes are options to measure, not a default to
+ * assume: 256 rows per CTA halves the traffic again and may pay for itself in
+ * spills.
+ *
+ * The arithmetic is the four-warp block's, step for step: the k16 mma order,
+ * the 64-key tile, the one maximum per tile and the BF16 P all stay, so the
+ * output is bit-identical and the shape is the only thing that moved.
+ * ------------------------------------------------------------------------ */
+enum {
+    H3D_PIPE_STAGES = 3,                          /* one tile read, two in flight */
+    H3D_PIPE_PLANE = H3D_MMA_KEYS * H3D_MMA_ROW,  /* one stage's K or V, elements */
+    H3D_PIPE_SMEM = (int)(H3D_PIPE_STAGES) * 2 * H3D_PIPE_PLANE *
+                    (int)sizeof(__nv_bfloat16)
+};
+
+/* One stage's K (`matrix` 0) or V (`matrix` 1) plane. */
+__device__ __forceinline__ static __nv_bfloat16 *h3d_pipe_plane(
+        __nv_bfloat16 *ring, uint32_t stage, uint32_t matrix) {
+    return ring + ((size_t)stage * 2u + matrix) * (size_t)H3D_PIPE_PLANE;
+}
+
+/* A 16-byte global-to-shared copy that does not block the issuing warp;
+ * `bytes` under 16 zero-fills the rest, which stages a key row past the end of
+ * the sequence without a branch. */
+__device__ __forceinline__ static void h3d_pipe_copy(void *destination,
+                                                     const void *source,
+                                                     uint32_t bytes) {
+    const uint32_t at = (uint32_t)__cvta_generic_to_shared(destination);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(at),
+                 "l"(source), "r"(bytes));
+}
+
+__device__ __forceinline__ static void h3d_pipe_commit(void) {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+
+/* Waits until at most `pending` groups are outstanding. Each tile's staging is
+ * one group, so waiting for stages-1 leaves the tile being read complete. */
+template <uint32_t pending>
+__device__ __forceinline__ static void h3d_pipe_wait(void) {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(pending));
+}
+
+/* Stage one 64-key tile at `base` into `stage`, swizzled as the four-warp
+ * block swizzles its tile. Commit is the caller's, so a tile's K and V land as
+ * one group. The stride is the CTA's own thread count, which is the template's
+ * width: a wider CTA stages the same tile with more threads at work on it. */
+template <uint32_t WARPS>
+__device__ __forceinline__ static void h3d_pipe_stage(
+        __nv_bfloat16 *ring, uint32_t stage, const __nv_bfloat16 *key,
+        const __nv_bfloat16 *value, uint32_t head, uint32_t sequence,
+        uint32_t base) {
+    __nv_bfloat16 *const tile_key = h3d_pipe_plane(ring, stage, 0u);
+    __nv_bfloat16 *const tile_value = h3d_pipe_plane(ring, stage, 1u);
+    for (uint32_t index = threadIdx.x;
+         index < H3D_MMA_KEYS * H3D_MMA_CHUNKS;
+         index += WARPS * 32u) {
+        const uint32_t row = index / H3D_MMA_CHUNKS;
+        const uint32_t chunk = index % H3D_MMA_CHUNKS;
+        const uint32_t source = base + row;
+        const uint32_t live = source < sequence ? 16u : 0u;
+        const size_t at = ((size_t)head * sequence +
+                           (live ? source : sequence - 1u)) *
+                                  H3D_MMA_HD +
+                          chunk * 8u;
+        const uint32_t slot = h3d_mma_slot(row, chunk);
+        h3d_pipe_copy(&tile_key[row * H3D_MMA_ROW + slot], key + at, live);
+        h3d_pipe_copy(&tile_value[row * H3D_MMA_ROW + slot], value + at, live);
+    }
+}
+
+/* One instantiation per width. `__launch_bounds__` takes the thread count, so
+ * ptxas is held to 208 registers at eight warps, 170 at twelve and 128 at
+ * sixteen without `-maxrregcount` in the build: the ceiling follows the shape.
+ * `MIN_CTA` is the second half of that bound and exists to be *asked*, not
+ * shipped: the ring as it stands fills an SM on its own, so the only way to
+ * make ptxas answer "what would two CTAs cost this block" is to demand two and
+ * read the spills. Every instantiation the dispatch launches leaves it at 1. */
+template <uint32_t WARPS, uint32_t MIN_CTA = 1>
+__global__ __launch_bounds__(WARPS * 32u, MIN_CTA)
+static void h3d_attention_mma_pipe_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *query,
+        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        uint32_t sequence, uint32_t heads, float scale) {
+    constexpr uint32_t rows_per_cta = H3D_MMA_M * WARPS;
+    extern __shared__ __align__(16) __nv_bfloat16 ring[];
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
+    const uint32_t column = (lane & 3u) * 2u;     /* first of its two columns */
+    const uint32_t matrix = lane >> 3u;           /* ldmatrix: which 8x8 quadrant */
+    const uint32_t head = blockIdx.y;
+    const uint32_t first_row = blockIdx.x * rows_per_cta + warp * H3D_MMA_M;
+    const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
+    const int live0 = row0 < sequence, live1 = row1 < sequence;
+    const uint32_t read0 = live0 ? row0 : sequence - 1u;
+    const uint32_t read1 = live1 ? row1 : sequence - 1u;
+    const __nv_bfloat16 *query0 =
+            query + ((size_t)head * sequence + read0) * H3D_MMA_HD;
+    const __nv_bfloat16 *query1 =
+            query + ((size_t)head * sequence + read1) * H3D_MMA_HD;
+
+    uint32_t a[H3D_MMA_KS][4];
+#pragma unroll
+    for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+        const uint32_t dim = step * 16u + column;
+        a[step][0] = h3d_mma_pair(__bfloat162float(query0[dim]),
+                                  __bfloat162float(query0[dim + 1u]));
+        a[step][1] = h3d_mma_pair(__bfloat162float(query1[dim]),
+                                  __bfloat162float(query1[dim + 1u]));
+        a[step][2] = h3d_mma_pair(__bfloat162float(query0[dim + 8u]),
+                                  __bfloat162float(query0[dim + 9u]));
+        a[step][3] = h3d_mma_pair(__bfloat162float(query1[dim + 8u]),
+                                  __bfloat162float(query1[dim + 9u]));
+    }
+
+    float maximum0 = -INFINITY, maximum1 = -INFINITY;
+    float denominator0 = 0.0f, denominator1 = 0.0f;
+    float result[H3D_MMA_DIMS][4];
+#pragma unroll
+    for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+        result[dim][0] = result[dim][1] = result[dim][2] = result[dim][3] = 0.0f;
+    }
+
+    /* Fill the ring, then issue one tile's copies per iteration so that the
+     * tile being read completed `stages - 1` tiles ago. */
+    h3d_pipe_stage<WARPS>(ring, 0u, key, value, head, sequence, 0u);
+    h3d_pipe_commit();
+    for (uint32_t ahead = 1; ahead + 1u < H3D_PIPE_STAGES; ahead++) {
+        const uint32_t base = ahead * H3D_MMA_KEYS;
+        if (base < sequence) {
+            h3d_pipe_stage<WARPS>(ring, ahead, key, value, head, sequence, base);
+        }
+        h3d_pipe_commit();
+    }
+
+    for (uint32_t tile = 0, base = 0; base < sequence;
+         tile++, base += H3D_MMA_KEYS) {
+        /* Tile `tile` is read this iteration; the prologue filled the ring with
+         * the `stages - 1` that follow it, so each iteration loads the tile
+         * `stages - 1` ahead, which is the stage this one leaves behind. */
+        const uint32_t next = base + (H3D_PIPE_STAGES - 1u) * H3D_MMA_KEYS;
+        const uint32_t current = tile % H3D_PIPE_STAGES;
+        if (next < sequence) {
+            h3d_pipe_stage<WARPS>(ring, (tile + H3D_PIPE_STAGES - 1u) % H3D_PIPE_STAGES,
+                           key, value, head, sequence, next);
+        }
+        /* An empty group keeps the ring's depth fixed, so the wait below is the
+         * same instruction on every tile, tail included. */
+        h3d_pipe_commit();
+        h3d_pipe_wait<H3D_PIPE_STAGES - 1>();
+        __syncthreads();   /* this tile's copies have landed for every warp */
+
+        const __nv_bfloat16 *const shared_key =
+                h3d_pipe_plane(ring, current, 0u);
+        const __nv_bfloat16 *const shared_value =
+                h3d_pipe_plane(ring, current, 1u);
+
+        /* Scores: S = Q * K^T over all H3D_MMA_KEYS staged keys. */
+        float score[H3D_MMA_NS][4];
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            score[slice][0] = score[slice][1] = 0.0f;
+            score[slice][2] = score[slice][3] = 0.0f;
+        }
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_KEYS / 16; part++) {
+                const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load(b, &shared_key[row * H3D_MMA_ROW +
+                                            h3d_mma_slot(row, col / 8u)]);
+                h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+            }
+        }
+
+        /* Scale, then mask the tail keys out of the softmax. */
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            const uint32_t first = slice * 8u + column;
+            score[slice][0] *= scale;
+            score[slice][1] *= scale;
+            score[slice][2] *= scale;
+            score[slice][3] *= scale;
+            if (base + first >= sequence) {
+                score[slice][0] = -INFINITY;
+                score[slice][2] = -INFINITY;
+            }
+            if (base + first + 1u >= sequence) {
+                score[slice][1] = -INFINITY;
+                score[slice][3] = -INFINITY;
+            }
+        }
+
+        /* One maximum per tile, reduced across the four lanes of a row. */
+        float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+            tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+        }
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+        const float next0 = fmaxf(maximum0, tile0);
+        const float next1 = fmaxf(maximum1, tile1);
+        const float rescale0 = expf(maximum0 - next0);
+        const float rescale1 = expf(maximum1 - next1);
+
+        float weight[H3D_MMA_NS][4];
+        float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            weight[slice][0] = expf(score[slice][0] - next0);
+            weight[slice][1] = expf(score[slice][1] - next0);
+            weight[slice][2] = expf(score[slice][2] - next1);
+            weight[slice][3] = expf(score[slice][3] - next1);
+            part0 += weight[slice][0] + weight[slice][1];
+            part1 += weight[slice][2] + weight[slice][3];
+        }
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+        denominator0 = denominator0 * rescale0 + part0;
+        denominator1 = denominator1 * rescale1 + part1;
+        maximum0 = next0;
+        maximum1 = next1;
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            result[dim][0] *= rescale0;
+            result[dim][1] *= rescale0;
+            result[dim][2] *= rescale1;
+            result[dim][3] *= rescale1;
+        }
+
+        /* O += P * V, P packed from the weights as the A fragments. */
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KEYS / 16; step++) {
+            uint32_t p[4];
+            p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+            p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+            p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                weight[2u * step + 1u][1]);
+            p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                weight[2u * step + 1u][3]);
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                const uint32_t row =
+                        step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load_trans(b, &shared_value[row * H3D_MMA_ROW +
+                                                   h3d_mma_slot(row, col / 8u)]);
+                h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+            }
+        }
+        __syncthreads();   /* every warp is done with this stage before it refills */
+    }
+
+    if (live0) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row0 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][0] / denominator0);
+            output[at + 1u] = __float2bfloat16(result[dim][1] / denominator0);
+        }
+    }
+    if (live1) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row1 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][2] / denominator1);
+            output[at + 1u] = __float2bfloat16(result[dim][3] / denominator1);
+        }
+    }
+}
+
+/* The pipelined block's shared-memory admission, one per width. Its ring is
+ * past the 48 KB every kernel gets without asking, so that shape's own ceiling
+ * has to be raised once; a refused request retires the shape rather than
+ * failing the launch. Returns 0 when the shape is admitted. */
+template <uint32_t WARPS>
+static int h3d_pipe_admit(void) {
+    static int refused = -1;
+    if (refused < 0) {
+        const cudaError_t status = cudaFuncSetAttribute(
+                (const void *)h3d_attention_mma_pipe_kernel<WARPS>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, H3D_PIPE_SMEM);
+        refused = status == cudaSuccess ? 0 : 1;
+        if (refused) (void)cudaGetLastError();
+    }
+    return refused;
+}
+
+/* Launch one width of the pipelined block. Returns nonzero when the launch was
+ * issued; zero sends the caller down to the next narrower shape. The label
+ * carries the width, because the record's A/Bs read these lines and two shapes
+ * that print the same string are indistinguishable in a log. */
+template <uint32_t WARPS>
+static int h3d_pipe_launch(h3d_context *context, h3d_tensor *output,
+                           const h3d_tensor *query, const h3d_tensor *key,
+                           const h3d_tensor *value, uint32_t sequence,
+                           uint32_t heads, float scale) {
+    if (h3d_pipe_admit<WARPS>() != 0) return 0;
+    const uint32_t rows = H3D_MMA_M * WARPS;
+    dim3 grid((sequence + rows - 1) / rows, heads);
+    h3d_attention_mma_pipe_kernel<WARPS><<<grid, WARPS * 32u,
+                                            (size_t)H3D_PIPE_SMEM,
+                                            context->stream>>>(
+            (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
+            (const __nv_bfloat16 *)key->data,
+            (const __nv_bfloat16 *)value->data, sequence, heads, scale);
+    return 1;
+}
+
 int h3d_sdpa(h3d_context *context, h3d_tensor *output,
              const h3d_tensor *query, const h3d_tensor *key,
              const h3d_tensor *value, uint32_t sequence, uint32_t heads,
@@ -3934,10 +3540,34 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    /* The benchmark arm: same tensors and scale, tensor-core arithmetic. Its
-     * kernel is the 128-wide one, so the 64-wide connector attention stays on
-     * the tiled path. */
+    /* Tensor-core arithmetic, on whichever pipelined width the environment
+     * asked for, or on the four-warp block. A width whose shared-memory
+     * admission is refused narrows rather than fails: sixteen warps fall to
+     * twelve, then eight, then the four-warp block, and `attention_warps` is
+     * left at zero so the rest of the run does not retry the refused shape.
+     * Both pipelined and four-warp kernels are 128-wide, so the 64-wide
+     * connector attention stays on the tiled path. */
     if (context->attention_mma && head_dim == 128) {
+        int issued = 0;
+        if (context->attention_warps == H3D_ATTN_PIPE16) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE16>(
+                    context, output, query, key, value, sequence, heads, scale);
+        }
+        if (!issued && context->attention_warps == H3D_ATTN_PIPE12) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE12>(
+                    context, output, query, key, value, sequence, heads, scale);
+        }
+        if (!issued && context->attention_warps == H3D_ATTN_PIPE8) {
+            issued = h3d_pipe_launch<H3D_ATTN_PIPE8>(
+                    context, output, query, key, value, sequence, heads, scale);
+        }
+        if (issued) {
+            char label[64];
+            snprintf(label, sizeof label, "BF16 attention (mma, pipelined %u warps)",
+                     (unsigned)context->attention_warps);
+            return h3d_launch_ok(label, error, error_size);
+        }
+        context->attention_warps = 0;
         dim3 mma_grid((sequence + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
         h3d_attention_mma_kernel<<<mma_grid, H3D_MMA_WARPS * 32u, 0,
                                    context->stream>>>(
@@ -6748,4 +6378,723 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
         (const uint32_t *)plan->mask->data, sequence, heads, blocks,
         h3d_sol_words(sequence), scale);
     return h3d_launch_ok("Sol-Attn forward", error, error_size);
+}
+
+/* -------------------------------------------------------------------------
+ * Latent resizer (`LatentResizer3D`): the H3 latent upscaler's own layers.
+ * The decoder already supplies `h3d_conv3d`, `h3d_group_norm_silu`, `h3d_silu_f32`
+ * and `h3d_vae_linear`; these five kernels are what it does not:
+ * zero padding for the 3x3x3 convolutions, the plain GroupNorm whose output
+ * the embedding modulates, the embedding's per-channel affine, the depthwise
+ * temporal convolution, and the trilinear resize that carries the upscale.
+ * Tensors are channels-last, `[batch, depth, height, width, channels]`, the
+ * layout `h3d_conv3d` already takes.
+ * ---------------------------------------------------------------------- */
+
+/* One block per (batch, group); two accumulating passes so the variance is
+ * the mean square deviation rather than a difference of squares. */
+__device__ static float h3d_block_sum(float value) {
+    __shared__ float shared[32];
+    __syncthreads();
+    uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    if (lane == 0) shared[warp] = value;
+    __syncthreads();
+    uint32_t warps = (blockDim.x + 31u) >> 5u;
+    value = (threadIdx.x < warps) ? shared[threadIdx.x] : 0.0f;
+    if (warp == 0) {
+        for (int offset = 16; offset > 0; offset >>= 1)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (threadIdx.x == 0) shared[0] = value;
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+/* Templated on the destination so the F16 route can pad and round in one pass
+ * instead of padding a bigger F32 volume and converting it afterwards: the
+ * padding of the largest volume here is 27x the latent in every direction. */
+template <typename T>
+__global__ static void h3d_zero_pad3d_kernel(
+    T *output, const float *input, uint32_t depth, uint32_t height,
+    uint32_t width, uint32_t channels, uint32_t pad_depth, uint32_t pad_height,
+    uint32_t pad_width, uint32_t out_depth, uint32_t out_height,
+    uint32_t out_width, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t x = (uint32_t)(row % out_width);
+    row /= out_width;
+    uint32_t y = (uint32_t)(row % out_height);
+    row /= out_height;
+    uint32_t t = (uint32_t)(row % out_depth);
+    uint32_t batch = (uint32_t)(row / out_depth);
+    int it = (int)t - (int)pad_depth;
+    int iy = (int)y - (int)pad_height;
+    int ix = (int)x - (int)pad_width;
+    float value = 0.0f;
+    if (it >= 0 && iy >= 0 && ix >= 0 && it < (int)depth &&
+        iy < (int)height && ix < (int)width) {
+        value = input[((((size_t)batch * depth + (uint32_t)it) * height +
+                        (uint32_t)iy) * width + (uint32_t)ix) * channels +
+                      channel];
+    }
+    output[index] = (T)value;
+}
+
+int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t pad_depth, uint32_t pad_height, uint32_t pad_width,
+                   char *error, size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels) {
+        return h3d_set_error(error, error_size, "invalid zero pad shape");
+    }
+    uint32_t out_depth = depth + 2u * pad_depth;
+    uint32_t out_height = height + 2u * pad_height;
+    uint32_t out_width = width + 2u * pad_width;
+    size_t input_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * out_depth * out_height * out_width,
+                      channels, &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) || !output ||
+        (output->dtype != H3D_F32 && output->dtype != H3D_F16) ||
+        output->elements < output_elements) {
+        return h3d_set_error(error, error_size, "invalid zero pad tensors");
+    }
+    unsigned blocks = (unsigned)((output_elements + 255) / 256);
+    if (output->dtype == H3D_F16) {
+        h3d_zero_pad3d_kernel<__half><<<blocks, 256, 0, context->stream>>>(
+            (__half *)output->data, (const float *)input->data, depth, height,
+            width, channels, pad_depth, pad_height, pad_width, out_depth,
+            out_height, out_width, output_elements);
+    } else {
+        h3d_zero_pad3d_kernel<float><<<blocks, 256, 0, context->stream>>>(
+            (float *)output->data, (const float *)input->data, depth, height,
+            width, channels, pad_depth, pad_height, pad_width, out_depth,
+            out_height, out_width, output_elements);
+    }
+    return h3d_launch_ok("zero pad", error, error_size);
+}
+
+__device__ static double h3d_block_sum_double(double value) {
+    __shared__ double shared[32];
+    __syncthreads();
+    uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    if (lane == 0) shared[warp] = value;
+    __syncthreads();
+    uint32_t warps = (blockDim.x + 31u) >> 5u;
+    value = (threadIdx.x < warps) ? shared[threadIdx.x] : 0.0;
+    if (warp == 0) {
+        for (int offset = 16; offset > 0; offset >>= 1)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (threadIdx.x == 0) shared[0] = value;
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+/* Grid-wide GroupNorm, in three passes.
+ *
+ * This was one block per (batch, group): 32 blocks for a 252k-voxel volume,
+ * each walking its voxels strided by the block width, and the resizer's stage
+ * timer charged it 6 GB/s against the 367 GB/s the im2col reaches. The volume
+ * is 129M floats, so the reduction needs the whole grid. `partial` splits each
+ * (batch, group) over `parts` blocks and accumulates the sum and the sum of
+ * squares (in double: one pass over the volume and the variance is still
+ * `E[x^2] - E[x]^2` to eighteen digits, which the F32 two-pass this replaces
+ * did not buy for two reads), `finalize` turns the parts into a per-
+ * (batch, channel) scale and shift, and `apply` is a coalesced grid-stride
+ * pass that can also emit the SiLU the reference computes on the norm's own
+ * output, which saves a whole read and write of the volume. */
+__global__ static void h3d_group_norm_partial_kernel(
+    const float *input, double *partials, uint32_t voxels, uint32_t channels,
+    uint32_t groups, uint32_t parts) {
+    uint32_t per_group = channels / groups;
+    uint32_t lane = blockIdx.y;
+    uint32_t batch = lane / groups;
+    uint32_t first = (lane % groups) * per_group;
+    uint32_t part = blockIdx.x;
+    // Split the voxels, not the elements, so the inner loop is a run of
+    // `per_group` contiguous channels and needs no division to address.
+    size_t share = voxels / parts;
+    size_t begin = share * part;
+    size_t end = part + 1 == parts ? voxels : share * (part + 1);
+    const float *base =
+        input + (size_t)batch * voxels * channels + (size_t)first;
+    double sum = 0.0;
+    double squares = 0.0;
+    for (size_t voxel = begin + threadIdx.x; voxel < end;
+         voxel += blockDim.x) {
+        const float *source = base + voxel * channels;
+        for (uint32_t inside = 0; inside < per_group; inside++) {
+            float value = source[inside];
+            sum += (double)value;
+            squares += (double)value * (double)value;
+        }
+    }
+    sum = h3d_block_sum_double(sum);
+    squares = h3d_block_sum_double(squares);
+    if (threadIdx.x == 0) {
+        size_t slot = ((size_t)lane * parts + part) * 2;
+        partials[slot] = sum;
+        partials[slot + 1] = squares;
+    }
+}
+
+__global__ static void h3d_group_norm_finalize_kernel(
+    const double *partials, const float *weight, const float *bias,
+    float *scale, float *shift, uint32_t channels, uint32_t groups,
+    uint32_t parts, double count, float epsilon) {
+    uint32_t lane = blockIdx.x;
+    uint32_t per_group = channels / groups;
+    uint32_t group = lane % groups;
+    double sum = 0.0;
+    double squares = 0.0;
+    for (uint32_t part = threadIdx.x; part < parts; part += blockDim.x) {
+        sum += partials[((size_t)lane * parts + part) * 2];
+        squares += partials[((size_t)lane * parts + part) * 2 + 1];
+    }
+    sum = h3d_block_sum_double(sum);
+    squares = h3d_block_sum_double(squares);
+    __shared__ float moments[2];
+    if (threadIdx.x == 0) {
+        double mean = sum / count;
+        double variance = squares / count - mean * mean;
+        // A negative from cancellation is clamped rather than left to poison
+        // the rsqrt.
+        if (variance < 0.0) variance = 0.0;
+        moments[0] = (float)mean;
+        moments[1] = rsqrtf((float)variance + epsilon);
+    }
+    __syncthreads();
+    float mean = moments[0];
+    float inverse = moments[1];
+    // `x * rstd * weight + (bias - mean * rstd * weight)`, so the apply pass is
+    // one fused multiply-add per element and reads no per-channel statistics.
+    size_t row = (size_t)(lane / groups) * channels + group * per_group;
+    for (uint32_t channel = threadIdx.x; channel < per_group;
+         channel += blockDim.x) {
+        uint32_t index = group * per_group + channel;
+        float scaled = inverse * weight[index];
+        scale[row + channel] = scaled;
+        shift[row + channel] = bias[index] - mean * scaled;
+    }
+}
+
+__global__ static void h3d_group_norm_apply_kernel(
+    float *output, const float *input, const float *scale, const float *shift,
+    uint32_t channels, uint32_t rows, size_t elements, uint32_t activate) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t batch = index / rows;
+    float value = input[index] * scale[(size_t)batch * channels + channel] +
+                  shift[(size_t)batch * channels + channel];
+    if (activate) value /= 1.0f + expf(-value);
+    output[index] = value;
+}
+
+/* The three passes with an optional SiLU on the result. `batch` and the
+ * volume are the caller's, `parts` is chosen so a (batch, group) pair gets
+ * enough blocks to fill the device without making the finalize pass long. */
+static int h3d_group_norm_volume(h3d_context *context, h3d_tensor *output,
+                                 const h3d_tensor *input,
+                                 const h3d_tensor *weight,
+                                 const h3d_tensor *bias, uint32_t batch,
+                                 uint32_t depth, uint32_t height, uint32_t width,
+                                 uint32_t channels, uint32_t groups,
+                                 float epsilon, uint32_t activate, char *error,
+                                 size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels ||
+        !groups || channels % groups) {
+        return h3d_set_error(error, error_size, "invalid GroupNorm shape");
+    }
+    size_t elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &elements) ||
+        !h3d_is(input, H3D_F32, elements) || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, channels) || !h3d_is(bias, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid GroupNorm tensors");
+    }
+    if (!elements) return 1;
+    uint32_t per_group = channels / groups;
+    uint32_t lanes = batch * groups;
+    uint32_t parts = 2048 / lanes;
+    if (!parts) parts = 1;
+    if (parts > 256) parts = 256;
+    size_t count = (size_t)depth * height * width * per_group;
+    size_t partial_doubles = (size_t)lanes * parts * 2;
+    size_t scale_floats = (size_t)batch * channels * 2;
+    void *scratch = NULL;
+    if (cudaMallocAsync(&scratch,
+                        partial_doubles * sizeof(double) +
+                            scale_floats * sizeof(float),
+                        context->stream) != cudaSuccess) {
+        return h3d_set_error(error, error_size, "GroupNorm scratch");
+    }
+    double *partials = (double *)scratch;
+    float *scale = (float *)(partials + partial_doubles);
+    float *shift = scale + (size_t)batch * channels;
+    dim3 grid(parts, lanes);
+    h3d_group_norm_partial_kernel<<<grid, 256, 0, context->stream>>>(
+        (const float *)input->data, partials, depth * height * width, channels,
+        groups, parts);
+    int status = h3d_launch_ok("GroupNorm partial", error, error_size);
+    if (status) {
+        h3d_group_norm_finalize_kernel<<<lanes, 256, 0, context->stream>>>(
+            partials, (const float *)weight->data, (const float *)bias->data,
+            scale, shift, channels, groups, parts, (double)count, epsilon);
+        status = h3d_launch_ok("GroupNorm finalize", error, error_size);
+    }
+    if (status) {
+        h3d_group_norm_apply_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                      context->stream>>>(
+            (float *)output->data, (const float *)input->data, scale, shift,
+            channels, depth * height * width * channels, elements, activate);
+        status = h3d_launch_ok("GroupNorm apply", error, error_size);
+    }
+    cudaFreeAsync(scratch, context->stream);
+    return status;
+}
+
+int h3d_group_norm(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, const h3d_tensor *weight,
+                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t groups, float epsilon, char *error,
+                   size_t error_size) {
+    return h3d_group_norm_volume(context, output, input, weight, bias, batch,
+                                 depth, height, width, channels, groups, epsilon,
+                                 0, error, error_size);
+}
+
+/* The same norm with the SiLU folded in, which is how every block of the
+ * resizer uses it: norm, activate, then the convolution. */
+int h3d_group_norm_activate(h3d_context *context, h3d_tensor *output,
+                            const h3d_tensor *input, const h3d_tensor *weight,
+                            const h3d_tensor *bias, uint32_t batch,
+                            uint32_t depth, uint32_t height, uint32_t width,
+                            uint32_t channels, uint32_t groups, float epsilon,
+                            char *error, size_t error_size) {
+    return h3d_group_norm_volume(context, output, input, weight, bias, batch,
+                                 depth, height, width, channels, groups, epsilon,
+                                 1, error, error_size);
+}
+
+/* `h = norm * (1 + scale) + shift` per channel, the ResBlock's embedding
+ * modulation with the scale and shift vectors passed as two pointers. */
+__global__ static void h3d_channel_affine_kernel(
+    float *output, const float *input, const float *scale, const float *shift,
+    uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    output[index] = input[index] * scale[channel] + shift[channel];
+}
+
+int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
+                       const h3d_tensor *input, const h3d_tensor *scale,
+                       const h3d_tensor *shift, uint32_t channels,
+                       size_t elements, char *error, size_t error_size) {
+    if (!context || !channels ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(scale, H3D_F32, channels) || !h3d_is(shift, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid channel affine tensors");
+    }
+    if (!elements) return 1;
+    h3d_channel_affine_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)scale->data, (const float *)shift->data, channels,
+        elements);
+    return h3d_launch_ok("channel affine", error, error_size);
+}
+
+/* Phase timing for the resizer's convolution, in seconds of device time.
+ * `h3d_conv3d_timing(1)` makes `h3d_conv3d_gemm` record cudaEvents between its
+ * phases and accumulate the intervals; `read` reports them and `reset` clears
+ * them. The marks are recorded in the work's own stream, so the intervals
+ * partition the timeline exactly and nothing is inserted between phases; one
+ * stream synchronize at the end of a timed call is what makes them readable.
+ * Phase order is im2col, GEMM, bias. */
+static int h3d_conv_timing_on = 0;
+static double h3d_conv_timing_seconds[3];
+
+int h3d_conv3d_timing(int enable) {
+    int previous = h3d_conv_timing_on;
+    h3d_conv_timing_on = enable ? 1 : 0;
+    return previous;
+}
+
+void h3d_conv3d_timing_read(double seconds[3]) {
+    if (!seconds) return;
+    for (int phase = 0; phase < 3; phase++)
+        seconds[phase] = h3d_conv_timing_seconds[phase];
+}
+
+void h3d_conv3d_timing_reset(void) {
+    for (int phase = 0; phase < 3; phase++) h3d_conv_timing_seconds[phase] = 0.0;
+}
+
+/* im2col for the resizer's 3x3x3 convolutions, one block per output row and
+ * one coalesced copy of `channels` floats per tap. The columns come out
+ * tap-major, `tap * channels + ic`, which is why the weights are permuted to
+ * `[out, kt, ky, kx, in]` when they are loaded: the alternative is an
+ * uncoalesced write or a division per element, and at these sizes both cost
+ * far more than the copy. */
+__global__ static void h3d_im2col3d_kernel(
+    float *columns, const float *input, uint32_t height, uint32_t width,
+    uint32_t out_height, uint32_t out_width, uint32_t channels,
+    uint32_t row_begin, uint32_t rows) {
+    if (blockIdx.x >= rows) return;
+    uint32_t row = row_begin + blockIdx.x;
+    // The row index walks the output volume; `height` and `width` are the
+    // padded strides the source is addressed with, and they differ by the
+    // kernel's own reach.
+    uint32_t x = row % out_width;
+    uint32_t rest = row / out_width;
+    uint32_t y = rest % out_height;
+    uint32_t t = rest / out_height;
+    float *destination = columns + (size_t)blockIdx.x * channels * 27;
+    for (uint32_t tap = 0; tap < 27; tap++) {
+        uint32_t kt = tap / 9, ky = (tap / 3) % 3, kx = tap % 3;
+        const float *source =
+            input + ((((size_t)(t + kt) * height + (y + ky)) * width +
+                      (x + kx)) *
+                     channels);
+        float *out = destination + (size_t)tap * channels;
+        for (uint32_t channel = threadIdx.x; channel < channels;
+             channel += blockDim.x) {
+            out[channel] = source[channel];
+        }
+    }
+}
+
+/* The same im2col for the F16 operand route: half the bytes written and half
+ * read, so the phase that was already at the memory floor gets its floor cut
+ * in two. The copy is still one coalesced run of `channels` values per tap. */
+__global__ static void h3d_im2col3d_half_kernel(
+    __half *columns, const __half *input, uint32_t height, uint32_t width,
+    uint32_t out_height, uint32_t out_width, uint32_t channels,
+    uint32_t row_begin, uint32_t rows) {
+    if (blockIdx.x >= rows) return;
+    uint32_t row = row_begin + blockIdx.x;
+    uint32_t x = row % out_width;
+    uint32_t rest = row / out_width;
+    uint32_t y = rest % out_height;
+    uint32_t t = rest / out_height;
+    __half *destination = columns + (size_t)blockIdx.x * channels * 27;
+    for (uint32_t tap = 0; tap < 27; tap++) {
+        uint32_t kt = tap / 9, ky = (tap / 3) % 3, kx = tap % 3;
+        const __half *source =
+            input + ((((size_t)(t + kt) * height + (y + ky)) * width +
+                      (x + kx)) *
+                     channels);
+        __half *out = destination + (size_t)tap * channels;
+        for (uint32_t channel = threadIdx.x; channel < channels;
+             channel += blockDim.x) {
+            out[channel] = source[channel];
+        }
+    }
+}
+
+/* `out[channel] += bias[channel]`, the epilogue the conv's GEMM leaves open. */
+__global__ static void h3d_add_bias_kernel(float *output, const float *bias,
+                                           uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    output[index] += bias[index % channels];
+}
+
+/* The same convolution `h3d_conv3d` computes, through im2col and the F32 GEMM:
+ * one thread per output element is fine for the decoder's small channel counts
+ * and 70x too slow at 512. `input` is the padded volume, as `h3d_conv3d` wants;
+ * `tile` bounds the expanded matrix, which is `tile * in * k^3` floats. */
+int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *weight,
+                    const h3d_tensor *bias, uint32_t depth, uint32_t height,
+                    uint32_t width, uint32_t input_channels,
+                    uint32_t output_channels, uint32_t kernel, uint32_t tile,
+                    const h3d_tensor *scratch, uint32_t tf32,
+                    uint32_t orientation, char *error, size_t error_size) {
+    if (!context || !depth || !height || !width || !input_channels ||
+        !output_channels || !kernel || !tile) {
+        return h3d_set_error(error, error_size, "invalid Conv3d shape");
+    }
+    if (kernel > depth || kernel > height || kernel > width) {
+        return h3d_set_error(error, error_size, "Conv3d kernel exceeds input");
+    }
+    uint32_t out_depth = depth - kernel + 1;
+    uint32_t out_height = height - kernel + 1;
+    uint32_t out_width = width - kernel + 1;
+    size_t input_elements, weight_elements, output_elements, column_elements;
+    /* The operand class comes from the tensors themselves: F16 input, weight
+     * and scratch run the half-precision im2col and a mixed-precision GEMM
+     * whose accumulator is still F32. `bias` and `output` stay F32 either way,
+     * so nothing downstream of the convolution changes. */
+    int half = input && input->dtype == H3D_F16;
+    int operand = half ? H3D_F16 : H3D_F32;
+    if (!h3d_mul_size((size_t)depth * height * width, input_channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)output_channels * input_channels * kernel * kernel,
+                      kernel, &weight_elements) ||
+        !h3d_mul_size((size_t)out_depth * out_height * out_width,
+                      output_channels, &output_elements) ||
+        !h3d_mul_size((size_t)tile, input_channels * kernel * kernel * kernel,
+                      &column_elements) ||
+        !h3d_is(input, operand, input_elements) ||
+        !h3d_is(weight, operand, weight_elements) ||
+        !h3d_is(output, H3D_F32, output_elements) ||
+        !h3d_is(bias, H3D_F32, output_channels) ||
+        !h3d_is(scratch, operand, column_elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid Conv3d tensors or scratch");
+    }
+    uint32_t columns_per_row = input_channels * kernel * kernel * kernel;
+    size_t rows = (size_t)out_depth * out_height * out_width;
+    uint32_t tiles = (uint32_t)((rows + tile - 1) / tile);
+    int timed = h3d_conv_timing_on;
+    cudaEvent_t *marks = NULL;
+    size_t marks_count = (size_t)tiles * 2 + 2;
+    if (timed) {
+        marks = (cudaEvent_t *)calloc(marks_count, sizeof(cudaEvent_t));
+        if (!marks) return h3d_set_error(error, error_size, "Conv3d timing");
+        for (size_t mark = 0; mark < marks_count; mark++)
+            cudaEventCreate(&marks[mark]);
+        // marks[0] is the start; after tile i, marks[1 + 2i] follows the
+        // im2col and marks[2 + 2i] the GEMM, and marks[2 * tiles + 1] follows
+        // the bias, so [marks[2 * tiles], marks[2 * tiles + 1]] is the bias.
+        cudaEventRecord(marks[0], context->stream);
+    }
+    uint32_t ran = 0;
+    int failed = 0;
+    for (uint32_t step = 0; step < tiles; step++) {
+        size_t begin = (size_t)step * tile;
+        size_t count = rows - begin < tile ? rows - begin : tile;
+        if (half) {
+            h3d_im2col3d_half_kernel<<<(unsigned)count, 256, 0,
+                                       context->stream>>>(
+                (__half *)scratch->data, (const __half *)input->data, height,
+                width, out_height, out_width, input_channels, (uint32_t)begin,
+                (uint32_t)count);
+        } else {
+            h3d_im2col3d_kernel<<<(unsigned)count, 256, 0, context->stream>>>(
+                (float *)scratch->data, (const float *)input->data, height,
+                width, out_height, out_width, input_channels, (uint32_t)begin,
+                (uint32_t)count);
+        }
+        if (!h3d_launch_ok("Conv3d im2col", error, error_size)) {
+            failed = 1;
+            break;
+        }
+        if (timed) cudaEventRecord(marks[1 + 2 * (size_t)step], context->stream);
+        /* TF32 is a rounding of F32 operands and means nothing beside F16 ones:
+         * there the class asked for is plain F32 accumulation over the half
+         * tensor cores, and the report says so. */
+        cublasComputeType_t compute =
+            half ? CUBLAS_COMPUTE_32F
+                 : (tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F);
+        cudaDataType_t type = half ? CUDA_R_16F : CUDA_R_32F;
+        int gemm = orientation
+            ? h3d_linear_lt_columns(context,
+                                    (char *)output->data +
+                                        begin * output_channels * 4,
+                                    scratch->data, weight->data, (uint32_t)count,
+                                    columns_per_row, output_channels, type,
+                                    CUDA_R_32F, compute, error, error_size)
+            : h3d_linear_lt_compute(
+                  context,
+                  (char *)output->data + begin * output_channels * 4,
+                  scratch->data, weight->data, (uint32_t)count,
+                  columns_per_row, output_channels, type, CUDA_R_32F, compute,
+                  error, error_size);
+        if (!gemm) {
+            failed = 1;
+            break;
+        }
+        if (timed) cudaEventRecord(marks[2 + 2 * (size_t)step], context->stream);
+        ran++;
+    }
+    int status = 1;
+    if (!failed) {
+        size_t output_count = rows * output_channels;
+        h3d_add_bias_kernel<<<(unsigned)((output_count + 255) / 256), 256, 0,
+                              context->stream>>>(
+            (float *)output->data, (const float *)bias->data, output_channels,
+            output_count);
+        if (!h3d_launch_ok("Conv3d bias", error, error_size)) status = 0;
+        if (timed) cudaEventRecord(marks[2 * (size_t)tiles + 1], context->stream);
+    } else {
+        status = 0;
+    }
+    if (timed) {
+        cudaStreamSynchronize(context->stream);
+        for (uint32_t step = 0; step < ran; step++) {
+            size_t start = step ? 2 * (size_t)step : 0;
+            float milliseconds = 0.0f;
+            cudaEventElapsedTime(&milliseconds, marks[start],
+                                 marks[1 + 2 * (size_t)step]);
+            h3d_conv_timing_seconds[0] += (double)milliseconds * 1e-3;
+            cudaEventElapsedTime(&milliseconds, marks[1 + 2 * (size_t)step],
+                                 marks[2 + 2 * (size_t)step]);
+            h3d_conv_timing_seconds[1] += (double)milliseconds * 1e-3;
+        }
+        if (ran == tiles && !failed && status) {
+            float milliseconds = 0.0f;
+            cudaEventElapsedTime(&milliseconds, marks[2 * (size_t)tiles],
+                                 marks[2 * (size_t)tiles + 1]);
+            h3d_conv_timing_seconds[2] += (double)milliseconds * 1e-3;
+        }
+        for (size_t mark = 0; mark < marks_count; mark++)
+            cudaEventDestroy(marks[mark]);
+        free(marks);
+    }
+    return status;
+}
+
+/* `out = left + right`, the resizer's identity skips. `h3d_add` is BF16 only
+ * and `h3d_scale_add_f32` carries a residual scale the skips do not have. */
+__global__ static void h3d_add_f32_kernel(float *output, const float *left,
+                                          const float *right, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    output[index] = left[index] + right[index];
+}
+
+int h3d_add_f32(h3d_context *context, h3d_tensor *output,
+                const h3d_tensor *left, const h3d_tensor *right,
+                size_t elements, char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(left, H3D_F32, elements) || !h3d_is(right, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size, "invalid F32 add tensors");
+    }
+    if (!elements) return 1;
+    h3d_add_f32_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                         context->stream>>>((float *)output->data,
+                                            (const float *)left->data,
+                                            (const float *)right->data, elements);
+    return h3d_launch_ok("F32 add", error, error_size);
+}
+
+/* `Conv3d(C, C, (k, 1, 1), pad=(k / 2, 0, 0), groups=C)`: depthwise over time,
+ * weights `[channels, 1, k, 1, 1]`. */
+__global__ static void h3d_temporal_dwconv_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t depth, uint32_t height, uint32_t width, uint32_t channels,
+    uint32_t kernel, uint32_t pad, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t x = (uint32_t)(row % width);
+    row /= width;
+    uint32_t y = (uint32_t)(row % height);
+    row /= height;
+    uint32_t t = (uint32_t)(row % depth);
+    uint32_t batch = (uint32_t)(row / depth);
+    float sum = bias ? bias[channel] : 0.0f;
+    for (uint32_t tap = 0; tap < kernel; tap++) {
+        int it = (int)t + (int)tap - (int)pad;
+        if (it < 0 || it >= (int)depth) continue;
+        size_t source = (((((size_t)batch * depth + (uint32_t)it) * height + y) *
+                          width + x) * channels + channel);
+        sum = fmaf(input[source], weight[(size_t)channel * kernel + tap], sum);
+    }
+    output[index] = sum;
+}
+
+int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                        uint32_t height, uint32_t width, uint32_t channels,
+                        uint32_t kernel, char *error, size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !channels ||
+        !kernel || (kernel & 1u) == 0u) {
+        return h3d_set_error(error, error_size, "invalid temporal conv shape");
+    }
+    size_t elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &elements) ||
+        !h3d_is(input, H3D_F32, elements) || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, (size_t)channels * kernel) ||
+        !h3d_is(bias, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size, "invalid temporal conv tensors");
+    }
+    h3d_temporal_dwconv_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                                 context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, (const float *)bias->data, depth, height,
+        width, channels, kernel, kernel / 2u, elements);
+    return h3d_launch_ok("temporal depthwise conv", error, error_size);
+}
+
+/* `F.interpolate(mode="trilinear", align_corners=False)` with the temporal axis
+ * held fixed: PyTorch's source index `(out + 0.5) * in / out - 0.5`, clamped at
+ * zero, and its tap order `h0 * (w0 * v00 + w1 * v01) + h1 * (w0 * v10 + w1 * v11)`. */
+__global__ static void h3d_resize_hw_kernel(
+    float *output, const float *input, uint32_t depth, uint32_t in_height,
+    uint32_t in_width, uint32_t out_height, uint32_t out_width,
+    uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t ox = (uint32_t)(row % out_width);
+    row /= out_width;
+    uint32_t oy = (uint32_t)(row % out_height);
+    row /= out_height;
+    uint32_t t = (uint32_t)(row % depth);
+    uint32_t batch = (uint32_t)(row / depth);
+    float sy = ((float)oy + 0.5f) * ((float)in_height / (float)out_height) - 0.5f;
+    if (sy < 0.0f) sy = 0.0f;
+    uint32_t y0 = (uint32_t)floorf(sy);
+    if (y0 > in_height - 1u) y0 = in_height - 1u;
+    float ly = sy - (float)y0;
+    uint32_t y1 = y0 + ((y0 < in_height - 1u) ? 1u : 0u);
+    float sx = ((float)ox + 0.5f) * ((float)in_width / (float)out_width) - 0.5f;
+    if (sx < 0.0f) sx = 0.0f;
+    uint32_t x0 = (uint32_t)floorf(sx);
+    if (x0 > in_width - 1u) x0 = in_width - 1u;
+    float lx = sx - (float)x0;
+    uint32_t x1 = x0 + ((x0 < in_width - 1u) ? 1u : 0u);
+    size_t base = ((size_t)batch * depth + t) * in_height * in_width * channels;
+    float v00 = input[base + ((size_t)y0 * in_width + x0) * channels + channel];
+    float v01 = input[base + ((size_t)y0 * in_width + x1) * channels + channel];
+    float v10 = input[base + ((size_t)y1 * in_width + x0) * channels + channel];
+    float v11 = input[base + ((size_t)y1 * in_width + x1) * channels + channel];
+    float left = v00 + (v01 - v00) * lx;
+    float right = v10 + (v11 - v10) * lx;
+    output[index] = left + (right - left) * ly;
+}
+
+int h3d_resize_hw(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                  uint32_t in_height, uint32_t in_width, uint32_t out_height,
+                  uint32_t out_width, uint32_t channels, char *error,
+                  size_t error_size) {
+    if (!context || !batch || !depth || !in_height || !in_width ||
+        !out_height || !out_width || !channels) {
+        return h3d_set_error(error, error_size, "invalid resize shape");
+    }
+    size_t input_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * depth * in_height * in_width, channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * depth * out_height * out_width, channels,
+                      &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(output, H3D_F32, output_elements)) {
+        return h3d_set_error(error, error_size, "invalid resize tensors");
+    }
+    h3d_resize_hw_kernel<<<(unsigned)((output_elements + 255) / 256), 256, 0,
+                           context->stream>>>(
+        (float *)output->data, (const float *)input->data, depth, in_height,
+        in_width, out_height, out_width, channels, output_elements);
+    return h3d_launch_ok("trilinear resize", error, error_size);
 }

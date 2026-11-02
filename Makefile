@@ -405,24 +405,25 @@ H3_LINK_ARGS = -C metadata=$(shell cksum $(filter %.o,$^) </dev/null 2>/dev/null
 $(H3_OBJS): %.o: %.cu %.h
 	$(NVCC) $(H3_NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference gemma gemma_connector prompt_cache engine vae))
+H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference prompt_cache engine vae upscale))
 tests/h3_text_gate: native/h3/h3_text_gpu.o
 tests/h3_dit_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-tests/h3_gemma_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-tests/h3_gemma_connector_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 tests/h3_engine_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o
 tests/h3_vision_gate: native/h3/h3_vision_gpu.o
 tests/h3_multimodal_gate: native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 tests/h3_video_encoder_gate tests/h3_audio_encoder_gate tests/h3_reference_gate: native/h3/h3_dit_gpu.o
-tests/h3_vae_gate: native/h3/h3_dit_gpu.o
+tests/h3_vae_gate tests/h3_upscale_gate: native/h3/h3_dit_gpu.o
 tests/h3_device_gate: native/h3/h3_device_gpu.o
 tests/h3_device_gate: H3_LIBS = $(DS4_RS_LIBS)
 # Header/canvas readers do not need a GPU object or CUDA libraries.
 tests/h3_partition_gate tests/h3_canvas_gate: H3_LIBS =
 # The cache gate is host-only: the container, the pickle and the payload rules.
 tests/h3_prompt_cache_gate: H3_LIBS =
+# The resizer on a real latent: not a gate (no reference, no bound), the step
+# between `h3-rs --save-latent` and `h3_vae_gate --latent-file`.
+tests/h3_upscale_probe: native/h3/h3_dit_gpu.o
 
-$(H3_GATES): tests/%: $(DS4_RS_SOURCES)
+$(H3_GATES) tests/h3_upscale_probe: tests/%: $(DS4_RS_SOURCES)
 	cargo rustc -p ds4-core --example $* --release --features h3-gates -- \
 		$(H3_LINK_ARGS) $(H3_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
@@ -487,19 +488,6 @@ tests/h3/fp8_gemm_bm: tests/h3/fp8_gemm_bm.cu native/h3/h3_dit_gpu.cu native/h3/
 tests/h3/elementwise_bm: tests/h3/elementwise_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
 
-# The Gemma4 encoder's INT8 convrot route in isolation: the Hadamard sign
-# matrix, the grouped rotation, the row scale, the INT8 values, the INT32
-# accumulator and the F32 epilogue, each checked against a host transcription of
-# comfy-kitchen 0.2.26's eager backend, then the route priced piece by piece.
-tests/h3/int8_convrot_bm: tests/h3/int8_convrot_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
-
-# The Gemma4 text tower's primitives (embedding, RMS norm, tanh GELU, the
-# elementwise ops, both RoPE conventions, the additive mask, attention), each
-# against a host transcription of the HuggingFace forward that uses it.
-tests/h3/gemma_tower_bm: tests/h3/gemma_tower_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
-
 # The Gemma-4 device gate: residency and the fused VQ row dot against the CPU
 # forward. Self-contained (one object, no engine objects), and built for this
 # device unless a cuda-* target has recorded an architecture in
@@ -519,7 +507,7 @@ tests/gemma4_gpu_gate: $(DS4_RS_SOURCES) $(GEMMA4_GPU_OBJ)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/gemma4_a4b_gpu_gate" $@
 
 # Portable reference tests: host-only, without model weights.
-H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable test_int8_convrot
+H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))
 # The suite's sources live outside crates/, so DS4_RS_SOURCES does not cover
 # them: without this an edited portable test rebuilt nothing and the copy
@@ -2800,7 +2788,7 @@ BUILD_PROGRAMS := \
     tests/weight_mapping_policy tests/weight_mapping_probe tools/gb10_peaks
 
 BUILD_OBJECTS += tests/test_iquest_prefix.o $(H3_OBJS)
-BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
+BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) tests/h3_upscale_probe $(H3_REFERENCE_SUITE) \
     tests/h3/native_test tests/h3/attn_bm tests/h3/attn_f32_bm \
     tests/h3/vae_gemm_bm tests/h3/sol_route_bm tests/h3/sol_forward_bm \
     tests/h3/elementwise_bm tests/h3/linear_fp8_bm \

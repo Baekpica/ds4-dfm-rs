@@ -23,7 +23,7 @@ use std::time::Instant;
 use ds4_core::minimax_h3::dit::{
     Attention, Dit, DitError, LoadMode, LoadOptions, Reduction, VaeAttention, VaeGemm,
 };
-use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest};
+use ds4_core::minimax_h3::engine::{Draft, EngineHandle, RenderRequest};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, Encode, Preset, RgbFrames};
@@ -107,6 +107,13 @@ struct Options {
     /// rendered in one process through a resident encoder and DiT
     /// (the one-shot path stays the default when this is absent).
     jobs: Option<PathBuf>,
+    /// `--draft`: the two-stage route's draft scale, `0.7` in the reference's
+    /// preset. Only the resident route can render it, because the refine needs
+    /// the engine's second prepared graph.
+    draft: Option<f32>,
+    /// `--refine-sigma`: the refine's one-step sigma, `0.72` in the preset.
+    /// `--draft` without it takes the preset's own number.
+    refine_sigma: Option<f32>,
     /// `--vae-workers` (`:1089`): the decode's chunk loop spread over this
     /// many device contexts. One is the reference's own serial loop.
     vae_workers: usize,
@@ -156,6 +163,16 @@ fn run() -> Result<ExitCode, String> {
     // request at a time. Without `--jobs` everything below is unchanged.
     if options.jobs.is_some() {
         return run_jobs(&options);
+    }
+
+    // A flag the route cannot apply is refused, not dropped: the one-shot path
+    // renders one canvas, and the two-stage route needs the engine's second
+    // prepared graph.
+    if options.draft.is_some() || options.refine_sigma.is_some() {
+        return Err(
+            "--draft/--refine-sigma need --jobs: the two-stage route runs through the resident engine"
+                .to_string(),
+        );
     }
 
     let canvas = Canvas::new(
@@ -533,17 +550,38 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
     let jobs = jobs::parse(&text, &path.display().to_string())
         .map_err(|error| error.message().to_string())?;
 
+    // `--refine-sigma` without `--draft` names a stage that would not run.
+    if options.refine_sigma.is_some() && options.draft.is_none() {
+        return Err("--refine-sigma needs --draft".to_string());
+    }
+    let draft = options.draft.map(|scale| Draft {
+        scale,
+        sigma: options.refine_sigma.unwrap_or(Draft::RELEASED.sigma),
+    });
+
     // Every line is checked before the first weight is read: a bad canvas must
-    // not cost a 62 GiB load.
+    // not cost a 62 GiB load. The draft canvas is checked here for the same
+    // reason - it is derived, and its derivation can fail.
     for (index, job) in jobs.iter().enumerate() {
         Canvas::new(job.width, job.height, 0, 0)
             .map_err(|error| format!("line {}: canvas: {error}", index + 1))?;
         check_frames(job.frames).map_err(|error| format!("line {}: {error}", index + 1))?;
+        if let Some(route) = draft {
+            route
+                .canvas(job.width, job.height)
+                .map_err(|error| format!("line {}: {}", index + 1, error.message()))?;
+            Schedule::refine(route.sigma)
+                .ok_or_else(|| format!("--refine-sigma {} is outside (0, 1]", route.sigma))?;
+        }
     }
 
     println!(
-        "JOBS count={} route=direct model={}",
+        "JOBS count={} route={} model={}",
         jobs.len(),
+        match draft {
+            Some(route) => format!("two-stage draft={} refine={}", route.scale, route.sigma),
+            None => "direct".to_string(),
+        },
         options.model_dir.display()
     );
 
@@ -560,6 +598,7 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
             steps: job.steps,
             reuse: options.reuse,
             seed: job.seed,
+            draft,
             first_frame: None,
             last_frame: None,
             references: Vec::new(),
@@ -578,8 +617,8 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
 
         println!(
             "JOB n={} canvas={}x{}x{} steps={} seed={} text={:.3}s{} load={:.3}s{} \
-             denoise={:.3}s audio={:.3}s \
-             video={:.3}s mux={:.3}s wall={:.3}s video_fnv={:016x} audio_fnv={:016x} \
+             denoise={:.3}s draft={:.3}s upscale={:.3}s refine={:.3}s audio_frozen={} \
+             audio={:.3}s video={:.3}s mux={:.3}s wall={:.3}s video_fnv={:016x} audio_fnv={:016x} \
              frames_fnv={:016x} out={}",
             index + 1,
             job.width,
@@ -592,6 +631,10 @@ fn run_jobs(options: &Options) -> Result<ExitCode, String> {
             report.load_seconds,
             if report.prepared_hit { " (hit)" } else { "" },
             report.denoise_seconds,
+            report.draft_seconds,
+            report.upscale_seconds,
+            report.refine_seconds,
+            report.audio_frozen,
             report.audio_seconds,
             report.video_seconds,
             report.mux_seconds,
@@ -1006,6 +1049,8 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         audio_out: None,
         latent_only: false,
         jobs: None,
+        draft: None,
+        refine_sigma: None,
         vae_workers: 1,
         vae_tile: None,
         encode: Encode::default(),
@@ -1101,6 +1146,22 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--save-audio" => options.audio_out = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--latent-only" => options.latent_only = true,
             "--jobs" => options.jobs = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            // The two-stage route's two numbers. They are route-wide, like the
+            // arms: a job line states the canvas and the prompt, not the route.
+            "--draft" => {
+                let text = value(&mut argv, &flag)?;
+                options.draft = Some(
+                    text.parse()
+                        .map_err(|_| "--draft takes a scale such as 0.7".to_string())?,
+                );
+            }
+            "--refine-sigma" => {
+                let text = value(&mut argv, &flag)?;
+                options.refine_sigma = Some(
+                    text.parse()
+                        .map_err(|_| "--refine-sigma takes a sigma such as 0.72".to_string())?,
+                );
+            }
             "--vae-tile" => {
                 let pixels: usize = unsigned(&mut argv, &flag)?
                     .try_into()
@@ -1131,9 +1192,8 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             }
             "--preset" => {
                 let name = value(&mut argv, &flag)?;
-                options.encode.preset = Preset::parse(&name).ok_or_else(|| {
-                    format!("--preset: {name} is not an libx264 preset (--help)")
-                })?;
+                options.encode.preset = Preset::parse(&name)
+                    .ok_or_else(|| format!("--preset: {name} is not an libx264 preset (--help)"))?;
             }
             "--preview-dir" => options.preview_dir = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--show" => options.show = true,

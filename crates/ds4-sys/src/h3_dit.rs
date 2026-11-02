@@ -16,6 +16,10 @@ use std::ptr::NonNull;
 /// `error[1024]` in the probe; the native side writes at most this much.
 const ERROR_SIZE: usize = 1024;
 
+/// Room for the algorithm report: the resizer's stage dispatches under a dozen
+/// distinct shapes, at about a hundred characters each.
+const LT_ALGO_REPORT_SIZE: usize = 4096;
+
 #[repr(C)]
 struct Context {
     _private: [u8; 0],
@@ -495,6 +499,139 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    fn h3d_add_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        left: *const CTensor,
+        right: *const CTensor,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_conv3d_gemm(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        tile: u32,
+        scratch: *const CTensor,
+        tf32: u32,
+        orientation: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_conv3d_timing(enable: c_int) -> c_int;
+    fn h3d_conv3d_timing_read(seconds: *mut f64);
+    fn h3d_conv3d_timing_reset();
+    fn h3d_lt_algo_report(text: *mut c_char, size: usize) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_zero_pad3d(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        pad_depth: u32,
+        pad_height: u32,
+        pad_width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_group_norm(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_group_norm_activate(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_channel_affine(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        scale: *const CTensor,
+        shift: *const CTensor,
+        channels: u32,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_temporal_dwconv(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        kernel: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_resize_hw(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        batch: u32,
+        depth: u32,
+        in_height: u32,
+        in_width: u32,
+        out_height: u32,
+        out_width: u32,
+        channels: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     fn h3d_cast_f32_to_bf16(
         context: *mut Context,
         output: *mut CTensor,
@@ -857,271 +994,6 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
-    // ---- the Gemma4 encoder's INT8 convrot route (`native/h3/h3_dit_gpu.h`).
-    // The reference is comfy-kitchen 0.2.26, called by the release from
-    // `runtime/cache_ops/int8_policy.py`; `h3d_int8_plan` is the chain's
-    // workspace and must outlive the call.
-
-    fn h3d_int8_hadamard(
-        context: *mut Context,
-        words: *mut CTensor,
-        group_size: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_int8_rotate(
-        context: *mut Context,
-        output: *mut CTensor,
-        words: *const CTensor,
-        input: *const CTensor,
-        rows: u32,
-        columns: u32,
-        group_size: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_int8_scale_rows(
-        context: *mut Context,
-        scales: *mut CTensor,
-        input: *const CTensor,
-        rows: u32,
-        columns: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_int8_quantize_rows(
-        context: *mut Context,
-        output: *mut CTensor,
-        scales: *const CTensor,
-        input: *const CTensor,
-        rows: u32,
-        columns: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_linear_int8_raw(
-        context: *mut Context,
-        accumulator: *mut CTensor,
-        input: *const CTensor,
-        weight: *const CTensor,
-        rows: u32,
-        input_dim: u32,
-        output_dim: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_int8_scale_epilogue(
-        context: *mut Context,
-        output: *mut CTensor,
-        accumulator: *const CTensor,
-        row_scale: *const CTensor,
-        column_scale: *const CTensor,
-        rows: u32,
-        columns: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_linear_int8_convrot(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        weight: *const CTensor,
-        weight_scale: *const CTensor,
-        bias: *const CTensor,
-        rows: u32,
-        input_dim: u32,
-        output_dim: u32,
-        group_size: u32,
-        plan: *const Int8Plan,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_int8_pad_rows(rows: u32) -> u32;
-
-    // The Gemma4 text tower's own primitives (`native/h3/h3_dit_gpu.h`), the
-    // forward of HuggingFace's `gemma4` at the release's pin. BF16 in and out
-    // with an F32 intermediate, one reference expression each.
-    fn h3d_embedding(
-        context: *mut Context,
-        output: *mut CTensor,
-        table: *const CTensor,
-        ids: *const CTensor,
-        rows: u32,
-        width: u32,
-        scale: f32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gelu_tanh(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        elements: usize,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_mul(
-        context: *mut Context,
-        output: *mut CTensor,
-        left: *const CTensor,
-        right: *const CTensor,
-        elements: usize,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_scale_bf16(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        scalar: *const CTensor,
-        elements: usize,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gemma_rope(
-        context: *mut Context,
-        query: *mut CTensor,
-        key: *mut CTensor,
-        cos: *const CTensor,
-        sin: *const CTensor,
-        rows: u32,
-        heads: u32,
-        kv_heads: u32,
-        head_dim: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gemma_rope_table(
-        context: *mut Context,
-        cos: *mut CTensor,
-        sin: *mut CTensor,
-        rows: u32,
-        dim: u32,
-        angles: u32,
-        base: f32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gemma_mask(
-        context: *mut Context,
-        output: *mut CTensor,
-        rows: u32,
-        window: u32,
-        padding: *const CTensor,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gemma_attention(
-        context: *mut Context,
-        output: *mut CTensor,
-        query: *const CTensor,
-        key: *const CTensor,
-        value: *const CTensor,
-        mask: *const CTensor,
-        rows: u32,
-        heads: u32,
-        kv_heads: u32,
-        head_dim: u32,
-        scale: f32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_connector_stack_scale(
-        context: *mut Context,
-        scales: *mut CTensor,
-        stacked: *const CTensor,
-        rows: u32,
-        width: u32,
-        layers: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_scale_constant(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        factor: f32,
-        elements: usize,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_connector_interleave(
-        context: *mut Context,
-        output: *mut CTensor,
-        stacked: *const CTensor,
-        scales: *const CTensor,
-        rows: u32,
-        width: u32,
-        layers: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_gather_rows(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        indices: *const CTensor,
-        rows: u32,
-        width: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_register_fill(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        binary: *const CTensor,
-        registers: *const CTensor,
-        rows: u32,
-        width: u32,
-        count: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_text_rope(
-        context: *mut Context,
-        query: *mut CTensor,
-        key: *mut CTensor,
-        cos: *const CTensor,
-        sin: *const CTensor,
-        rows: u32,
-        heads: u32,
-        head_dim: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
-
-    fn h3d_per_head_gate(
-        context: *mut Context,
-        output: *mut CTensor,
-        input: *const CTensor,
-        logits: *const CTensor,
-        rows: u32,
-        heads: u32,
-        head_dim: u32,
-        error: *mut c_char,
-        error_size: usize,
-    ) -> c_int;
 }
 
 /// `h3d_dtype`.
@@ -1132,10 +1004,9 @@ pub enum Dtype {
     U32,
     /// E4M3, one byte per element: the FP8 projection route's operand type.
     Fp8,
-    /// The INT8 convrot route's quantized weights and activations.
-    I8,
-    /// Its int32 accumulator.
-    I32,
+    /// IEEE half: the resizer's F16 operand route, where the weight is stored
+    /// as the checkpoint has it and the GEMM accumulates in F32.
+    F16,
 }
 
 impl Dtype {
@@ -1145,17 +1016,16 @@ impl Dtype {
             Dtype::F32 => 1,
             Dtype::U32 => 2,
             Dtype::Fp8 => 3,
-            Dtype::I8 => 4,
-            Dtype::I32 => 5,
+            Dtype::F16 => 4,
         }
     }
 
     /// Bytes per element, so a host slice can be checked before a copy.
     pub fn size(self) -> usize {
         match self {
-            Dtype::Bf16 => 2,
-            Dtype::F32 | Dtype::U32 | Dtype::I32 => 4,
-            Dtype::Fp8 | Dtype::I8 => 1,
+            Dtype::Bf16 | Dtype::F16 => 2,
+            Dtype::F32 | Dtype::U32 => 4,
+            Dtype::Fp8 => 1,
         }
     }
 }
@@ -1219,31 +1089,6 @@ pub struct SolPlanBuffers {
     _query_bar: Tensor,
     _kc_mean: Tensor,
     _kc_var: Tensor,
-}
-
-/// `struct h3d_int8_plan` (`native/h3/h3_dit_gpu.h`), field for field: the
-/// INT8 convrot chain's workspace. `quantized` and `accumulator` are sized to
-/// `h3d_int8_pad_rows(rows)`, the reference's own M padding; the two padded
-/// rows past the real ones are written and never read.
-#[repr(C)]
-struct Int8Plan {
-    words: *mut CTensor,
-    rotated: *mut CTensor,
-    quantized: *mut CTensor,
-    row_scales: *mut CTensor,
-    accumulator: *mut CTensor,
-}
-
-/// The plan and the tensors it points at, for the same reason
-/// [`SolPlanBuffers`] exists: the C struct holds raw pointers, so the tensors
-/// must outlive it and cannot move.
-pub struct Int8PlanBuffers {
-    plan: Int8Plan,
-    _words: Tensor,
-    _rotated: Tensor,
-    _quantized: Tensor,
-    _row_scales: Tensor,
-    _accumulator: Tensor,
 }
 
 /// One CUDA stream and one cuBLASLt handle: the reference's `h3_gpu`.
@@ -1614,687 +1459,6 @@ impl Gpu {
         )
     }
 
-    // ---- the Gemma4 encoder's INT8 convrot route. The reference is
-    // comfy-kitchen 0.2.26's eager backend, cited in the native file; the
-    // release drives it from `runtime/cache_ops/int8_policy.py`.
-
-    /// How many rows the int8 chain pads to: `max(rows, 32)` rounded up to 32,
-    /// the reference's own M padding. A plan built for `rows` must size
-    /// `quantized`, `row_scales` and `accumulator` for the padded count.
-    pub fn int8_pad_rows(rows: u32) -> u32 {
-        unsafe { h3d_int8_pad_rows(rows) }
-    }
-
-    /// Build the grouped-Hadamard sign matrix for `group_size` (a power of 4,
-    /// at most 1024) into `words`, a `Dtype::U32` tensor of
-    /// `group_size * ceil(group_size / 32)` elements.
-    pub fn int8_hadamard(&self, words: &Tensor, group_size: u32) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_int8_hadamard(self.raw.as_ptr(), words.raw(), group_size, error, size)
-            },
-            "int8 hadamard",
-        )
-    }
-
-    /// The grouped rotation on its own (`h3d_int8_rotate`), for a bisect.
-    pub fn int8_rotate(
-        &self,
-        output: &Tensor,
-        words: &Tensor,
-        input: &Tensor,
-        rows: u32,
-        columns: u32,
-        group_size: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_int8_rotate(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    words.raw(),
-                    input.raw(),
-                    rows,
-                    columns,
-                    group_size,
-                    error,
-                    size,
-                )
-            },
-            "int8 rotate",
-        )
-    }
-
-    /// The row absmax and scale on their own (`h3d_int8_scale_rows`).
-    pub fn int8_scale_rows(
-        &self,
-        scales: &Tensor,
-        input: &Tensor,
-        rows: u32,
-        columns: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_int8_scale_rows(
-                    self.raw.as_ptr(),
-                    scales.raw(),
-                    input.raw(),
-                    rows,
-                    columns,
-                    error,
-                    size,
-                )
-            },
-            "int8 row scale",
-        )
-    }
-
-    /// The row-wise quantization on its own (`h3d_int8_quantize_rows`).
-    pub fn int8_quantize_rows(
-        &self,
-        output: &Tensor,
-        scales: &Tensor,
-        input: &Tensor,
-        rows: u32,
-        columns: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_int8_quantize_rows(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    scales.raw(),
-                    input.raw(),
-                    rows,
-                    columns,
-                    error,
-                    size,
-                )
-            },
-            "int8 row quantize",
-        )
-    }
-
-    /// The int8 x int8 -> int32 matmul (`h3d_linear_int8_raw`), row-major with
-    /// the weight transposed, as the BF16 and FP8 routes are laid out.
-    pub fn linear_int8_raw(
-        &self,
-        accumulator: &Tensor,
-        input: &Tensor,
-        weight: &Tensor,
-        rows: u32,
-        input_dim: u32,
-        output_dim: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_linear_int8_raw(
-                    self.raw.as_ptr(),
-                    accumulator.raw(),
-                    input.raw(),
-                    weight.raw(),
-                    rows,
-                    input_dim,
-                    output_dim,
-                    error,
-                    size,
-                )
-            },
-            "int8 linear raw",
-        )
-    }
-
-    /// The F32 scale epilogue (`h3d_int8_scale_epilogue`):
-    /// `bf16(acc * (row_scale * column_scale))`, the reference's own
-    /// association. The bias, when there is one, is `linear`'s separate add.
-    pub fn int8_scale_epilogue(
-        &self,
-        output: &Tensor,
-        accumulator: &Tensor,
-        row_scale: &Tensor,
-        column_scale: &Tensor,
-        rows: u32,
-        columns: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_int8_scale_epilogue(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    accumulator.raw(),
-                    row_scale.raw(),
-                    column_scale.raw(),
-                    rows,
-                    columns,
-                    error,
-                    size,
-                )
-            },
-            "int8 scale epilogue",
-        )
-    }
-
-    /// The whole INT8 convrot linear (`h3d_linear_int8_convrot`):
-    /// `DevInt8ConvRotLinear.forward` end to end. `weight` is `Dtype::I8` at
-    /// `[output_dim, input_dim]` and `weight_scale` `Dtype::F32` at
-    /// `[output_dim]`, both as the checkpoint carries them - the weight is
-    /// already rotated, so nothing here rotates a weight.
-    #[allow(clippy::too_many_arguments)]
-    pub fn linear_int8_convrot(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        weight: &Tensor,
-        weight_scale: &Tensor,
-        bias: Option<&Tensor>,
-        rows: u32,
-        input_dim: u32,
-        output_dim: u32,
-        group_size: u32,
-        plan: &Int8PlanBuffers,
-    ) -> Result<(), String> {
-        let bias_raw = bias.map_or(std::ptr::null_mut(), |tensor| tensor.raw());
-        self.call(
-            |error, size| unsafe {
-                h3d_linear_int8_convrot(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    weight.raw(),
-                    weight_scale.raw(),
-                    bias_raw,
-                    rows,
-                    input_dim,
-                    output_dim,
-                    group_size,
-                    &plan.plan,
-                    error,
-                    size,
-                )
-            },
-            "int8 linear convrot",
-        )
-    }
-
-    /// Allocate the chain's workspace for one `[rows, input_dim]` activation
-    /// and one `[output_dim, input_dim]` weight, the way
-    /// `h3d_int8_plan`'s comments describe it. One plan serves every layer of
-    /// one shape.
-    pub fn int8_plan(
-        &self,
-        rows: u32,
-        input_dim: u32,
-        output_dim: u32,
-        group_size: u32,
-    ) -> Result<Int8PlanBuffers, String> {
-        let padded = Self::int8_pad_rows(rows) as usize;
-        let input_dim = input_dim as usize;
-        let output_dim = output_dim as usize;
-        let group_size = group_size as usize;
-        let per_row = group_size.div_ceil(32);
-
-        let words = self.alloc(Dtype::U32, group_size * per_row)?;
-        let rotated = self.alloc(Dtype::Bf16, rows as usize * input_dim)?;
-        let quantized = self.alloc(Dtype::I8, padded * input_dim)?;
-        let row_scales = self.alloc(Dtype::F32, padded)?;
-        let accumulator = self.alloc(Dtype::I32, padded * output_dim)?;
-        self.int8_hadamard(&words, group_size as u32)?;
-
-        let plan = Int8Plan {
-            words: words.raw(),
-            rotated: rotated.raw(),
-            quantized: quantized.raw(),
-            row_scales: row_scales.raw(),
-            accumulator: accumulator.raw(),
-        };
-
-        Ok(Int8PlanBuffers {
-            plan,
-            _words: words,
-            _rotated: rotated,
-            _quantized: quantized,
-            _row_scales: row_scales,
-            _accumulator: accumulator,
-        })
-    }
-
-    /// The Gemma4 text tower's own primitives, the forward of HuggingFace's
-    /// `gemma4` at the release's pin. Each takes BF16 and returns BF16 with an
-    /// F32 intermediate, and each is one reference expression.
-
-    /// `embed_tokens(ids) * embed_scale` (`modeling_gemma4.py:1476-1477`), the
-    /// scale already carrying the reference's own BF16 cast. `ids` is
-    /// `Dtype::U32` `[rows]`, `table` BF16 `[vocabulary, width]`.
-    pub fn embedding(
-        &self,
-        output: &Tensor,
-        table: &Tensor,
-        ids: &Tensor,
-        rows: u32,
-        width: u32,
-        scale: f32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_embedding(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    table.raw(),
-                    ids.raw(),
-                    rows,
-                    width,
-                    scale,
-                    error,
-                    size,
-                )
-            },
-            "gemma embedding",
-        )
-    }
-
-    /// `gelu_pytorch_tanh`, ATen's tanh gelu
-    /// (`ActivationGeluKernel.cu:21-31`).
-    pub fn gelu_tanh(&self, output: &Tensor, input: &Tensor) -> Result<(), String> {
-        let elements = output.elements();
-
-        self.call(
-            |error, size| unsafe {
-                h3d_gelu_tanh(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    elements,
-                    error,
-                    size,
-                )
-            },
-            "gemma tanh gelu",
-        )
-    }
-
-    /// The MLP's `act_fn(gate_proj(x)) * up_proj(x)` (`:1089`).
-    pub fn mul(&self, output: &Tensor, left: &Tensor, right: &Tensor) -> Result<(), String> {
-        let elements = output.elements();
-
-        self.call(
-            |error, size| unsafe {
-                h3d_mul(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    left.raw(),
-                    right.raw(),
-                    elements,
-                    error,
-                    size,
-                )
-            },
-            "bf16 multiply",
-        )
-    }
-
-    /// `hidden_states *= self.layer_scalar` (`:1462`): `scalar` is a BF16
-    /// `[1]`.
-    pub fn scale_bf16(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        scalar: &Tensor,
-    ) -> Result<(), String> {
-        let elements = output.elements();
-
-        self.call(
-            |error, size| unsafe {
-                h3d_scale_bf16(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    scalar.raw(),
-                    elements,
-                    error,
-                    size,
-                )
-            },
-            "bf16 scale",
-        )
-    }
-
-    /// `apply_rotary_pos_emb` (`:793-811`) with `rotate_half` (`:786-791`),
-    /// in place on head-major query and key. `cos` and `sin` are
-    /// [`Self::gemma_rope_table`]'s pair tables.
-    #[allow(clippy::too_many_arguments)]
-    pub fn gemma_rope(
-        &self,
-        query: &Tensor,
-        key: &Tensor,
-        cos: &Tensor,
-        sin: &Tensor,
-        rows: u32,
-        heads: u32,
-        kv_heads: u32,
-        head_dim: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_gemma_rope(
-                    self.raw.as_ptr(),
-                    query.raw(),
-                    key.raw(),
-                    cos.raw(),
-                    sin.raw(),
-                    rows,
-                    heads,
-                    kv_heads,
-                    head_dim,
-                    error,
-                    size,
-                )
-            },
-            "gemma rope",
-        )
-    }
-
-    /// The RoPE pair tables (`Gemma4TextRotaryEmbedding.forward`,
-    /// `:1164-1181`): `Dtype::Bf16` `[rows, dim]` each. `angles` counts the
-    /// live frequencies; the rest are the identity pair (`dim / 2` for the
-    /// sliding layers' default table, `dim / 4` for the full ones'
-    /// proportional table).
-    pub fn gemma_rope_table(
-        &self,
-        cos: &Tensor,
-        sin: &Tensor,
-        rows: u32,
-        dim: u32,
-        angles: u32,
-        base: f32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_gemma_rope_table(
-                    self.raw.as_ptr(),
-                    cos.raw(),
-                    sin.raw(),
-                    rows,
-                    dim,
-                    angles,
-                    base,
-                    error,
-                    size,
-                )
-            },
-            "gemma rope table",
-        )
-    }
-
-    /// The additive attention mask (`masking_utils.py:608-610`): BF16
-    /// `[rows, rows]`, 0 where a key is attended and `finfo(bfloat16).min`
-    /// where it is not. `window` of 0 is the full layer type; `padding` is
-    /// `Dtype::U32` `[rows]` over the keys, or `None`.
-    pub fn gemma_mask(
-        &self,
-        output: &Tensor,
-        rows: u32,
-        window: u32,
-        padding: Option<&Tensor>,
-    ) -> Result<(), String> {
-        let padding = padding.map_or(std::ptr::null(), |padding| padding.raw());
-
-        self.call(
-            |error, size| unsafe {
-                h3d_gemma_mask(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    rows,
-                    window,
-                    padding,
-                    error,
-                    size,
-                )
-            },
-            "gemma mask",
-        )
-    }
-
-    /// `eager_attention_forward` (`:824-858`) at `scaling = 1.0`, head-major
-    /// Q/K/V and output, with `mask` the [`Self::gemma_mask`] tensor.
-    #[allow(clippy::too_many_arguments)]
-    pub fn gemma_attention(
-        &self,
-        output: &Tensor,
-        query: &Tensor,
-        key: &Tensor,
-        value: &Tensor,
-        mask: Option<&Tensor>,
-        rows: u32,
-        heads: u32,
-        kv_heads: u32,
-        head_dim: u32,
-        scale: f32,
-    ) -> Result<(), String> {
-        let mask = mask.map_or(std::ptr::null(), |mask| mask.raw());
-
-        self.call(
-            |error, size| unsafe {
-                h3d_gemma_attention(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    query.raw(),
-                    key.raw(),
-                    value.raw(),
-                    mask,
-                    rows,
-                    heads,
-                    kv_heads,
-                    head_dim,
-                    scale,
-                    error,
-                    size,
-                )
-            },
-            "gemma attention",
-        )
-    }
-
-    /// `_rescale_norm` (`feature_extractor.py:68-69`): scale by an F32
-    /// constant, the product rounding to BF16 once.
-    pub fn scale_constant(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        factor: f32,
-    ) -> Result<(), String> {
-        let elements = output.elements();
-
-        self.call(
-            |error, size| unsafe {
-                h3d_scale_constant(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    factor,
-                    elements,
-                    error,
-                    size,
-                )
-            },
-            "bf16 constant scale",
-        )
-    }
-
-    /// `norm_and_concat_per_token_rms`'s rsqrt (`feature_extractor.py:48-64`):
-    /// the BF16 `[rows, layers]` scale of each `(row, layer)` of the
-    /// `[layers, rows, width]` stack.
-    pub fn connector_stack_scale(
-        &self,
-        scales: &Tensor,
-        stacked: &Tensor,
-        rows: u32,
-        width: u32,
-        layers: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_connector_stack_scale(
-                    self.raw.as_ptr(),
-                    scales.raw(),
-                    stacked.raw(),
-                    rows,
-                    width,
-                    layers,
-                    error,
-                    size,
-                )
-            },
-            "connector stack scale",
-        )
-    }
-
-    /// The extractor's `reshape(B, T, D * L)` (`:62`): the layered stack
-    /// written interleaved, each value scaled by its layer's scale.
-    pub fn connector_interleave(
-        &self,
-        output: &Tensor,
-        stacked: &Tensor,
-        scales: &Tensor,
-        rows: u32,
-        width: u32,
-        layers: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_connector_interleave(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    stacked.raw(),
-                    scales.raw(),
-                    rows,
-                    width,
-                    layers,
-                    error,
-                    size,
-                )
-            },
-            "connector interleave",
-        )
-    }
-
-    /// `_apply_right_pad_order` (`embeddings_processor.py:40-42`): gather the
-    /// rows by a host-computed permutation.
-    pub fn gather_rows(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        indices: &Tensor,
-        rows: u32,
-        width: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_gather_rows(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    indices.raw(),
-                    rows,
-                    width,
-                    error,
-                    size,
-                )
-            },
-            "row gather",
-        )
-    }
-
-    /// `_replace_padded_with_learnable_registers`
-    /// (`embeddings_connector.py:139-151`): keep the row where `binary` is set,
-    /// else take the tiled register row.
-    pub fn register_fill(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        binary: &Tensor,
-        registers: &Tensor,
-        rows: u32,
-        width: u32,
-        count: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_register_fill(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    binary.raw(),
-                    registers.raw(),
-                    rows,
-                    width,
-                    count,
-                    error,
-                    size,
-                )
-            },
-            "register fill",
-        )
-    }
-
-    /// `apply_split_rotary_emb` (`rope.py:42-85`) in place, `cos`/`sin` the
-    /// BF16 `[rows, heads, head_dim / 2]` tables.
-    pub fn text_rope(
-        &self,
-        query: &Tensor,
-        key: &Tensor,
-        cos: &Tensor,
-        sin: &Tensor,
-        rows: u32,
-        heads: u32,
-        head_dim: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_text_rope(
-                    self.raw.as_ptr(),
-                    query.raw(),
-                    key.raw(),
-                    cos.raw(),
-                    sin.raw(),
-                    rows,
-                    heads,
-                    head_dim,
-                    error,
-                    size,
-                )
-            },
-            "RoPE",
-        )
-    }
-
-    /// `PytorchGatedAttention` (`ops.py:94-106`): `input * 2 *
-    /// sigmoid(logits)`, one gate per head.
-    pub fn per_head_gate(
-        &self,
-        output: &Tensor,
-        input: &Tensor,
-        logits: &Tensor,
-        rows: u32,
-        heads: u32,
-        head_dim: u32,
-    ) -> Result<(), String> {
-        self.call(
-            |error, size| unsafe {
-                h3d_per_head_gate(
-                    self.raw.as_ptr(),
-                    output.raw(),
-                    input.raw(),
-                    logits.raw(),
-                    rows,
-                    heads,
-                    head_dim,
-                    error,
-                    size,
-                )
-            },
-            "per-head gate",
-        )
-    }
 
     /// The video VAE decoder's F32 linear (`h3d_vae_linear`): `linear` at
     /// `Dtype::F32` with the decoder's own bench options applied. Only the
@@ -2665,8 +1829,8 @@ impl Gpu {
 
     /// `h3_gpu_rms_norm_bf16`.
     /// The BF16 RMS norm (`h3d_rms_norm`) with the reference's reduction tree.
-    /// `weight` is optional because Gemma's `v_norm` is built with
-    /// `with_scale=False` and has none.
+    /// `weight` is optional because the reference's `with_scale=False` builds
+    /// carry none.
     pub fn rms_norm(
         &self,
         output: &Tensor,
@@ -3841,6 +3005,329 @@ impl Gpu {
                 )
             },
             "conv3d",
+        )
+    }
+
+    /// `h3d_add_f32`: elementwise F32 add, the resizer's identity skips.
+    pub fn add_f32(&self, output: &Tensor, left: &Tensor, right: &Tensor) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_add_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    left.raw(),
+                    right.raw(),
+                    output.elements(),
+                    error,
+                    size,
+                )
+            },
+            "F32 add",
+        )
+    }
+
+    /// `h3d_conv3d_gemm`: the resizer's 3x3x3 convolution through im2col and
+    /// the F32 GEMM. `input` is the padded volume, `scratch` the expanded
+    /// matrix's home (`tile * in * k^3` floats).
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv3d_gemm(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        tile: u32,
+        scratch: &Tensor,
+        tf32: bool,
+        columns: bool,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_conv3d_gemm(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    depth,
+                    height,
+                    width,
+                    input_channels,
+                    output_channels,
+                    kernel,
+                    tile,
+                    scratch.raw(),
+                    tf32 as u32,
+                    columns as u32,
+                    error,
+                    size,
+                )
+            },
+            "conv3d gemm",
+        )
+    }
+
+    /// `h3d_conv3d_timing`: make `conv3d_gemm` sample its phases with device
+    /// events. Returns the previous state. `conv3d_timing_read` reports the
+    /// accumulated seconds as `[im2col, gemm, bias]`; the accumulation is per
+    /// context and survives calls, so `conv3d_timing_reset` precedes a run.
+    pub fn conv3d_timing(&self, enable: bool) -> bool {
+        unsafe { h3d_conv3d_timing(enable as c_int) != 0 }
+    }
+
+    /// `h3d_conv3d_timing_read`: `[im2col, gemm, bias]` seconds since the last
+    /// reset, over every `conv3d_gemm` call on any context.
+    pub fn conv3d_timing_read() -> [f64; 3] {
+        let mut seconds = [0.0f64; 3];
+        unsafe { h3d_conv3d_timing_read(seconds.as_mut_ptr()) };
+        seconds
+    }
+
+    /// `h3d_conv3d_timing_reset`: clear the accumulators.
+    pub fn conv3d_timing_reset() {
+        unsafe { h3d_conv3d_timing_reset() };
+    }
+
+    /// `h3d_lt_algo_report`: the cuBLASLt algorithm each distinct GEMM shape
+    /// dispatched this run, `rows x k x n <type> <compute> <layout> cand=..
+    /// id=.. tile=.. stages=.. splitk=.. wk=..`, one entry per shape
+    /// separated by `; `. The algorithm is chosen once per shape through
+    /// `cublasLtMatmulAlgoGetHeuristic` and passed explicitly instead of
+    /// NULL, so a timing can be read beside the kernel that produced it.
+    /// `H3D_LT_ALGO=<i>` selects the i-th candidate, `H3D_LT_ALGO_TRACE=1`
+    /// prints each choice to stderr.
+    pub fn lt_algo_report() -> String {
+        let mut text = [0 as c_char; LT_ALGO_REPORT_SIZE];
+        unsafe { h3d_lt_algo_report(text.as_mut_ptr(), LT_ALGO_REPORT_SIZE) };
+        let end = text
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(LT_ALGO_REPORT_SIZE);
+        let bytes: Vec<u8> = text[..end].iter().map(|byte| *byte as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// `h3d_zero_pad3d`: zero padding for the resizer's 3x3x3 convolutions,
+    /// channels-last, `[batch, depth, height, width, channels]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn zero_pad3d(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        pad: [u32; 3],
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_zero_pad3d(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    pad[0],
+                    pad[1],
+                    pad[2],
+                    error,
+                    size,
+                )
+            },
+            "zero pad",
+        )
+    }
+
+    /// `h3d_group_norm`: GroupNorm without the SiLU epilogue, statistics over
+    /// the whole volume per (batch, group).
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_group_norm(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    groups,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "GroupNorm",
+        )
+    }
+
+    /// `h3d_group_norm_activate`: the same norm with the reference's
+    /// `F.silu(norm(x))` folded into the apply pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_activate(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_group_norm_activate(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    groups,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "GroupNorm activate",
+        )
+    }
+
+    /// `h3d_channel_affine`: `input * scale[c] + shift[c]`, the resizer's
+    /// embedding modulation.
+    pub fn channel_affine(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        scale: &Tensor,
+        shift: &Tensor,
+        channels: u32,
+        elements: usize,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_channel_affine(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    scale.raw(),
+                    shift.raw(),
+                    channels,
+                    elements,
+                    error,
+                    size,
+                )
+            },
+            "channel affine",
+        )
+    }
+
+    /// `h3d_temporal_dwconv`: the resizer's depthwise convolution over time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn temporal_dwconv(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        kernel: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_temporal_dwconv(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    kernel,
+                    error,
+                    size,
+                )
+            },
+            "temporal depthwise conv",
+        )
+    }
+
+    /// `h3d_resize_hw`: trilinear resize with the temporal axis held fixed,
+    /// the upscale inside the resizer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_hw(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        batch: u32,
+        depth: u32,
+        in_height: u32,
+        in_width: u32,
+        out_height: u32,
+        out_width: u32,
+        channels: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_resize_hw(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    batch,
+                    depth,
+                    in_height,
+                    in_width,
+                    out_height,
+                    out_width,
+                    channels,
+                    error,
+                    size,
+                )
+            },
+            "trilinear resize",
         )
     }
 

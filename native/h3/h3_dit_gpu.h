@@ -22,11 +22,10 @@
  * `fmaf` where the reference relies on contraction changes the last bit.
  *
  * Deviation, named: the reference carries F32, BF16, U32 and int8 tensors in
- * one `h3_gpu_tensor`; this ABI carries F32, BF16, U32, I8 and I32 and still
+ * one `h3_gpu_tensor`; this ABI carries F32, BF16, U32, F16 and FP8 and still
  * refuses the DiT's int8/fused-NAX variants (CUDA returns 0 from
  * `h3_gpu_has_int8_mlp`/`h3_gpu_has_nax_mlp`, `h3_gpu_cuda.cu:332-334`, so the
- * reference's own CUDA path is the one implemented here). The I8/I32 pair
- * exists for the Gemma4 encoder's INT8 convrot route below, not for the DiT.
+ * reference's own CUDA path is the one implemented here).
  */
 #ifndef H3D_DIT_GPU_H
 #define H3D_DIT_GPU_H
@@ -39,16 +38,18 @@ extern "C" {
 #endif
 
 /* `H3D_FP8` is E4M3, one byte per element, and exists only for the FP8
- * projection route below; `H3D_I8` and `H3D_I32` exist only for the Gemma4
- * encoder's INT8 convrot route. `h3d_is` still matches a dtype exactly, so no
+ * projection route below. `h3d_is` still matches a dtype exactly, so no
  * existing op can be handed one by accident. */
 enum h3d_dtype {
     H3D_BF16 = 0,
     H3D_F32 = 1,
     H3D_U32 = 2,
     H3D_FP8 = 3,
-    H3D_I8 = 4,
-    H3D_I32 = 5,
+    /* F16 exists for the resizer's half-precision operand route: the
+     * checkpoint is already F16, so the weight costs nothing to store that way
+     * and the tensor cores that take F16 operands run the GEMM faster than the
+     * TF32 ones. The accumulator and everything downstream stay F32. */
+    H3D_F16 = 4,
 };
 
 /* Sol-Attn's fixed shapes (`techniques/sparse_backends/sol_attn/preprocess.py`
@@ -188,281 +189,13 @@ int h3d_fp8_scale_epilogue(h3d_context *context, h3d_tensor *output,
                            const h3d_tensor *column_scale, uint32_t rows,
                            uint32_t columns, char *error, size_t error_size);
 
-/* ---- the release's INT8 convrot route, for the Gemma4 encoder ----
- *
- * The conditioning this port has to build offline is Gemma-4-12B features
- * through the the refiner connector, and the release serves both quantized with Comfy's
- * `int8_tensorwise` + `convrot` layout (`runtime/cache_ops/int8_policy.py:97-104`,
- * `DevInt8ConvRotLinear`). The reference arithmetic is `comfy-kitchen` 0.2.26
- * (`/data/refs/comfy-kitchen-v0.2.26`): a normalized regular Hadamard rotation
- * of the activation in groups of `group_size`, row-wise INT8 quantization in
- * the activation's own dtype, an int8 -> int32 matmul, then an F32 scale
- * epilogue cast to BF16 and the bias last. Every entry point names its
- * reference lines, and the weight side is already rotated and quantized in the
- * checkpoint, so nothing here rotates a weight.
- *
- * The Hadamard matrix is stored as sign bits, which is exact: the matrix is
- * `kron(h4, ...) / sqrt(size)` (`tensor/int8_utils.py:10-38`) and `size` is a
- * power of 4, so every entry is exactly +/- a power of two and the accumulation
- * can add `+x` or `-x` and apply that one scale at the end. */
-
-/* The sign matrix's shape: `group_size` must be a power of 4 and at most
- * `H3D_INT8_GROUP_MAX`, one bit per entry packed row-major with
- * `ceil(group/32)` words per row. `words` is a U32 tensor of
- * `group * ceil(group/32)` elements. */
-enum { H3D_INT8_GROUP_MAX = 1024 };
-
-int h3d_int8_hadamard(h3d_context *context, h3d_tensor *words,
-                      uint32_t group_size, char *error, size_t error_size);
-int h3d_int8_rotate(h3d_context *context, h3d_tensor *output,
-                    const h3d_tensor *words, const h3d_tensor *input,
-                    uint32_t rows, uint32_t columns, uint32_t group_size,
-                    char *error, size_t error_size);
-int h3d_int8_scale_rows(h3d_context *context, h3d_tensor *scales,
-                        const h3d_tensor *input, uint32_t rows,
-                        uint32_t columns, char *error, size_t error_size);
-int h3d_int8_quantize_rows(h3d_context *context, h3d_tensor *output,
-                           const h3d_tensor *scales, const h3d_tensor *input,
-                           uint32_t rows, uint32_t columns, char *error,
-                           size_t error_size);
-int h3d_linear_int8_raw(h3d_context *context, h3d_tensor *accumulator,
-                        const h3d_tensor *input, const h3d_tensor *weight,
-                        uint32_t rows, uint32_t input_dim, uint32_t output_dim,
-                        char *error, size_t error_size);
-int h3d_int8_scale_epilogue(h3d_context *context, h3d_tensor *output,
-                            const h3d_tensor *accumulator,
-                            const h3d_tensor *row_scale,
-                            const h3d_tensor *column_scale, uint32_t rows,
-                            uint32_t columns, char *error, size_t error_size);
-
-/* The chain's workspace, the way `h3d_sol_plan` holds the search step's. One
- * plan serves every layer of one shape, so the encoder allocates it once. The
- * two padded tensors follow the reference's own M padding to 32 rows
- * (`_int8_matmul_accumulate`, `backends/eager/quantization.py:762-765`); only
- * the rows before `padded_rows` are ever read, so they need no zeroing. */
-struct h3d_int8_plan {
-    h3d_tensor *words;       /* U32,  group * ceil(group/32)     */
-    h3d_tensor *rotated;     /* BF16, rows * input_dim           */
-    h3d_tensor *quantized;   /* I8,   padded_rows * input_dim    */
-    h3d_tensor *row_scales;  /* F32,  padded_rows                */
-    h3d_tensor *accumulator; /* I32,  padded_rows * output_dim   */
-};
-
-/* `max(rows, 32)` rounded up to 32, the reference's own M padding. */
-uint32_t h3d_int8_pad_rows(uint32_t rows);
-
-/* `DevInt8ConvRotLinear.forward` -> `int8_linear`
- * (`backends/eager/quantization.py:965-1051`) end to end: rotate, quantize,
- * accumulate, scale, cast, bias. `weight` is I8 `[output_dim, input_dim]` and
- * `weight_scale` F32 `[output_dim]`, both as the checkpoint carries them. */
-int h3d_linear_int8_convrot(h3d_context *context, h3d_tensor *output,
-                            const h3d_tensor *input, const h3d_tensor *weight,
-                            const h3d_tensor *weight_scale,
-                            const h3d_tensor *bias, uint32_t rows,
-                            uint32_t input_dim, uint32_t output_dim,
-                            uint32_t group_size,
-                            const struct h3d_int8_plan *plan, char *error,
-                            size_t error_size);
-
-/* ---- the Gemma4 text tower's own primitives ----
- *
- * The tower is the other consumer of the INT8 route above: it feeds it BF16
- * activations and gets BF16 rows back, and everything between the calls is the
- * forward of HuggingFace's `gemma4` at the release's pin (transformers 5.14.1,
- * `requirements/stage2-observed.txt:7`), read at
- * `/data/refs/transformers-5.14.1/transformers/models/gemma4/
- * modeling_gemma4.py`.
- * The path is BF16 in and out with an F32 intermediate - `inputs_embeds` fixes
- * the dtype (`:1679`) and every elementwise op below computes in float and
- * rounds once, which is what torch's half-precision kernels do - so each
- * kernel here is one reference expression with its own rounding structure, and
- * the port's fixed reduction orders are the deviations to measure.
- *
- * Two of those expressions are PyTorch's, not the model file's, and were read
- * at the pinned torch (`/data/refs/torch-2.13.0-aten`): `pow(mean + eps, -0.5)`
- * on CUDA IS `rsqrtf` (`PowKernel.cu:170-179` -> `UnaryOpsKernel.cu:96` ->
- * `CUDAMathCompat.h:122`), which `h3d_rms_norm_kernel` already issues, so its
- * `weight` becomes optional here rather than gaining a second norm kernel; and
- * `gelu_pytorch_tanh` is ATen's tanh gelu, cited at `h3d_gelu_tanh`. */
-
-/* `Gemma4TextScaledWordEmbedding.forward` (`:1476-1477`):
- * `embed_tokens(ids) * embed_scale.to(weight.dtype)`, the scale fixed at
- * `hidden_size ** 0.5` (`:1608-1610`, the reference's own comment recording
- * that the cast is deliberate). `ids` is U32 `[rows]`; `scale` arrives already
- * carrying that BF16 cast. */
-int h3d_embedding(h3d_context *context, h3d_tensor *output,
-                  const h3d_tensor *table, const h3d_tensor *ids,
-                  uint32_t rows, uint32_t width, float scale, char *error,
-                  size_t error_size);
-
-/* `h3d_rms_norm` gains the weightless form Gemma's `v_norm` needs: built
- * `with_scale=False` (`:1220`), so `forward` skips the multiply (`:210-214`)
- * and the kernel takes `weight == NULL`. */
+/* The DiT's RMS norm over `[rows, width]`: `rsqrt(mean(x^2) + epsilon)` then
+ * the optional per-width `weight`. `weight == NULL` is the weightless form the
+ * reference's `with_scale=False` builds use. */
 int h3d_rms_norm(h3d_context *context, h3d_tensor *output,
                  const h3d_tensor *input, const h3d_tensor *weight,
                  uint32_t rows, uint32_t width, float epsilon, char *error,
                  size_t error_size);
-
-/* `Gemma4TextMLP.forward` (`:1088-1090`) with `hidden_activation`
- * `gelu_pytorch_tanh`: `0.5 * x * (1 + tanhf(kBeta * (x + 0.044715 x^3)))`,
- * `kBeta = M_SQRT2 * M_2_SQRTPI * 0.5`, in float with one rounding
- * (`aten/src/ATen/native/cuda/ActivationGeluKernel.cu:21-31`, whose constants
- * are that product and not a decimal literal). */
-int h3d_gelu_tanh(h3d_context *context, h3d_tensor *output,
-                  const h3d_tensor *input, size_t elements, char *error,
-                  size_t error_size);
-
-/* The MLP's `act_fn(gate_proj(x)) * up_proj(x)` (`:1089`): one BF16 product in
- * float with one rounding. */
-int h3d_mul(h3d_context *context, h3d_tensor *output, const h3d_tensor *left,
-            const h3d_tensor *right, size_t elements, char *error,
-            size_t error_size);
-
-/* `hidden_states *= self.layer_scalar` (`:1462`): a BF16 `[1]` buffer (ones in
- * this checkpoint, kept so a checkpoint that carries a non-one scalar stays
- * coherent), broadcast over the row and rounded once. */
-int h3d_scale_bf16(h3d_context *context, h3d_tensor *output,
-                   const h3d_tensor *input, const h3d_tensor *scalar,
-                   size_t elements, char *error, size_t error_size);
-
-/* `apply_rotary_pos_emb` (`:793-811`) with `rotate_half` (`:786-791`) over the
- * pair table `Gemma4TextRotaryEmbedding.forward` builds (`:1164-1181`):
- * `x * cos + rotate_half(x) * sin`, the two products and the sum each rounded
- * to the operand dtype, as torch's elementwise ops do. `cos`/`sin` are BF16
- * `[rows, head_dim]` and already carry the reference's own cast; `query` is
- * BF16 `[rows, heads, head_dim]` and `key` BF16 `[rows, kv_heads, head_dim]`,
- * both rotated in place. The two layer types differ only in the table's width
- * and the frequencies behind it (`:1106-1122`), so one kernel serves both. */
-int h3d_gemma_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
-                   const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
-                   uint32_t heads, uint32_t kv_heads, uint32_t head_dim,
-                   char *error, size_t error_size);
-
-/* The pair tables the call above consumes, `Gemma4TextRotaryEmbedding.forward`
- * (`:1164-1181`): `inv_freq` is `1 / base ** (arange(0, dim, 2) / dim)`
- * (`:1157-1161`), the angles are `inv_freq @ positions` in F32, `emb` is
- * `cat(freqs, freqs)` and the tables are that elementwise, cast to BF16. A
- * proportional table (`:1106-1122`, the full layers' `partial_rotary_factor`
- * 0.25) keeps the first `angles` frequencies and zeroes the rest
- * (`modeling_rope_utils.py:236-250`), which is what leaves those dimensions
- * unrotated - so `angles` counts live frequencies and the rest are the identity
- * pair (cos 1, sin 0). `base` is `rope_theta` (1e4 sliding, 1e6 full),
- * `dim` the per-head width (256 sliding, 512 full) and `positions` are
- * `arange(rows)` (`:1689-1691`; the tokenizer's left padding does not shift
- * them). `cos` and `sin` are BF16 `[rows, dim]`. */
-int h3d_gemma_rope_table(h3d_context *context, h3d_tensor *cos,
-                         h3d_tensor *sin, uint32_t rows, uint32_t dim,
-                         uint32_t angles, float base, char *error,
-                         size_t error_size);
-
-/* `create_causal_mask` / `create_sliding_window_causal_mask` (`:1701-1708`) as
- * `eager_mask` materialises them (`masking_utils.py:545-611`): keep is
- * `kv <= q` and, on a sliding layer, `kv > q - window`
- * (`masking_utils.py:76-80,92-100`), intersected with the 2-D padding mask
- * (`:168-179`), then `where(keep, 0.0, finfo(dtype).min)`. The `dtype` is the
- * embedding's (`:942,990`), BF16 here, so the fill is `finfo(bfloat16).min`
- * (-3.3895313892515355e+38, finite) - which is why a fully masked row softmaxes
- * to uniform rather than to NaN. `window` of 0 is the full layer type;
- * `padding` is the tokenizer's attention mask, U32 `[rows]` over keys, or NULL.
- * `output` is the BF16 additive mask `[rows, rows]`. */
-int h3d_gemma_mask(h3d_context *context, h3d_tensor *output, uint32_t rows,
-                   uint32_t window, const h3d_tensor *padding, char *error,
-                   size_t error_size);
-
-/* `eager_attention_forward` (`:824-858`) at `scaling = 1.0` (`:1200`, passed
- * explicitly, so the eager default never applies): `q @ repeat_kv(k)^T * 1.0`,
- * `+ mask`, an F32 softmax cast back to the query dtype, then `@ repeat_kv(v)`,
- * with `repeat_kv` (`:815-822`) the `heads / kv_heads` repeat. Q/K/V and the
- * output are head-major, the port's layout for every H3 attention primitive;
- * `mask` is BF16 `[rows, rows]` or NULL. The port's reduction order and its
- * single BF16 rounding per product are the named deviations.
- *
- * Limits, checked and refused: `head_dim` at most `H3D_GEMMA_HEAD_DIM_MAX` and
- * `rows` at most `H3D_GEMMA_ROWS_MAX`, because one row's score vector is staged
- * in shared memory; the release's tokenizer truncates to 1024, so the encoder
- * never asks for more. `head_dim` must be a multiple of 256 (8 warps x 32
- * lanes) so every lane owns whole elements. */
-enum { H3D_GEMMA_HEAD_DIM_MAX = 512, H3D_GEMMA_ROWS_MAX = 4096 };
-
-int h3d_gemma_attention(h3d_context *context, h3d_tensor *output,
-                        const h3d_tensor *query, const h3d_tensor *key,
-                        const h3d_tensor *value, const h3d_tensor *mask,
-                        uint32_t rows, uint32_t heads, uint32_t kv_heads,
-                        uint32_t head_dim, float scale, char *error,
-                        size_t error_size);
-
-/* ---- the AV connector and its feature extractor ----
- *
- * Gemma-4-12B hidden states reach the refiner through the upstream 1D connector
- * (`ltx-core/src/ltx_core/text_encoders/gemma/{feature_extractor,
- * embeddings_connector,embeddings_processor}.py`, read at
- * `/data/ltx2-pin/packages`). Its norms, linears, SDPA, GELU and residual adds
- * are the generic entries above; the six below are the rest, and the refiner
- * built on the same primitives reuses them. The RoPE tables are built on the
- * host (`minimax_h3::gemma_connector`), because the reference's own grid is
- * float64 numpy (`rope.py:113-131`). */
-
-/* `_rescale_norm` (`feature_extractor.py:68-69`): `x * sqrt(target / source)`,
- * the multiplier an F32 Python float, so the product rounds to BF16 once and
- * the scalar is not BF16-rounded first. */
-int h3d_scale_constant(h3d_context *context, h3d_tensor *output,
-                       const h3d_tensor *input, float factor,
-                       size_t elements, char *error, size_t error_size);
-
-/* `norm_and_concat_per_token_rms` (`feature_extractor.py:48-64`) up to its
- * rsqrt: `variance = mean(encoded ** 2, dim=2)` over `[layers, rows, width]`,
- * then `rsqrt(variance + 1e-6)`. `scales` is the BF16 `[rows, layers]` result.
- * The reference squares in BF16 before accumulating and rounds each of the
- * mean, the epsilon add and the rsqrt; this port's 256-partial tree is the one
- * deviation. */
-int h3d_connector_stack_scale(h3d_context *context, h3d_tensor *scales,
-                              const h3d_tensor *stacked, uint32_t rows,
-                              uint32_t width, uint32_t layers, char *error,
-                              size_t error_size);
-
-/* `normed.reshape(B, T, D * L)` (`:62`): the `[layers, rows, width]` stack
- * written `[rows, width * layers]` in `d * layers + l` order, each value
- * multiplied by its layer's scale. `output` and `stacked` are the same
- * element count; `scales` is `h3d_connector_stack_scale`'s. */
-int h3d_connector_interleave(h3d_context *context, h3d_tensor *output,
-                             const h3d_tensor *stacked,
-                             const h3d_tensor *scales, uint32_t rows,
-                             uint32_t width, uint32_t layers, char *error,
-                             size_t error_size);
-
-/* `_apply_right_pad_order` (`embeddings_processor.py:40-42`): gather the
- * `[rows, width]` rows by `indices` (U32 `[rows]`, a permutation). */
-int h3d_gather_rows(h3d_context *context, h3d_tensor *output,
-                    const h3d_tensor *input, const h3d_tensor *indices,
-                    uint32_t rows, uint32_t width, char *error,
-                    size_t error_size);
-
-/* `_replace_padded_with_learnable_registers`
- * (`embeddings_connector.py:139-151`): keep `input`'s row where `binary`
- * (U32 `[rows]`) is set, else take `registers`' row `r % count`. The additive
- * mask the reference then passes the blocks is all zeros, so the connector's
- * attention takes no mask. */
-int h3d_register_fill(h3d_context *context, h3d_tensor *output,
-                      const h3d_tensor *input, const h3d_tensor *binary,
-                      const h3d_tensor *registers, uint32_t rows,
-                      uint32_t width, uint32_t count, char *error,
-                      size_t error_size);
-
-/* `apply_split_rotary_emb` (`rope.py:42-85`) in place on head-major Q and K,
- * with `cos`/`sin` the BF16 `[rows, heads, head_dim / 2]` tables
- * (`split_freqs_cis` `:163-184`). */
-int h3d_text_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
-                 const h3d_tensor *cos, const h3d_tensor *sin, uint32_t rows,
-                 uint32_t heads, uint32_t head_dim, char *error,
-                 size_t error_size);
-
-/* `PytorchGatedAttention` (`ops.py:94-106`): `output = input * 2 *
- * sigmoid(logits)`, `logits` BF16 `[rows, heads]` broadcast over each head's
- * `head_dim`. */
-int h3d_per_head_gate(h3d_context *context, h3d_tensor *output,
-                      const h3d_tensor *input, const h3d_tensor *logits,
-                      uint32_t rows, uint32_t heads, uint32_t head_dim,
-                      char *error, size_t error_size);
 
 /* The video VAE decoder's F32 linear: `h3d_linear` at `H3D_F32` with the
  * decoder's own options applied (`h3d_set_vae_option`). Separate from
@@ -985,6 +718,100 @@ int h3d_sol_forward(h3d_context *context, h3d_tensor *output,
                     const h3d_tensor *key, const h3d_tensor *value,
                     uint32_t sequence, uint32_t heads, float scale, char *error,
                     size_t error_size);
+
+/* The latent resizer's own layers (`LatentResizer3D`), all F32 and channels-last
+ * `[batch, depth, height, width, channels]`, the layout `h3d_conv3d` takes. The
+ * 3x3x3 convolutions pair `h3d_zero_pad3d` with `h3d_conv3d`, the 1x1x1 ones are
+ * `h3d_vae_linear`, and `h3d_group_norm_silu` / `h3d_silu_f32` supply the rest. */
+
+/* Zero padding for the 3x3x3 convolutions: `h3d_conv3d` is a valid
+ * convolution, so the padding is a separate pass, as the encoder does. */
+int h3d_zero_pad3d(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t pad_depth, uint32_t pad_height, uint32_t pad_width,
+                   char *error, size_t error_size);
+
+/* GroupNorm without the SiLU epilogue (`nn.GroupNorm(32, C)`): the ResBlock's
+ * `out_norm`, whose output the embedding then scales and shifts. Statistics are
+ * per (batch, group) over the whole volume, as PyTorch's are. Three passes and
+ * the whole grid: partial sums per (batch, group, part), a finalize that folds
+ * them into a per-(batch, channel) scale and shift, and a coalesced apply. */
+int h3d_group_norm(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, const h3d_tensor *weight,
+                   const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                   uint32_t height, uint32_t width, uint32_t channels,
+                   uint32_t groups, float epsilon, char *error,
+                   size_t error_size);
+
+/* The same norm with the reference's `F.silu(norm(x))` folded into the apply
+ * pass, so the volume is read and written once instead of twice. */
+int h3d_group_norm_activate(h3d_context *context, h3d_tensor *output,
+                            const h3d_tensor *input, const h3d_tensor *weight,
+                            const h3d_tensor *bias, uint32_t batch,
+                            uint32_t depth, uint32_t height, uint32_t width,
+                            uint32_t channels, uint32_t groups, float epsilon,
+                            char *error, size_t error_size);
+
+/* `h = input * scale[c] + shift[c]`: the ResBlock's embedding applied as
+ * `out_norm * (1 + scale) + shift` with the two halves of `emb_layers` held
+ * apart, so the caller passes `2 * channels` as a scale and a shift already. */
+int h3d_channel_affine(h3d_context *context, h3d_tensor *output,
+                       const h3d_tensor *input, const h3d_tensor *scale,
+                       const h3d_tensor *shift, uint32_t channels,
+                       size_t elements, char *error, size_t error_size);
+
+/* `out = left + right` over F32 elements, the resizer's identity skips. */
+int h3d_add_f32(h3d_context *context, h3d_tensor *output,
+                const h3d_tensor *left, const h3d_tensor *right,
+                size_t elements, char *error, size_t error_size);
+
+/* The resizer's 3x3x3 convolutions: `h3d_conv3d`'s arithmetic through im2col
+ * and the F32 GEMM, which is what makes 512 channels usable. `input` is the
+ * padded volume (`h3d_zero_pad3d`'s output) and `tile` bounds the expanded
+ * matrix the caller lends as `scratch` (`tile * in * k^3` floats). One thread
+ * per output element costs 70x this at 512 channels. */
+int h3d_conv3d_gemm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *weight,
+                    const h3d_tensor *bias, uint32_t depth, uint32_t height,
+                    uint32_t width, uint32_t input_channels,
+                    uint32_t output_channels, uint32_t kernel, uint32_t tile,
+                    const h3d_tensor *scratch, uint32_t tf32,
+                    uint32_t orientation, char *error, size_t error_size);
+
+/* Phase timing for `h3d_conv3d_gemm`, in seconds of device time: [im2col,
+ * GEMM, bias]. `timing` turns the sampling on (and returns the previous
+ * state); `read` copies the accumulators into `seconds`, `reset` clears them. */
+int h3d_conv3d_timing(int enable);
+void h3d_conv3d_timing_read(double seconds[3]);
+void h3d_conv3d_timing_reset(void);
+
+/* The cuBLASLt algorithm each distinct GEMM shape dispatched, one entry per
+ * shape in first-seen order, separated by "; ":
+ * `rows x k x n <type> <compute> <layout> cand=.. id=.. tile=.. stages=..
+ * splitk=.. wk=..`. The algorithm is chosen once per shape (from
+ * `cublasLtMatmulAlgoGetHeuristic`) and passed explicitly, so a timing can be
+ * read beside the kernel that produced it. `H3D_LT_ALGO=<i>` selects the i-th
+ * candidate and `H3D_LT_ALGO_TRACE=1` prints choices to stderr. Returns the
+ * length written. */
+int h3d_lt_algo_report(char *text, size_t size);
+
+/* `Conv3d(C, C, (kernel, 1, 1), pad=(kernel / 2, 0, 0), groups=C)`: the
+ * TemporalConv's depthwise pass over time, weights `[channels, 1, kernel, 1, 1]`. */
+int h3d_temporal_dwconv(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+                        uint32_t height, uint32_t width, uint32_t channels,
+                        uint32_t kernel, char *error, size_t error_size);
+
+/* `F.interpolate(mode="trilinear", align_corners=False)` with the temporal axis
+ * held fixed and only height and width resampled: this is the upscale itself,
+ * and the convolutions either side of it re-synthesize the detail. */
+int h3d_resize_hw(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *input, uint32_t batch, uint32_t depth,
+                  uint32_t in_height, uint32_t in_width, uint32_t out_height,
+                  uint32_t out_width, uint32_t channels, char *error,
+                  size_t error_size);
 
 #ifdef __cplusplus
 }
