@@ -96,6 +96,55 @@ __global__ static void glm53_absorb_q_kernel(float *out, const float *q,
     }
 }
 
+/* Decode and verify rows (1-4) of the per-head Q8_0 projections: one warp
+ * per weight row, lanes reading consecutive bytes. The (head, row) block
+ * kernels made each thread walk its own 272- or 544-byte row, 83/77 us per
+ * decode layer for 8.9 MB each. The F32 sum order differs. */
+enum { GLM53_ROWDOT_ROWS = 4, GLM53_ROWDOT_WARPS = 8 };
+
+template <uint32_t K>
+__global__ static void glm53_q8_rowdot_kernel(float *out, const float *x, const char *weight,
+        uint32_t rows, uint32_t heads, uint32_t outputs) {
+    constexpr uint32_t V = K / 32u, ROW = K / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t task = blockIdx.x * GLM53_ROWDOT_WARPS + threadIdx.x / 32u;
+    if (task >= heads * outputs) { return; }
+    const uint32_t h = task / outputs, o = task % outputs, k0 = lane * V;
+    const char *block = weight + (uint64_t)task * ROW + k0 / GLM53_COMPACT_Q8_BLOCK * GLM53_COMPACT_Q8_BYTES;
+    const float d = __half2float(*(const __half *)block);
+    const int8_t *q = (const int8_t *)(block + sizeof(__half)) + k0 % GLM53_COMPACT_Q8_BLOCK;
+    float w[V];
+    #pragma unroll
+    for (uint32_t i = 0; i < V; i++) { w[i] = d * (float)q[i]; }
+    for (uint32_t t = 0; t < rows; t++) {
+        const float *xr = x + ((uint64_t)t * heads + h) * K + k0;
+        float acc = 0.0f;
+        #pragma unroll
+        for (uint32_t i = 0; i < V; i++) { acc = fmaf(xr[i], w[i], acc); }
+        for (uint32_t stride = 16u; stride; stride >>= 1u) { acc += __shfl_xor_sync(0xffffffffu, acc, stride); }
+        if (!lane) { out[((uint64_t)t * heads + h) * outputs + o] = acc; }
+    }
+}
+
+static bool glm53_rowdot(float *out, const float *x, const char *weight, uint32_t rows,
+        uint32_t heads, uint32_t outputs, uint32_t k) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_GLM53_ROWDOT");
+        on = !env || strcmp(env, "0") != 0;
+    }
+    if (!on || rows > GLM53_ROWDOT_ROWS || (k != 256u && k != 512u)) { return false; }
+    const uint32_t blocks = (heads * outputs + GLM53_ROWDOT_WARPS - 1u) / GLM53_ROWDOT_WARPS;
+    if (k == 256u) {
+        glm53_q8_rowdot_kernel<256u><<<blocks, GLM53_ROWDOT_WARPS * 32u, 0, ds4_current_stream()>>>(
+            out, x, weight, rows, heads, outputs);
+    } else {
+        glm53_q8_rowdot_kernel<512u><<<blocks, GLM53_ROWDOT_WARPS * 32u, 0, ds4_current_stream()>>>(
+            out, x, weight, rows, heads, outputs);
+    }
+    return true;
+}
+
 extern "C" int ds4_gpu_glm53_absorb_q(ds4_gpu_tensor *low_q,
         const ds4_gpu_tensor *q, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t rows, uint32_t heads,
@@ -111,9 +160,11 @@ extern "C" int ds4_gpu_glm53_absorb_q(ds4_gpu_tensor *low_q,
         weight_offset, (uint64_t)heads * latent_dim * row_bytes, low_q,
         "GLM-5.3 compact K-b Q8_0");
     if (!weight) { return 0; }
-    glm53_absorb_q_kernel<<<dim3(heads, rows), 128u, 0, ds4_current_stream()>>>(
-        (float *)low_q->ptr, (const float *)q->ptr, weight,
-        heads, latent_dim, head_dim, row_bytes);
+    if (!glm53_rowdot((float *)low_q->ptr, (const float *)q->ptr, weight, rows, heads, latent_dim, head_dim)) {
+        glm53_absorb_q_kernel<<<dim3(heads, rows), 128u, 0, ds4_current_stream()>>>(
+            (float *)low_q->ptr, (const float *)q->ptr, weight,
+            heads, latent_dim, head_dim, row_bytes);
+    }
     return cuda_ok(cudaGetLastError(), "GLM-5.3 compact Q absorption");
 }
 
@@ -150,9 +201,11 @@ extern "C" int ds4_gpu_glm53_proj_v(ds4_gpu_tensor *out,
         weight_offset, (uint64_t)heads * head_dim * row_bytes, out,
         "GLM-5.3 compact V-b Q8_0");
     if (!weight) { return 0; }
-    glm53_proj_v_kernel<<<dim3(heads, rows), 128u, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)low_out->ptr, weight,
-        heads, latent_dim, head_dim, row_bytes);
+    if (!glm53_rowdot((float *)out->ptr, (const float *)low_out->ptr, weight, rows, heads, head_dim, latent_dim)) {
+        glm53_proj_v_kernel<<<dim3(heads, rows), 128u, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)low_out->ptr, weight,
+            heads, latent_dim, head_dim, row_bytes);
+    }
     return cuda_ok(cudaGetLastError(), "GLM-5.3 compact V projection");
 }
 
