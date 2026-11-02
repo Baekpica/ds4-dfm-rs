@@ -85,7 +85,7 @@ record qualification separately from throughput.
 
 The repository pins Rust 1.98.0, `rustfmt` and `clippy` in
 [`rust-toolchain.toml`](rust-toolchain.toml). CUDA builds require the local
-CUDA toolkit and C/C++ build tools.
+CUDA toolkit, C/C++ build tools and CMake (ds4-core builds libjpeg-turbo).
 
 ```sh
 git clone https://github.com/Baekpica/ds4-dfm-rs.git

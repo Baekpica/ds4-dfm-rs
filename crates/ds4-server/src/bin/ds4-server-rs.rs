@@ -39,7 +39,6 @@ fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
         prefill_chunk: opt.prefill_chunk,
         prefill_window: opt.prefill_window,
         activation_bits: opt.activation_bits,
-        replay_check: opt.replay_check,
         debug: opt.debug,
     })
 }
@@ -613,6 +612,7 @@ fn main() {
         model_options.push(ModelOpenOption::MtpDraftTokens(draft));
     }
     model_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
+    model_options.push(ModelOpenOption::MemFloorGb(plan.effective.mem_floor_gb));
     // A family whose caps refuse banks has no multi-sequence graph to open;
     // asking native for one only reports the refusal. Bonsai (qwen35) is the
     // resident case: its session is the trunk state itself.
@@ -640,10 +640,10 @@ fn main() {
         CacheIdentity::capture_with_sources(Path::new(path), &sidecars, &sources, &settings)
             .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
     });
-    // --mem-budget-mb (unit Z) arms the engine's L1 load gate; it must be
-    // set before the model open reads it (core_util.c:238-256).
-    if let Some(mb) = mem_budget_mb {
-        ds4_core::set_mem_budget_mb(mb);
+    // --mem-budget-mb (unit Z) arms the engine's L1 load gate at open
+    // (core_util.c:238-256); a non-positive value leaves it off.
+    if let Some(mb) = mem_budget_mb.and_then(|mb| u64::try_from(mb).ok()) {
+        model_options.push(ModelOpenOption::MemBudgetMb(mb));
     }
     let mut v41_route: Option<ds4_server::V41ServeRoute> = None;
     let model = match model_path.as_deref() {
@@ -1415,7 +1415,7 @@ Tool replay: [--disable-exact-dsml-tool-replay] [--tool-memory-max-ids N]\n\
          [--dspark] [--no-dspark] [--dspark-verify K] [--no-graph] [--no-kv-reuse] [--v41-prof]\n\
          [--emit-trace] [--mem-budget-mb N]\n\
          Distributed: [--role coordinator|worker] [--layers A:B] [--listen HOST PORT] [--coordinator HOST PORT]\n\
-         [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--dist-replay-check] [--debug]"
+         [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--debug]"
     );
     std::process::exit(2);
 }

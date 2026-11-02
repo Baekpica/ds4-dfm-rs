@@ -117,6 +117,11 @@ static bool ds4_session_lazy_graph_enabled(void) {
     const char *v = getenv("DS4_SESSION_LAZY_GRAPH");
     return !v || strcmp(v, "0") != 0;
 }
+/* ds4.c's fit switch without a host memory policy: DS4_SESSION_GRAPH_FIT=0. */
+static bool ds4_session_graph_fit_off(void) {
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    return fit && fit[0] == '0' && fit[1] == '\0';
+}
 /* GLM VQ graph hooks; the fixture runs the GLM-5.3 family. */
 static bool ds4_model_is_glm(void) { return true; }
 static uint64_t gvq_extra_bytes(uint32_t ctx, uint32_t rows) { (void)ctx; (void)rows; return 0u; }

@@ -1,6 +1,6 @@
 /* Serial session: one graph owns every SWA ring and full-layer FP8 row. A
- * prompt that extends the checkpoint continues in place; any other prompt
- * prefills from 0 (the rings hold only the last window and one chunk). */
+ * prompt resumes at its common prefix while the rings (the window and one
+ * chunk) still hold the window under it. */
 static int beam_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->beam_graph.failed = true;
     s->checkpoint_valid = false;
@@ -21,6 +21,14 @@ static bool beam_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the live state keeps for `prompt`; 0 rebuilds. */
+static uint32_t beam_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_beam_graph *g = &s->beam_graph;
+    if (!s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    return ring_holds(g->swa_cap, BEAM_WINDOW, g->high, g->restored, keep) ? keep : 0;
+}
+
 static int beam_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
@@ -31,14 +39,21 @@ static int beam_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     if (!s->beam_graph_ready) { payload_set_err(err, errlen, "Beam graph is not initialized"); return 1; }
     ds4_beam_graph *g = &s->beam_graph;
-    uint32_t start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (uint32_t)s->checkpoint.len;
-        if (start == (uint32_t)prompt->len) { return 0; }
-    } else {
+    uint32_t start = beam_sync_keep(s, prompt);
+    const uint32_t live = (uint32_t)s->checkpoint.len;
+    if (!start) {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "Beam graph reset failed"); return 1; }
+    } else if (start == (uint32_t)prompt->len) {
+        return 0;
+    } else if (start < live) {
+        /* The old branch's verify rows (up to live + a block) displaced the
+         * DFlash2 rings' rows below live - window: the draft context restarts
+         * above them, or at the resume row. */
+        const uint32_t lost = live > DS4_BEAM_DF_WINDOW ? live - DS4_BEAM_DF_WINDOW : 0u;
+        if (g->draft_first < lost) { g->draft_first = lost < start ? lost : start; }
+        g->position = start;
+        session_rewound(s, start);
     }
     const uint32_t end = (uint32_t)prompt->len;
     while (start < end) {

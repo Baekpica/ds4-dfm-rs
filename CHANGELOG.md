@@ -14,6 +14,77 @@ for exact provenance. Historical entries retain their original scope.
 - DeepSeek V4 CLI and bench prompts encode on the host; the native bridge
   drops twelve entries the Rust host no longer calls (tokenizer, stop/EOS,
   C sampler, session position, model id, distributed worker).
+- A held instance lock (`DS4_LOCK_FILE`, default `/tmp/ds4.lock`) is an
+  error from `ds4`, `ds4-bench` and `ds4-server`. Native model open used to
+  call `exit(2)` inside the FFI call, ending the host without an error.
+- The Rust hosts parse and validate the Qwen SSD-PLE manifest before the
+  weight map and pass the sidecar to native, which keeps the page cache. A
+  missing or bad sidecar now fails at once instead of after the map.
+- Memory policy values (`--mem-floor-gb`, `--mem-budget-mb`, fit headrooms
+  and switch, governor modes) reach native as open options instead of
+  environment variables. An L1 budget refusal fails the model open (exit
+  1) instead of `_exit(137)`.
+- Native stops where the Rust host does: the host stop set reaches native at
+  model open. Static batch rows end at the host's stop tokens and report
+  `stop` (they decoded to the token budget and reported `length`); GLM VQ
+  user/observation and K2 `im_end` stop natively; an EOS policy also
+  excludes Naive's EOT.
+- Native maps each sidecar (vision, MiMo VQ audio, MTP/DFlash, DSpark) from
+  the tensor directory Rust built instead of parsing the GGUF again. Rust
+  resolves `DS4_DSPARK_MODEL` for every family, so native no longer opens a
+  drafter Rust never validated, and checks a named vision sidecar before
+  open; a bad file used to end the process inside the native binder.
+- Qwen4Exp, Ling-3.0-VL and GLM-5.3 images are decoded, resized and packed
+  in Rust; native adds only the vision tower's positions. Qwen rows are
+  packed into native's buffer only after the request passes admission and
+  its memory check, and are freed after upload, as in C. JPEG decodes
+  through libjpeg-turbo with PIL's settings (vendored, built with CMake), so
+  pixels match the HF processors; stb_image differed by up to 48 levels on
+  4:2:2 JPEGs, so Qwen JPEG disk-KV entries from earlier builds miss once.
+  PNG rows match the C path bit for bit (GLM within an ulp), and the Qwen
+  pixel hash keeps its C definition. Preprocessing is faster than C on 14 of
+  15 fixture/tower pairs (bug.jpeg Qwen 73.7 -> 48.6 ms) and 0.02 ms slower
+  on the last; Qwen request times and VmHWM are unchanged.
+- `--dist-replay-check` is deprecated: Rust hosts reject it. It only ran in
+  the C CLI's one-shot coordinator, where it compared two fresh prefills;
+  Rust hosts accepted it and did nothing. The property it guarded, reused or
+  restored state matching a fresh run, is now checked for every family by
+  `ds4 --serving-check`.
+- `ds4 --serving-check` runs every ServingCaps checklist item on the loaded
+  model, declared or not, and prints the declaration beside the result:
+  prefix, rewind and continue reuse, session disk KV and snapshots, and bank
+  warm, fork, partial, disk and width. A declared item that fails exits 1.
+  A row agrees when its top-1 is a no-reuse reference's; a flip inside the
+  spread between two accepted arithmetics (fresh prefill, decode-fed) is a
+  near tie. Each flip prints with its margins.
+- Serial lanes resume at the common prefix in fourteen more families instead
+  of prefilling every non-extending prompt from zero. A.X-K2, MiniMax, Beam,
+  Naive, Motif-3, dots3, Step 3.7, IQuest and K2-Horizon keep positional
+  rows while their sliding rings still hold the window; Solar, GLM-5.3,
+  Ling-3.0-VL, Ling-3.1 and Qwen3.8 resume from one of two copies of their
+  recurrent state taken during each sync. dots3 and Step 3.7 sessions with
+  MTP and media states still rebuild. The host asks native for the kept rows
+  (`ds4_session_sync_keep`).
+- K-EXAONE's serial rewind measured its ring from the live length: after a
+  longer abandoned branch it could resume over overwritten rows. Rings now
+  count from the newest row written; `ds4_bridge_session_exaone_rewind_span`
+  and the host's mirror of it are removed.
+- K2-Horizon banks fork at any common prefix (partial reuse), like MiniMax
+  and A.X-K2: no layer slides, so no checkpoint is needed.
+- Step 3.7's serial restore no longer admits a rewind below the restored
+  prefix: its rings get back one window, as the bank restore assumed.
+- Declarations follow the check: every bank, reuse, disk and snapshot item
+  worked on the 19 local artifacts
+  ([record](docs/benchmarks/serving-checklist-2026-11-02/README.md)), so
+  `serving_caps` marks them qualified. On the bank lane `--prefix-reuse
+  auto` now selects partial reuse for K-EXAONE, dots3, MiMo-V2.6-Flash,
+  IQuest, Ling-3.1 VQ, Beam VQ, MiniMax VQ and A.X-K2 VQ. The VQ families
+  keep their boot plan: Ling-3.1 and Beam map checkpoint slots only from
+  memory their banks leave, MiniMax and A.X-K2 need none; the other four
+  quote their pools at boot, as Solar, Motif-3 and Qwen do. Disk KV no
+  longer warns `disk_unverified` for these families, K2-Horizon, Inkling
+  and V4.1. GLM 5.3, DeepSeek V4 and Bonsai had no local artifact and keep
+  their declarations.
 
 ## v0.1.5 — 2026-11-01
 

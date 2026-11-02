@@ -318,7 +318,8 @@ static bool ling3vl_vision_pack(const uint8_t *rgb, uint32_t width,
                                 uint32_t grid_h, uint32_t grid_w, float *patches,
                                 int32_t *indices, float *weights,
                                 int32_t *height, int32_t *pos_width) {
-    if (!rgb || !patches || !indices || !weights || !height || !pos_width ||
+    /* rgb NULL: a Rust host already packed the patches; positions only. */
+    if ((rgb && !patches) || !indices || !weights || !height || !pos_width ||
         !grid_h || !grid_w || (grid_h & 1u) || (grid_w & 1u)) { return false; }
     uint32_t row = 0u;
     for (uint32_t bh = 0; bh < grid_h / 2u; bh++) {
@@ -326,8 +327,8 @@ static bool ling3vl_vision_pack(const uint8_t *rgb, uint32_t width,
             for (uint32_t ih = 0; ih < 2u; ih++) {
                 for (uint32_t iw = 0; iw < 2u; iw++) {
                     const uint32_t ph = 2u * bh + ih, pw = 2u * bw + iw;
-                    float *dst = patches + (size_t)row * L3V_VIT_PATCH_DIM;
-                    for (uint32_t c = 0; c < 3u; c++) {
+                    float *dst = rgb ? patches + (size_t)row * L3V_VIT_PATCH_DIM : NULL;
+                    for (uint32_t c = 0; rgb && c < 3u; c++) {
                         for (uint32_t py = 0; py < L3V_VIT_PATCH; py++) {
                             const uint32_t y = ph * L3V_VIT_PATCH + py;
                             for (uint32_t px = 0; px < L3V_VIT_PATCH; px++) {
@@ -495,21 +496,26 @@ static bool ling3vl_vision_encode_one(ds4_ling3vl_vision *v, const ds4_model *m,
                                       unsigned feature_row) {
     const uint32_t patches = info->grid_h * info->grid_w;
     if (patches > v->capacity) { return false; }
-    int width = 0, height = 0, channels = 0;
-    uint8_t *decoded = stbi_load_from_memory(image->data, (int)image->data_len,
-                                             &width, &height, &channels, 3);
-    if (!decoded || width != (int)info->source_width ||
-        height != (int)info->source_height) {
+    uint8_t *resized = NULL;
+    if (!image->patches) {
+        int width = 0, height = 0, channels = 0;
+        uint8_t *decoded = stbi_load_from_memory(image->data, (int)image->data_len,
+                                                 &width, &height, &channels, 3);
+        if (!decoded || width != (int)info->source_width ||
+            height != (int)info->source_height) {
+            stbi_image_free(decoded);
+            return false;
+        }
+        resized = qwen4exp_resize_rgb_pillow(
+            decoded, info->source_width, info->source_height, info->resized_width,
+            info->resized_height);
         stbi_image_free(decoded);
-        return false;
+        if (!resized) { return false; }
     }
-    uint8_t *resized = qwen4exp_resize_rgb_pillow(
-        decoded, info->source_width, info->source_height, info->resized_width,
-        info->resized_height);
-    stbi_image_free(decoded);
-    if (!resized) { return false; }
 
-    float *host_patches = xmalloc((size_t)patches * L3V_VIT_PATCH_DIM * sizeof(float));
+    /* Host-packed rows upload as they are; only positions are built here. */
+    float *host_patches = image->patches ? NULL
+        : xmalloc((size_t)patches * L3V_VIT_PATCH_DIM * sizeof(float));
     int32_t *indices = xmalloc((size_t)patches * 4u * sizeof(int32_t));
     float *weights = xmalloc((size_t)patches * 4u * sizeof(float));
     int32_t *rows = xmalloc((size_t)patches * sizeof(int32_t));
@@ -520,9 +526,10 @@ static bool ling3vl_vision_encode_one(ds4_ling3vl_vision *v, const ds4_model *m,
     bool ok = ling3vl_vision_pack(resized, info->resized_width, info->grid_h,
                                   info->grid_w, host_patches, indices, weights,
                                   rows, cols);
+    const float *upload = image->patches ? image->patches : host_patches;
     free(resized);
     ok = ok &&
-        ds4_gpu_tensor_write(v->patches, 0, host_patches,
+        ds4_gpu_tensor_write(v->patches, 0, upload,
                              (uint64_t)patches * L3V_VIT_PATCH_DIM * sizeof(float)) &&
         ds4_gpu_tensor_write(v->pos_indices, 0, indices,
                              (uint64_t)patches * 4u * sizeof(int32_t)) &&

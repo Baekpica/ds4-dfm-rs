@@ -1,0 +1,379 @@
+== kexaone: models/K-EXAONE-236B-A23B-Mixed-Quant-GGUF/K-EXAONE-236B-A23B-MXQ-IQ2XXS-Q3K-Q4Edge-Q8Dense-MTPQ8-v1-00001-of-00003.gguf (12.7 min)
+serving checklist: Kexaone236B (ExaoneMoe) ctx 8192 prompt 5269 split 5120 prefill grid 512
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 5120, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 5120, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5285, top-1 17/17 (prefill 17, decode-fed 17), max_abs 2.274e0
+  disk      session   qualified  works              kept 5285, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5285, top-1 17/17, exact
+  banks     warm      qualified  works              kept 5120, tokens 5/5
+  banks     fork      qualified  works              kept 5120, tokens 5/5
+  banks     partial   qualified  works              kept 4096, tokens 5/5
+  banks     disk      qualified  works              kept 5120, tokens 5/5
+  banks     width     qualified  works              tokens 5/5 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max - qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== k2horizon: models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf (4.5 min)
+serving checklist: K2Horizon375B (ExaoneMoe) ctx 8192 prompt 5389 split 5120 prefill grid 1024
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 5120, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 5120, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5405, top-1 16/17 (prefill 16, decode-fed 15), near-tie 1 <= 1.832, max_abs 4.453e0; row 0: 373 +0.250 over prefill 1518 +0.012, decode-fed 479 +0.341
+  disk      session   qualified  works              kept 5405, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5405, top-1 17/17, exact
+  banks     warm      qualified  works              kept 5120, tokens 16/16
+  banks     fork      qualified  works              kept 5120, tokens 16/16
+  banks     partial   qualified  works              kept 5120, tokens 16/16
+  banks     disk      qualified  works              kept 5120, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max - qualified 32768
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== beam-vq: models/Beam-1.0-501B-A23B-VQ-GGUF (1.8 min)
+serving checklist: BeamVq (BeamVq) ctx 8192 prompt 5579 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5595, top-1 16/17 (prefill 15, decode-fed 16), near-tie 1 <= 0.389, max_abs 2.485e0; row 0: 130957 +0.173 over prefill 220 +0.059, decode-fed 220 +0.388
+  disk      session   qualified  works              kept 5595, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5595, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Sidecar present Serial
+  context   limit                no check yet       declared max 1048576 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== step37: models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf (9.1 min)
+serving checklist: Step37Flash (Step37) ctx 8192 prompt 5598 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5614, top-1 16/17 (prefill 16, decode-fed 16), near-tie 1 <= 1.477, max_abs 2.821e0; row 10: 769 +0.110 over prefill 10059 +0.119, decode-fed 10059 +0.123
+  disk      session   qualified  works              kept 5614, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5614, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 0/0
+  mtp       lossless             no check yet       declared Sidecar qualified Both
+  context   limit                no check yet       declared max 262144 qualified 65536
+  prompt    limit                no check yet       declared qualified 6300
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== solar: models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf (11.1 min)
+serving checklist: SolarOpen2_250B (SolarOpen2) ctx 8192 prompt 5364 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5380, top-1 17/17 (prefill 16, decode-fed 17), max_abs 3.093e0
+  disk      session   qualified  works              kept 5380, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5380, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max - qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== glm-vq: models/GLM-5.3-Flash-VQ-Q4K-v3-GGUF (2.3 min)
+serving checklist: Glm53FlashVq (Glm53Vq) ctx 8192 prompt 5552 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5568, top-1 17/17 (prefill 16, decode-fed 17), max_abs 1.906e0
+  disk      session   qualified  works              kept 5568, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5568, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Both
+  context   limit                no check yet       declared max 1048576 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== ling3vl: models/Ling-3.0-flash-VL-Mixed-Quant-GGUF/MQ-Q5-KDA-VIT-BF16/Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00001-of-00003.gguf (2.3 min)
+serving checklist: Ling30FlashVl (Ling3Vl) ctx 8192 prompt 5801 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5817, top-1 17/17 (prefill 17, decode-fed 16), max_abs 3.419e0
+  disk      session   qualified  works              kept 5817, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5817, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max 262144 qualified 65536
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== ling31-vq: models/Ling-3.1-flash-1019-VQ-GGUF (2.9 min)
+serving checklist: Ling31FlashVq (Ling31Vq) ctx 8192 prompt 5801 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5817, top-1 17/17 (prefill 17, decode-fed 17), max_abs 1.195e0
+  disk      session   qualified  works              kept 5817, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5817, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Both
+  context   limit                no check yet       declared max 1048576 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== thinkingcap: models/ThinkingCap-Qwen3.8-Flash-Next-Mixed-Quant-GGUF/MQ-Q5-SSD-PLE-BF16/ThinkingCap-Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf (3.0 min)
+serving checklist: Qwen38FlashNext (Qwen4Exp) ctx 8192 prompt 5683 split 5632 prefill grid 256
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 5632, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 5632, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5699, top-1 17/17 (prefill 17, decode-fed 17), max_abs 5.229e0
+  disk      session   qualified  works              kept 5699, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5699, top-1 17/17, exact
+  banks     warm      qualified  works              kept 5632, tokens 16/16
+  banks     fork      qualified  works              kept 5632, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 5632, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded qualified Bank
+  context   limit                no check yet       declared max 1048576 qualified 262144
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== naive: models/Naive-N0.5-Flash-Mixed-Quant-GGUF/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf (11.0 min)
+serving checklist: NaiveN05Flash (NaiveN05) ctx 8192 prompt 5579 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5595, top-1 17/17 (prefill 17, decode-fed 17), max_abs 3.625e0
+  disk      session   qualified  works              kept 5595, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5595, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared External present Both
+  context   limit                no check yet       declared max 1048576 qualified 8192
+  prompt    limit                no check yet       declared qualified 702
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== motif3: models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf (10.9 min)
+serving checklist: Motif3 (Motif3) ctx 8192 prompt 4935 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 4951, top-1 17/17 (prefill 17, decode-fed 17), max_abs 1.622e0
+  disk      session   qualified  works              kept 4951, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 4951, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max 262144 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== dots3: models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf (13.8 min)
+serving checklist: Dots3NotePrev (Dots3Note) ctx 8192 prompt 5563 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 4096, top-1 17/17 (prefill 17, decode-fed 15), exact
+  disk      session   qualified  works              kept 4096, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 4096, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Serial
+  context   limit                no check yet       declared max 524288 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== inkling: models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf (13.8 min)
+serving checklist: InklingSmall (Inkling) ctx 8192 prompt 5527 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    -          no                 prefilled from zero: nothing kept
+  reuse     continue  qualified  works              kept 5543, top-1 17/17 (prefill 17, decode-fed 17), exact
+  disk      session   qualified  works              kept 5543, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5543, top-1 17/17, exact
+  banks     warm      -          no                 batch_ctx_create: this model does not yet implement the multi-sequence graph
+  banks     fork      -          no                 batch_ctx_create: this model does not yet implement the multi-sequence graph
+  banks     partial   -          no                 batch_ctx_create: this model does not yet implement the multi-sequence graph
+  banks     disk      -          no                 batch_ctx_create: this model does not yet implement the multi-sequence graph
+  banks     width     -          no                 batch_ctx_create: this model does not yet implement the multi-sequence graph
+  mtp       lossless             no check yet       declared Sidecar qualified Serial
+  context   limit                no check yet       declared max 1048576 qualified 1024
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 4, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== mimo-mopd: models/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-MOPD-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf (11.2 min)
+serving checklist: Mimo26Flash (Mimo2) ctx 8192 prompt 5579 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 3072, top-1 17/17 (prefill 17, split 17), exact
+  reuse     continue  qualified  works              kept 5595, top-1 16/17 (prefill 14, decode-fed 16), near-tie 1 <= 2.579, max_abs 6.979e0; row 6: 40 +0.440 over prefill 151645 +0.146, decode-fed 151645 +0.785
+  disk      session   qualified  works              kept 5595, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5595, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 12/12
+  banks     fork      qualified  works              kept 4096, tokens 12/12
+  banks     partial   qualified  works              kept 4096, tokens 12/12
+  banks     disk      qualified  works              kept 4096, tokens 12/12
+  banks     width     qualified  works              tokens 12/12 + 16/16
+  mtp       lossless             no check yet       declared Embedded qualified Serial
+  context   limit                no check yet       declared max 1048576 qualified 524288
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== minimax-vq: models/MiniMax-M3.1-Flash-VQ-GGUF (2.2 min)
+serving checklist: MinimaxVq (MinimaxVq) ctx 8192 prompt 5453 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5469, top-1 17/17 (prefill 16, decode-fed 17), max_abs 1.053e1
+  disk      session   qualified  works              kept 5469, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5469, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Serial
+  context   limit                no check yet       declared max 1048576 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== mimo-vq: models/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF (1.9 min)
+serving checklist: Mimo26FlashVq (Mimo2) ctx 8192 prompt 5579 split 4096 prefill grid 4096
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 3072, top-1 17/17 (prefill 17, split 17), exact
+  reuse     continue  qualified  works              kept 5595, top-1 16/17 (prefill 16, decode-fed 16), near-tie 1 <= 2.478, max_abs 4.835e0; row 0: 10417 +0.011 over prefill 525 +0.180, decode-fed 130957 +0.349
+  disk      session   qualified  works              kept 5595, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5595, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded qualified Serial
+  context   limit                no check yet       declared max 1048576 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared serial
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== axk2-vq: models/A.X-K2-VQ-GGUF (5.3 min)
+serving checklist: Axk2Vq (Axk2Vq) ctx 8192 prompt 5476 split 4096 prefill grid 2048
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 4096, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5492, top-1 17/17 (prefill 16, decode-fed 17), max_abs 3.477e0
+  disk      session   qualified  works              kept 5492, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5492, top-1 17/17, exact
+  banks     warm      qualified  works              kept 4096, tokens 16/16
+  banks     fork      qualified  works              kept 4096, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 4096, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared None - None
+  context   limit                no check yet       declared max 262144 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== v41-ivq: models/DeepSeek-V4.1-Flash-1017-iVQ-GGUF/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf (3.6 min)
+serving checklist: DeepSeek41Flash (DeepSeek4) prompt 5615 split 2807
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 2807, tokens 16/16
+  reuse     rewind    -          no                 prefilled from zero: nothing kept
+  reuse     continue  qualified  works              kept 5630, tokens 16/16
+  disk      session   qualified  works              kept 5615, tokens 16/16
+  snapshot  session   -          no                 V4.1 has no session snapshot
+  banks     warm      -          no                 V4.1 serves one sequence: no banks
+  banks     fork      -          no                 V4.1 serves one sequence: no banks
+  banks     partial   -          no                 V4.1 serves one sequence: no banks
+  banks     disk      -          no                 V4.1 serves one sequence: no banks
+  banks     width     -          no                 V4.1 serves one sequence: no banks
+  mtp       lossless             no check yet       declared Embedded qualified Serial
+  context   limit                no check yet       declared max - qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)
+exit 0
+
+== iquest: models/IQuest-Q1-Mixed-Quant-GGUF/IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf (13.2 min)
+serving checklist: IQuestQ1 (IQuestQ1) ctx 8192 prompt 5446 split 5376 prefill grid 128
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 5376, top-1 17/17, exact
+  reuse     rewind    qualified  works              kept 5376, top-1 17/17, exact
+  reuse     continue  qualified  works              kept 5462, top-1 17/17 (prefill 17, decode-fed 15), max_abs 5.938e0
+  disk      session   qualified  works              kept 5462, top-1 17/17, exact
+  snapshot  session   qualified  works              kept 5462, top-1 17/17, exact
+  banks     warm      qualified  works              kept 5376, tokens 16/16
+  banks     fork      qualified  works              kept 5376, tokens 16/16
+  banks     partial   qualified  works              kept 4096, tokens 16/16
+  banks     disk      qualified  works              kept 5376, tokens 16/16
+  banks     width     qualified  works              tokens 16/16 + 16/16
+  mtp       lossless             no check yet       declared Embedded present Both
+  context   limit                no check yet       declared max 524288 qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+exit 0

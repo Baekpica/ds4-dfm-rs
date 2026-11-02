@@ -2734,8 +2734,39 @@ void ds4_host_bind_map_install(const ds4_host_bind_map *m) {
     g_host_bind_map = m;
 }
 
+/* Rust hosts pass the Qwen SSD-PLE sidecar they parsed and validated; the
+ * C hosts keep reading DS4_QWEN_PLE_* and the manifest. */
+static const ds4_host_ple *g_host_ple;
+
+void ds4_host_ple_install(const ds4_host_ple *p) {
+    g_host_ple = p;
+}
+
+void ds4_host_ple_clear(void) {
+    g_host_ple = NULL;
+}
+
 void ds4_host_bind_map_clear(void) {
     g_host_bind_map = NULL;
+}
+
+static const ds4_host_tensor_dir *g_host_vision_dir;
+static const ds4_host_tensor_dir *g_host_audio_dir;
+static const ds4_host_tensor_dir *g_host_mtp_dir;
+static const ds4_host_tensor_dir *g_host_dspark_dir;
+
+void ds4_host_sidecar_dirs_install(const ds4_host_tensor_dir *vision,
+                                   const ds4_host_tensor_dir *audio,
+                                   const ds4_host_tensor_dir *mtp,
+                                   const ds4_host_tensor_dir *dspark) {
+    g_host_vision_dir = vision;
+    g_host_audio_dir = audio;
+    g_host_mtp_dir = mtp;
+    g_host_dspark_dir = dspark;
+}
+
+void ds4_host_sidecar_dirs_clear(void) {
+    ds4_host_sidecar_dirs_install(NULL, NULL, NULL, NULL);
 }
 
 /* MTP/DSpark sibling bind maps live in their own slots: the base map is
@@ -3754,6 +3785,16 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
     model_build_catalog(m);
 
     if (!metal_mapping && prefetch_cpu) model_prefetch_cpu_mapping(m);
+}
+
+/* A sidecar mapped from the host's tensor directory for it (Rust hosts);
+ * NULL keeps the C parse (C hosts). */
+static void sidecar_model_open(ds4_model *m, const ds4_host_tensor_dir *dir,
+                               const char *path, bool metal_mapping,
+                               bool prefetch_cpu) {
+    g_host_tensor_dir = dir;
+    model_open(m, path, metal_mapping, prefetch_cpu);
+    g_host_tensor_dir = NULL;
 }
 
 /* Map all files in a split GGUF into one reserved virtual range.  Each
@@ -10783,11 +10824,33 @@ uint64_t ds4_runtime_mem_budget_bytes(void) {
     return g_mem_budget_bytes;
 }
 
+/* Rust hosts pass the memory policy values at open (budget included);
+ * the C hosts keep their env reads and ds4_set_mem_budget_mb. */
+static ds4_host_mem_policy g_host_mem;
+static bool g_host_mem_set;
+
+void ds4_host_mem_policy_install(const ds4_host_mem_policy *p) {
+    g_host_mem_set = p != NULL;
+    if (!p) return;
+    g_host_mem = *p;
+    g_mem_budget_bytes = p->budget_bytes;
+}
+
+/* DS4_SESSION_GRAPH_FIT=0 turns the session-graph fit gate off: the
+ * allocation fails open. */
+static bool ds4_session_graph_fit_off(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_fit == 0;
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    return fit && fit[0] == '0' && fit[1] == '\0';
+}
+
 #define DS4_L1_GATE_FRAC 0.85   /* core_util.c:10 */
 #define DS4_GIB (1024.0 * 1024.0 * 1024.0)   /* core_internal.h:91 */
 
-void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
-    if (g_mem_budget_bytes == 0) return;
+/* Returns false on refusal; the engine fails its open instead of the
+ * reference's _exit(137), which ended the Rust host inside the FFI call. */
+bool ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
+    if (g_mem_budget_bytes == 0) return true;
     const uint64_t planned = resident_model_bytes + kv_and_scratch_bytes;
     const uint64_t limit = (uint64_t)((double)g_mem_budget_bytes * DS4_L1_GATE_FRAC);
     if (planned > limit) {
@@ -10798,11 +10861,12 @@ void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_b
                 (double)kv_and_scratch_bytes / DS4_GIB,
                 DS4_L1_GATE_FRAC * 100.0, (double)g_mem_budget_bytes / DS4_GIB);
         fflush(stderr);
-        _exit(137);
+        return false;
     }
     fprintf(stderr,
             "ds4: L1 budget gate: planned resident %.2f GiB within %.2f GiB budget\n",
             (double)planned / DS4_GIB, (double)g_mem_budget_bytes / DS4_GIB);
+    return true;
 }
 
 #ifndef DS4_NO_GPU
@@ -18504,6 +18568,7 @@ static uint64_t metal_graph_alloc_bytes_estimate(
  * Backend-neutral (env + arithmetic only) and called unconditionally from
  * the server's serial quote path, so it must stay OUTSIDE the GPU guard. */
 uint64_t ds4_session_graph_headroom_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.session_graph_headroom;
     uint64_t headroom = 1024ull << 20;
     const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
     if (he && he[0]) {
@@ -18578,8 +18643,7 @@ static bool metal_graph_session_fit_check(
         bool                     loud,
         ds4_session_graph_fit_quote *q) {   /* memgov D4-1: optional quote out */
     if (q) memset(q, 0, sizeof(*q));
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -27113,9 +27177,16 @@ static bool qwen4exp_vision_host_prepare(
     ds4_qwen_image_info info[4];
     uint64_t patch_rows = 0u, feature_rows = 0u;
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
-                                 &info[i], error, error_size) != 0)
+        if (images[i].pack) {
+            /* A Rust host probed it; it packs the rows below. */
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) return false;
+            info[i] = (ds4_qwen_image_info){.grid_h = gh, .grid_w = gw,
+                                            .token_count = gh * gw / 4u};
+        } else if (ds4_qwen_image_probe(images[i].data, images[i].data_len,
+                                        &info[i], error, error_size) != 0) {
             return false;
+        }
         if (info[i].grid_h != images[i].grid_h ||
             info[i].grid_w != images[i].grid_w) {
             if (error && error_size)
@@ -27144,24 +27215,38 @@ static bool qwen4exp_vision_host_prepare(
 
     uint32_t patch_base = 0u;
     for (uint32_t image_i = 0; image_i < image_count; image_i++) {
-        int width = 0, height = 0, channels = 0;
-        uint8_t *decoded = stbi_load_from_memory(
-            images[image_i].data, (int)images[image_i].data_len,
-            &width, &height, &channels, 3);
-        if (!decoded || width != (int)info[image_i].source_width ||
-            height != (int)info[image_i].source_height) {
-            stbi_image_free(decoded);
-            if (error && error_size)
-                snprintf(error, error_size, "PNG/JPEG decode failed: %s",
-                         stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
+        const bool packed = images[image_i].pack != NULL;
+        const uint64_t values = (uint64_t)info[image_i].grid_h * info[image_i].grid_w *
+                                DS4_QWEN_VISION_PATCH_DIM;
+        /* The host decodes into these rows only now, past admission and the
+         * memory check; they go with the rest of host after upload. */
+        if (packed && images[image_i].pack(images[image_i].pack_ud,
+                host->patches + (size_t)patch_base * DS4_QWEN_VISION_PATCH_DIM, values) != 0) {
+            if (error && error_size) snprintf(error, error_size, "PNG/JPEG decode failed");
             qwen4exp_vision_host_free(host);
             return false;
         }
-        uint8_t *resized = qwen4exp_resize_rgb_pillow(
-            decoded, info[image_i].source_width, info[image_i].source_height,
-            info[image_i].resized_width, info[image_i].resized_height);
-        stbi_image_free(decoded);
-        if (!resized) {
+        uint8_t *resized = NULL;
+        if (!packed) {
+            int width = 0, height = 0, channels = 0;
+            uint8_t *decoded = stbi_load_from_memory(
+                images[image_i].data, (int)images[image_i].data_len,
+                &width, &height, &channels, 3);
+            if (!decoded || width != (int)info[image_i].source_width ||
+                height != (int)info[image_i].source_height) {
+                stbi_image_free(decoded);
+                if (error && error_size)
+                    snprintf(error, error_size, "PNG/JPEG decode failed: %s",
+                             stbi_failure_reason() ? stbi_failure_reason() : "invalid image");
+                qwen4exp_vision_host_free(host);
+                return false;
+            }
+            resized = qwen4exp_resize_rgb_pillow(
+                decoded, info[image_i].source_width, info[image_i].source_height,
+                info[image_i].resized_width, info[image_i].resized_height);
+            stbi_image_free(decoded);
+        }
+        if (!packed && !resized) {
             if (error && error_size) snprintf(error, error_size, "image resize failed");
             qwen4exp_vision_host_free(host);
             return false;
@@ -27179,7 +27264,7 @@ static bool qwen4exp_vision_host_prepare(
                         const uint32_t row = patch_base + local++;
                         float *dst = host->patches +
                             (size_t)row * DS4_QWEN_VISION_PATCH_DIM;
-                        for (uint32_t c = 0; c < 3u; c++) {
+                        if (!packed) for (uint32_t c = 0; c < 3u; c++) {
                             for (uint32_t temporal = 0; temporal < 2u; temporal++) {
                                 (void)temporal;
                                 for (uint32_t py = 0; py < 16u; py++) {
@@ -37605,6 +37690,9 @@ struct ds4_vocab {
     int dots3_endofsystem_id;
     int dots3_endofuser_id;
     int dots3_endoftext_id;
+    /* Rust hosts: their stop set (Vocab::is_stop); 0 = the family table. */
+    uint32_t n_stop;
+    int stop[DS4_HOST_MAX_STOPS];
     str_i32_table token_to_id;
     str_i32_table merge_rank;
     /* USER_DEFINED tokens, matched as literal text before the regex split.
@@ -37756,14 +37844,10 @@ static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
     return opening_rows;
 }
 
-static bool qwen4exp_engine_open_ple(ds4_engine *engine,
-                                     const char *model_path) {
-#ifdef __APPLE__
-    (void)engine;
-    (void)model_path;
-    return false;
-#else
-    if (!engine || !model_path || !model_path[0]) return false;
+#ifndef __APPLE__
+/* C hosts: sidecar and cache policy from DS4_QWEN_PLE_* and the manifest. */
+static ds4_ple_store *qwen4exp_open_ple_env(const char *model_path,
+                                            char *error, size_t error_size) {
     const char *slash = strrchr(model_path, '/');
     const bool filesystem_root = slash == model_path;
     const size_t root_len = filesystem_root ? 1u
@@ -37792,13 +37876,28 @@ static bool qwen4exp_engine_open_ple(ds4_engine *engine,
      * without changing their published BF16 metadata or their compute path. */
     const char *ple_dir = getenv("DS4_QWEN_PLE_DIR");
     const bool override_ple = ple_dir && ple_dir[0];
-    char error[512] = {0};
-    engine->qwen_ple_store = ds4_ple_store_open(
+    ds4_ple_store *store = ds4_ple_store_open(
         override_ple ? ple_dir : root,
         override_ple ? "ple-manifest.json" : "ple/ple-manifest.json",
         (size_t)cache_mb << 20,
-        workers, true, error, sizeof(error));
+        workers, true, error, error_size);
     free(root);
+    return store;
+}
+#endif
+
+static bool qwen4exp_engine_open_ple(ds4_engine *engine,
+                                     const char *model_path) {
+#ifdef __APPLE__
+    (void)engine;
+    (void)model_path;
+    return false;
+#else
+    if (!engine || !model_path || !model_path[0]) return false;
+    char error[512] = {0};
+    engine->qwen_ple_store = g_host_ple
+        ? ds4_ple_store_open_host(g_host_ple, true, error, sizeof(error))
+        : qwen4exp_open_ple_env(model_path, error, sizeof(error));
     if (!engine->qwen_ple_store) {
         fprintf(stderr, "ds4: cannot open Qwen SSD-PLE sidecars: %s\n",
                 error[0] ? error : "unknown error");
@@ -39783,6 +39882,9 @@ static void model_apply_host_vocab(ds4_vocab *vocab) {
     vocab->dots3_endofsystem_id = h->dots3_endofsystem_id;
     vocab->dots3_endofuser_id = h->dots3_endofuser_id;
     vocab->dots3_endoftext_id = h->dots3_endoftext_id;
+    if (h->n_stop > DS4_HOST_MAX_STOPS) ds4_die("host stop set is too large");
+    vocab->n_stop = h->n_stop;
+    for (i = 0; i < h->n_stop; i++) vocab->stop[i] = h->stop[i];
 }
 
 static void vocab_free(ds4_vocab *vocab) {
@@ -40636,6 +40738,12 @@ char *ds4_token_text(ds4_engine *e, int token, size_t *len) {
 
 static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
     if (!vocab || token < 0) return false;
+    if (vocab->n_stop) {
+        for (uint32_t i = 0; i < vocab->n_stop; i++) {
+            if (token == vocab->stop[i]) return true;
+        }
+        return false;
+    }
     if (token == vocab->eos_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         /* The source EOS list includes next-user/tool-observation roles.
@@ -45744,6 +45852,10 @@ typedef struct {
     uint32_t ctx_cap;
     uint32_t cache_len;
     uint32_t mtp_cache_len;
+    /* Newest row a forward wrote and a restore's floor: what the SWA rings
+     * still hold for a rewind. */
+    uint32_t high;
+    uint32_t restored;
     uint64_t latent_cache_bytes;
     ds4_gpu_tensor *tokens;
     ds4_gpu_tensor *positions;
@@ -45817,6 +45929,10 @@ typedef struct {
     uint32_t cap;              /* prefill chunk rows */
     uint32_t ctx_cap;
     uint32_t cache_len;
+    /* Newest row a forward wrote and a restore's floor: what the SWA rings
+     * still hold for a rewind. */
+    uint32_t high;
+    uint32_t restored;
     uint32_t idx_sub;          /* indexer score sub-chunk (queries) */
     uint64_t cache_bytes;
     ds4_gpu_tensor *tokens;
@@ -45962,6 +46078,8 @@ typedef struct {
     uint32_t        layer_kv_cap[DS4_MAX_LAYER];
     uint64_t        kv_bytes;
     uint64_t        workspace_bytes;
+    /* Serial rewind bounds: the newest row written and the restore floor. */
+    uint32_t        high, restored;
 } ds4_exaone_gpu_graph;
 
 /* One row in a cross-bank decode.  Weight-bound stages run once over all
@@ -46549,6 +46667,7 @@ static bool exaone_graph_prefill_chunk(ds4_exaone_gpu_graph *g,
                                        bool want_logits) {
     if (n_tok == 0u || n_tok > g->prefill_cap) return false;
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    if (pos0 + n_tok > g->high) { g->high = pos0 + n_tok; }
 
     for (uint32_t t = 0; t < n_tok; t++) {
         ds4_gpu_tensor *row = ds4_gpu_tensor_view(
@@ -46581,6 +46700,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
                                 int token,
                                 uint32_t pos) {
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    if (pos + 1u > g->high) { g->high = pos + 1u; }
     if (!ds4_gpu_embed_token_quant_tensor(g->cur, m->map, m->size,
                                           w->token_embd->abs_offset,
                                           w->token_embd->type, DS4_N_VOCAB,
@@ -47524,6 +47644,32 @@ static ds4_exaone_batch_runtime *exaone_batch_runtime_create(
     return rt;
 }
 
+/* K2-Horizon has no LLLG ring: every row stays at its position. */
+static bool exaone_ringless(void) {
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (exaone_layer_is_sliding(il)) { return false; }
+    }
+    return true;
+}
+
+/* A ringless bank forks at any prefix: rows [0, pos) are exact. */
+static bool exaone_bank_fork(ds4_exaone_batch_runtime *rt, uint32_t src, uint32_t dst, uint32_t pos) {
+    if (!rt || !exaone_ringless() || src >= rt->max_seq || dst >= rt->max_seq ||
+        !pos || pos > rt->cache_len[src]) { return false; }
+    rt->bank_logits_valid[dst] = 0u;
+    if (src != dst) {
+        const ds4_exaone_gpu_graph *sg = &rt->graph[src];
+        const uint64_t row_bytes = sg->kv_dim * 2u * sizeof(uint16_t);
+        for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+            if (sg->layer_kv[il] && !ds4_gpu_tensor_copy(rt->graph[dst].layer_kv[il], 0, sg->layer_kv[il], 0,
+                                                         (uint64_t)pos * row_bytes)) { return false; }
+        }
+        if (!ds4_gpu_synchronize()) { return false; }
+    }
+    rt->cache_len[dst] = pos;
+    return true;
+}
+
 static bool exaone_batch_runtime_copy_bank(
         ds4_exaone_batch_runtime *rt, uint32_t src, uint32_t dst,
         uint32_t tokens) {
@@ -48064,6 +48210,17 @@ typedef struct ds4_dots3_spec ds4_dots3_spec;
 struct ds4_qwen35_gpu_graph;
 struct ds4_qwen35_ref_state;
 
+/* Copies of a serial session's recurrent state pool a rewind resumes from
+ * (serial_ckpt_capture). */
+enum { SERIAL_CKPTS = 2 };
+typedef struct {
+    ds4_gpu_tensor *slab;        /* SERIAL_CKPTS slots, mapped on demand */
+    uint64_t slot_bytes;
+    uint32_t pos[SERIAL_CKPTS];  /* 0: empty */
+    uint64_t gen[SERIAL_CKPTS];  /* the session generation it belongs to */
+    uint32_t aux[SERIAL_CKPTS][2]; /* family cursors beside the state */
+} ds4_serial_ckpt;
+
 struct ds4_session {
     ds4_engine *engine;
     ds4_dist_session *distributed;
@@ -48117,6 +48274,7 @@ struct ds4_session {
      * even after another context/bank fit changes the process environment. */
     uint32_t glm53_rows, glm53_window;
     bool glm53_graph_ready;
+    ds4_serial_ckpt rewind;
 #endif
     /* Prism Bonsai keeps its whole trunk in one struct per backend, both
      * defined further down next to their kernels' wrappers, so a session owns
@@ -49079,7 +49237,10 @@ static bool motif3_graph_forward_impl(
     }
 
     if (!host_logits) {
-        if (latent) g->cache_len = pos0 + rows;
+        if (latent) {
+            g->cache_len = pos0 + rows;
+            if (g->cache_len > g->high) { g->high = g->cache_len; }
+        }
         return true;
     }
 
@@ -49111,7 +49272,10 @@ static bool motif3_graph_forward_impl(
             (uint64_t)DS4_N_VOCAB * sizeof(host_logits[0])),
             "logits readback");
 #undef M3_FORWARD
-    if (latent) g->cache_len = pos0 + rows;
+    if (latent) {
+        g->cache_len = pos0 + rows;
+        if (g->cache_len > g->high) { g->high = g->cache_len; }
+    }
     return true;
 }
 
@@ -49972,6 +50136,7 @@ static bool dots3_graph_forward_chunk(
     }
 #undef D3_FORWARD
     g->cache_len = pos0 + rows;
+    if (g->cache_len > g->high) { g->high = g->cache_len; }
     return true;
 }
 
@@ -52696,6 +52861,8 @@ static int exaone_payload_restore_graph(
         free(tokens);
         return 1;
     }
+    /* The ring holds the saved window under n_tokens, no row above it. */
+    g->high = g->restored = n_tokens;
     *tokens_out = tokens;
     return 0;
 }
@@ -53082,7 +53249,9 @@ static int step37_payload_restore_graph(ds4_step37_graph *g, ds4_step37_spec *sp
         return 1;
     }
     g->position = n;
-    g->high_water = n;
+    /* Only the live window was restored: no rewind below n until new rows
+     * replenish the chunk slack (as the bank restore). */
+    g->high_water = n + g->cap;
     if (spec) {
         for (unsigned i = 0; i < STEP37_DRAFT_LAYERS; i++) {
             spec->draft.position[i] = base;
@@ -53223,6 +53392,7 @@ static int motif3_payload_restore_graph(
     }
     g->cache_len = n_tokens;
     g->mtp_cache_len = 0u;
+    g->high = g->restored = n_tokens;
     const uint64_t total = motif3_payload_bytes_for_graph(g, n_tokens);
     const uint64_t header_bytes =
         (uint64_t)DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t);
@@ -53447,6 +53617,7 @@ static int dots3_payload_restore_graph(
         return 1;
     }
     g->cache_len = n_tokens;
+    g->high = g->restored = n_tokens;
     const uint64_t base = dots3_payload_bytes_for_graph(g, n_tokens);
     const uint64_t total = base ? base + dots3_spec_payload_bytes(sp, n_tokens) : 0;
     const uint64_t header_bytes =
@@ -56824,6 +56995,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         if (s->motif3_graph_ready) {
             s->motif3_graph.cache_len = 0u;
             s->motif3_graph.mtp_cache_len = 0u;
+            s->motif3_graph.high = s->motif3_graph.restored = 0u;
         }
     } else if (ds4_session_is_dots3(s)) {
         s->checkpoint_valid = false;
@@ -56831,6 +57003,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->mtp_draft_valid = false;
         if (s->dots3_graph_ready) {
             s->dots3_graph.cache_len = 0u;
+            s->dots3_graph.high = s->dots3_graph.restored = 0u;
         }
         dots3_spec_reset(s->dots3_spec);
     } else if (ds4_session_is_exaone(s)) {
@@ -60156,23 +60329,29 @@ static uint64_t ds4_batch_slabs_bank_bytes(const ds4_gpu_graph *g, bool mtp, boo
  * derivation disclosed once per boot on its own line. */
 static uint64_t ds4_mem_floor_bytes(void);
 static uint64_t ds4_batch_fit_headroom_bytes(int ctx_size) {
-    const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
     (void)ctx_size;
-    if (he && he[0]) {
-        const long hv = atol(he);
-        if (hv >= 0) return (uint64_t)hv << 20;
+    uint64_t burst;
+    if (g_host_mem_set) {
+        if (!g_host_mem.batch_fit_derived) return g_host_mem.batch_fit_headroom;
+        burst = g_host_mem.batch_fit_burst;
+    } else {
+        const char *he = getenv("DS4_BATCH_FIT_HEADROOM_MB");
+        if (he && he[0]) {
+            const long hv = atol(he);
+            if (hv >= 0) return (uint64_t)hv << 20;
+        }
+        { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
+          if (de && de[0] == '0' && de[1] == '\0')
+              return 6144ull << 20; }      /* kill switch: the V7 static */
+        /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
+         * (cuBLASLt and MMQ kernel images the driver loads on first use). */
+        burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
+        { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
+          if (be && be[0]) {
+              const long bv = atol(be);
+              if (bv >= 0) burst = (uint64_t)bv << 20;
+          } }
     }
-    { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
-      if (de && de[0] == '0' && de[1] == '\0')
-          return 6144ull << 20; }      /* kill switch: the V7 static */
-    /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
-     * (cuBLASLt and MMQ kernel images the driver loads on first use). */
-    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
-    { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
-      if (be && be[0]) {
-          const long bv = atol(be);
-          if (bv >= 0) burst = (uint64_t)bv << 20;
-      } }
     const uint64_t floor = ds4_mem_floor_bytes();
     const uint64_t headroom = floor + burst;
     static int disclosed;              /* boot-path call sites only */
@@ -60349,6 +60528,7 @@ static bool ds4_batch_fit_kv_plan_enabled(void) {
  * serves as the A/B kill switch at 0).  Distinct from the fit headroom
  * above: headroom is a boot PLANNING margin, the floor is a LIVE line. */
 static uint64_t ds4_mem_floor_bytes(void) {
+    if (g_host_mem_set) return g_host_mem.floor_bytes;
     static uint64_t floor_b = UINT64_MAX;
     if (floor_b == UINT64_MAX) {
         uint64_t f = 4ull << 30;
@@ -60478,6 +60658,13 @@ void ds4_gov_modes_init(void) {
         DS4_GOV_MODE_ENFORCE,   /* SERIAL_SESSION   (D2-4)  */
         DS4_GOV_MODE_ENFORCE,   /* STATIC_BATCH     (D2-5)  */
     };
+    if (g_host_mem_set) {
+        for (int c = 0; c < DS4_GOVC__COUNT; c++) {
+            g_gov_mode[c] = g_host_mem.gov_mode[c];
+        }
+        g_gov_modes_ready = 1;
+        return;
+    }
     int gdef = -1;
     const char *g = getenv("DS4_MEMGOV");
     if (g && g[0]) {
@@ -61942,7 +62129,7 @@ static int exaone_batch_ctx_create_impl(
     for (uint32_t b = 0; b < ctx->max_seq; b++) ctx->bank_gen[b] = 1u;
     /* v0.6.2 Inc 3 recency array; see the Solar create note. */
     ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
-    ctx->supports_partial_reuse = ctx->exaone->checkpoint_slab != NULL;
+    ctx->supports_partial_reuse = ctx->exaone->checkpoint_slab != NULL || exaone_ringless();
     ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
     *out = ctx;
     return 0;
@@ -64989,6 +65176,16 @@ static void family_cont_publish_generated(
  * residual/MoE graph and select mutable state through bank-aware CUDA kernels.
  * The scalar one-bank path remains the correctness and low-concurrency fast
  * path; lifecycle, history, sampling, and callbacks are identical on both. */
+/* Static rows have no on_token listener, so they end at the host's stop
+ * set here; streaming rows leave every stop but EOS to the host, which
+ * sees the token text (Beam's <|call|> must reach its tool parser). */
+static bool host_static_stop(const ds4_batch_ctx *ctx,
+                             int (*on_token)(void *ud, void *user, int token),
+                             int token) {
+    return !on_token && ctx->e->vocab.n_stop &&
+           vocab_token_is_generation_stop(&ctx->e->vocab, token);
+}
+
 static int solar_engine_continuous_generate(
         ds4_batch_ctx *ctx,
         int (*admit)(void *ud, ds4_cont_request *req),
@@ -65377,7 +65574,7 @@ static int solar_engine_continuous_generate(
                     sb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == sb->eos;
+                    const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, sb->user, token);
                     if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -65472,7 +65669,7 @@ static int solar_engine_continuous_generate(
             sb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == sb->eos;
+            const bool hit_eos = token == sb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, sb->user, token);
             if (hit_eos || sb->generated_len >= sb->max_new || aborted) {
@@ -65613,6 +65810,13 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
         ctx->exaone->cache_len[bank] = 0u;
         ctx->exaone->bank_logits_valid[bank] = 0u;
     }
+}
+
+/* Banks whose rows all stay at their positions fork at any prefix. */
+static bool prefix_bank_fork(ds4_batch_ctx *ctx, uint32_t src, uint32_t dst, uint32_t pos) {
+    if (ctx->minimax) { return minimax_bank_fork(ctx->minimax, src, dst, pos); }
+    if (ctx->axk2) { return axk2_bank_fork(ctx->axk2, src, dst, pos); }
+    return exaone_bank_fork(ctx->exaone, src, dst, pos);
 }
 
 static bool family_banked_copy(
@@ -65974,7 +66178,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         emitted++;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         if (finish || aborted || cb->generated_len >= cb->max_new) {
             finished = true;
@@ -66035,7 +66239,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         cb->current = token;
         ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1);
         ds4_metrics_window_add(1, 0, 0);
-        finish = token == cb->eos;
+        finish = token == cb->eos || host_static_stop(ctx, on_token, token);
         const bool aborted = !finish && on_token && !on_token(ud, cb->user, token);
         finished = finish || aborted || cb->generated_len >= cb->max_new;
     }
@@ -66231,7 +66435,7 @@ static int family_banked_engine_continuous_generate(
                         forked = partial = true;
                     }
                 } else if (source_prefix &&
-                           requested_cached < source_frontier && ctx->exaone) {
+                           requested_cached < source_frontier && ctx->exaone && !exaone_ringless()) {
                     const int checkpoint = exaone_ckpt_find(
                         ctx->exaone, (uint32_t)src, requested_cached, (uint32_t)req.n);
                     uint32_t pos = 0;
@@ -66339,19 +66543,19 @@ static int family_banked_engine_continuous_generate(
                         forked = partial = true;
                     }
                 } else if (source_prefix &&
-                           requested_cached < source_frontier && (ctx->minimax || ctx->axk2)) {
-                    /* MiniMax and A.X-K2 caches are position-indexed: any
-                     * prefix of the source is exact. Keep one prompt row to
-                     * prefill so the bank produces the next logits. */
+                           requested_cached < source_frontier && (ctx->minimax || ctx->axk2 || ctx->exaone)) {
+                    /* MiniMax, A.X-K2 and K2-Horizon caches are position-
+                     * indexed: any prefix of the source is exact. Keep one
+                     * prompt row to prefill so the bank produces the next
+                     * logits. */
                     const uint32_t pos = requested_cached < (uint32_t)req.n
                         ? requested_cached : (uint32_t)req.n - 1u;
                     if (!pos) {
                         ctx->fork_rejects++;
-                    } else if (ctx->minimax ? !minimax_bank_fork(ctx->minimax, (uint32_t)src, b, pos)
-                                            : !axk2_bank_fork(ctx->axk2, (uint32_t)src, b, pos)) {
+                    } else if (!prefix_bank_fork(ctx, (uint32_t)src, b, pos)) {
                         ctx->bank_gen[b]++;
                         ctx->bank_hist_valid[b] = 0;
-                        FCG_ERR("continuous_generate: MiniMax prefix fork failed src=%d dst=%u", src, b);
+                        FCG_ERR("continuous_generate: prefix fork failed src=%d dst=%u", src, b);
                         ok = false;
                         break;
                     } else {
@@ -66788,7 +66992,7 @@ static int family_banked_engine_continuous_generate(
                     cb->stats.first_token_sec = now_sec();
                     ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                     ds4_metrics_window_add(1u, 0u, 0u);
-                    const bool hit_eos = token == cb->eos;
+                    const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                     const bool aborted = !hit_eos && on_token &&
                         !on_token(ud, cb->user, token);
                     if (hit_eos || cb->generated_len >= cb->max_new ||
@@ -66927,7 +67131,7 @@ static int family_banked_engine_continuous_generate(
             cb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
             ds4_metrics_window_add(1u, 1u, 0u);
-            const bool hit_eos = token == cb->eos;
+            const bool hit_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
             const bool aborted = !hit_eos && on_token &&
                 !on_token(ud, cb->user, token);
             if (hit_eos || cb->generated_len >= cb->max_new || aborted) {
@@ -66955,7 +67159,7 @@ static int family_banked_engine_continuous_generate(
                 cb->current = token;
                 ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
                 ds4_metrics_window_add(1u, 0u, 0u);
-                const bool next_eos = token == cb->eos;
+                const bool next_eos = token == cb->eos || host_static_stop(ctx, on_token, token);
                 const bool next_aborted = !next_eos && on_token &&
                     !on_token(ud, cb->user, token);
                 if (next_eos || cb->generated_len >= cb->max_new ||
@@ -73130,7 +73334,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
-    ds4_acquire_instance_lock();
+    if (!opt->host_policy) ds4_acquire_instance_lock();
 
     bool load_slice = opt->load_slice;
     uint32_t load_layer_start = opt->load_layer_start;
@@ -73411,7 +73615,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
-        model_open(&e->vision_model, opt->vision_path, true, false);
+        sidecar_model_open(&e->vision_model, g_host_vision_dir,
+                           opt->vision_path, true, false);
         if (v41_sidecar) {
             /* The sidecar carries the DeepSeek-ViT + aligner and the per-layer
              * image-row router bias (blk.N.exp_probs_b_vl).  Its own metadata
@@ -73436,7 +73641,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (snprintf(audio, sizeof(audio), "%.*saudio-q8_0.gguf", dir, opt->vision_path) >= (int)sizeof(audio)) {
                 ds4_die("MiMo VQ audio part path too long");
             }
-            model_open(&e->audio_model, audio, true, false);
+            sidecar_model_open(&e->audio_model, g_host_audio_dir,
+                               opt->audio_path ? opt->audio_path : audio, true, false);
             mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
@@ -73511,7 +73717,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4 &&
         opt->distributed.role == DS4_DISTRIBUTED_NONE) {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0])
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
             dspark_path = getenv("DS4_DSPARK_MODEL");
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
@@ -73532,7 +73738,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * this window so mtp names resolve by index and the layout check
          * above skips (the host already ran the expected-layout table). */
         if (g_host_mtp_bind_map) ds4_host_bind_map_install(g_host_mtp_bind_map);
-        model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
+        sidecar_model_open(&e->mtp_model, g_host_mtp_dir, opt->mtp_path,
+                           graph_backend, true);
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
             inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
             if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
@@ -73595,7 +73802,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
      * runs attach it without threading a flag through every tool yet. */
     {
         const char *dspark_path = opt->dspark_path;
-        if (!dspark_path || !dspark_path[0]) dspark_path = getenv("DS4_DSPARK_MODEL");
+        if ((!dspark_path || !dspark_path[0]) && !opt->host_policy)
+            dspark_path = getenv("DS4_DSPARK_MODEL");
         if (dspark_path && dspark_path[0] &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE) {
             /* The host dspark map indexes the flag path's tensor dir; an
@@ -73603,7 +73811,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              * explicit-path case installs it (the bridge sets both). */
             if (g_host_dspark_bind_map && opt->dspark_path && opt->dspark_path[0])
                 ds4_host_bind_map_install(g_host_dspark_bind_map);
-            model_open(&e->dspark_model, dspark_path, graph_backend, true);
+            sidecar_model_open(&e->dspark_model, g_host_dspark_dir, dspark_path,
+                               graph_backend, true);
             if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
                 ds4_str arch = {0};
                 if (e->mtp_draft_tokens > N05_DF_BLOCK - 1 ||
@@ -73739,7 +73948,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if (e->dspark_ready) {
             const char *dspark_prov = opt->dspark_path && opt->dspark_path[0]
-                ? opt->dspark_path : getenv("DS4_DSPARK_MODEL");
+                ? opt->dspark_path : opt->host_policy ? NULL : getenv("DS4_DSPARK_MODEL");
             (void)ds4_gpu_model_source_bind(e->dspark_model.map,
                                             e->dspark_model.size,
                                             DS4_MSRC_ROLE_DRAFTER,
@@ -73812,6 +74021,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
 #endif
         int model_map_ok = 0;
+        bool budget_ok = true; /* --mem-budget-mb L1 gate */
         if (opt->ssd_streaming) {
             ds4_model_map_span_vec spans;
             if (!glm53_stream_spans(&e->weights, &spans)) {
@@ -73877,8 +74087,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     load_end,
                     spans.len,
                     (double)span_bytes / 1073741824.0);
-            ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
-            model_map_ok = ds4_gpu_set_model_map_spans(e->model.map,
+            budget_ok = ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_spans(e->model.map,
                                                         e->model.size,
                                                         offsets,
                                                         sizes,
@@ -73908,16 +74118,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                         resident += spans.v[i].end - spans.v[i].off;
                     }
                     free(spans.v);
-                    ds4_l1_budget_gate(resident, 0);
+                    budget_ok = ds4_l1_budget_gate(resident, 0);
                 }
             } else {
-                ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
+                budget_ok = ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
             }
-            model_map_ok = ds4_gpu_set_model_map_range(e->model.map,
+            model_map_ok = budget_ok && ds4_gpu_set_model_map_range(e->model.map,
                                                        e->model.size,
                                                        e->model.tensor_data_pos,
                                                        e->model.size - e->model.tensor_data_pos,
                                                        e->model.max_tensor_bytes);
+        }
+        if (!budget_ok) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
         }
         if (!model_map_ok) {
             fprintf(stderr,
@@ -74298,8 +74513,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #ifdef __GLIBC__
     /* Freed load buffers (16 MiB O_DIRECT reads per part) stay in glibc's
      * arenas once its mmap threshold rises: 0.75 GiB of a Ling-3.1 server's
-     * RSS. Return them before callers fit banks from free memory. */
-    malloc_trim(0);
+     * RSS. Return them before callers fit banks from free memory; a Rust
+     * host trims after open returns. */
+    if (!opt->host_policy) malloc_trim(0);
 #endif
 
     *out = e;
@@ -74395,22 +74611,43 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     ds4_glm53_vision_host host = {0};
     if (!glm53_vision_host_prepare(
             encoded, encoded_len, &host, error, error_cap)) return 0;
-    float *embedding = xmalloc((size_t)host.info.token_count * 4096u * sizeof(float));
-    const ds4_vision_image_info info = host.info;
-    const int ok = ds4_gpu_glm53_vision_encode(
-            embedding, host.patches, host.info.grid_height,
-            host.info.grid_width, e->vision_model.map, e->vision_model.size,
-            &e->vision_weights);
+    const int ok = ds4_engine_vision_encode_patches(
+            e, host.patches, host.info.grid_height, host.info.grid_width,
+            out, error, error_cap);
     glm53_vision_host_free(&host);
-    if (!ok) {
+    return ok;
+#endif
+}
+
+int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
+                                     uint32_t grid_h, uint32_t grid_w,
+                                     ds4_vision_embedding *out,
+                                     char *error, size_t error_cap) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+#ifdef DS4_NO_GPU
+    (void)e; (void)patches; (void)grid_h; (void)grid_w;
+    if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
+    return 0;
+#else
+    const uint64_t token_count = (uint64_t)grid_h * grid_w / 4u;
+    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        !patches || (grid_h & 1u) || (grid_w & 1u) || token_count == 0u || token_count > 8000u) {
+        if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready or the grid is invalid");
+        return 0;
+    }
+    float *embedding = xmalloc((size_t)token_count * 4096u * sizeof(float));
+    if (!ds4_gpu_glm53_vision_encode(
+            embedding, patches, grid_h, grid_w, e->vision_model.map,
+            e->vision_model.size, &e->vision_weights)) {
         free(embedding);
         if (error && error_cap) snprintf(error, error_cap, "GLM-5.3 vision encoding failed");
         return 0;
     }
     out->data = embedding;
-    out->token_count = info.token_count;
-    out->grid_width = info.grid_width;
-    out->grid_height = info.grid_height;
+    out->token_count = (uint32_t)token_count;
+    out->grid_width = grid_w;
+    out->grid_height = grid_h;
     return 1;
 #endif
 }
@@ -74623,8 +74860,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
                                           uint32_t ctx_size,
                                           uint32_t prefill_cap,
                                           bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
 
     const ds4_context_memory plan =
         solar_graph_context_memory_estimate(backend, ctx_size);
@@ -74644,12 +74880,7 @@ static bool solar_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long v = atol(he);
-        if (v >= 0) headroom = (uint64_t)v << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74676,8 +74907,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
                                            uint32_t ctx_size,
                                            uint32_t prefill_cap,
                                            bool loud) {
-    const char *fe = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fe && fe[0] == '0' && fe[1] == '\0') return true;
+    if (ds4_session_graph_fit_off()) return true;
     if (backend != DS4_BACKEND_CUDA || ctx_size > DS4_ROPE_ORIG_CTX) {
         return false;
     }
@@ -74700,12 +74930,7 @@ static bool exaone_graph_session_fit_check(ds4_backend backend,
     const uint64_t sub_out = ds4_gpu_substrate_outstanding();
     free_b = free_b > sub_out ? free_b - sub_out : 0u;
 
-    uint64_t headroom = 1024ull << 20;
-    const char *he = getenv("DS4_SESSION_GRAPH_HEADROOM_MB");
-    if (he && he[0]) {
-        const long value = atol(he);
-        if (value >= 0) headroom = (uint64_t)value << 20;
-    }
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
     const bool fits = plan.total_bytes <= UINT64_MAX - headroom &&
                       free_b >= plan.total_bytes + headroom;
     if (fits) return true;
@@ -74741,8 +74966,7 @@ static bool glm53_graph_session_fit_check(
     if (q) memset(q, 0, sizeof(*q));
     const uint64_t plan = glm53_session_bytes(ctx_size, rows, window, mtp);
     if (backend != DS4_BACKEND_CUDA || plan == 0u) return false;
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74782,8 +75006,7 @@ static bool qwen4exp_graph_session_fit_check(ds4_backend backend,
                                               bool loud,
                                               ds4_session_graph_fit_quote *q) {
     if (q) memset(q, 0, sizeof(*q));
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
-    if (fit && fit[0] == '0' && fit[1] == '\0') {
+    if (ds4_session_graph_fit_off()) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74860,9 +75083,8 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = iquest_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; } return true;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74887,9 +75109,8 @@ static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling31_memory(ctx, cap).total_bytes + ling31_mtp_bytes(ctx, ling31_session_drafts(e));
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74915,9 +75136,8 @@ static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = beam_memory(ctx, cap).total_bytes + (beam_drafting(e) ? beam_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74938,9 +75158,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = axk2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74959,9 +75178,8 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 // The serial graph's chunk, halved like a bank's until it fits beside the
 // session headroom.
 static uint32_t axk2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if (e->backend != DS4_BACKEND_CUDA || (fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (e->backend != DS4_BACKEND_CUDA || ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         return cap;
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
@@ -74974,9 +75192,8 @@ static bool minimax_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = minimax_memory(ctx, cap).total_bytes + (minimax_drafting(e) ? minimax_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -74997,9 +75214,8 @@ static bool naive_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = naive_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75020,9 +75236,8 @@ static bool mimo2_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = mimo2_memory(ctx, cap).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75045,9 +75260,8 @@ static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     const uint64_t need = step37_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75085,9 +75299,8 @@ static bool ling3vl_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     const uint64_t need = ling3vl_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
@@ -75116,9 +75329,8 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     if (e->backend != DS4_BACKEND_CUDA || !need) {
         return false;
     }
-    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     uint64_t available = 0, total = 0;
-    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+    if (ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
         if (q) {
             q->fits = 1;
             q->fail_open = 1;
@@ -76240,6 +76452,8 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
+        ds4_gpu_tensor_free(s->rewind.slab);
+        memset(&s->rewind, 0, sizeof(s->rewind));
         if (ds4_session_is_iquest(s)) {
             iquest_graph_free(&s->iquest_graph); s->iquest_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -76865,6 +77079,158 @@ static bool glm53_vision_spans_validate(
 }
 
 #ifndef DS4_NO_GPU
+/* Serial rewind (AGENTS.md serving contract). Agent clients re-render the
+ * last answer, so a prompt that leaves the live state resumes at its common
+ * prefix where the family's state allows instead of prefilling from zero:
+ *
+ *   live  [ common prefix | old branch ......... high )
+ *   keep  [ common prefix )  re-prefill the new tail from there
+ *
+ * Positional rows below the prefix are untouched. A sliding ring must still
+ * hold the window under it; recurrent state needs a checkpoint at or below
+ * it. Each family's keep function answers both the host (ds4_session_sync_
+ * keep) and its own sync, so the rows reported are the rows resumed. */
+
+/* Rows before family limits: the common prefix, one less when the prompt
+ * ends inside the state (its last token re-runs for the logits); the live
+ * length for an extension. */
+static uint32_t session_keep_prefix(ds4_session *s, const ds4_tokens *prompt) {
+    const uint32_t live = (uint32_t)s->checkpoint.len;
+    uint32_t common = (uint32_t)ds4_session_common_prefix(s, prompt);
+    if (common && common < live && common == (uint32_t)prompt->len) { common--; }
+    return common;
+}
+
+/* Whether a sliding ring of `ring` rows, written up to `high`, still holds the
+ * `window` rows under `k`. Rows an abandoned branch wrote at or past k
+ * displaced the oldest once the ring wrapped; a restore brings back only
+ * the window under `restored`. */
+static bool ring_holds(uint32_t ring, uint32_t window, uint32_t high,
+                       uint32_t restored, uint32_t k) {
+    if (k < restored) { return false; }
+    return high <= k || high <= ring || (ring > window && high - k <= ring - window);
+}
+
+/* Recurrent state (KDA, linear attention) has no positional index to cut
+ * back: a rewind resumes from a copy of the family's state pool. A sync
+ * takes one where its final chunk starts and one at its end; a resent turn
+ * resumes at the first, a re-rendered continuation at the second. A copy
+ * belongs to the generation it was taken in: invalidate, rebuild and
+ * restore move the generation, a rewind re-tags the copies it keeps. Slots
+ * map on demand beyond the operator floor; a skipped copy only means a
+ * rebuild. */
+static bool serial_ckpt_live(const ds4_session *s, int i) {
+    return s->rewind.pos[i] && s->rewind.gen[i] == s->generation;
+}
+
+/* The deepest live copy at or below `limit` and the live rows, or -1. */
+static int serial_ckpt_find(const ds4_session *s, uint32_t limit) {
+    int best = -1;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (!serial_ckpt_live(s, i) || s->rewind.pos[i] > limit ||
+            s->rewind.pos[i] > (uint32_t)s->checkpoint.len) { continue; }
+        if (best < 0 || s->rewind.pos[i] > s->rewind.pos[best]) { best = i; }
+    }
+    return best;
+}
+
+/* One tensor span of a family's recurrent state, copied in list order. */
+typedef struct {
+    ds4_gpu_tensor *tensor;
+    uint64_t bytes;
+} serial_part;
+
+/* Copies the state after `pos` rows (its `n` parts) into a dead slot or the
+ * shallowest live one; returns the slot or -1. */
+static int serial_ckpt_capture(ds4_session *s, const serial_part *parts, uint32_t n,
+                               uint32_t pos) {
+    ds4_serial_ckpt *c = &s->rewind;
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!parts[i].tensor || !parts[i].bytes) { return -1; }
+        bytes += parts[i].bytes;
+    }
+    if (!bytes || !pos) { return -1; }
+    int slot = -1;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (serial_ckpt_live(s, i) && c->pos[i] == pos) { return i; }
+        if (slot < 0 || !serial_ckpt_live(s, i) ||
+            (serial_ckpt_live(s, slot) && c->pos[i] < c->pos[slot])) { slot = i; }
+    }
+    if (!c->slab || c->slot_bytes != bytes) {
+        ds4_gpu_tensor_free(c->slab);
+        memset(c, 0, sizeof(*c));
+        c->slab = ds4_gpu_tensor_reserve((uint64_t)SERIAL_CKPTS * bytes);
+        if (!c->slab) { return -1; }
+        c->slot_bytes = bytes;
+    }
+    const uint64_t base = (uint64_t)slot * bytes;
+    if (batch_span_need(c->slab, base, bytes) > ds4_mem_usable_beyond(0) ||
+        !ds4_gpu_tensor_ensure(c->slab, base, bytes)) { return -1; }
+    // A failed copy must never leave a slot naming half-replaced state. The
+    // copy is a driver memcpy: no chained launch may be in flight around it.
+    c->pos[slot] = 0;
+    if (!ds4_gpu_synchronize()) { return -1; }
+    uint64_t at = base;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!ds4_gpu_tensor_copy(c->slab, at, parts[i].tensor, 0, parts[i].bytes)) { return -1; }
+        at += parts[i].bytes;
+    }
+    if (!ds4_gpu_synchronize()) { return -1; }
+    c->pos[slot] = pos;
+    c->gen[slot] = s->generation;
+    c->aux[slot][0] = c->aux[slot][1] = 0;
+    return slot;
+}
+
+static bool serial_ckpt_restore(const ds4_session *s, int slot, const serial_part *parts,
+                                uint32_t n) {
+    const ds4_serial_ckpt *c = &s->rewind;
+    const uint64_t base = (uint64_t)slot * c->slot_bytes;
+    uint64_t at = base;
+    if (!ds4_gpu_synchronize()) { return false; }
+    for (uint32_t i = 0; i < n; i++) {
+        if (!ds4_gpu_tensor_copy(parts[i].tensor, 0, c->slab, at, parts[i].bytes)) { return false; }
+        at += parts[i].bytes;
+    }
+    return at - base == c->slot_bytes && ds4_gpu_synchronize();
+}
+
+/* The live state now ends at `keep`: content below the old length changed,
+ * so the generation moves, as the host plan's does. Recurrent copies at or
+ * below keep still describe this state; deeper ones the old branch. */
+static void session_rewound(ds4_session *s, uint32_t keep) {
+    const uint64_t was = s->generation;
+    s->checkpoint.len = (int)keep;
+    s->mtp_draft_valid = false;
+    s->generation++;
+    for (int i = 0; i < SERIAL_CKPTS; i++) {
+        if (s->rewind.gen[i] == was && s->rewind.pos[i] <= keep) { s->rewind.gen[i] = s->generation; }
+    }
+}
+
+/* GLM-5.3: DSA latent and pool rows keep every position; the KDA state, the
+ * pools' incomplete groups and the MTP cursors resume from a copy at or below
+ * the common prefix. */
+static uint32_t glm53_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_glm53_gpu_graph *g = &s->glm53_graph;
+    if (!s->glm53_graph_ready || !s->checkpoint_valid || g->mtp_trial_n ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
+/* A copy of the GLM state after `pos` rows, with its MTP cursors. */
+static void glm53_sync_capture(ds4_session *s, uint32_t pos) {
+    ds4_glm53_gpu_graph *g = &s->glm53_graph;
+    const int slot = serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, pos);
+    if (slot < 0) { return; }
+    s->rewind.aux[slot][0] = g->mtp_len;
+    s->rewind.aux[slot][1] = g->mtp_min;
+}
+
 static int ds4_session_sync_glm53(
         ds4_session *s,
         const ds4_tokens *prompt,
@@ -76898,14 +77264,21 @@ static int ds4_session_sync_glm53(
         }
     }
 
-    int start = 0;
-    if (span_count == 0u && s->checkpoint_valid &&
-        g->cache_len == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len &&
-        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = s->checkpoint.len;
+    int start = span_count == 0u ? (int)glm53_sync_keep(s, prompt) : 0;
+    const int slot = start && start < s->checkpoint.len
+        ? serial_ckpt_find(s, (uint32_t)start) : -1;
+    if (start && start >= s->checkpoint.len) {
         if (start == prompt->len) return 0;
+    } else if (slot >= 0 &&
+               serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+        g->cache_len = (uint32_t)start;
+        g->last_rows = 0u;
+        g->mtp_len = s->rewind.aux[slot][0];
+        g->mtp_min = s->rewind.aux[slot][1];
+        g->mtp_rewind_n = g->mtp_rewind_epoch = 0u;
+        session_rewound(s, (uint32_t)start);
     } else {
+        start = 0;
         s->generation++;
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -76935,6 +77308,8 @@ static int ds4_session_sync_glm53(
             if (pos + rows == end) { span_index++; }
         }
         const bool last = pos + rows == (uint32_t)prompt->len;
+        // Where the final chunk starts: a resent turn resumes here.
+        if (last && span_count == 0u && pos > (uint32_t)start) { glm53_sync_capture(s, pos); }
         if (!glm53_graph_prefill(g, &e->model, &e->weights,
                 prompt->v + pos, rows, pos, embedding, last ? s->logits : NULL)) {
             snprintf(err, errlen, "GLM-5.3 prefill failed at position %u", pos);
@@ -76948,6 +77323,8 @@ static int ds4_session_sync_glm53(
             s->progress(s->progress_ud, "prefill_chunk", (int)pos, prompt->len);
         }
     }
+    // The prompt's end: a re-rendered continuation resumes here.
+    if (span_count == 0u) { glm53_sync_capture(s, (uint32_t)prompt->len); }
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
@@ -76993,6 +77370,19 @@ static bool ling3vl_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the Ling state keeps for a text `prompt`; 0 rebuilds. Latent rows
+ * keep every position; the KDA state resumes from a copy at or below the
+ * common prefix. Media states rebuild. */
+static unsigned ling3vl_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_ling3vl_graph *g = &s->ling3vl_graph;
+    if (!s->ling3vl_graph_ready || !s->checkpoint_valid || g->failed ||
+        s->ling3vl_media.count || g->position != (unsigned)s->checkpoint.len) { return 0; }
+    const unsigned keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
 static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                 const ds4_ling3vl_media *media, char *err,
                                 size_t errlen) {
@@ -77014,14 +77404,16 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
         payload_set_err(err, errlen, "Ling graph is not initialized");
         return 1;
     }
-    unsigned start = 0u;
-    if (!media && !s->ling3vl_media.count && s->checkpoint_valid && !g->failed &&
-        g->position == (unsigned)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len &&
-        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
+    unsigned start = media ? 0u : ling3vl_sync_keep(s, prompt);
+    const int slot = start && start < (unsigned)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
+    if (start && start >= (unsigned)s->checkpoint.len) {
         if (start == (unsigned)prompt->len) { return 0; }
+    } else if (slot >= 0 &&
+               serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+        g->position = g->high_water = start;
+        session_rewound(s, start);
     } else {
+        start = 0u;
         ds4_session_invalidate(s);
         if (media) { s->ling3vl_media = *media; }
         if (g->failed) {
@@ -77029,9 +77421,15 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
             return 1;
         }
     }
+    const unsigned resume = start;
+    const bool text = !s->ling3vl_media.count;
     while (start < (unsigned)prompt->len) {
         unsigned n = (unsigned)prompt->len - start;
         if (n > g->cap) { n = g->cap; }
+        // Where the final chunk starts: a resent turn resumes here.
+        if (text && start > resume && start + n == (unsigned)prompt->len) {
+            (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, start);
+        }
         if (!ling3vl_forward(g, &s->engine->model, &s->engine->weights,
                              prompt->v + start, n, start)) {
             return ling3vl_session_fail(s, err, errlen);
@@ -77042,6 +77440,8 @@ static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
         }
     }
     if (!ling3vl_read_logits(s)) { return ling3vl_session_fail(s, err, errlen); }
+    // The prompt's end: a re-rendered continuation resumes here.
+    if (text) { (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, start); }
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
@@ -77104,6 +77504,22 @@ static bool step37_read_logits(ds4_session *s) {
     return true;
 }
 
+/* Rows the Step state keeps for a text `prompt`; 0 rebuilds. Full layers
+ * keep every position and the widened SWA ring the window under a resume
+ * row one chunk below the newest written. MTP predictor rings and media
+ * states rebuild. */
+static unsigned step37_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_step37_graph *g = &s->step37_graph;
+    if (!s->step37_graph_ready || !s->checkpoint_valid || g->failed || s->step37_trial_n ||
+        s->step37_media.count || g->position != (unsigned)s->checkpoint.len) { return 0; }
+    const unsigned keep = session_keep_prefix(s, prompt);
+    if (keep == g->position) {
+        return !s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
+                                         s->step37_spec.position == g->position) ? keep : 0;
+    }
+    return !s->engine->mtp_ready && step37_holds(g, keep) ? keep : 0;
+}
+
 static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                 const ds4_step37_media *media, char *err, size_t errlen) {
     if (!prompt->v || s->step37_trial_n) {
@@ -77123,14 +77539,12 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
         payload_set_err(err, errlen, "Step graph is not initialized");
         return 1;
     }
-    unsigned start = 0;
-    if (!media && !s->step37_media.count && s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
-        (!s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
-                                 s->step37_spec.position == g->position)) &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (unsigned)s->checkpoint.len;
-        if (start == (unsigned)prompt->len) { return 0; }
-    } else {
+    unsigned start = media ? 0 : step37_sync_keep(s, prompt);
+    if (start && start == (unsigned)prompt->len) { return 0; }
+    if (start && start < (unsigned)s->checkpoint.len) {
+        if (!step37_rewind(g, start)) { return step37_session_fail(s, err, errlen); }
+        session_rewound(s, start);
+    } else if (!start) {
         ds4_session_invalidate(s);
         if (media) { s->step37_media = *media; }
         if (g->failed || (s->engine->mtp_ready && !step37_spec_valid(&s->step37_spec))) {
@@ -77581,6 +77995,158 @@ static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errl
     return rc;
 }
 
+#ifndef DS4_NO_GPU
+/* Motif-3: full layers keep every position; SWA rings must still hold the
+ * window under the resume row. */
+static uint32_t motif3_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_motif3_gpu_graph *g = &s->motif3_graph;
+    if (!s->checkpoint_valid || !s->motif3_graph_ready ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    uint32_t ring = g->ctx_cap;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->layer_cache_cap[il] && g->layer_cache_cap[il] < ring) { ring = g->layer_cache_cap[il]; }
+    }
+    return ring_holds(ring, DS4_N_SWA + 1u, g->high, g->restored, keep) ? keep : 0;
+}
+
+/* EXAONE: global layers keep every position; LLLG sliding rings must still
+ * hold the window under the resume row. K2-Horizon has no ring. */
+static uint32_t exaone_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_exaone_gpu_graph *g = &s->exaone_graph;
+    if (!s->exaone_graph_ready || !s->checkpoint_valid) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == (uint32_t)s->checkpoint.len) { return keep; }
+    uint32_t ring = g->ctx_size;
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (g->layer_kv[il] && exaone_graph_layer_is_sliding(il) && g->layer_kv_cap[il] < ring) {
+            ring = g->layer_kv_cap[il];
+        }
+    }
+    if (ring >= g->ctx_size) { return keep; }
+    // A row attends to itself and the DS4_N_SWA - 1 rows under it.
+    return ring_holds(ring, DS4_N_SWA - 1u, g->high, g->restored, keep) ? keep : 0;
+}
+
+/* Solar: GQA rows keep every position; the KDA state and its conv rings
+ * resume from a copy at or below the common prefix. */
+static uint32_t solar_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    if (!s->solar_graph_ready || !s->checkpoint_valid || !s->solar_state_valid) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == (uint32_t)s->checkpoint.len) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0 : s->rewind.pos[slot];
+}
+
+/* Qwen4Exp: QSA rows keep every position; the GDN conv and recurrent states
+ * and the PLE conv rows (the bank checkpoints' parts, in their order) resume
+ * from a copy at or below the common prefix. Image states rebuild. */
+static uint32_t qwen4exp_rewind_parts(ds4_qwen_gpu_graph *g, serial_part *parts) {
+    uint32_t n = 0;
+    parts[n++] = (serial_part){g->ple.conv_state, ds4_gpu_tensor_bytes(g->ple.conv_state)};
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (ds4_qwen4exp_layer_is_full_attention(il)) { continue; }
+        const ds4_qwen_gdn_state *st = &g->gdn_state[il];
+        parts[n++] = (serial_part){st->conv, ds4_gpu_tensor_bytes(st->conv)};
+        parts[n++] = (serial_part){st->recurrent, ds4_gpu_tensor_bytes(st->recurrent)};
+    }
+    return n;
+}
+
+static uint32_t qwen4exp_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_qwen_gpu_graph *g = &s->qwen_graph;
+    if (!s->qwen_graph_ready || !s->checkpoint_valid ||
+        g->length != (uint32_t)s->checkpoint.len) { return 0; }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->length) { return keep; }
+    if (g->image_count) { return 0; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0 : s->rewind.pos[slot];
+}
+
+/* A copy of the Qwen state after `pos` rows. */
+static void qwen4exp_sync_capture(ds4_session *s, uint32_t pos) {
+    serial_part parts[1 + 2 * DS4_MAX_LAYER];
+    const uint32_t n = qwen4exp_rewind_parts(&s->qwen_graph, parts);
+    (void)serial_ckpt_capture(s, parts, n, pos);
+}
+
+/* The state back at `pos` rows from copy `slot`, as a same-bank checkpoint
+ * restore: QSA rows cut back, the PLE hash from the kept tokens, MTP
+ * history restarted (drafts only). */
+static bool qwen4exp_rewind(ds4_session *s, int slot, uint32_t pos) {
+    ds4_qwen_gpu_graph *g = &s->qwen_graph;
+    serial_part parts[1 + 2 * DS4_MAX_LAYER];
+    const uint32_t n = qwen4exp_rewind_parts(g, parts);
+    const ds4_ple_hash_config *hash = ds4_ple_store_hash_config(s->engine->qwen_ple_store);
+    if (!hash || !pos || !serial_ckpt_restore(s, slot, parts, n)) { return false; }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!ds4_qwen4exp_layer_is_full_attention(il)) { continue; }
+        if (g->qsa_state[il].length < pos) { return false; }
+        g->qsa_state[il].length = pos;
+    }
+    ds4_ple_hash_state_reset(&g->ple.hash_state, hash);
+    if (pos >= 2u) { g->ple.hash_state.previous[0] = s->checkpoint.v[pos - 2u]; }
+    g->ple.hash_state.previous[1] = s->checkpoint.v[pos - 1u];
+    g->ple.prepared_rows = 0u;
+    g->length = pos;
+    if (g->mtp_enabled && !qwen4exp_qsa_state_reset(&g->mtp_qsa_state)) { return false; }
+    g->mtp_pending_valid = false;
+    qwen_mtp_vocab_reset(g);
+    return true;
+}
+
+/* dots3: full layers and DSA keys keep every position; SWA rings must still
+ * hold the window under the resume row, which drops to the prefill grid as
+ * an extension's tail does (MoE-tier parity). An MTP predictor needs the
+ * target's hidden row under it, which nothing keeps: it rebuilds. */
+static uint32_t dots3_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_dots3_gpu_graph *g = &s->dots3_graph;
+    if (!s->checkpoint_valid || !s->dots3_graph_ready ||
+        g->cache_len != (uint32_t)s->checkpoint.len) { return 0; }
+    uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->cache_len) { return keep; }
+    if (s->dots3_spec || !s->prefill_cap) { return 0; }
+    keep -= keep % s->prefill_cap;
+    uint32_t ring = g->ctx_cap;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->layer_cache_cap[il] && g->layer_cache_cap[il] < ring) { ring = g->layer_cache_cap[il]; }
+    }
+    return ring_holds(ring, DS4_N_SWA, g->high, g->restored, keep) ? keep : 0;
+}
+#endif
+
+/* Rows of the live serial state a sync of `tokens` keeps when they do not
+ * extend it: the common prefix, lowered to where the family's state can
+ * resume (ring windows, recurrent checkpoints); 0 rebuilds. -1 when the
+ * family resumes only on extension, which the host plans itself. The host
+ * asks rather than mirroring high-water marks and checkpoint positions. */
+int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
+    if (!s || !tokens || n_tokens <= 0) { return -1; }
+#ifndef DS4_NO_GPU
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    if (ds4_session_is_mimo2(s)) {
+        return s->mimo2_graph_ready ? (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt) : 0;
+    }
+    if (ds4_session_is_axk2(s)) { return s->axk2_graph_ready ? (int)axk2_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_minimax(s)) { return s->minimax_graph_ready ? (int)minimax_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_beam(s)) { return s->beam_graph_ready ? (int)beam_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_naive(s)) { return s->naive_graph_ready ? (int)naive_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_motif3(s)) { return (int)motif3_sync_keep(s, &prompt); }
+    if (ds4_session_is_exaone(s)) { return (int)exaone_sync_keep(s, &prompt); }
+    if (ds4_session_is_dots3(s)) { return (int)dots3_sync_keep(s, &prompt); }
+    if (ds4_session_is_step37(s)) { return (int)step37_sync_keep(s, &prompt); }
+    if (ds4_session_is_iquest(s)) { return s->iquest_graph_ready ? (int)iquest_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_ling3vl(s)) { return (int)ling3vl_sync_keep(s, &prompt); }
+    if (ds4_session_is_solar(s)) { return (int)solar_sync_keep(s, &prompt); }
+    if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
+    if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
+#endif
+    return -1;
+}
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
@@ -77613,17 +78179,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             snprintf(err, errlen, "Motif-3 latent session is not initialized");
             return 1;
         }
-        int start = 0;
-        if (s->checkpoint_valid &&
-            s->motif3_graph.cache_len == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        int start = (int)motif3_sync_keep(s, prompt);
+        if (!start) {
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
             s->motif3_graph.cache_len = 0;
+            s->motif3_graph.high = s->motif3_graph.restored = 0;
+        } else if (start == prompt->len) {
+            return 0;
+        } else if (start < s->checkpoint.len) {
+            s->motif3_graph.cache_len = (uint32_t)start;
+            session_rewound(s, (uint32_t)start);
         }
         while (start < prompt->len) {
             uint32_t rows = (uint32_t)(prompt->len - start);
@@ -77662,17 +78228,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (err && errlen) { snprintf(err, errlen, "commit dots3 trial before sync"); }
             return 1;
         }
-        int start = 0;
-        if (s->checkpoint_valid &&
-            s->dots3_graph.cache_len == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        int start = (int)dots3_sync_keep(s, prompt);
+        if (!start) {
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
             s->dots3_graph.cache_len = 0;
+            s->dots3_graph.high = s->dots3_graph.restored = 0;
+        } else if (start == prompt->len) {
+            return 0;
+        } else if (start < s->checkpoint.len) {
+            s->dots3_graph.cache_len = (uint32_t)start;
+            session_rewound(s, (uint32_t)start);
         }
         /* Plain sessions replay a partial chunk; MTP needs matching teacher rows. */
         const uint32_t tail = (uint32_t)start % s->prefill_cap;
@@ -77846,14 +78412,15 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        int start = 0;
-        if (s->checkpoint_valid &&
-            g->length == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
+        int start = (int)qwen4exp_sync_keep(s, prompt);
+        const int slot = start && start < s->checkpoint.len
+            ? serial_ckpt_find(s, (uint32_t)start) : -1;
+        if (start && start >= s->checkpoint.len) {
             if (start == prompt->len) return 0;
+        } else if (slot >= 0 && qwen4exp_rewind(s, slot, (uint32_t)start)) {
+            session_rewound(s, (uint32_t)start);
         } else {
+            start = 0;
             s->generation++;
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
@@ -77870,6 +78437,10 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             const uint32_t rows = qwen4exp_prefill_rows(
                 remain, s->prefill_cap, start == first_start);
             const bool last = rows == remain;
+            // Where the final chunk starts: a resent turn resumes here.
+            if (last && start > first_start && !g->image_count) {
+                qwen4exp_sync_capture(s, (uint32_t)start);
+            }
             uint32_t next_rows = remain - rows;
             if (next_rows > s->prefill_cap) next_rows = s->prefill_cap;
             if (!qwen4exp_graph_forward_chunk(
@@ -77898,6 +78469,8 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (s->progress)
                 s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
         }
+        // The prompt's end: a re-rendered continuation resumes here.
+        if (!g->image_count) { qwen4exp_sync_capture(s, (uint32_t)start); }
         ds4_tokens_copy(&s->checkpoint, prompt);
         s->checkpoint_valid = true;
         return 0;
@@ -77916,19 +78489,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        /* Reuse an extending prefix, or a diverged prefix whose preceding
-         * sliding window is still resident in the widened ring. Client-side
-         * replay can retokenize the latest assistant turn, so exact extension
-         * alone would turn a small tail rewrite into a full cold prefill. */
-        int start = 0;
-        if (s->checkpoint_valid) {
-            const int live = s->checkpoint.len;
-            const int common = ds4_session_common_prefix(s, prompt);
-            const int span = ds4_session_exaone_rewind_span(s);
-            start = common;
-            if (start > 0 && start == prompt->len) start = prompt->len - 1;
-            if (live - start > span) start = 0;
-            if (common < live) s->generation++;
+        int start = (int)exaone_sync_keep(s, prompt);
+        if (start && start == prompt->len) { return 0; }
+        if (!start) {
+            if (s->checkpoint_valid) { s->generation++; }
+            g->high = g->restored = 0;
+        } else if (start < s->checkpoint.len) {
+            session_rewound(s, (uint32_t)start);
         }
         s->checkpoint.len = start;
         s->mtp_draft_valid = false;
@@ -77966,14 +78533,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             return 1;
         }
 
-        int start = 0;
-        if (s->checkpoint_valid && s->solar_state_valid &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
+        int start = (int)solar_sync_keep(s, prompt);
+        const int slot = start && start < s->checkpoint.len
+            ? serial_ckpt_find(s, (uint32_t)start) : -1;
+        if (start && start >= s->checkpoint.len) {
             s->mtp_draft_valid = false;
             if (start == prompt->len) return 0;
+        } else if (slot >= 0 &&
+                   serial_ckpt_restore(s, slot, &(serial_part){g->state_pool, g->state_bytes}, 1)) {
+            session_rewound(s, (uint32_t)start);
         } else {
+            start = 0;
             s->generation++;   /* non-extending sync rebuilds content */
             s->checkpoint_valid = false;
             s->checkpoint.len = 0;
@@ -77992,6 +78562,10 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             uint32_t n = (uint32_t)prompt->len - done;
             if (n > s->prefill_cap) n = s->prefill_cap;
             const bool last = done + n == (uint32_t)prompt->len;
+            // Where the final chunk starts: a resent turn resumes here.
+            if (last && done > (uint32_t)start) {
+                (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, done);
+            }
             if (!solar_graph_prefill_chunk(g, &e->model, &e->weights,
                                            prompt->v + done, n, done, last)) {
                 if (errlen) {
@@ -78024,6 +78598,8 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             (void)solar_graph_reset_state(g);
             return 1;
         }
+        // The prompt's end: a re-rendered continuation resumes here.
+        (void)serial_ckpt_capture(s, &(serial_part){g->state_pool, g->state_bytes}, 1, done);
         ds4_tokens_copy(&s->checkpoint, prompt);
         s->checkpoint_valid = true;
         s->solar_state_valid = true;
@@ -78166,8 +78742,17 @@ int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     for (uint32_t i = 0; i < image_count; i++) {
-        if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len, &info[i],
-                                    err, errlen) != 0) {
+        if (images[i].patches) {
+            const uint32_t gh = images[i].grid_h, gw = images[i].grid_w;
+            if (!gh || !gw || (gh & 1u) || (gw & 1u)) {
+                payload_set_err(err, errlen, "invalid Ling image grid");
+                return 1;
+            }
+            info[i] = (ds4_ling3vl_image_info){
+                .resized_width = gw * 16u, .resized_height = gh * 16u,
+                .grid_h = gh, .grid_w = gw, .token_count = gh * gw / 4u};
+        } else if (ds4_ling3vl_image_probe(images[i].data, images[i].data_len,
+                                           &info[i], err, errlen) != 0) {
             return 1;
         }
     }
@@ -78433,37 +79018,6 @@ int ds4_session_common_prefix(ds4_session *s, const ds4_tokens *prompt) {
     int i = 0;
     while (i < n && s->checkpoint.v[i] == prompt->v[i]) i++;
     return i;
-}
-
-int ds4_session_exaone_rewind_span(ds4_session *s) {
-#ifdef DS4_NO_GPU
-    (void)s;
-    return 0;
-#else
-    if (!s || !ds4_session_is_exaone(s) || !s->exaone_graph_ready) return 0;
-    /* Full-attention storage does not qualify edited-prefix reuse for K2.
-     * Match the host's exact-only policy; an exact extension still has
-     * live_pos - resume_pos == 0 and keeps its existing prefix. */
-    if (DS4_MODEL_VARIANT == DS4_VARIANT_K2_HORIZON_375B) {
-        return 0;
-    }
-    const ds4_exaone_gpu_graph *g = &s->exaone_graph;
-    const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
-    uint32_t narrowest = 0u;
-    bool bounded = false;
-    for (uint32_t il = 0; il < n_exec; il++) {
-        if (!g->layer_kv[il] || !exaone_graph_layer_is_sliding(il)) continue;
-        if (!bounded || g->layer_kv_cap[il] < narrowest) {
-            narrowest = g->layer_kv_cap[il];
-            bounded = true;
-        }
-    }
-    if (!bounded) return (int)g->ctx_size;
-    const int live = s->checkpoint_valid ? s->checkpoint.len : 0;
-    if ((uint32_t)live <= narrowest) return live;
-    if (narrowest <= DS4_N_SWA) return 0;
-    return (int)(narrowest - DS4_N_SWA + 1u);
-#endif
 }
 
 static bool session_logits_unready(const ds4_session *s) {

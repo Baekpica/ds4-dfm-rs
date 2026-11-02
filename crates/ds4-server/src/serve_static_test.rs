@@ -152,6 +152,19 @@ fn settle_static_finish_maps_c_eos_and_budget() {
 }
 
 #[test]
+fn static_row_cut_at_a_stop_token_finishes_stop() {
+    // Given: native decoded past a host stop token to the budget
+    let row = StaticRow {
+        tokens: vec![5, 6, 99, 7, 8],
+        finish: StaticFinish::Length,
+    };
+    // When: the host cuts the text at its stop set
+    let (text, finish, emitted) = settle::detok_static_row(&row, 5, |t| t == 99, |t| vec![t as u8]);
+    // Then: the request stopped; the text ends before the stop token
+    assert_eq!((text, finish, emitted), (vec![5, 6], "stop", 2));
+}
+
+#[test]
 fn static_routed_request_settles_c_chat_terminal_when_n_eq_2() {
     // Given: LANE_STATIC n=2 success (todos 11-12 wrote "{}")
     let mut spy = SpyStatic {

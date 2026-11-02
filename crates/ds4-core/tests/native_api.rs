@@ -27,7 +27,6 @@ fn model_exposes_distributed_oracle_boundary() {
         prefill_chunk: 0,
         prefill_window: 0,
         activation_bits: 0,
-        replay_check: false,
         debug: false,
     };
     assert_eq!(config.role, DistributedRole::Worker);

@@ -36,17 +36,6 @@ use crate::{
     identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire, V41Zchain, ZchainGeom,
 };
 
-/// `--mem-budget-mb` (unit Z): the engine's process memory red line and L1
-/// load gate (`core_util.c:198-256`).  Call before opening the model; 0
-/// leaves the budget unset (the gate is then a no-op, the engine's own
-/// default).  On Linux the footprint-watchdog half is inert by the engine's
-/// own design (`core_util.c:141-145`); the L1 gate is the active half.
-pub fn set_mem_budget_mb(mb: i32) {
-    unsafe {
-        ds4_sys::ds4_bridge_set_mem_budget_mb(mb);
-    }
-}
-
 /// The last V4.1 run's speculation account: (rounds, offered, accepted), the
 /// engine's `ds4_engine_v41_last_spec_stats` (`core_v41_api.c:41-46`; the
 /// counters are cleared by the next generate entry).  The server reports the
@@ -2245,6 +2234,8 @@ mod tests {
             runtime_budget: None,
             v41_ctx: Some(4096),
             _distributed: None,
+            // Stands in for the lock; only its drop matters.
+            _instance_lock: std::fs::File::open(path).unwrap(),
             _not_send: std::marker::PhantomData,
         }
     }
