@@ -5781,10 +5781,12 @@ static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
                 m, k, tokens, experts, used, stride, MoeLayout::Raw);
         }
     }
-    /* The measured GLM raw-down schedule keeps D2S6/scatter/sanitize intact.
-     * Generic Q2 callers retain their existing rectangular launch policy. */
+    /* The measured GLM raw-down schedule keeps D2S6/scatter intact. Generic
+     * Q2 callers retain their existing rectangular launch policy. GLM's
+     * consumers (weighted SwiGLU, moe_sum) zero non-finite values at read,
+     * so the whole-buffer sanitize pass is skipped (0.5 s of an 8K prefill). */
     return ds4_mmq_moe_impl<type>("glm-owned-mmq", w, x, ids, out, m, k,
-        tokens, experts, used, stream, nullptr, 0, true, 0, 0, nullptr,
+        tokens, experts, used, stream, nullptr, 0, false, 0, 0, nullptr,
         SwiGLUOutput::F32, blocks, policy);
 }
 
@@ -5818,10 +5820,11 @@ static int glm_pair_strided(const void *gate, const void *up, const float *x,
         return -1;
     }
     // Keep the two-single-call assignment layout and rounding. Sharing only
-    // preparation makes the same-width supply contract byte exact.
+    // preparation makes the same-width supply contract byte exact. The
+    // weighted SwiGLU zeroes non-finite gate/up at read: no sanitize pass.
     return ds4_mmq_moe_pair_impl<type>("glm-raw-pair", gate, up, x, ids,
         gate_out, up_out, m, k, tokens, experts, used, stream,
-        nullptr, nullptr, 0, true, nullptr, (int64_t)tokens * used,
+        nullptr, nullptr, 0, false, nullptr, (int64_t)tokens * used,
         nullptr, 0, (int64_t)(stride / block));
 }
 
