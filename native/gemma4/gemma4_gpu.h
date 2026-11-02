@@ -172,6 +172,52 @@ int gm4_gpu_kv_get(gm4_gpu *g, gm4_kv *kv, int pos, float *k, float *v, char *er
 int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, int pos, float *out,
                            char *err, size_t errlen);
 
+/* One layer's wiring: the resident tensors by index (`v` is -1 where the layer
+ * has no v_proj, the `k_eq_v` full layers), the geometry, and the small
+ * vectors the CPU layer keeps beside its matrices. The vectors are uploaded
+ * once at gm4_gpu_layer_new, so a step uploads only the input activation.
+ * `router_scale` is folded with 1/sqrt(hidden) here, exactly as the CPU folds
+ * it (forward.rs:362-365). */
+typedef struct {
+    int q, k, v, o, dense_gate, dense_up, dense_down, router, expert_gate_up, expert_down;
+    int heads, kv_heads, head_dim, hidden, dense_ff, moe_ff, experts, top_k;
+    int threads; /* launch width; 0 means 256 */
+    float eps;
+    float layer_scalar;
+    const float *input_norm, *post_attn_norm, *pre_ffn_norm, *post_ffn_norm;
+    const float *pre_ffn_norm2, *post_ffn_norm1, *post_ffn_norm2;
+    const float *q_norm, *k_norm, *router_scale, *per_expert_scale, *rope_inv;
+} gm4_layer_spec;
+
+typedef struct gm4_layer gm4_layer;
+int gm4_gpu_layer_new(gm4_gpu *g, const gm4_layer_spec *spec, gm4_layer **out, char *err,
+                      size_t errlen);
+void gm4_gpu_layer_free(gm4_layer *L);
+
+/* What the layer holds on the device: one arena for every intermediate, the
+ * small vectors, the picks and the two row lists. Allocated once here, never
+ * grown. */
+size_t gm4_gpu_layer_bytes(const gm4_layer *L);
+
+/* One layer, start to finish, on the device: the CPU layer's order
+ * (forward.rs:335-398), including the o_proj that ends its attention (:462),
+ * the dense feed-forward, the router's selection, the routed experts and the
+ * two closing norms. The input activation is uploaded once and the output
+ * downloaded once; nothing in between leaves the device, and the router's
+ * picks stay there. `pos` must be the cache's next position: the key and value
+ * are written to it before attention reads it. */
+int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, int pos,
+                          float *out, char *err, size_t errlen);
+
+/* Diagnostic: copy one intermediate of the last forward back as f32, for the
+ * gate to locate a wiring error. Not on any inference path, and the arena
+ * reuses buffers, so a name is the state the forward leaves there. `which` is
+ * 0 xa, 1 hb, 2 qa, 3 qb, 4 ka, 5 kb, 6 va, 7 vb, 8 attn, 9 attn2, 10 xb,
+ * 11 dg, 12 du, 13 dact, 14 dd, 15 dense, 16 r, 17 scores, 18 moe, 19 moe2,
+ * 20 comb, 21 comb2, 22 outd, 23 gu, 24 act, 25 d. `n` is the caller's width
+ * for the value and must fit the buffer. */
+int gm4_gpu_layer_probe(gm4_layer *L, int which, float *out, int n, char *err, size_t errlen);
+
 /* out = x * w over n values: the router's per-dimension scale. */
 int gm4_gpu_mul(gm4_gpu *g, const float *x, const float *w, float *out, size_t n, char *err,
                 size_t errlen);

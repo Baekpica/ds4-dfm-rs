@@ -38,7 +38,7 @@ use std::time::Instant;
 use ds4_core::f16_to_f32;
 use ds4_core::gemma4_a4b::{
     bf16_round, decode, gelu, normalize_heads, rms_norm, rope, softmax, top_k, Entry, Family,
-    LayerType, Matrix, Role, Tensor,
+    LayerType, Matrix, Model, Role, Tensor,
 };
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
@@ -60,6 +60,44 @@ struct Account {
     device_free_after: u64,
     tensors: i32,
     payloads: i32,
+}
+
+/// Mirrors `gm4_layer_spec`, field for field.
+#[repr(C)]
+struct LayerSpec {
+    q: i32,
+    k: i32,
+    v: i32,
+    o: i32,
+    dense_gate: i32,
+    dense_up: i32,
+    dense_down: i32,
+    router: i32,
+    expert_gate_up: i32,
+    expert_down: i32,
+    heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    hidden: i32,
+    dense_ff: i32,
+    moe_ff: i32,
+    experts: i32,
+    top_k: i32,
+    threads: i32,
+    eps: f32,
+    layer_scalar: f32,
+    input_norm: *const f32,
+    post_attn_norm: *const f32,
+    pre_ffn_norm: *const f32,
+    post_ffn_norm: *const f32,
+    pre_ffn_norm2: *const f32,
+    post_ffn_norm1: *const f32,
+    post_ffn_norm2: *const f32,
+    q_norm: *const f32,
+    k_norm: *const f32,
+    router_scale: *const f32,
+    per_expert_scale: *const f32,
+    rope_inv: *const f32,
 }
 
 extern "C" {
@@ -249,6 +287,34 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_layer_new(
+        g: *mut c_void,
+        spec: *const LayerSpec,
+        out: *mut *mut c_void,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    fn gm4_gpu_layer_free(l: *mut c_void);
+    fn gm4_gpu_layer_bytes(l: *const c_void) -> usize;
+    fn gm4_gpu_layer_probe(
+        l: *mut c_void,
+        which: i32,
+        out: *mut f32,
+        n: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_layer_forward(
+        g: *mut c_void,
+        l: *mut c_void,
+        kv: *mut c_void,
+        x: *const f32,
+        pos: i32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -273,6 +339,7 @@ fn usage() -> &'static str {
   --skip-router      skip the router's top-k (step 7)
   --skip-head        skip the embedding lookup and the logits head (step 8)
   --skip-ring        skip the per-layer KV cache (step 9a)
+  --skip-layer       skip the chained layer (step 9b)
   --help             this text"
 }
 
@@ -303,6 +370,7 @@ fn run() -> Result<(), String> {
     let mut router = true;
     let mut head = true;
     let mut ring = true;
+    let mut chain = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -334,6 +402,7 @@ fn run() -> Result<(), String> {
             "--skip-router" => router = false,
             "--skip-head" => head = false,
             "--skip-ring" => ring = false,
+            "--skip-layer" => chain = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -539,6 +608,9 @@ fn run() -> Result<(), String> {
     }
     if ring {
         ring_gate(&device, &family, &root, timing, &mut failed)?;
+    }
+    if chain {
+        layer_gate(&device, &family, &root, &encoded, timing, &mut failed)?;
     }
     if router {
         router_gate(&device, &family, &root, &encoded, &mut failed)?;
@@ -1470,6 +1542,257 @@ fn ring_gate(
     Ok(())
 }
 
+/// Step 9(b): one layer, start to finish, on the device.
+///
+/// The reference is the forward's own layer, not a copy: `Session::layer_at`
+/// runs the code `step` runs (forward.rs:335-398), on the same weights at the
+/// same position, so a difference is the device chain or its f16 cache and
+/// nothing else. Two positions: 0, where there is no history and the
+/// comparison is pure arithmetic, and 24, where the cache and the expert
+/// selection are exercised. The wrap case is step 9a's, because driving a
+/// layer past 1024 positions through the CPU reference costs a minute rather
+/// than a second.
+///
+/// The chain is one upload, one download and no sync in between, so the
+/// timing line is also the claim: the whole layer's launches run back to back.
+fn layer_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    timing: usize,
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let hidden = config.hidden;
+    let mut per_kind: Vec<(LayerType, f64)> = Vec::new();
+    // The reference is a Model, so the comparison is the forward the CLI runs,
+    // not a re-derivation of it.
+    let model = Model::open(root).map_err(|e| e.to_string())?;
+
+    for &layer in &[0usize, 5] {
+        let spec = &family.layout.layers[layer];
+        let kind = spec.kind;
+        let head_dim = config.head_dim_of(kind);
+        let kv_heads = config.kv_heads_of(kind);
+        let window = match kind {
+            LayerType::Sliding => config.sliding_window as i32,
+            LayerType::Full => 0,
+        };
+        let cap = match kind {
+            LayerType::Sliding => config.sliding_window,
+            LayerType::Full => 1024,
+        };
+        let last = 24usize;
+
+        let tensor = |role: Role| -> Result<i32, String> {
+            let entry = spec.get(role).map_err(|e| e.to_string())?;
+            encoded
+                .iter()
+                .position(|e| e.name == entry.name)
+                .map(|i| i as i32)
+                .ok_or_else(|| format!("{}: not an encoded entry", entry.name))
+        };
+        let vector = |role: Role| -> Result<Vec<f32>, String> {
+            Ok(decode(root, spec.get(role).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?
+                .data)
+        };
+
+        let q = tensor(Role::QProj)?;
+        let k = tensor(Role::KProj)?;
+        let v = match config.has_v_proj(kind) {
+            true => tensor(Role::VProj)?,
+            false => -1,
+        };
+        let o = tensor(Role::OProj)?;
+        let dense_gate = tensor(Role::DenseGate)?;
+        let dense_up = tensor(Role::DenseUp)?;
+        let dense_down = tensor(Role::DenseDown)?;
+        let router = tensor(Role::RouterProj)?;
+        let expert_gate_up = tensor(Role::ExpertGateUp)?;
+        let expert_down = tensor(Role::ExpertDown)?;
+        let input_norm = vector(Role::InputNorm)?;
+        let post_attn_norm = vector(Role::PostAttentionNorm)?;
+        let pre_ffn_norm = vector(Role::PreFfnNorm)?;
+        let post_ffn_norm = vector(Role::PostFfnNorm)?;
+        let pre_ffn_norm2 = vector(Role::PreFfnNorm2)?;
+        let post_ffn_norm1 = vector(Role::PostFfnNorm1)?;
+        let post_ffn_norm2 = vector(Role::PostFfnNorm2)?;
+        let q_norm = vector(Role::QNorm)?;
+        let k_norm = vector(Role::KNorm)?;
+        let router_scale = vector(Role::RouterScale)?;
+        let per_expert_scale = vector(Role::RouterPerExpertScale)?;
+        let scalar = decode(
+            root,
+            spec.get(Role::LayerScalar).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .data[0];
+        let rope_inv = config.rope_inv(kind);
+        let eps = config.rms_eps;
+        let q_mat = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let k_mat = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let v_mat = match config.has_v_proj(kind) {
+            true => Some(
+                Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?,
+            ),
+            false => None,
+        };
+        let o_mat = Matrix::open(root, spec.get(Role::OProj).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+
+        let lspec = LayerSpec {
+            q,
+            k,
+            v,
+            o,
+            dense_gate,
+            dense_up,
+            dense_down,
+            router,
+            expert_gate_up,
+            expert_down,
+            heads: config.heads as i32,
+            kv_heads: kv_heads as i32,
+            head_dim: head_dim as i32,
+            hidden: hidden as i32,
+            dense_ff: config.dense_ff as i32,
+            moe_ff: config.moe_ff as i32,
+            experts: config.experts as i32,
+            top_k: config.top_k as i32,
+            threads: 256,
+            eps: config.rms_eps,
+            layer_scalar: scalar,
+            input_norm: input_norm.as_ptr(),
+            post_attn_norm: post_attn_norm.as_ptr(),
+            pre_ffn_norm: pre_ffn_norm.as_ptr(),
+            post_ffn_norm: post_ffn_norm.as_ptr(),
+            pre_ffn_norm2: pre_ffn_norm2.as_ptr(),
+            post_ffn_norm1: post_ffn_norm1.as_ptr(),
+            post_ffn_norm2: post_ffn_norm2.as_ptr(),
+            q_norm: q_norm.as_ptr(),
+            k_norm: k_norm.as_ptr(),
+            router_scale: router_scale.as_ptr(),
+            per_expert_scale: per_expert_scale.as_ptr(),
+            rope_inv: rope_inv.as_ptr(),
+        };
+        let chain = call_layer_new(device, &lspec)?;
+        let kv = call_kv_new(device, kv_heads, head_dim, window, cap)?;
+        let bytes = unsafe { gm4_gpu_layer_bytes(chain.0) };
+
+        let mut session = model.session();
+        let mut got = vec![0f32; hidden];
+        for pos in 0..=last {
+            let x = shift_probe(&elementwise_probe(hidden, 1.0), pos);
+            let want = session
+                .layer_at(layer, &x, pos)
+                .map_err(|e| e.to_string())?;
+            call_layer_forward(device, &chain, &kv, &x, pos, &mut got)?;
+            if pos == 0 || pos == last {
+                let (rel, max, scale) = compare(&want, &got);
+                println!(
+                    "LAYER {layer} {kind:?} at {pos}: vs the forward's own layer relL2 {rel:.3e} maxabs {max:.3e} scale {scale:.3e}"
+                );
+                if pos == 0 {
+                    // One key, so the softmax is 1 and the attention core is
+                    // the value head itself; every stage below is the CPU's
+                    // own arithmetic, compared separately.
+                    let h = rms_norm(&x, Some(&input_norm), eps);
+                    let q_raw = q_mat.matvec(&h).map_err(|e| e.to_string())?;
+                    let mut qb = normalize_heads(&q_raw, &q_norm, config.heads, head_dim, eps);
+                    rope(&mut qb, config.heads, head_dim, 0, &rope_inv);
+                    let k_raw = k_mat.matvec(&h).map_err(|e| e.to_string())?;
+                    let v_raw = match &v_mat {
+                        Some(m) => m.matvec(&h).map_err(|e| e.to_string())?,
+                        None => k_raw.clone(),
+                    };
+                    let v = normalize_heads(&v_raw, &[], kv_heads, head_dim, eps);
+                    let group = config.heads / kv_heads;
+                    let mut full = vec![0f32; config.heads * head_dim];
+                    for head in 0..config.heads {
+                        let kv_head = head / group;
+                        full[head * head_dim..(head + 1) * head_dim]
+                            .copy_from_slice(&v[kv_head * head_dim..(kv_head + 1) * head_dim]);
+                    }
+                    let o = o_mat.matvec(&full).map_err(|e| e.to_string())?;
+                    let attn = rms_norm(&o, Some(&post_attn_norm), eps);
+                    let xb: Vec<f32> = x.iter().zip(&attn).map(|(a, b)| a + b).collect();
+                    // The cache is f16 from the first position, so the sharper
+                    // reference rounds the value head the way the kernel reads
+                    // it back. Without that, this stage's difference is the
+                    // cache, not the chain.
+                    let full16: Vec<f32> = full.iter().map(|&v| round_f16(v)).collect();
+                    let o16 = o_mat.matvec(&full16).map_err(|e| e.to_string())?;
+                    // Buffers in the arena are reused, so a stage is only
+                    // readable where the forward leaves it: qb, vb, the o_proj
+                    // output (attn2) and the post-attention residual (xb).
+                    let stages: [(&str, i32, &Vec<f32>); 4] = [
+                        ("qb", 3, &qb),
+                        ("vb", 7, &v),
+                        ("o_proj(f16 v)", 9, &o16),
+                        ("xb", 10, &xb),
+                    ];
+                    for (label, which, want) in stages {
+                        let got = call_layer_probe(&chain, which, want.len())?;
+                        let (rel, max, scale) = compare(want, &got);
+                        println!(
+                            "  STAGE {label} relL2 {rel:.3e} maxabs {max:.3e} scale {scale:.3e}"
+                        );
+                    }
+                }
+                // The band is the cache, not a guess. Even at position 0 the
+                // key and value come back as f16, which the stage print below
+                // separates from the arithmetic: qb and vb are 1e-6, the
+                // o_proj of the f16 value head 5e-6 to 5e-5, and the layer's
+                // own output 1.5e-4. At 24 positions, where the cache holds 24
+                // keys, the measured cost is 2.4e-4.
+                let band = if pos == 0 { 1e-3 } else { 2e-3 };
+                if rel > band {
+                    println!("  FAIL the chained layer is past {band:.0e} at {pos}");
+                    *failed = true;
+                }
+            }
+        }
+
+        if timing > 0 {
+            let x = shift_probe(&elementwise_probe(hidden, 1.0), last);
+            call_layer_forward(device, &chain, &kv, &x, last, &mut got)?;
+            let mut best = f64::INFINITY;
+            for _ in 0..timing {
+                let t = Instant::now();
+                call_layer_forward(device, &chain, &kv, &x, last, &mut got)?;
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "  TIMING layer {layer} {kind:?} {:.3} ms for one token (chain state {:.0} KiB)",
+                best * 1e3,
+                bytes as f64 / 1024.0
+            );
+            per_kind.push((kind, best * 1e3));
+        }
+    }
+
+    // The projection the owner cares about: 25 sliding layers and 5 full ones
+    // at the measured per-layer cost. It is a projection, not a measurement of
+    // a 30-layer step, and it says nothing about the prefill.
+    if per_kind.len() == 2 {
+        let sliding = per_kind.iter().find(|(k, _)| *k == LayerType::Sliding);
+        let full = per_kind.iter().find(|(k, _)| *k == LayerType::Full);
+        if let (Some((_, s)), Some((_, f))) = (sliding, full) {
+            let step = 25.0 * s + 5.0 * f;
+            println!(
+                "LAYER PROJECTION 25 x {s:.3} ms + 5 x {f:.3} ms = {step:.2} ms per token, {:.1} tok/s, against the 10.97 ms the tools measured for the routed weight stream",
+                1000.0 / step
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Step 8: the two ends of the model, both on the same 262144 x 2816 matrix
 /// because the embeddings are tied.
 ///
@@ -2047,6 +2370,71 @@ fn call_attention_ring(
         return Err(format!("ring attention: {}", message(&err)));
     }
     Ok(())
+}
+
+/// A layer handle that frees itself, for the same reason `Cache` does.
+struct Chain(*mut c_void);
+
+impl Drop for Chain {
+    fn drop(&mut self) {
+        unsafe { gm4_gpu_layer_free(self.0) }
+    }
+}
+
+fn call_layer_new(device: &Residency, spec: &LayerSpec) -> Result<Chain, String> {
+    let mut err = [0i8; 512];
+    let mut out: *mut c_void = std::ptr::null_mut();
+    let rc = unsafe { gm4_gpu_layer_new(device.0, spec, &mut out, err.as_mut_ptr(), err.len()) };
+    if rc != 0 {
+        return Err(format!("layer_new: {}", message(&err)));
+    }
+    Ok(Chain(out))
+}
+
+fn call_layer_forward(
+    device: &Residency,
+    chain: &Chain,
+    kv: &Cache,
+    x: &[f32],
+    pos: usize,
+    out: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_layer_forward(
+            device.0,
+            chain.0,
+            kv.0,
+            x.as_ptr(),
+            pos as i32,
+            out.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("layer_forward at {pos}: {}", message(&err)));
+    }
+    Ok(())
+}
+
+fn call_layer_probe(chain: &Chain, which: i32, n: usize) -> Result<Vec<f32>, String> {
+    let mut err = [0i8; 512];
+    let mut out = vec![0f32; n];
+    let rc = unsafe {
+        gm4_gpu_layer_probe(
+            chain.0,
+            which,
+            out.as_mut_ptr(),
+            n as i32,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("layer_probe {which}: {}", message(&err)));
+    }
+    Ok(out)
 }
 
 /// A deterministic vector in [-scale, scale], distinct from the other probes.

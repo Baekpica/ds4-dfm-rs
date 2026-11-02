@@ -397,6 +397,14 @@ impl<'m> Session<'m> {
         Ok(out)
     }
 
+    /// One layer at one position, through the same code `step` runs. The
+    /// device gate compares a whole chained layer against this, so the
+    /// reference is the forward itself rather than a second copy of it; the
+    /// cache must already hold every earlier position.
+    pub fn layer_at(&mut self, index: usize, x: &[f32], pos: usize) -> Result<Vec<f32>, Error> {
+        self.layer(index, x.to_vec(), pos)
+    }
+
     fn attention(&mut self, index: usize, h: &[f32], pos: usize) -> Result<Vec<f32>, Error> {
         let model = self.model;
         let config = &model.config;

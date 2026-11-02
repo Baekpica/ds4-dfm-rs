@@ -33,6 +33,7 @@
 #include <cuda_runtime.h>
 
 #include <fcntl.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -749,6 +750,28 @@ __global__ void kv_put_kernel(__half *k, __half *v, const float *ksrc, const flo
     v[at] = __float2half_rn(vsrc[i]);
 }
 
+/* The layer chain's row lists, built on the device from the router's picks so
+ * the selection never travels to the host. Entry (e, r) is
+ * picked[e] * stride + r: the CPU's own formula for an expert's slice
+ * (forward.rs:377-383, `expert * 2 * moe_ff + r` and
+ * `expert * hidden + r`). */
+__global__ void rowlist_kernel(uint32_t *rows, const int *picked, int k, int count, int stride) {
+    const size_t i = (size_t) blockIdx.x * (size_t) blockDim.x + (size_t) threadIdx.x;
+    const size_t n = (size_t) k * (size_t) count;
+    if (i >= n) return;
+    const int e = (int) (i / (size_t) count);
+    const int r = (int) (i % (size_t) count);
+    rows[i] = (uint32_t) (picked[e] * stride + r);
+}
+
+/* y += scale * x, with the scale read from device memory: the router's
+ * renormalised weight for the expert whose down projection x holds. */
+__global__ void axpy_kernel(float *y, const float *x, const float *scale, size_t n) {
+    const size_t i = (size_t) blockIdx.x * (size_t) blockDim.x + (size_t) threadIdx.x;
+    if (i >= n) return;
+    y[i] += scale[0] * x[i];
+}
+
 /* ---- the router ---------------------------------------------------------
  *
  * The reference's router (`modeling_gemma4.py:1357-1372` as the CPU forward
@@ -1156,6 +1179,34 @@ struct gm4_kv {
     int cap;   /* positions held: the window for a ring, max_pos otherwise */
     int ring;  /* 1 when the slot wraps at cap (the sliding layers) */
 };
+
+/* One layer wired for the chain: the weights' tensor indices, the small
+ * vectors uploaded once, and one arena holding every intermediate. The arena
+ * is cut once at new and never grows, so a step allocates nothing. */
+struct gm4_layer {
+    int q, k, v, o, dg_t, du_t, dd_t, rt, egu, edn;
+    int heads, kv_heads, head_dim, hidden, dense_ff, moe_ff, experts, top_k, threads;
+    float eps, scalar;
+    float *small; /* the norms, the router's folded scale, the tables */
+    float *in_norm, *post_attn, *pre_ffn, *post_ffn, *pre_ffn2, *post_ffn1, *post_ffn2;
+    float *q_norm, *k_norm, *router_scale, *pes, *rope_inv;
+    float *arena;
+    size_t arena_floats, used;
+    size_t w[28]; /* each arena buffer's cut; 0-25 are the probe's numbering */
+    float *xa, *xb, *hb, *qa, *qb, *ka, *kb, *va, *vb, *attn, *attn2;
+    float *dg, *du, *dact, *dd, *dense, *r, *scores, *probs, *wsel;
+    float *moe, *moe2, *comb, *comb2, *outd;
+    float *gu, *act, *d;
+    int *picked;
+    uint32_t *rl1, *rl2;
+};
+
+static float *arena_cut(gm4_layer *L, int k, size_t n) {
+    float *p = L->arena + L->used;
+    L->used += n;
+    L->w[k] = n;
+    return p;
+}
 
 extern "C" {
 
@@ -1709,6 +1760,174 @@ static int ensure_float(float **slot, size_t *cap, size_t need, char *err, size_
     return 0;
 }
 
+/* ---- the layer chain's device-only launches ------------------------------
+ *
+ * Each one is the kernel its host entry point runs, without the upload and
+ * the download around it, so a layer's intermediates stay on the device. The
+ * host entry points remain the gated API; the chain is gated as a whole
+ * against the CPU layer. Every buffer here must already be on the device.
+ */
+
+static int matvec_dev(gm4_gpu *g, int tensor, const float *xd, float *yd, int threads, char *err,
+                      size_t errlen) {
+    if (tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    const Layout &L = t->pays[0].l;
+    /* The kernels accumulate, so the stage sum starts from zero. */
+    cudaError_t e = cudaMemsetAsync(yd, 0, (size_t) L.rows * sizeof(float), 0);
+    if (e != cudaSuccess) return fail(err, errlen, "chain y clear", e);
+    for (int p = 0; p < t->npay; p++) {
+        launch_payload(t->pays[p], NULL, xd, yd, threads);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "chain matvec launch", e);
+    }
+    return 0;
+}
+
+static int rows_dev(gm4_gpu *g, int tensor, const uint32_t *rld, int nrows, const float *xd,
+                    float *yd, int threads, char *err, size_t errlen) {
+    if (tensor < 0 || tensor >= g->nt) {
+        snprintf(err, errlen, "tensor %d is not in the residency", tensor);
+        return -1;
+    }
+    const Tensor *t = &g->ts[tensor];
+    cudaError_t e = cudaMemsetAsync(yd, 0, (size_t) nrows * sizeof(float), 0);
+    if (e != cudaSuccess) return fail(err, errlen, "chain gather y clear", e);
+    for (int p = 0; p < t->npay; p++) {
+        Payload one = t->pays[p];
+        one.l.row0 = 0;
+        one.l.nrows = nrows;
+        launch_payload(one, rld, xd, yd, threads);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(err, errlen, "chain gather launch", e);
+    }
+    return 0;
+}
+
+static int rmsnorm_dev(const float *xd, const float *wd, float *yd, int rows, int width, float eps,
+                       char *err, size_t errlen) {
+    const int threads = 256;
+    rmsnorm_kernel<<<(unsigned) rows, threads, threads * sizeof(float)>>>(xd, wd, yd, width, eps);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain rmsnorm launch", e);
+    return 0;
+}
+
+static int gelu_mul_dev(const float *gd, const float *ud, float *ad, size_t n, char *err,
+                        size_t errlen) {
+    const unsigned threads = 256;
+    gelu_mul_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(gd, ud, ad, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain gelu_mul launch", e);
+    return 0;
+}
+
+static int residual_dev(const float *xd, const float *addd, float *od, size_t n, float scale,
+                        char *err, size_t errlen) {
+    const unsigned threads = 256;
+    residual_scale_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(xd, addd, od, n,
+                                                                                scale);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain residual launch", e);
+    return 0;
+}
+
+static int mul_dev(const float *xd, const float *wd, float *od, size_t n, char *err,
+                   size_t errlen) {
+    const unsigned threads = 256;
+    mul_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(xd, wd, od, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain mul launch", e);
+    return 0;
+}
+
+static int rope_dev(float *xd, int heads, int head_dim, int pos, const float *invd, char *err,
+                    size_t errlen) {
+    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(xd, heads, head_dim, pos, invd);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain rope launch", e);
+    return 0;
+}
+
+static int router_topk_dev(const float *scoresd, const float *pesd, int experts, int k,
+                           float *probsd, int *indicesd, float *weightsd, char *err,
+                           size_t errlen) {
+    if (k > experts) {
+        snprintf(err, errlen, "top-k %d is past the %d experts", k, experts);
+        return -1;
+    }
+    unsigned threads = 32;
+    while (threads < (unsigned) experts && threads < 1024) threads <<= 1;
+    router_topk_kernel<<<1, threads, 32 * sizeof(float)>>>(scoresd, pesd, experts, k, probsd,
+                                                          indicesd, weightsd);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain router launch", e);
+    return 0;
+}
+
+static int rowlist_dev(uint32_t *rows, const int *picked, int k, int count, int stride, char *err,
+                       size_t errlen) {
+    const size_t n = (size_t) k * (size_t) count;
+    const unsigned threads = 256;
+    rowlist_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(rows, picked, k, count,
+                                                                         stride);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain rowlist launch", e);
+    return 0;
+}
+
+static int axpy_dev(float *yd, const float *xd, const float *scaled, size_t n, char *err,
+                    size_t errlen) {
+    const unsigned threads = 256;
+    axpy_kernel<<<(unsigned) ((n + threads - 1) / threads), threads>>>(yd, xd, scaled, n);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain axpy launch", e);
+    return 0;
+}
+
+static int kv_put_dev(gm4_kv *kv, int pos, const float *kd, const float *vd, char *err,
+                      size_t errlen) {
+    if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
+        snprintf(err, errlen, "chain kv position %d outside the %s cache's %d positions", pos,
+                 kv->ring ? "ring" : "appending", kv->cap);
+        return -1;
+    }
+    const int slot = kv->ring ? pos % kv->cap : pos;
+    const int block = 128;
+    kv_put_kernel<<<(kv->per + block - 1) / block, block>>>(kv->keys, kv->values, kd, vd, kv->per,
+                                                           slot);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain kv put launch", e);
+    return 0;
+}
+
+static int attention_ring_dev(gm4_gpu *g, gm4_kv *kv, const float *qd, int heads, int pos,
+                              float *outd, char *err, size_t errlen) {
+    if (heads % kv->kv_heads) {
+        snprintf(err, errlen, "%d query heads do not divide into %d kv heads", heads,
+                 kv->kv_heads);
+        return -1;
+    }
+    if (!kv->ring && pos >= kv->cap) {
+        snprintf(err, errlen, "chain position %d past the appending cache's %d", pos, kv->cap);
+        return -1;
+    }
+    const int positions = pos + 1;
+    const int nwin = kv->ring && positions > kv->cap ? kv->cap : positions;
+    const int first = positions - nwin;
+    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
+        return -1;
+    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
+        qd, kv->keys, kv->values, g->ascores, outd, heads, kv->kv_heads, kv->head_dim, positions,
+        first, nwin, kv->cap, kv->ring);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "chain attention launch", e);
+    return 0;
+}
+
 /* Apply one layer type's rotary frequencies to every head of `x` in place, at
  * `pos`. `inv` is the layer type's table from Config::rope_inv: head_dim/2
  * entries, zero past the rotated pairs. */
@@ -2003,6 +2222,382 @@ int gm4_gpu_attention_ring(gm4_gpu *g, gm4_kv *kv, const float *q, int heads, in
     if (e != cudaSuccess) return fail(err, errlen, "ring attention sync", e);
     e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "ring attention download", e);
+    return 0;
+}
+
+/* ---- one layer, chained on the device ------------------------------------
+ *
+ * The CPU layer (forward.rs:335-398) in its own order: the input norm, q/k/v,
+ * the per-head norms and rotary, the cache write and the attention, the
+ * post-attention norm and residual, the dense feed-forward, the router and its
+ * top-k, the routed experts, and the two norms and the scalar that close the
+ * layer. Every step below is the launch the gated entry point above performs;
+ * what changes is that the intermediates stay in one arena, the router's picks
+ * stay in device memory, and the whole layer is one upload at the start and
+ * one download at the end instead of fourteen of each.
+ */
+
+int gm4_gpu_layer_new(gm4_gpu *g, const gm4_layer_spec *spec, gm4_layer **out, char *err,
+                      size_t errlen) {
+    if (!g || !spec || !out) {
+        snprintf(err, errlen, "layer_new needs a device handle, a spec and an out pointer");
+        return -1;
+    }
+    *out = NULL;
+    const int idx[10] = {spec->q,    spec->k,   spec->v,           spec->o,        spec->dense_gate,
+                         spec->dense_up, spec->dense_down, spec->router, spec->expert_gate_up,
+                         spec->expert_down};
+    for (int i = 0; i < 10; i++) {
+        /* v is the one tensor a layer may not have (`k_eq_v`), and then it is
+         * -1. Everything else must be resident. */
+        if (i == 2 && spec->v < 0) continue;
+        if (idx[i] < 0 || idx[i] >= g->nt) {
+            snprintf(err, errlen, "layer tensor %d (slot %d) is not in the residency", idx[i], i);
+            return -1;
+        }
+    }
+    if (spec->heads <= 0 || spec->kv_heads <= 0 || spec->head_dim <= 0 || spec->head_dim % 2
+        || spec->heads % spec->kv_heads || spec->hidden <= 0 || spec->dense_ff <= 0
+        || spec->moe_ff <= 0 || spec->experts <= 0 || spec->top_k <= 0
+        || spec->top_k > spec->experts) {
+        snprintf(err, errlen, "layer_new's geometry is not a legal layer");
+        return -1;
+    }
+    if (!spec->input_norm || !spec->post_attn_norm || !spec->pre_ffn_norm || !spec->post_ffn_norm
+        || !spec->pre_ffn_norm2 || !spec->post_ffn_norm1 || !spec->post_ffn_norm2 || !spec->q_norm
+        || !spec->k_norm || !spec->router_scale || !spec->per_expert_scale || !spec->rope_inv) {
+        snprintf(err, errlen, "layer_new is missing one of the layer's vectors");
+        return -1;
+    }
+    const size_t nh = (size_t) spec->hidden;
+    const size_t nq = (size_t) spec->heads * (size_t) spec->head_dim;
+    const size_t nk = (size_t) spec->kv_heads * (size_t) spec->head_dim;
+    const size_t nff = (size_t) spec->dense_ff;
+    const size_t nmoe = (size_t) spec->moe_ff;
+    const size_t nex = (size_t) spec->top_k;
+    const size_t nsmall = 8 * nh + 2 * (size_t) spec->head_dim + (size_t) spec->experts
+                          + (size_t) spec->head_dim / 2;
+    const size_t narena = 11 * nh + 4 * nq + 4 * nk + 3 * nff + 3 * (size_t) spec->experts
+                          + 3 * nex * nmoe + nex * nh;
+
+    gm4_layer *L = (gm4_layer *) calloc(1, sizeof(gm4_layer));
+    if (!L) {
+        snprintf(err, errlen, "out of host memory for the layer handle");
+        return -1;
+    }
+    L->q = spec->q;
+    L->k = spec->k;
+    L->v = spec->v;
+    L->o = spec->o;
+    L->dg_t = spec->dense_gate;
+    L->du_t = spec->dense_up;
+    L->dd_t = spec->dense_down;
+    L->rt = spec->router;
+    L->egu = spec->expert_gate_up;
+    L->edn = spec->expert_down;
+    L->heads = spec->heads;
+    L->kv_heads = spec->kv_heads;
+    L->head_dim = spec->head_dim;
+    L->hidden = spec->hidden;
+    L->dense_ff = spec->dense_ff;
+    L->moe_ff = spec->moe_ff;
+    L->experts = spec->experts;
+    L->top_k = spec->top_k;
+    L->threads = spec->threads > 0 ? spec->threads : 256;
+    L->eps = spec->eps;
+    L->scalar = spec->layer_scalar;
+    L->arena_floats = narena;
+
+    cudaError_t e = cudaMalloc((void **) &L->small, nsmall * sizeof(float));
+    if (e == cudaSuccess) e = cudaMalloc((void **) &L->arena, narena * sizeof(float));
+    if (e == cudaSuccess) e = cudaMalloc((void **) &L->picked, nex * sizeof(int));
+    if (e == cudaSuccess)
+        e = cudaMalloc((void **) &L->rl1, nex * 2 * nmoe * sizeof(uint32_t));
+    if (e == cudaSuccess) e = cudaMalloc((void **) &L->rl2, nex * nh * sizeof(uint32_t));
+    if (e != cudaSuccess) {
+        if (L->small) cudaFree(L->small);
+        if (L->arena) cudaFree(L->arena);
+        if (L->picked) cudaFree(L->picked);
+        if (L->rl1) cudaFree(L->rl1);
+        if (L->rl2) cudaFree(L->rl2);
+        free(L);
+        snprintf(err, errlen, "layer cudaMalloc failed: %s", cudaGetErrorString(e));
+        return -1;
+    }
+
+    /* The small vectors, one block, in this fixed order. The router's scale is
+     * folded with 1/sqrt(hidden) here, exactly as the CPU folds it
+     * (forward.rs:362-365: `*slot *= scale * root`), so the kernel does one
+     * multiply per dimension. */
+    float *dst = L->small;
+    const float root = 1.0f / sqrtf((float) spec->hidden);
+    const float *const norms[7] = {spec->input_norm,     spec->post_attn_norm, spec->pre_ffn_norm,
+                                   spec->post_ffn_norm,  spec->pre_ffn_norm2,  spec->post_ffn_norm1,
+                                   spec->post_ffn_norm2};
+    float **const dst_slots[7] = {&L->in_norm,  &L->post_attn, &L->pre_ffn, &L->post_ffn,
+                                  &L->pre_ffn2, &L->post_ffn1, &L->post_ffn2};
+    for (int i = 0; i < 7; i++) {
+        *dst_slots[i] = dst;
+        e = cudaMemcpy(dst, norms[i], nh * sizeof(float), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            gm4_gpu_layer_free(L);
+            return fail(err, errlen, "layer norm upload", e);
+        }
+        dst += nh;
+    }
+    L->q_norm = dst;
+    e = cudaMemcpy(dst, spec->q_norm, (size_t) spec->head_dim * sizeof(float),
+                   cudaMemcpyHostToDevice);
+    dst += (size_t) spec->head_dim;
+    L->k_norm = dst;
+    if (e == cudaSuccess)
+        e = cudaMemcpy(dst, spec->k_norm, (size_t) spec->head_dim * sizeof(float),
+                       cudaMemcpyHostToDevice);
+    dst += (size_t) spec->head_dim;
+    L->router_scale = dst;
+    if (e == cudaSuccess) {
+        float *scaled = (float *) malloc(nh * sizeof(float));
+        if (!scaled) {
+            gm4_gpu_layer_free(L);
+            snprintf(err, errlen, "out of host memory for the router scale");
+            return -1;
+        }
+        for (size_t i = 0; i < nh; i++) scaled[i] = spec->router_scale[i] * root;
+        e = cudaMemcpy(dst, scaled, nh * sizeof(float), cudaMemcpyHostToDevice);
+        free(scaled);
+    }
+    dst += nh;
+    L->pes = dst;
+    if (e == cudaSuccess)
+        e = cudaMemcpy(dst, spec->per_expert_scale, (size_t) spec->experts * sizeof(float),
+                       cudaMemcpyHostToDevice);
+    dst += (size_t) spec->experts;
+    L->rope_inv = dst;
+    if (e == cudaSuccess)
+        e = cudaMemcpy(dst, spec->rope_inv, (size_t) spec->head_dim / 2 * sizeof(float),
+                       cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) {
+        gm4_gpu_layer_free(L);
+        return fail(err, errlen, "layer table upload", e);
+    }
+
+    /* The arena, cut in a fixed order; the sum above is its exact size. */
+    L->xa = arena_cut(L, 0, nh);
+    L->hb = arena_cut(L, 1, nh);
+    L->qa = arena_cut(L, 2, nq);
+    L->qb = arena_cut(L, 3, nq);
+    L->ka = arena_cut(L, 4, nk);
+    L->kb = arena_cut(L, 5, nk);
+    L->va = arena_cut(L, 6, nk);
+    L->vb = arena_cut(L, 7, nk);
+    L->attn = arena_cut(L, 8, nq);
+    L->attn2 = arena_cut(L, 9, nq);
+    L->xb = arena_cut(L, 10, nh);
+    L->dg = arena_cut(L, 11, nff);
+    L->du = arena_cut(L, 12, nff);
+    L->dact = arena_cut(L, 13, nff);
+    L->dd = arena_cut(L, 14, nh);
+    L->dense = arena_cut(L, 15, nh);
+    L->r = arena_cut(L, 16, nh);
+    L->scores = arena_cut(L, 17, (size_t) spec->experts);
+    L->moe = arena_cut(L, 18, nh);
+    L->moe2 = arena_cut(L, 19, nh);
+    L->comb = arena_cut(L, 20, nh);
+    L->comb2 = arena_cut(L, 21, nh);
+    L->outd = arena_cut(L, 22, nh);
+    L->gu = arena_cut(L, 23, nex * 2 * nmoe);
+    L->act = arena_cut(L, 24, nex * nmoe);
+    L->d = arena_cut(L, 25, nex * nh);
+    L->probs = arena_cut(L, 26, (size_t) spec->experts);
+    L->wsel = arena_cut(L, 27, (size_t) spec->experts);
+    if (L->used > narena) {
+        gm4_gpu_layer_free(L);
+        snprintf(err, errlen, "the layer arena is short by %zu floats", L->used - narena);
+        return -1;
+    }
+    *out = L;
+    return 0;
+}
+
+void gm4_gpu_layer_free(gm4_layer *L) {
+    if (!L) return;
+    if (L->small) cudaFree(L->small);
+    if (L->arena) cudaFree(L->arena);
+    if (L->picked) cudaFree(L->picked);
+    if (L->rl1) cudaFree(L->rl1);
+    if (L->rl2) cudaFree(L->rl2);
+    free(L);
+}
+
+size_t gm4_gpu_layer_bytes(const gm4_layer *L) {
+    if (!L) return 0;
+    return L->arena_floats * sizeof(float) + 8 * (size_t) L->hidden * sizeof(float) + 2
+           * (size_t) L->head_dim * sizeof(float) + (size_t) L->experts * sizeof(float)
+           + (size_t) L->head_dim / 2 * sizeof(float) + (size_t) L->top_k * sizeof(int)
+           + ((size_t) L->top_k * 2 * (size_t) L->moe_ff + (size_t) L->top_k * (size_t) L->hidden)
+                 * sizeof(uint32_t);
+}
+
+int gm4_gpu_layer_forward(gm4_gpu *g, gm4_layer *L, gm4_kv *kv, const float *x, int pos,
+                          float *out, char *err, size_t errlen) {
+    if (!g || !L || !kv || !x || !out) {
+        snprintf(err, errlen, "layer_forward needs a layer, a cache, an input and an output");
+        return -1;
+    }
+    if (kv->kv_heads != L->kv_heads || kv->head_dim != L->head_dim) {
+        snprintf(err, errlen, "the cache is %d kv heads of %d, the layer is %d of %d",
+                 kv->kv_heads, kv->head_dim, L->kv_heads, L->head_dim);
+        return -1;
+    }
+    if (pos < 0 || (!kv->ring && pos >= kv->cap)) {
+        snprintf(err, errlen, "layer position %d outside the cache's %d positions", pos, kv->cap);
+        return -1;
+    }
+    const int nh = L->hidden;
+    const int nk = L->kv_heads * L->head_dim;
+    cudaError_t e = cudaMemcpy(L->xa, x, (size_t) nh * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "layer x upload", e);
+
+    /* residual = x; h = input_norm(residual); q, k and v from h. */
+    if (rmsnorm_dev(L->xa, L->in_norm, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->q, L->hb, L->qa, L->threads, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->k, L->hb, L->ka, L->threads, err, errlen) != 0) return -1;
+    if (L->v >= 0) {
+        if (matvec_dev(g, L->v, L->hb, L->va, L->threads, err, errlen) != 0) return -1;
+    } else {
+        /* `value_states = key_states` before either norm (`:1258-1263`). */
+        e = cudaMemcpyAsync(L->va, L->ka, (size_t) nk * sizeof(float), cudaMemcpyDeviceToDevice, 0);
+        if (e != cudaSuccess) return fail(err, errlen, "layer k to v copy", e);
+    }
+
+    /* The per-head norms, then rotary on q and k; v_norm has no weight. */
+    if (rmsnorm_dev(L->qa, L->q_norm, L->qb, L->heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+    if (rope_dev(L->qb, L->heads, L->head_dim, pos, L->rope_inv, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(L->ka, L->k_norm, L->kb, L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+    if (rope_dev(L->kb, L->kv_heads, L->head_dim, pos, L->rope_inv, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(L->va, NULL, L->vb, L->kv_heads, L->head_dim, L->eps, err, errlen) != 0)
+        return -1;
+
+    /* The cache takes this position first: the query sees its own key. */
+    if (kv_put_dev(kv, pos, L->kb, L->vb, err, errlen) != 0) return -1;
+    if (attention_ring_dev(g, kv, L->qb, L->heads, pos, L->attn, err, errlen) != 0) return -1;
+    /* The output projection is the last thing the CPU's attention does
+     * (`layer.o.matvec(&out)`, forward.rs:462), so it is part of this step. */
+    if (matvec_dev(g, L->o, L->attn, L->attn2, L->threads, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(L->attn2, L->post_attn, L->attn, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(L->xa, L->attn, L->xb, (size_t) nh, 1.0f, err, errlen) != 0) return -1;
+
+    /* The dense feed-forward, which reads the post-attention residual. */
+    if (rmsnorm_dev(L->xb, L->pre_ffn, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->dg_t, L->hb, L->dg, L->threads, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->du_t, L->hb, L->du, L->threads, err, errlen) != 0) return -1;
+    if (gelu_mul_dev(L->dg, L->du, L->dact, (size_t) L->dense_ff, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->dd_t, L->dact, L->dd, L->threads, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(L->dd, L->post_ffn1, L->dense, 1, nh, L->eps, err, errlen) != 0) return -1;
+
+    /* The router: the weightless norm, the folded scale, the projection, the
+     * selection. The picks and the weights stay on the device from here. */
+    if (rmsnorm_dev(L->xb, NULL, L->r, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (mul_dev(L->r, L->router_scale, L->moe2, (size_t) nh, err, errlen) != 0) return -1;
+    if (matvec_dev(g, L->rt, L->moe2, L->scores, L->threads, err, errlen) != 0) return -1;
+    if (router_topk_dev(L->scores, L->pes, L->experts, L->top_k, L->probs, L->picked, L->wsel,
+                        err, errlen) != 0)
+        return -1;
+
+    /* The experts: one gate_up gather for all k, one gelu per expert, then a
+     * down gather and a weighted accumulate per expert, as forward.rs:376-388
+     * does it. */
+    const int gcount = 2 * L->moe_ff;
+    const size_t gn = (size_t) L->top_k * (size_t) gcount;
+    if (rmsnorm_dev(L->xb, L->pre_ffn2, L->hb, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (rowlist_dev(L->rl1, L->picked, L->top_k, gcount, gcount, err, errlen) != 0) return -1;
+    if (rows_dev(g, L->egu, L->rl1, (int) gn, L->hb, L->gu, L->threads, err, errlen) != 0)
+        return -1;
+    for (int i = 0; i < L->top_k; i++) {
+        const float *gu = L->gu + (size_t) i * (size_t) gcount;
+        float *act = L->act + (size_t) i * (size_t) L->moe_ff;
+        if (gelu_mul_dev(gu, gu + L->moe_ff, act, (size_t) L->moe_ff, err, errlen) != 0) return -1;
+    }
+    if (rowlist_dev(L->rl2, L->picked, L->top_k, nh, nh, err, errlen) != 0) return -1;
+    e = cudaMemsetAsync(L->moe, 0, (size_t) nh * sizeof(float), 0);
+    if (e != cudaSuccess) return fail(err, errlen, "layer moe clear", e);
+    for (int i = 0; i < L->top_k; i++) {
+        const float *act = L->act + (size_t) i * (size_t) L->moe_ff;
+        float *d = L->d + (size_t) i * (size_t) nh;
+        if (rows_dev(g, L->edn, L->rl2 + (size_t) i * (size_t) nh, nh, act, d, L->threads, err,
+                     errlen) != 0)
+            return -1;
+        if (axpy_dev(L->moe, d, L->wsel + i, (size_t) nh, err, errlen) != 0) return -1;
+    }
+
+    /* The close: moe norm, dense + moe, the pair norm, the residual, scalar. */
+    if (rmsnorm_dev(L->moe, L->post_ffn2, L->moe2, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(L->dense, L->moe2, L->comb, (size_t) nh, 1.0f, err, errlen) != 0) return -1;
+    if (rmsnorm_dev(L->comb, L->post_ffn, L->comb2, 1, nh, L->eps, err, errlen) != 0) return -1;
+    if (residual_dev(L->xb, L->comb2, L->outd, (size_t) nh, L->scalar, err, errlen) != 0)
+        return -1;
+
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "layer sync", e);
+    e = cudaMemcpy(out, L->outd, (size_t) nh * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "layer download", e);
+    return 0;
+}
+
+/* Diagnostic: copy one intermediate of the last forward back as f32. Not on
+ * any inference path; it is how the layer gate locates a wiring error instead
+ * of guessing at one. The arena reuses buffers, so what a number holds is the
+ * state the forward leaves it in; `n` is the caller's own width for the value
+ * and must fit the buffer. */
+int gm4_gpu_layer_probe(gm4_layer *L, int which, float *out, int n, char *err, size_t errlen) {
+    if (!L || !out || n <= 0) {
+        snprintf(err, errlen, "layer_probe needs a layer and an output");
+        return -1;
+    }
+    const float *src = NULL;
+    /* which: 0 xa 1 hb 2 qa 3 qb 4 ka 5 kb 6 va 7 vb 8 attn 9 attn2 10 xb
+     * 11 dg 12 du 13 dact 14 dd 15 dense 16 r 17 scores 18 moe 19 moe2
+     * 20 comb 21 comb2 22 outd 23 gu 24 act 25 d */
+    switch (which) {
+    case 0: src = L->xa; break;
+    case 1: src = L->hb; break;
+    case 2: src = L->qa; break;
+    case 3: src = L->qb; break;
+    case 4: src = L->ka; break;
+    case 5: src = L->kb; break;
+    case 6: src = L->va; break;
+    case 7: src = L->vb; break;
+    case 8: src = L->attn; break;
+    case 9: src = L->attn2; break;
+    case 10: src = L->xb; break;
+    case 11: src = L->dg; break;
+    case 12: src = L->du; break;
+    case 13: src = L->dact; break;
+    case 14: src = L->dd; break;
+    case 15: src = L->dense; break;
+    case 16: src = L->r; break;
+    case 17: src = L->scores; break;
+    case 18: src = L->moe; break;
+    case 19: src = L->moe2; break;
+    case 20: src = L->comb; break;
+    case 21: src = L->comb2; break;
+    case 22: src = L->outd; break;
+    case 23: src = L->gu; break;
+    case 24: src = L->act; break;
+    case 25: src = L->d; break;
+    default:
+        snprintf(err, errlen, "layer_probe has no intermediate %d", which);
+        return -1;
+    }
+    if ((size_t) n > L->w[which]) {
+        snprintf(err, errlen, "intermediate %d holds %zu values, the caller asked for %d", which,
+                 L->w[which], n);
+        return -1;
+    }
+    cudaError_t e = cudaMemcpy(out, src, (size_t) n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "layer probe", e);
     return 0;
 }
 
