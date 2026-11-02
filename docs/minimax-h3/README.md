@@ -108,7 +108,6 @@ The model's license is included in the downloaded repository.
 - [Reference probes and media comparison](../../tools/minimax_h3/README.md)
 - [GB10 maintainer validation, 2026-10-26](validation-2026-10-26.md)
 - [Speed baseline against h3.c, 2026-10-27](speed-2026-10-27.md)
-- [The Gemma4 encoder and the AV connector: port map and numeric reference, 2026-10-29](gemma-connector-port-plan-2026-10-29.md)
 - [The DiT's elementwise pair: a staged layout, bit for bit, 2026-10-29](dit-elementwise-2026-10-29.md)
 - [The projections' true shapes, the gap that was bookkeeping, and FP8 re-priced, 2026-10-29](dit-gemm-shape-2026-10-29.md)
 - [The projections in FP8, and the in-model gap, 2026-10-29](fp8-projections-2026-10-29.md)
