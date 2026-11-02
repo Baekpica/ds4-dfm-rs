@@ -61,7 +61,7 @@ pub use forward::{Model, Session};
 /// The forward's elementwise arithmetic, published so a device kernel can be
 /// gated against the exact function the CPU path runs instead of a second copy
 /// of the formula.
-pub use forward::{bf16_round, gelu, rms_norm};
+pub use forward::{bf16_round, gelu, normalize_heads, rms_norm, rope};
 pub use layout::{Layer, Layout, Role};
 pub use model::{identify, is_release, Family, NAME_PREFIX};
 pub use release::{Codebook, Entry, Payload, Release, Totals};

@@ -150,16 +150,7 @@ impl Model {
             let spec = &family.layout.layers[index];
             let kind = spec.kind;
             let role = |role: Role| -> Result<&Entry, Error> { family.role(index, role) };
-            let head_dim = config.head_dim_of(kind);
-            let half = head_dim / 2;
-            let theta = config.rope_theta(kind);
-            let rotated = config.rotated_dims(kind);
-            let mut rope_inv = vec![0f32; half];
-            for (i, slot) in rope_inv.iter_mut().enumerate() {
-                if i < rotated / 2 {
-                    *slot = 1.0 / (theta as f32).powf(2.0 * i as f32 / head_dim as f32);
-                }
-            }
+            let rope_inv = config.rope_inv(kind);
             layers.push(LayerWeights {
                 kind,
                 input_norm: vector(dir, role(Role::InputNorm)?)?,
@@ -472,7 +463,7 @@ impl<'m> Session<'m> {
     }
 }
 
-fn normalize_heads(x: &[f32], weight: &[f32], heads: usize, head_dim: usize, eps: f32) -> Vec<f32> {
+pub fn normalize_heads(x: &[f32], weight: &[f32], heads: usize, head_dim: usize, eps: f32) -> Vec<f32> {
     let mut out = vec![0f32; x.len()];
     for head in 0..heads {
         let start = head * head_dim;
@@ -490,7 +481,7 @@ fn normalize_heads(x: &[f32], weight: &[f32], heads: usize, head_dim: usize, eps
     out
 }
 
-fn rope(x: &mut [f32], heads: usize, head_dim: usize, pos: usize, inv: &[f32]) {
+pub fn rope(x: &mut [f32], heads: usize, head_dim: usize, pos: usize, inv: &[f32]) {
     let half = head_dim / 2;
     for head in 0..heads {
         let base = head * head_dim;

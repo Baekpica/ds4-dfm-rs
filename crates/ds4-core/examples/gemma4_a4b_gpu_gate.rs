@@ -36,7 +36,10 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ds4_core::f16_to_f32;
-use ds4_core::gemma4_a4b::{bf16_round, decode, gelu, rms_norm, Entry, Family, Matrix, Tensor};
+use ds4_core::gemma4_a4b::{
+    bf16_round, decode, gelu, normalize_heads, rms_norm, rope, Entry, Family, LayerType, Matrix,
+    Role, Tensor,
+};
 
 /// Mirrors `gm4_spec` in native/gemma4/gemma4_gpu.h.
 #[repr(C)]
@@ -157,6 +160,31 @@ extern "C" {
         err: *mut c_char,
         errlen: usize,
     ) -> i32;
+    fn gm4_gpu_rope(
+        g: *mut c_void,
+        x: *mut f32,
+        heads: i32,
+        head_dim: i32,
+        pos: i32,
+        inv: *const f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn gm4_gpu_attention(
+        g: *mut c_void,
+        q: *const f32,
+        k: *const f32,
+        v: *const f32,
+        heads: i32,
+        kv_heads: i32,
+        head_dim: i32,
+        positions: i32,
+        window: i32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32;
 }
 
 struct Residency(*mut c_void);
@@ -177,6 +205,7 @@ fn usage() -> &'static str {
   --skip-gather      skip the routed-expert gather (step 3)
   --skip-prefill     skip the tensor-core prefill (step 4)
   --skip-elementwise skip the norms and elementwise kernels (step 5)
+  --skip-attention   skip rotary and decode attention (step 6)
   --help             this text"
 }
 
@@ -203,6 +232,7 @@ fn run() -> Result<(), String> {
     let mut gather = true;
     let mut prefill = true;
     let mut elementwise = true;
+    let mut attention = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -230,6 +260,7 @@ fn run() -> Result<(), String> {
             "--skip-gather" => gather = false,
             "--skip-prefill" => prefill = false,
             "--skip-elementwise" => elementwise = false,
+            "--skip-attention" => attention = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -429,6 +460,9 @@ fn run() -> Result<(), String> {
     }
     if elementwise {
         elementwise_gate(&device, &mut failed)?;
+    }
+    if attention {
+        attention_gate(&device, &family, &root, &mut failed)?;
     }
     if failed {
         return Err("a kernel is past the gate".into());
@@ -946,6 +980,326 @@ fn elementwise_gate(device: &Residency, failed: &mut bool) -> Result<(), String>
     if rel > 1e-6 {
         println!("  FAIL the softcap is past 1e-6");
         *failed = true;
+    }
+    Ok(())
+}
+
+/// Step 6: rotary and the single-token attention, on two real layers (0 is
+/// sliding, 5 is full).
+///
+/// The reference is assembled from the forward's own published primitives in
+/// the forward's order (`forward.rs:409-471`): q_proj, q_norm, rope; the k
+/// projection, k_norm, rope; the weightless v norm, from `v_proj` on a
+/// sliding layer and from the raw k projection where `k_eq_v` holds
+/// (`modeling_gemma4.py:1263-1271`); then the mask, the fp32 softmax and the
+/// weighted sum. The f64 side of the comparison rounds K and V to f16 first,
+/// because that is the cache's format and the rounding, not the kernel, is
+/// what separates it from the CPU.
+fn attention_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let eps = config.rms_eps;
+    let hidden = config.hidden;
+
+    // The rotary kernel first, in both flavours, at a position large enough
+    // that the angle's f32 precision is exercised.
+    for &kind in &[LayerType::Sliding, LayerType::Full] {
+        let head_dim = config.head_dim_of(kind);
+        let heads = config.heads;
+        let inv = config.rope_inv(kind);
+        let pos = 12_345usize;
+        let x = elementwise_probe(heads * head_dim, 2.0);
+        let mut want = x.clone();
+        rope(&mut want, heads, head_dim, pos, &inv);
+        let mut got = x.clone();
+        call_rope(device, &mut got, heads, head_dim, pos, &inv)?;
+        let (rel, max, _) = compare(&want, &got);
+        let nonzero = inv.iter().filter(|&&v| v != 0.0).count();
+        println!(
+            "ROPE {:?} heads {heads} width {head_dim} pos {pos} rotated pairs {nonzero} of {} relL2 {rel:.3e} maxabs {max:.3e}",
+            kind,
+            inv.len()
+        );
+        if rel > 1e-6 {
+            println!("  FAIL the rotary is past 1e-6 against the forward's rope");
+            *failed = true;
+        }
+    }
+
+    for &layer in &[0usize, 5] {
+        let spec = &family.layout.layers[layer];
+        let kind = spec.kind;
+        let head_dim = config.head_dim_of(kind);
+        let heads = config.heads;
+        let kv_heads = config.kv_heads_of(kind);
+        let window = match kind {
+            LayerType::Sliding => config.sliding_window as i32,
+            LayerType::Full => 0,
+        };
+        // Sliding: long enough that the window clips. Full: a short history.
+        let positions = match kind {
+            LayerType::Sliding => config.sliding_window + 276,
+            LayerType::Full => 192,
+        };
+        let pos = positions - 1;
+
+        let q_proj = Matrix::open(root, spec.get(Role::QProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let k_proj = Matrix::open(root, spec.get(Role::KProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let v_proj = match config.has_v_proj(kind) {
+            true => Some(Matrix::open(root, spec.get(Role::VProj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?),
+            false => None,
+        };
+        let q_norm = decode(root, spec.get(Role::QNorm).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+            .data;
+        let k_norm = decode(root, spec.get(Role::KNorm).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+            .data;
+        let inv = config.rope_inv(kind);
+
+        // The history: one activation vector per position, projected and
+        // normalised the way the forward does it.
+        let mut k_all = Vec::with_capacity(positions * kv_heads * head_dim);
+        let mut v_all = Vec::with_capacity(positions * kv_heads * head_dim);
+        let mut h_last = vec![0f32; hidden];
+        for p in 0..positions {
+            let h = elementwise_probe(hidden, 1.0);
+            let h = shift_probe(&h, p);
+            if p + 1 == positions {
+                h_last = h.clone();
+            }
+            let k_raw = k_proj.matvec(&h).map_err(|e| e.to_string())?;
+            let mut k = normalize_heads(&k_raw, &k_norm, kv_heads, head_dim, eps);
+            rope(&mut k, kv_heads, head_dim, p, &inv);
+            let v_raw = match &v_proj {
+                Some(m) => m.matvec(&h).map_err(|e| e.to_string())?,
+                None => k_raw.clone(),
+            };
+            let v = normalize_heads(&v_raw, &[], kv_heads, head_dim, eps);
+            k_all.extend_from_slice(&k);
+            v_all.extend_from_slice(&v);
+        }
+
+        let q_raw = q_proj.matvec(&h_last).map_err(|e| e.to_string())?;
+        let mut q = normalize_heads(&q_raw, &q_norm, heads, head_dim, eps);
+        rope(&mut q, heads, head_dim, pos, &inv);
+
+        let first = match kind {
+            LayerType::Sliding => positions.saturating_sub(config.sliding_window),
+            LayerType::Full => 0,
+        };
+        let cpu = cpu_attention(
+            &q, &k_all, &v_all, heads, kv_heads, head_dim, positions, first,
+        );
+        let k16: Vec<f32> = k_all.iter().map(|&x| round_f16(x)).collect();
+        let v16: Vec<f32> = v_all.iter().map(|&x| round_f16(x)).collect();
+        let want = f64_attention(&q, &k16, &v16, heads, kv_heads, head_dim, positions, first);
+
+        let mut out = vec![0f32; heads * head_dim];
+        call_attention(
+            device, &q, &k_all, &v_all, heads, kv_heads, head_dim, positions, window, &mut out,
+        )?;
+
+        let (vs_cpu, max_cpu, _) = compare(&cpu, &out);
+        let (vs_f64, max_f64) = compare_f32_f64(&out, &want);
+        println!(
+            "ATTENTION layer {layer} {kind:?} heads {heads} kv {kv_heads} width {head_dim} positions {positions} window {} first {first}: vs cpu {vs_cpu:.3e} (maxabs {max_cpu:.3e}) vs f64(f16 kv) {vs_f64:.3e} (maxabs {max_f64:.3e})",
+            if window > 0 { window.to_string() } else { "all".to_string() }
+        );
+        if vs_f64 > 1e-5 {
+            println!("  FAIL the attention kernel is past 1e-5 against the f16 reference");
+            *failed = true;
+        }
+        // The f16 cache's own cost, against the CPU's f32 KV.
+        if vs_cpu > 2e-3 {
+            println!("  FAIL the f16 cache costs more than the 2e-3 band");
+            *failed = true;
+        }
+
+        // The window must be exactly `window` keys including the query, and
+        // moving the first index must change the result.
+        if kind == LayerType::Sliding {
+            let mut wrong = vec![0f32; heads * head_dim];
+            call_attention(
+                device,
+                &q,
+                &k_all,
+                &v_all,
+                heads,
+                kv_heads,
+                head_dim,
+                positions,
+                window + 1,
+                &mut wrong,
+            )?;
+            let (drift, _, _) = compare(&wrong, &out);
+            println!("  WINDOW a wider window changes the output by relL2 {drift:.3e}");
+            if drift == 0.0 {
+                println!("  FAIL the window is not being applied");
+                *failed = true;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A per-position variation of a probe vector, so the history is not 1300
+/// copies of one activation. It rotates the vector's entries by `position`
+/// and scales it, which keeps the values in a model-like range.
+fn shift_probe(base: &[f32], position: usize) -> Vec<f32> {
+    let n = base.len();
+    let mut out = vec![0f32; n];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = base[(i + position * 7) % n] * (1.0 + 0.01 * (position % 13) as f32);
+    }
+    out
+}
+
+/// The forward's attention in f32: scores, softmax, weighted sum.
+fn cpu_attention(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    positions: usize,
+    first: usize,
+) -> Vec<f32> {
+    let group = heads / kv_heads;
+    let mut out = vec![0f32; heads * head_dim];
+    let mut scores = vec![0f32; positions - first];
+    for h in 0..heads {
+        let kv_head = h / group;
+        let qh = &q[h * head_dim..(h + 1) * head_dim];
+        for p in first..positions {
+            let base = (p * kv_heads + kv_head) * head_dim;
+            let kb = &k[base..base + head_dim];
+            scores[p - first] = qh.iter().zip(kb).map(|(&a, &b)| a * b).sum();
+        }
+        let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0f32;
+        for s in scores.iter_mut() {
+            *s = (*s - max).exp();
+            sum += *s;
+        }
+        let o = &mut out[h * head_dim..(h + 1) * head_dim];
+        for (p, &s) in scores.iter().enumerate() {
+            let base = ((first + p) * kv_heads + kv_head) * head_dim;
+            for d in 0..head_dim {
+                o[d] += (s / sum) * v[base + d];
+            }
+        }
+    }
+    out
+}
+
+/// The same in f64 over the given K/V: the reference the kernel approximates.
+fn f64_attention(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    positions: usize,
+    first: usize,
+) -> Vec<f64> {
+    let group = heads / kv_heads;
+    let mut out = vec![0f64; heads * head_dim];
+    let mut scores = vec![0f64; positions - first];
+    for h in 0..heads {
+        let kv_head = h / group;
+        let qh = &q[h * head_dim..(h + 1) * head_dim];
+        for p in first..positions {
+            let base = (p * kv_heads + kv_head) * head_dim;
+            let kb = &k[base..base + head_dim];
+            scores[p - first] = qh
+                .iter()
+                .zip(kb)
+                .map(|(&a, &b)| f64::from(a) * f64::from(b))
+                .sum();
+        }
+        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let mut sum = 0f64;
+        for s in scores.iter_mut() {
+            *s = (*s - max).exp();
+            sum += *s;
+        }
+        let o = &mut out[h * head_dim..(h + 1) * head_dim];
+        for (p, &s) in scores.iter().enumerate() {
+            let base = ((first + p) * kv_heads + kv_head) * head_dim;
+            for d in 0..head_dim {
+                o[d] += (s / sum) * f64::from(v[base + d]);
+            }
+        }
+    }
+    out
+}
+
+fn call_rope(
+    device: &Residency,
+    x: &mut [f32],
+    heads: usize,
+    head_dim: usize,
+    pos: usize,
+    inv: &[f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_rope(
+            device.0,
+            x.as_mut_ptr(),
+            heads as i32,
+            head_dim as i32,
+            pos as i32,
+            inv.as_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("rope: {}", message(&err)));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_attention(
+    device: &Residency,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    positions: usize,
+    window: i32,
+    out: &mut [f32],
+) -> Result<(), String> {
+    let mut err = [0i8; 512];
+    let rc = unsafe {
+        gm4_gpu_attention(
+            device.0,
+            q.as_ptr(),
+            k.as_ptr(),
+            v.as_ptr(),
+            heads as i32,
+            kv_heads as i32,
+            head_dim as i32,
+            positions as i32,
+            window,
+            out.as_mut_ptr(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!("attention: {}", message(&err)));
     }
     Ok(())
 }

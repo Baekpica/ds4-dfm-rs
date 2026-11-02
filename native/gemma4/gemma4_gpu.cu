@@ -604,6 +604,123 @@ __global__ void softcap_kernel(float *y, size_t n, float cap) {
     y[i] = cap * tanhf(y[i] / cap);
 }
 
+/* ---- attention ---------------------------------------------------------
+ *
+ * The reference is the official implementation, read first-hand this session
+ * at /data/refs/transformers-5.14.1:
+ *   - modeling_gemma4.py:786-814  rotate_half and apply_rotary_pos_emb
+ *     (x * cos + rotate_half(x) * sin, with rotate_half pairing d and
+ *     d + width/2 and the table folded by cat(freqs, freqs));
+ *   - modeling_rope_utils.py:227-244  proportional RoPE: rope_angles =
+ *     int(partial * head_dim // 2), inv = 1/base^(2i/head_dim) over the full
+ *     head width, zeros for the unrotated pairs;
+ *   - modeling_gemma4.py:1183-1296  the attention block: q_norm, k_norm,
+ *     weightless v_norm, k_eq_v taking the value from the raw k projection,
+ *     scaling 1.0;
+ *   - modeling_gemma4.py:823-855  eager attention: scores, additive mask,
+ *     softmax upcast to fp32, then probs . v;
+ *   - masking_utils.py:92-101  the sliding predicate kv > q - window with the
+ *     causal kv <= q, i.e. exactly `window` keys including the query.
+ */
+
+/* The rotary application: one thread per pair, so the two halves of a pair
+ * are written by the same thread and no barrier is needed. A zero frequency
+ * is the identity pair and is skipped. */
+__global__ void rope_kernel(float *x, int heads, int head_dim, int pos, const float *inv) {
+    const int h = blockIdx.x;
+    const int d = threadIdx.x;
+    const int half = head_dim / 2;
+    if (d >= half) return;
+    const float w = inv[d];
+    if (w == 0.0f) return;
+    float *base = x + (size_t) h * (size_t) head_dim;
+    const float angle = (float) pos * w;
+    float s, c;
+    sincosf(angle, &s, &c);
+    const float a = base[d], b = base[d + half];
+    base[d] = a * c - b * s;
+    base[d + half] = b * c + a * s;
+}
+
+__device__ __forceinline__ float block_max(float v, float *red) {
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int off = 16; off > 0; off >>= 1) v = fmaxf(v, __shfl_down_sync(0xffffffffu, v, off));
+    if (lane == 0) red[warp] = v;
+    __syncthreads();
+    v = threadIdx.x < (blockDim.x + 31) / 32 ? red[threadIdx.x] : -INFINITY;
+    if (warp == 0) {
+        for (int off = 16; off > 0; off >>= 1) v = fmaxf(v, __shfl_down_sync(0xffffffffu, v, off));
+        if (lane == 0) red[0] = v;
+    }
+    __syncthreads();
+    v = red[0];
+    __syncthreads();
+    return v;
+}
+
+__device__ __forceinline__ float block_sum(float v, float *red) {
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+    if (lane == 0) red[warp] = v;
+    __syncthreads();
+    v = threadIdx.x < (blockDim.x + 31) / 32 ? red[threadIdx.x] : 0.0f;
+    if (warp == 0) {
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+        if (lane == 0) red[0] = v;
+    }
+    __syncthreads();
+    v = red[0];
+    __syncthreads();
+    return v;
+}
+
+/* One query token against a K/V history. Grid is one block per head; a warp
+ * takes every nwarps-th position in the window for the score pass, the whole
+ * block shares the softmax, and the value pass is one thread per dimension
+ * with no reduction at all. K and V are f16, which is finer than the
+ * reference's bf16 activations. */
+__global__ void attn_decode_kernel(const float *q, const __half *k, const __half *v,
+                                   float *scores, float *out, int heads, int kv_heads,
+                                   int head_dim, int positions, int first, int nwin) {
+    extern __shared__ float red[];
+    const int h = blockIdx.x;
+    const int group = heads / kv_heads;
+    const int kv_head = h / group;
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int nwarps = blockDim.x >> 5;
+    const float *qh = q + (size_t) h * (size_t) head_dim;
+    float *sc = scores + (size_t) h * (size_t) nwin;
+    const size_t kv_stride = (size_t) kv_heads * (size_t) head_dim;
+
+    for (int p = first + warp; p < positions; p += nwarps) {
+        const __half *kp = k + (size_t) p * kv_stride + (size_t) kv_head * head_dim;
+        float s = 0.0f;
+        for (int d = lane; d < head_dim; d += 32) s += qh[d] * __half2float(kp[d]);
+        for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xffffffffu, s, off);
+        if (lane == 0) sc[p - first] = s; /* scaling is 1.0 */
+    }
+    __syncthreads();
+
+    /* fp32 softmax, as the reference upcasts it (`:846`). */
+    float mx = -INFINITY;
+    for (int i = threadIdx.x; i < nwin; i += blockDim.x) mx = fmaxf(mx, sc[i]);
+    mx = block_max(mx, red);
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < nwin; i += blockDim.x) {
+        const float e = expf(sc[i] - mx);
+        sc[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+
+    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
+        float acc = 0.0f;
+        const __half *vp = v + (size_t) first * kv_stride + (size_t) kv_head * head_dim + d;
+        for (int p = 0; p < nwin; p++) acc += (sc[p] / sum) * __half2float(vp[(size_t) p * kv_stride]);
+        out[(size_t) h * (size_t) head_dim + d] = acc;
+    }
+}
+
 /* Largest dynamic shared-memory window the device accepts; the shared-codebook
  * variant needs nc*dim f16 in one block, which a wide codebook cannot fit. */
 size_t smem_max(void) {
@@ -924,6 +1041,10 @@ struct gm4_gpu {
     size_t pxtcap, pycap;
     float *ew[3];      /* the elementwise kernels' operands, grown on demand */
     size_t ewcap[3];
+    float *aq, *ax, *ai, *ascores, *aout; /* attention's and RoPE's operands */
+    size_t aqcap, axcap, aicap, ascorescap, aoutcap;
+    __half *akv;
+    size_t akvcap;
     char devname[256];
     gm4_account acct;
 };
@@ -1005,6 +1126,12 @@ void gm4_gpu_close(gm4_gpu *g) {
     if (g->py) cudaFree(g->py);
     for (int i = 0; i < 3; i++)
         if (g->ew[i]) cudaFree(g->ew[i]);
+    if (g->aq) cudaFree(g->aq);
+    if (g->ax) cudaFree(g->ax);
+    if (g->ai) cudaFree(g->ai);
+    if (g->ascores) cudaFree(g->ascores);
+    if (g->aout) cudaFree(g->aout);
+    if (g->akv) cudaFree(g->akv);
     free(g);
 }
 
@@ -1387,6 +1514,111 @@ int gm4_gpu_softcap(gm4_gpu *g, float *y, size_t n, float cap, char *err, size_t
     if (e != cudaSuccess) return fail(err, errlen, "softcap sync", e);
     e = cudaMemcpy(y, g->ew[0], n * sizeof(float), cudaMemcpyDeviceToHost);
     if (e != cudaSuccess) return fail(err, errlen, "softcap download", e);
+    return 0;
+}
+
+/* Grow a plain device float buffer, keeping the old one on failure. */
+static int ensure_float(float **slot, size_t *cap, size_t need, char *err, size_t errlen) {
+    if (need <= *cap) return 0;
+    float *next = NULL;
+    cudaError_t e = cudaMalloc((void **) &next, need * sizeof(float));
+    if (e != cudaSuccess) {
+        snprintf(err, errlen, "cudaMalloc of %.1f MiB failed: %s",
+                 (double) need * sizeof(float) / (1024.0 * 1024.0), cudaGetErrorString(e));
+        return -1;
+    }
+    if (*slot) cudaFree(*slot);
+    *slot = next;
+    *cap = need;
+    return 0;
+}
+
+/* Apply one layer type's rotary frequencies to every head of `x` in place, at
+ * `pos`. `inv` is the layer type's table from Config::rope_inv: head_dim/2
+ * entries, zero past the rotated pairs. */
+int gm4_gpu_rope(gm4_gpu *g, float *x, int heads, int head_dim, int pos, const float *inv,
+                 char *err, size_t errlen) {
+    if (!g || !x || !inv || heads <= 0 || head_dim <= 0 || head_dim % 2 || pos < 0) {
+        snprintf(err, errlen, "rope needs an input, a table and a positive even head width");
+        return -1;
+    }
+    const size_t n = (size_t) heads * (size_t) head_dim;
+    if (ensure_float(&g->ax, &g->axcap, n, err, errlen) != 0) return -1;
+    if (ensure_float(&g->ai, &g->aicap, (size_t) (head_dim / 2), err, errlen) != 0) return -1;
+    cudaError_t e = cudaMemcpy(g->ax, x, n * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "rope x upload", e);
+    e = cudaMemcpy(g->ai, inv, (size_t) (head_dim / 2) * sizeof(float), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) return fail(err, errlen, "rope table upload", e);
+    rope_kernel<<<(unsigned) heads, (unsigned) (head_dim / 2)>>>(g->ax, heads, head_dim, pos, g->ai);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "rope launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "rope sync", e);
+    e = cudaMemcpy(x, g->ax, n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "rope download", e);
+    return 0;
+}
+
+/* One query token's attention against `positions` keys and values, the last
+ * `window` of them when `window` is positive (the sliding layers) and all of
+ * them when it is zero (the full layers). q is [heads][head_dim]; k and v are
+ * [positions][kv_heads][head_dim], f32 here and rounded to f16 on upload,
+ * which is the cache's format. */
+int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v, int heads,
+                      int kv_heads, int head_dim, int positions, int window, float *out,
+                      char *err, size_t errlen) {
+    if (!g || !q || !k || !v || !out || heads <= 0 || kv_heads <= 0 || head_dim <= 0
+        || head_dim % 2 || heads % kv_heads || positions <= 0 || window < 0) {
+        snprintf(err, errlen,
+                 "attention needs q, k, v and an output with heads a multiple of kv_heads and "
+                 "an even head width");
+        return -1;
+    }
+    const int nwin = window > 0 && positions > window ? window : positions;
+    const int first = positions - nwin;
+    const size_t qn = (size_t) heads * (size_t) head_dim;
+    const size_t kvn = (size_t) positions * (size_t) kv_heads * (size_t) head_dim;
+    if (ensure_float(&g->aq, &g->aqcap, qn, err, errlen) != 0) return -1;
+    if (ensure_float(&g->aout, &g->aoutcap, qn, err, errlen) != 0) return -1;
+    if (ensure_float(&g->ascores, &g->ascorescap, (size_t) heads * (size_t) nwin, err, errlen) != 0)
+        return -1;
+    if (kvn * 2 > g->akvcap) {
+        __half *next = NULL;
+        cudaError_t e = cudaMalloc((void **) &next, kvn * 2 * sizeof(__half));
+        if (e != cudaSuccess) {
+            snprintf(err, errlen, "attention kv cudaMalloc of %.1f MiB failed: %s",
+                     (double) kvn * 2 * sizeof(__half) / (1024.0 * 1024.0), cudaGetErrorString(e));
+            return -1;
+        }
+        if (g->akv) cudaFree(g->akv);
+        g->akv = next;
+        g->akvcap = kvn * 2;
+    }
+    /* The cache format at the boundary: round and upload. */
+    __half *host_kv = (__half *) malloc(kvn * 2 * sizeof(__half));
+    if (!host_kv) {
+        snprintf(err, errlen, "out of host memory for the f16 cache upload");
+        return -1;
+    }
+    for (size_t i = 0; i < kvn; i++) {
+        host_kv[i] = __float2half_rn(k[i]);
+        host_kv[kvn + i] = __float2half_rn(v[i]);
+    }
+    cudaError_t e = cudaMemcpy(g->aq, q, qn * sizeof(float), cudaMemcpyHostToDevice);
+    if (e == cudaSuccess)
+        e = cudaMemcpy(g->akv, host_kv, kvn * 2 * sizeof(__half), cudaMemcpyHostToDevice);
+    free(host_kv);
+    if (e != cudaSuccess) return fail(err, errlen, "attention upload", e);
+
+    attn_decode_kernel<<<(unsigned) heads, 256, 32 * sizeof(float)>>>(
+        g->aq, g->akv, g->akv + kvn, g->ascores, g->aout, heads, kv_heads, head_dim, positions,
+        first, nwin);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return fail(err, errlen, "attention launch", e);
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) return fail(err, errlen, "attention sync", e);
+    e = cudaMemcpy(out, g->aout, qn * sizeof(float), cudaMemcpyDeviceToHost);
+    if (e != cudaSuccess) return fail(err, errlen, "attention download", e);
     return 0;
 }
 

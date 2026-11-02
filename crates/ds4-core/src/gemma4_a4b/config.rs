@@ -239,6 +239,28 @@ impl Config {
         }
     }
 
+    /// The rotary inverse frequencies a layer type rotates with, zero past the
+    /// rotated pairs.
+    ///
+    /// `modeling_rope_utils.py:227-244`: `rope_angles = int(partial *
+    /// head_dim // 2)` and `inv_freq[i] = 1 / base ** (2i / head_dim)` over
+    /// the full head width, then zeros for the `nope_angles` that stay
+    /// unrotated. The proportional type is given
+    /// `head_dim_key="global_head_dim"` for full layers
+    /// (`modeling_gemma4.py:1120-1124`), so the divisor is the full 512 and
+    /// not the rotated 128. `modeling_gemma4.py:1177` folds the table with
+    /// `cat(freqs, freqs)`, which makes a zero frequency an identity pair.
+    pub fn rope_inv(&self, kind: LayerType) -> Vec<f32> {
+        let width = self.head_dim_of(kind);
+        let theta = self.rope_theta(kind);
+        let rotated = self.rotated_dims(kind);
+        let mut inv = vec![0f32; width / 2];
+        for (i, slot) in inv.iter_mut().take(rotated / 2).enumerate() {
+            *slot = 1.0 / (theta as f32).powf(2.0 * i as f32 / width as f32);
+        }
+        inv
+    }
+
     pub fn rope_theta(&self, kind: LayerType) -> f64 {
         match kind {
             LayerType::Sliding => self.sliding_theta,

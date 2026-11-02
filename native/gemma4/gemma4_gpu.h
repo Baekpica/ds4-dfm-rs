@@ -123,6 +123,23 @@ int gm4_gpu_residual_scale(gm4_gpu *g, const float *x, const float *add, float *
                            float scale, char *err, size_t errlen);
 int gm4_gpu_softcap(gm4_gpu *g, float *y, size_t n, float cap, char *err, size_t errlen);
 
+/* Rotary, in place, on [heads][head_dim] at position `pos`. `inv` is the layer
+ * type's table (Config::rope_inv): head_dim/2 entries, zero past the rotated
+ * pairs, so the unrotated half is the identity (the reference's
+ * cat(freqs, freqs) fold). */
+int gm4_gpu_rope(gm4_gpu *g, float *x, int heads, int head_dim, int pos, const float *inv,
+                 char *err, size_t errlen);
+
+/* One query token's attention over `positions` keys and values: the last
+ * `window` of them when window is positive (the sliding layers), all of them
+ * when it is zero (the full layers). q is [heads][head_dim]; k and v are
+ * [positions][kv_heads][head_dim], rounded to f16 on upload, which is the
+ * cache's format. Softmax is fp32 and the scaling is 1.0
+ * (modeling_gemma4.py:846, :1200). */
+int gm4_gpu_attention(gm4_gpu *g, const float *q, const float *k, const float *v, int heads,
+                      int kv_heads, int head_dim, int positions, int window, float *out,
+                      char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif
