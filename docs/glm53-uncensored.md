@@ -7,6 +7,9 @@ The [earlier antirez Q2 gate](ds4-dfm-model-families.md#glm-53-flash-release-sco
 qualifies its own artifact and recorded runtime.
 The [2026-10-08 Prefill campaign](glm53-prefill-2026-10-08.md) records the newer
 2048-row path and SSD policy. Its gates do not extend this record's 1M scope.
+The [2026-11-02 rounds](glm53-mixed-optimization-2026-11-02.md) move this
+artifact's attention, index, mHC and KDA paths onto tensor-core kernels:
+8K prefill 216 → 806 tok/s, decode 15.2 → 19.1 tok/s, MTP off.
 
 ## Artifacts and input
 

@@ -6,7 +6,16 @@
 #include "glm_vq_gemv.cuh"
 #include "glm_vq_kda.cuh"
 
-/* Fast paths of the compact (mixed-artifact) GLM-5.3 graph.
+/* Fast paths of the compact (mixed-artifact) GLM-5.3 graph, mostly GLM VQ
+ * kernels on this artifact's formats (F16 cache and pools, F32 residuals):
+ *
+ *   DSA    q --K_b GEMM--> flash tile (F16 latents) --V_b GEMM--> heads
+ *   index  fused 4-row x 128-pool MMA scores
+ *   KDA    rank-128 SGEMM projections; tensor-core chunk local + scan
+ *   mHC    one-pass RMS + 24 mapping dots
+ *
+ * Each entry returns 1 done, 0 not covered (the reference path runs), -1
+ * failed, and has a DS4_GLM53_* kill switch.
  *
  * Latent attention for the compact cache.
  * The reference kernel runs one SIMT block per (row, head): each of the 64

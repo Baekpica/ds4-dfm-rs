@@ -456,6 +456,23 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   Sorting the head first (tokens ≥ 1e-3 of the top probability, the full
   order's prefix) took the step to 83 ms: sampled code 18.4 → 32.7 tok/s.
   Time a sampled request whenever drafting or the sampler changes.
+- **Share a kernel across element types as a kernel template.** Moving
+  GLM VQ's flash tile into a `__forceinline__` device body for an F16
+  sibling changed the BF16 kernel's SASS (1,728 → 1,704 instructions, two
+  more spills); a templated `__global__` plus `static constexpr auto
+  name = kernel_t<T>` kept it identical and its call sites unchanged.
+- **Port a sibling family's kernels before writing new ones.** GLM's
+  mixed artifact ran SIMT attention, index scores, mHC and KDA beside the
+  VQ path's tensor-core versions of the same algebra: reusing them on F16
+  caches took 8K prefill 216 → 806 tok/s and decode 15.2 → 19.1.
+- **Read-time guards make write-side scrubs dead.** Every routed MMQ
+  ended with a non-finite scrub of its F32 output while its consumers
+  (weighted SwiGLU, moe_sum) already zero non-finite values at read: 0.5
+  of an 8K GLM prefill's 12.7 s, byte-identical once removed.
+- **Fit chunk effects before raising the chunk.** GLM mixed routed MMQ
+  fit a + b/rows (b = the 1.95 GB/layer expert stream), yet 4,096-row
+  chunks lost 6.4% at 8K and doubled the 2.9 GiB workspace (cause not
+  isolated). Measure the whole prefill before moving the chunk cap.
 
 # Agent Notes
 

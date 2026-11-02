@@ -1,0 +1,13 @@
+{
+ "name": "base-1",
+ "commit": "8c2068b5",
+ "binary_sha256": "e3b77844bccca53151c84569794a14da9ca5718656d61119a842428309ea999d",
+ "args": "--ctx-start 2048 --ctx-max 65536 --step-incr 2048 --ctx-alloc 67584 --gen-tokens 128",
+ "busy_sm_mhz": [
+  2138,
+  2190
+ ],
+ "samples": 1284,
+ "min_available_gib": 21.67,
+ "max_psi_full_avg10": 0.0
+}
