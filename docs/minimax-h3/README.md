@@ -13,8 +13,11 @@ audio references. There is no H3 GGUF or VQ loader.
 One process does the whole job: `h3-rs` encodes the prompt, the DiT denoises
 the latent at the requested canvas, the H3 video VAE decodes it, the H3 audio
 VAE decodes the soundtrack and FFmpeg muxes the MP4. Nothing upscales,
-re-renders or re-decodes the result afterwards, so the delivered clip is the
-model's own generation at the canvas the request names.
+re-renders or re-decodes the delivered file afterwards, so the clip is the
+model's own generation at the canvas the request names. The model's own
+two-stage route - a draft at 0.7 of the canvas, one latent upscale and one
+refine step - runs inside the render and is asked for with `--draft`, which
+needs the resident route (`--jobs`); it is not a post-process.
 
 ## Build and run
 
@@ -114,6 +117,11 @@ The model's license is included in the downloaded repository.
 - [The per-row FP8 arm, built and priced: exact, 1.73 s/eval, no visible gain, 2026-10-29](fp8-row-arm-2026-10-29.md)
 - [The release's FP8 route at the delivery canvas: 12.8% of a step, and detail the arm does not lose, 2026-11-02](fp8-delivery-2026-11-02.md)
 - [Three attention widths, measured: the block is not bound by K/V traffic, 2026-11-02](attention-widths-2026-11-02.md)
+- [The draft's anatomy: what holds it, 2026-10-31](draft-anatomy-2026-10-31.md)
+- [The two-stage route: a draft at 0.7, one upscale, one refine step, 2026-11-01](two-stage-route-2026-11-01.md)
+- [The H3 latent upscaler, ported and gated, 2026-11-01](latent-upscale-2026-11-01.md)
+- [The resizer's cost, split three ways, 2026-11-01](resizer-cost-2026-11-01.md)
+- [The resizer's last four seconds named, then halved, 2026-11-01](resizer-algorithm-2026-11-01.md)
 - [The video VAE decoder attributed, and its four bias passes fused away, 2026-10-29](vae-decoder-attribution-2026-10-29.md)
 - [The decoder's block GEMMs on BF16 operands: 19% of FRAMES, and what it rounds, 2026-10-29](vae-bf16-arm-2026-10-29.md)
 - [The decoder's readback: 1.87 s of pageable D2H, and the route it hid behind, 2026-10-29](vae-readback-2026-10-29.md)
