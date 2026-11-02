@@ -229,6 +229,7 @@ fn usage() -> &'static str {
   --skip-elementwise skip the norms and elementwise kernels (step 5)
   --skip-attention   skip rotary and decode attention (step 6)
   --skip-router      skip the router's top-k (step 7)
+  --skip-head        skip the embedding lookup and the logits head (step 8)
   --help             this text"
 }
 
@@ -257,6 +258,7 @@ fn run() -> Result<(), String> {
     let mut elementwise = true;
     let mut attention = true;
     let mut router = true;
+    let mut head = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -286,6 +288,7 @@ fn run() -> Result<(), String> {
             "--skip-elementwise" => elementwise = false,
             "--skip-attention" => attention = false,
             "--skip-router" => router = false,
+            "--skip-head" => head = false,
             "--help" | "-h" => {
                 println!("{}", usage());
                 return Ok(());
@@ -491,6 +494,9 @@ fn run() -> Result<(), String> {
     }
     if router {
         router_gate(&device, &family, &root, &encoded, &mut failed)?;
+    }
+    if head {
+        head_gate(&device, &family, &root, &encoded, &mut failed)?;
     }
     if failed {
         return Err("a kernel is past the gate".into());
@@ -1176,6 +1182,121 @@ fn attention_gate(
                 *failed = true;
             }
         }
+    }
+    Ok(())
+}
+
+/// Step 8: the two ends of the model, both on the same 262144 x 2816 matrix
+/// because the embeddings are tied.
+///
+/// The input end is one row: the forward reads `embed.row(token)` and scales
+/// it by bf16(sqrt(hidden)) (`forward.rs:325-329`). The output end is every
+/// row: the head is the largest single read of a token, 278 MB of payload at
+/// this geometry, and the softcap is applied to its 262144 logits.
+fn head_gate(
+    device: &Residency,
+    family: &Family,
+    root: &Path,
+    encoded: &[&Entry],
+    failed: &mut bool,
+) -> Result<(), String> {
+    let config = &family.config;
+    let hidden = config.hidden;
+    let vocab = config.vocab;
+    let env = &family.layout.embed;
+    let name = env.name.clone();
+    let index = encoded
+        .iter()
+        .position(|e| e.name == name)
+        .ok_or_else(|| format!("{name}: not an encoded entry of this release"))?;
+    let entry = encoded[index];
+    if entry.rows != vocab || entry.cols != hidden {
+        return Err(format!(
+            "{name}: {}x{}, the config says {vocab}x{hidden}",
+            entry.rows, entry.cols
+        ));
+    }
+    let matrix = Matrix::open(root, env).map_err(|e| e.to_string())?;
+
+    // The input end: one row. With a one-hot input the gather's single
+    // product must be exactly the decoded value at that column, which is how
+    // the forward reads a token's embedding.
+    let token = 12_345usize;
+    let scale = bf16_round((hidden as f32).sqrt());
+    let row_cpu = matrix.row(token).map_err(|e| e.to_string())?;
+    let pick = hidden / 3;
+    let mut onehot = vec![0f32; hidden];
+    onehot[pick] = 1.0;
+    let mut got = [0f32; 1];
+    call_rows(device, index, &[token as u32], &onehot, &mut got, 256)?;
+    let want = row_cpu[pick];
+    let diff = (f64::from(got[0]) - f64::from(want)).abs();
+    println!(
+        "EMBED {name} token {token} of {vocab}x{hidden}: one-hot column {pick} device {:.9} decoded {:.9} maxabs {diff:.3e}, forward scale {scale}",
+        got[0], want
+    );
+    if diff > 1e-6 {
+        println!("  FAIL the embedding row read is not exact");
+        *failed = true;
+    }
+
+    // The output end: every row, against the CPU's own matvec.
+    let x = probe_input(hidden);
+    let cpu_start = Instant::now();
+    let logits_cpu = matrix.matvec(&x).map_err(|e| e.to_string())?;
+    let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1e3;
+    let mut best: Option<(f64, i32)> = None;
+    let mut logits_gpu = vec![0f32; vocab];
+    for &threads in &[128i32, 256, 512] {
+        let mut out = vec![0f32; vocab];
+        // One warm-up, then the best of three: the first launch of a kernel
+        // pays for the module, and a single launch is not a measurement.
+        call_matvec(device, index, &x, &mut out, threads)?;
+        let mut ms = f64::INFINITY;
+        for _ in 0..3 {
+            let started = Instant::now();
+            call_matvec(device, index, &x, &mut out, threads)?;
+            ms = ms.min(started.elapsed().as_secs_f64() * 1e3);
+        }
+        let (rel, max, _) = compare(&logits_cpu, &out);
+        println!(
+            "HEAD {name} {vocab}x{hidden} threads {threads}: cpu {cpu_ms:.1} ms gpu best-of-3 {ms:.3} ms relL2 {rel:.3e} maxabs {max:.3e} {:.1} GB/s",
+            entry.bytes as f64 / (ms / 1e3) / 1e9
+        );
+        if rel > 1e-4 {
+            println!("  FAIL the head is past 1e-4 against the CPU");
+            *failed = true;
+        }
+        if best.map_or(true, |(b, _)| ms < b) {
+            best = Some((ms, threads));
+        }
+        if threads == 512 {
+            logits_gpu.copy_from_slice(&out);
+        }
+    }
+    if let Some((ms, threads)) = best {
+        println!("  BEST threads {threads} at {ms:.3} ms");
+    }
+
+    // The softcap on the head's own output, against the same in f64.
+    let want: Vec<f64> = logits_gpu
+        .iter()
+        .map(|&v| {
+            f64::from(config.logit_softcap)
+                * (f64::from(v) / f64::from(config.logit_softcap)).tanh()
+        })
+        .collect();
+    let mut capped = logits_gpu.clone();
+    call_softcap(device, &mut capped, config.logit_softcap)?;
+    let (rel, max) = compare_f32_f64(&capped, &want);
+    let saturated = capped.iter().filter(|&&v| v.abs() > 29.0).count();
+    println!(
+        "  SOFTCAP cap {} applied to {vocab} logits: relL2 {rel:.3e} maxabs {max:.3e}, {saturated} of {vocab} past 29.0",
+        config.logit_softcap
+    );
+    if rel > 1e-6 {
+        println!("  FAIL the softcap on the head is past 1e-6");
+        *failed = true;
     }
     Ok(())
 }
