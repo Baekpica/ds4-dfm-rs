@@ -74,6 +74,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [A.X-K2 VQ](axk2-vq.md) | `release.json` directory of GVQ1 parts (`axk2_vq`) | 61 MLA layers with the DSA top-2,048 indexer (FP8 latent and key rows), gated RMSNorm, 256 VQ experts top-8 (9/10-bit GVQ1 v2), host-read BF16 embedding, Hermes tools; banks, partial reuse, disk KV, no drafter |
 | [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
 | [MiMo-V2.6-Flash VQ](mimo2-vq.md) | `release.json` directory of GVQ1 parts (`mimo2_vq`) | the same graph with 256 VQ experts top-8 (13-bit GVQ1, 8-bit residual on 32 layers), FP8 full-layer K/V, host-read BF16 embedding, Q8_0 vision/audio parts; banks, partial reuse, disk KV, embedded MTP or DFlash |
+| [Gemma-4 26B A4B VQ](gemma4-vq.md) | `release.json` directory of GVQ1 parts (`gemma4_vq`) | 25 sliding-window-1024 and 5 full GQA layers with BF16 KV in both layouts, dense FFN 2112 beside 128 VQ experts top-8 (R13+8), tanh-30 head, layer scalars; serial session, banks, partial reuse, disk KV, snapshots; the assistant drafter part is in the artifact but not yet executed |
 | [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
 The scheduler implementation may differ because the model states differ, but
