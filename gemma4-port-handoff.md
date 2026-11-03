@@ -2,18 +2,19 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 9e23197f (feat(gemma4): direct VQ prefill GEMM for
-  the routed experts), plus this handoff commit. The six commits on top of
-  d6ad9774 are f0c2b92a (serving-check prefix reference), 19f5b75b (the
-  Gemma VQ header split), 659a152b (optional FP8 full-layer KV and fused
-  expert gate/up), bf6b3989 (optional fast decode attention), c09cfbf9
-  (the prefill-first plan) and 9e23197f (the direct VQ prefill round,
-  pushed to the fork). This handoff adds 4q (the evening round) and
-  updates section 9. No GLM file is modified. Sibling VQ_tools: branch
-  feature/gvq1-gemv-profile at be8c7e6; dev stays 65ef74d; the owner edits
-  that tree from other sessions, so leave its uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 (synced at 9e23197f) and
-  ~/models/gguf-family-it-r8.
+last_updated_commit: 2faef6c3 (perf(gemma4): tiled prefill attention,
+  batch Q8_0 dense down, deterministic scatter), plus this handoff commit.
+  The seven commits on top of d6ad9774 are f0c2b92a (serving-check prefix
+  reference), 19f5b75b (the Gemma VQ header split), 659a152b (optional FP8
+  full-layer KV and fused expert gate/up), bf6b3989 (optional fast decode
+  attention), c09cfbf9 (the prefill-first plan), 9e23197f (the direct VQ
+  prefill round, pushed to the fork) and 2faef6c3 (the attention and dense-
+  down round). This handoff adds 4r and updates section 9. No GLM file is
+  modified. Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6;
+  dev stays 65ef74d; the owner edits that tree from other sessions, so
+  leave its uncommitted files alone.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 (content at 9e23197f; its git
+  HEAD reads d6ad9774) and ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
@@ -1643,6 +1644,63 @@ once on the 121 GB of unified memory.
 - The bus question to the GPT 6 Astra session (01a1a2bf, dashboard session
   5) was accepted; its reply had not arrived at this handoff.
 
+4r. The 2026-11-03 second round: attention tiled, dense down batched,
+    the direct-prefill scatter made deterministic
+
+- Commit 2faef6c3 (local, not pushed). Evidence:
+  docs/gemma4-attention-round-2026-11-03.md. No GLM or Ling-3.1 file is
+  touched; the container format is unchanged.
+- Correctness first, and it was a real defect: the GB10 run of 4q found
+  the direct VQ prefill was not run-to-run reproducible. g4_moe_scatter_kernel
+  does dst[target] = bf16(dst[target] + src*w); the direct path ran it once
+  over all pairs, so the eight experts of one output row were read-modify-
+  written by eight threads in the same launch. Three pairs of identical
+  runs differed by relL2 0.085 to 0.125 on the frontier logits while the
+  per-expert path was bit-reproducible (off vs off2 0.0). The new
+  g4_moe_scatter_ordered_kernel uses one thread per output element and
+  walks the token's eight grouped rows in ascending expert order (the
+  reference's per-expert loop order), rounding after each add, so the
+  accumulation is the reference's own sequence. The 4q claim that the
+  frontier difference was only cuBLAS accumulation order was wrong for
+  the scatter; the direct path now differs from the reference only in the
+  GEMM itself.
+- expf: the oracle's two exp(double) per key became expf, which is the
+  reference's precision class (modeling_gemma4.py:839, softmax with
+  dtype=torch.float32). The FP64 pipe is 1/64 rate on these cards.
+  Attention 139.8 -> 70.2 ms of GPU time at ctx 256.
+- cuda/gemma4_attn_tile.cuh, DS4_GEMMA4_ATTN_PREFILL=1: one CTA per (row
+  tile, KV head), 8 warps sharing one staged K/V tile (4 rows x 2 heads on
+  the sliding layers, 1 row x 8 heads on the full ones), uint4 staging,
+  16 KiB of shared. Prefill attention 33.6 -> 9.5 ms (25 x 0.28 + 5 x
+  0.50-0.70 ms). BIT-IDENTICAL to the oracle on the live model: the whole
+  262144-logit frontier dump matches byte for byte.
+- cuda/gemma4_attn_fast.cuh, DS4_GEMMA4_ATTN_FAST=1: the decode kernel's
+  staging loop now copies uint4 instead of one bf16 per thread. Decode
+  attention 36.7 -> 5.8 ms (0.18 ms sliding, 0.24 ms full). Also
+  bit-identical to the oracle on the live model.
+- ds4_gpu_matmul_q8_0_dense_batch, DS4_GEMMA4_Q8_BATCH=1: the dense down
+  is Q8_0 with K = 8*256 + 64, which the shared dispatcher's tile path
+  refuses, so it fell to matmul_q8_0_preq_kernel (one block per (row,
+  token), only K/32 of 256 threads active). The new entry runs the
+  existing batch warp8 kernel for that shape (16 rows per block, 16
+  threads per row, one token per block). 138.2 -> 65.1 ms. The fp32 sum
+  order changes: eight tokens identical, frontier logits relL2 5.10e-2
+  with the same argmax and the same top-5 set.
+- Measured, ctx 256 copy-resident, three fresh-process runs per arm, all
+  four options against none: prefill 395.51 -> 543.19 tok/s median (+37.3
+  percent, mean +39.6), decode 13.12 -> 24.76 (+88.7 percent). Total GPU
+  kernel time 511.5 -> 305.0 ms. The off arm is itself faster than 4q's
+  338.14 because expf serves the oracle path too; the like-for-like number
+  is the same-binary A/B.
+- Still the largest kernels at ctx 256 with the whole stack on: the VQ
+  gate/up item kernel 100.2 ms, the dense down 65.1, the VQ down 43.3,
+  rope 22.3, the Q4_K projections 13.5, the tile attention 9.6.
+- Not done: the GB10 has not been re-measured with this round's kernels;
+  the token-tiled dense down (the batch kernel re-reads each weight row
+  once per token, L2-served) is the next unit for that shape; the exact-
+  prefill gate (28 minutes) has not been re-run with the new kernels, only
+  the frontier byte-identity check.
+
 7. Open items outside the port
 
 - Pushes: both branches are ahead; each needs the owner's word and an OSV
@@ -1659,7 +1717,9 @@ once on the 121 GB of unified memory.
                                 # handoff commit. If ds4_gemma4_mtp.inc or
                                 # the speed files are untracked again, read
                                 # 4k and 4l.
-    git ls-remote origin feat/gemma4-family   # expect 9e23197f (pushed)
+    git ls-remote origin feat/gemma4-family   # expect 9e23197f (pushed);
+                                              # 2faef6c3 is local until the
+                                              # owner authorizes the push
     ssh leandro@192.168.1.91 'cd ~/ds4-gemma4 && git log --oneline -1 && \
       ls ~/models/gguf-family-it-r8/release.json'
                                 # the Spark worktree is a copy at 9e23197f;
@@ -1686,13 +1746,14 @@ once on the 121 GB of unified memory.
 
 9. The remaining phases, in order, and the files that carry each
 
-Phase 0 is closed (f0c2b92a). The measured speed order is now: the prefill
-side first (the restore + cuBLAS path for the VQ experts, which the decode
-options do not touch), then the remaining decode primitives (the 704 block
-variant, the vocabulary head, RoPE, the router), then the per-GPU profile
-consumer. Phases 5-6 are the residency options. Phase 7 closes the port.
-R13+8v2 is dropped: the next prefill kernel works on the existing R13+8
-records and must not introduce a new container version.
+Phase 0 is closed (f0c2b92a). The measured speed order after the second
+round (2faef6c3) is: the dense down and the VQ expert GEMM first (65 and
+143 ms of the 305 ms GPU time at ctx 256), then the remaining decode
+primitives (the 704 block variant, the vocabulary head, RoPE, the
+router), then the per-GPU profile consumer. Phases 5-6 are the residency
+options. Phase 7 closes the port. R13+8v2 is dropped: the next prefill
+kernel works on the existing R13+8 records and must not introduce a new
+container version.
 
 Phase 0 — CLOSED: the 406-token prefix gate (f0c2b92a)
 
@@ -1706,7 +1767,8 @@ Phase 0 — CLOSED: the 406-token prefix gate (f0c2b92a)
   reconstruction (prompt 406, split 203, grid 512). The remaining Phase 0
   work is only the wrapped-ring gate from 4k, which is now Phase 7's P8.
 
-Phase 1 — decode attention: DONE as an option (bf6b3989); prefill remains
+Phase 1 — decode attention: DONE as an option (bf6b3989); the prefill
+  side landed in the second round (2faef6c3, see 4r)
 
   cuda/gemma4_attn_fast.cuh is a CTA-per-KV-head kernel: the group's query
   heads (2 sliding, 8 full) share one shared-memory K/V tile, with the
@@ -1714,20 +1776,18 @@ Phase 1 — decode attention: DONE as an option (bf6b3989); prefill remains
   DS4_GEMMA4_ATTN_FAST=1, default off. Measured: 4070 ctx 256 copy 11.33 ->
   18.09 tok/s (1.60x), 4070 ctx 2048 zero-copy 1.59 -> 2.42 (1.52x), GB10
   ctx 256 12.46 -> 13.73 (1.10x); 8 greedy tokens identical off/on on each
-  machine. The remaining attention work is the prefill side (rows > 1),
-  where the oracle still runs; a block-per-query-head kernel with the key
-  window split and combine pass is the next step, using the sibling flash
-  kernels (cuda/glm_vq_flash.cuh, cuda/l31_flash.cuh, cuda/axk2_flash.cuh,
-  cuda/ds41_attn_mma.cuh) and llama.cpp's 256/512 MMA paths
-  (ggml/src/ggml-cuda/fattn.cu:333-355). Keep cuda/gemma4_attn.cuh as the
-  oracle. Gate: tokens or logits within the measured noise at ctx 256 and
-  2048, then bench; report against the 18.09 / 2.42 baselines. The
-  default-off decision for DS4_GEMMA4_ATTN_FAST is revisited after the
-  prefill kernel and a ctx 8192 bench on both cards.
+  machine. The uint4 staging change (2faef6c3) took the decode attention
+  from 36.7 to 5.8 ms at ctx 256 and the served decode from 13.12 to 24.76
+  tok/s in the same-binary A/B. The prefill side is
+  cuda/gemma4_attn_tile.cuh (DS4_GEMMA4_ATTN_PREFILL=1): one CTA per (row
+  tile, KV head), 8 warps sharing one staged tile, 33.6 -> 9.5 ms and
+  bit-identical to the oracle. Both remain default-off; folding them into
+  one option and the ctx 8192 bench on both cards is the remaining
+  decision.
 
 Phase 2 — fused MoE: the decode gate/up option is in (659a152b, neutral);
-  the direct VQ prefill is DONE (9e23197f); the Q8_0 dense down tail was
-  measured and reverted; the prefill attention is next
+  the direct VQ prefill is DONE (9e23197f); the attention and the dense
+  down are DONE as options (2faef6c3); the token-tiled dense down is next
 
   The fused decode gate/up + GELU is bit-identical but neutral on the 4070
   (decode 13.29 -> 13.24 tok/s): the decode is bandwidth-bound on the VQ
@@ -1740,10 +1800,21 @@ Phase 2 — fused MoE: the decode gate/up option is in (659a152b, neutral);
   docs/gemma4-vq-prefill-2026-11-03.md. The Q8_0 dense down through the
   fused MMQ tail was tried and reverted: numerically right (identical
   tokens) but 1.6x slower at K=2112 (211.46 against 338.14 tok/s prefill),
-  so the preq kernel stays. The next unit is the prefill attention (Phase
-  1's remainder), then the remaining VQ levers: one weight tile at a time
-  to free L1, and double-buffering the decode against the compute. Do not
-  change the container format.
+  so the preq kernel stays.
+  The second round (2faef6c3, see 4r and
+  docs/gemma4-attention-round-2026-11-03.md) closed the prefill attention
+  (tile kernel, 33.6 -> 9.5 ms, bit-identical), the decode attention
+  (uint4 staging, 36.7 -> 5.8 ms, bit-identical), the oracle's double exp
+  (expf, 139.8 -> 70.2 ms) and the dense down (batch warp8, 138.2 -> 65.1
+  ms), and fixed the direct-prefill scatter race. Whole stack against
+  none, ctx 256: prefill +37.3 percent, decode +88.7 percent.
+  Next, in order: (1) the dense down is still 2.17 ms per layer at 1.4
+  TFLOP/s because the batch kernel re-reads each weight row once per
+  token; a token-tiled Q8_0 kernel (weight tile in shared, 16-32 tokens
+  per block) is the next unit for that shape; (2) the remaining VQ levers,
+  one weight tile at a time to free L1 and double-buffering the decode
+  against the compute; (3) the GB10 re-run of this round; (4) the exact-
+  prefill gate with the new kernels. Do not change the container format.
 
 Phase 3 — the vocabulary head, RoPE and the router
 
