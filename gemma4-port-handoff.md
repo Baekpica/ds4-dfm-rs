@@ -2,10 +2,11 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 19f25d46 (the code state; this file's commit follows it)
+last_updated_commit: 19f25d46 (the code state; handoff commits 55b34a71 and
+  this one follow it)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T08:56:00+01:00
+handoff_written_at: 2026-11-03T09:20:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -49,8 +50,10 @@ What is still open, in order:
           checkpoint. Unrun here; the paged run on this host is untested.
           Nothing above claims quality beyond these two answers and the API
           run.
-  2. P7   banks, payload save/restore, snapshots, disk KV; remove the
-          ds4_engine_supports_batching refusal (2dca7709) when the lane lands.
+  2. P7   payload save/restore first, then snapshots (free through it), disk
+          KV, and last the banked multi-sequence lane; remove the
+          ds4_engine_supports_batching refusal (2dca7709) when that lane
+          lands. Reconnaissance and the exact layout are section 4d.
   3. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
   4. P9   the serving remainder: the four-part OpenAI gate, the live
           tool-tail continuation (it refuses this family and fails rather than
@@ -560,8 +563,55 @@ the chunk fence, and the generic KV charge. Two remain visible:
     weights plus the default 4 GiB floor leaves no room for the quote.
     Not a family defect, a host limit to state in the serving docs.
 
-Open, unchanged: the row-invariance work (4b next step a/b) and the logits
-gate against the 48.07 GiB reference on the GB10.
+Open at that commit were the row-invariance work and the reference logits
+gate; the first closed in 4b (19f25d46), the second is P6b.
+
+4d. P7 reconnaissance: what the payload slice needs (2026-11-03)
+
+The serial session already provides sync, eval and prefix reuse
+(ds4_gemma4_session.inc). What P7 adds, in dependency order:
+
+  1. payload save/restore (ds4_gemma4_payload.inc). The contract is
+     ds4.h:1598-1600: magic "DSV4", version 3, 13 u32 header fields, then
+     tokens, logits, then the state. The dispatch arms to extend are
+     ds4_session_payload_bytes (ds4.c, the is_* chain), ds4_session_save_payload
+     and ds4_session_load_payload; ds4_ling31_payload.inc (154 lines) is the
+     model, including the header checks and the failed-restore rule (a partial
+     load never leaves a usable checkpoint).
+  2. snapshots need no new mechanism: ds4_session_save_snapshot /
+     load_snapshot go through the payload, so the serving check's snapshot
+     item follows from (1).
+  3. disk KV plugs into ds4_kvstore (ds4_kvstore.h) once (1) names the bytes.
+  4. banks need the real multi-sequence graph (ds4_gemma4_batch.inc) and the
+     ds4_engine_supports_batching refusal removal; that is the large piece and
+     stays last.
+
+Gemma-4's payload layout, stated explicitly as the plan requires. A layer's
+cache is (ds4_gemma4.h:57-69):
+
+  full    (layers 5, 11, 17, 23, 29):  ctx rows
+  sliding (the other 25):              G4_WINDOW + cap rows = 1024 + cap
+  row bytes: kv_heads * head_dim * 2 * sizeof(uint16_t)
+             sliding 8 * 256, full 2 * 512; kcache and vcache each that many.
+
+The first slice saves each layer's whole cache at its fixed row count (0.23
+GiB at ctx 2048, cap 1), which needs no dead-row reasoning; a later trim can
+save only the live ring rows and must keep the same validation. The header
+carries ctx, cap, G4_LAYERS, the two row counts, the vocab and n, so a
+restore can reject a payload from a different ctx or cap; kv_bytes is
+recomputed, not trusted (it does not fit u32 at large ctx).
+
+Follow the ling31 set rather than invent a shape: ds4_ling31_payload.inc
+(with its header checks and its failed-restore rule) is the model for the new
+ds4_gemma4_payload.inc, and ds4_ling31_batch.inc / _bank_payload.inc are the
+models for the banked lane. The payload also needs its three dispatch arms in
+ds4.c and the ds4_kvstore wiring.
+
+Next concrete step: write ds4_gemma4_payload.inc with
+gemma4_payload_bytes / _save / _restore, add the three dispatch arms, build,
+then gate with --serving-check (the snapshot item should turn from "not
+implemented yet" to a restore that reproduces the next token) and a manual
+save/load run whose logits equal the live run's.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
