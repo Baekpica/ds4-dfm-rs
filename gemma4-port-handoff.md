@@ -20,7 +20,7 @@ last_updated_commit: 14f27345 (perf(gemma4): token-tiled Q8_0 dense down,
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T21:52:16+01:00
+handoff_written_at: 2026-11-03T21:56:16+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1649,7 +1649,8 @@ once on the 121 GB of unified memory.
 4r. The 2026-11-03 second round: attention tiled, dense down batched,
     the direct-prefill scatter made deterministic
 
-- Commit 2faef6c3 (local, not pushed). Evidence:
+- Commits 2faef6c3 (the round), 14f27345 (the token tile) and the two
+  handoff commits, pushed to JLFN/ds4-dfm-rs (9e23197f..4829b404). Evidence:
   docs/gemma4-attention-round-2026-11-03.md. No GLM or Ling-3.1 file is
   touched; the container format is unchanged.
 - Correctness first, and it was a real defect: the GB10 run of 4q found
@@ -1719,8 +1720,9 @@ once on the 121 GB of unified memory.
 
 7. Open items outside the port
 
-- Pushes: both branches are ahead; each needs the owner's word and an OSV
-  scan first.
+- Pushes: feat/gemma4-family is pushed through 4829b404 (9e23197f..4829b404,
+  ls-remote confirmed, OSV scan 146 packages / 0 vulnerable). Any further
+  push still needs the owner's word and a fresh scan.
 - docs/recipe-v41-identical.md is deleted in the VQ_tools working tree and
   was not committed by this session.
 - The Hugging Face upload (JLFN/gemma-4-26b-a4b-VQ-GGUF) must publish the
@@ -1733,14 +1735,13 @@ once on the 121 GB of unified memory.
                                 # handoff commit. If ds4_gemma4_mtp.inc or
                                 # the speed files are untracked again, read
                                 # 4k and 4l.
-    git ls-remote origin feat/gemma4-family   # expect 9e23197f (pushed);
-                                              # 2faef6c3 is local until the
-                                              # owner authorizes the push
+    git ls-remote origin feat/gemma4-family   # expect 4829b404 (pushed)
     ssh leandro@192.168.1.91 'cd ~/ds4-gemma4 && git log --oneline -1 && \
       ls ~/models/gguf-family-it-r8/release.json'
-                                # the Spark worktree is a copy at 9e23197f;
-                                # its git HEAD still reads d6ad9774 until a
-                                # push or fetch updates it
+                                # the Spark worktree content is at 2faef6c3
+                                # (this round's build); 14f27345, the token
+                                # tile, is not synced there yet. Its git HEAD
+                                # still reads d6ad9774 until a pull
     cd /data/VQ_tools && git log --oneline -2    # expect 65ef74d, b47dae6 on
                                                  # dev; the profile unit is on
                                                  # feature/gvq1-gemv-profile
