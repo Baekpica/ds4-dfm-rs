@@ -42,8 +42,10 @@ The residual stage is what distinguishes this artifact from the original
 256-entry E4M3 book, so the reconstruction is `bf16(gain · (C1 + C2))`.
 Measured on the same checkpoint, the expert weight error is 23.3772 percent
 mean relL2 at about 2.22 bits per weight, against 39.2868 percent for the
-13-bit build at 1.6377. The mechanism and the rate/quality table are in
-`docs/codebook.md` of the sibling VQ_tools repository.
+13-bit build at 1.6377 (the two builds' weight-space reports, recorded in the
+port handoff section 4f). The mechanism, the byte account and the encoder are
+in the VQ_tools repository (`docs/codebook.md` and the
+`gemma-4-26b-a4b-family-r8` recipe).
 
 ## KV layout
 
