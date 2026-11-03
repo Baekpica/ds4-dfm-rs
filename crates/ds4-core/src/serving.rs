@@ -970,16 +970,20 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
-        // gemma4_vq verifies, binds and refuses; it has no forward in this
-        // tree yet, so it declares nothing qualified and no speculative lane.
-        // Its MTP drafter is a second checkpoint, hence Sidecar.
+        // gemma4_vq runs the serial session: one forward in, one token out,
+        // with a kept prefix checkpoint so a sync can resume, rewind and
+        // continue. Every reuse item is exact because the session's prefill
+        // is one row per forward (ds4_gemma4_bind.inc: the batched widths
+        // order their sums differently, measured at 2.4 nats). Banks, disk,
+        // snapshot and speculative decode are P7/P8 and stay undeclared. Its
+        // MTP drafter is a second checkpoint, hence Sidecar.
         ModelFamily::Gemma4Vq => ServingCaps {
             family,
             variant,
             banks: BankLane::Serial,
             bank_support: Support::None,
-            reuse: ReuseKind::None,
-            reuse_support: Support::None,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
             disk: Support::None,
             snapshot: Support::None,
             mtp: MtpKind::Sidecar,

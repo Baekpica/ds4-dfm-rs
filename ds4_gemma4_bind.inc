@@ -115,11 +115,21 @@ static void gemma4_bind(ds4_weights *w, const ds4_model *m) {
 }
 
 #ifndef DS4_NO_GPU
-/* Prefill chunk: the sliding-window ring is sized to hold a whole chunk on
- * top of the window, so the cap is the only knob. Default 2048 keeps the
- * ring at 3072 rows per sliding layer. */
+/* Prefill chunk: the sliding-window ring is sized to hold a whole chunk on top
+ * of the window, so the cap is the only knob. Default 2048 keeps the
+ * ring at 3072 rows per sliding layer.
+ *
+ * P6a: the default is one row, because every batched width in this stack
+ * orders its sums differently from the one-row launches (measured: a 2-row
+ * batch already moves this model's logits by 2.4 nats, and the layer-0 o
+ * projection is the first row-level stage that differs). The serving
+ * checklist compares a 16-row prefill against one-row decodes, so a grouped
+ * prefill reports a near-tie as WRONG. One row per forward makes prefill and
+ * decode the same arithmetic and the checklist exact; DS4_GEMMA4_PREFILL_CHUNK
+ * keeps the batched path for a throughput measurement until a bit-identical
+ * batched path exists. */
 static uint32_t gemma4_prefill_cap(uint32_t ctx) {
-    uint32_t cap = G4_PREFILL;
+    uint32_t cap = 1u;
     const char *value = getenv("DS4_GEMMA4_PREFILL_CHUNK");
     if (value && *value) {
         char *end = NULL;
