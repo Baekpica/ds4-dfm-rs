@@ -923,6 +923,18 @@ Still open in P9: the four-part OpenAI gate (GET /v1/models, a chat
 completion, the same request twice byte-identical, and sm_89 CUDA), which
 needs the GPU and the tree, both held by P8 while it works.
 
+4j. P11 weight-space arm: the two-stage build is on disk (2026-11-03)
+
+/data/tmp/vq-2stage finished at 11:48 (8.1 GB, 60 expert stacks, layers
+0-29). Its own manifest (the build's report, `relL2` column) gives a 60-stack
+mean of 18.7203 percent, min 18.31, max 19.48. That is the comparable figure
+for this directory; the 18.7685 recorded earlier came from a different run
+and should not be quoted for it. The R13+8 build's 60-stack mean is 23.3772,
+so the weight-space gap is 4.66 points for the extra bits.
+
+The served arm still needs two-stage support in vq-gguf and in the ds4 GVQ
+reader; nothing in this directory can be served yet.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
