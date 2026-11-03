@@ -2,15 +2,15 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: dd6772dc (ds4 code state: P7 closed. c42e8b31 carried the
-  session payload and snapshot; dd6772dc carried the disk layout, the banked
-  lane and the capability flip. Earlier: the R13+8 bind at faa2489e,
-  7cd25a50 closed P6b, 1d86327d carried the rotary fix). Sibling VQ_tools:
-  dev at 0fd5f9d, the residual stage c859d1f and its recipe; a docs/wiki
-  rewrite is in flight there.
+last_updated_commit: e96d09d8 (ds4 code state; P7 closed in c42e8b31 and
+  dd6772dc, the P9 tail and docs in be901c46..89fa33b7). The working tree
+  carries P8 uncommitted (section 4k): 19 modified files plus the new
+  ds4_gemma4_mtp.inc, the ring fix included. Sibling VQ_tools: dev at
+  c37f588, the docs/wiki rewrite committed; the owner is also editing that
+  tree from other sessions, so leave its uncommitted files alone.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T12:30:00+01:00
+handoff_written_at: 2026-11-03T13:40:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -66,24 +66,24 @@ The batching refusal is gone; serving.rs declares banks and disk Qualified.
 
 What is still open, in order:
 
-  1. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft. In flight with a
-          subagent; the reference files are pinned in /tmp/g4ref and their
-          hashes match section 5's table.
-  2. P9   the serving remainder: the four-part OpenAI gate, the live
-          tool-tail continuation (it refuses this family and fails rather than
-          mis-render), and the serving-host limits in docs.
-  3. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
-          OSV scan, pushes (owner's word required).
+  1. P8   the drafter is written, builds, and passes gates A, B and C on a
+          short prompt; the wrapped-ring gate is the run in flight (4k).
+          Then: commit, run --serving-check with --mtp, and measure speed
+          with ds4-bench. The one open design question is G4_MTP_DRAFTS = 4
+          against the checkpoint's num_assistant_tokens = 6 (4k).
+  2. P9   the four-part OpenAI gate is scripted (tests/gemma4_serving_http_gate.sh)
+          and not yet run; the live tool-tail continuation is done
+          (be901c46); the serving-host limits are documented.
+  3. P10  docs/gemma4-vq.md, the families row, README and the capability
+          table are done (4a8d038b, f47d494c); left: the HF release
+          directory, the OSV scan (already clean on 2026-11-03) and pushes
+          (owner's word required).
   4. P11  artifact quality comparison, after P9: R13+8 (the artifact under
           test, still serving) against the two-stage 8x4096x2 build, on the
           P6b probes and greedy text through the OpenAI path. The served arm
           needs two-stage support in vq-gguf and in the ds4 GVQ reader first;
-          the weight-space arm can run now. The protocol and the decision
-          rule are docs/gemma4-port-plan.md P11. The experts-only two-stage
-          build was started at 11:47 into /data/tmp/vq-2stage (recipe
-          recipes/gemma-4-26b-a4b-family-2stage.json); if it finished, run
-          vq-quality over that directory and record the 60-stack mean beside
-          the R13+8 23.3772 before anything else in this item.
+          the weight-space arm is recorded (4j): the two-stage directory's
+          60-stack mean is 18.7203 against R13+8's 23.3772.
 
 Operational facts this host needs:
 
@@ -150,6 +150,19 @@ Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
             (snapshot session qualified works; pass works 4, undeclared 0)
   dd6772dc  feat(gemma4-vq): the banked lane and the disk payload
             (disk session and all five bank items work; pass works 10)
+  05761686  docs(handoff): P7 is closed, the gate prints works 10
+  4a8d038b  docs(gemma4-vq): the family page, the families row and the
+            README row
+  be901c46  feat(gemma4-vq): the live tool tail renders the canonical
+            responses (three unit tests pin the bytes)
+  50e46a88  docs(gemma4-port-plan): P7 closed, the live tool tail done
+  f47d494c  docs(serving): the Gemma row in the generated capability table
+  b33f67c7  docs(handoff): P9 progress beside P8, and the OSV result
+  453fd123  test(gemma4-vq): the four-part OpenAI serving gate
+  e96d09d8  docs(handoff): the two-stage build's own weight-space number
+  89fa33b7  docs(gemma4-vq): point the residual paragraph at what still
+            exists
+  (P8 is uncommitted: 4k)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -935,6 +948,90 @@ so the weight-space gap is 4.66 points for the extra bits.
 The served arm still needs two-stage support in vq-gguf and in the ds4 GVQ
 reader; nothing in this directory can be served yet.
 
+4k. P8: the drafter, taken over and in flight (2026-11-03)
+
+The subagent's work was stopped and taken over. The tree carries, uncommitted:
+ds4_gemma4_mtp.inc (new, the runtime and the draft round) plus 19 modified
+files (Makefile, ds4.c, the Gemma includes and headers, the CUDA attention,
+the primitive test, and the Rust bind/layout/serving files). It builds clean
+with make cuda CUDA_ARCH=sm_89.
+
+What the drafter does, every step cited in the file: the assistant's forward
+(pre_projection over cat[trunk token row, trunk final-norm row], four shared
+layers with q_proj + q_norm + rope and the trunk's K/V, the dense MLP, the
+tied 262144x1024 head, post_projection), and the reference's draft round
+(candidate_generator.py:1327-1351): position held at input_ids.shape[1]-1 for
+every draft step, argmax between steps, up to num_assistant_tokens. The trunk
+publishes the final-norm row on every forward (gemma4_mtp_publish) and drops
+it on reset/restore; the K/V the drafter reads is layers 28 (sliding) and 29
+(full), as docs/gemma4-reference-semantics.md section 4 settles it.
+
+Gates on the short prompt (48 tokens, 24 generated, temp 0):
+  A  drafting on equals drafting off: 122 bytes identical.
+  B  every verify round matched: keep=5 five times, draft[i] == target[i-1]
+     for each accepted row (e.g. draft 100,45518,108,236829,139 vs target
+     45518,108,236829,139,4661).
+  C  two drafting runs byte-identical.
+
+The defect found and fixed in the take-over: the batched verify wrote five
+rows into a sliding ring of window + chunk (1025 rows at chunk 1), and two
+slots the block's own first row reads (positions start-1023, start-1022) were
+overwritten by rows 2 and 3 of the same block. A short prompt never wraps the
+ring, so gates A/B/C above could not see it. The ring is now window + the
+widest block one forward writes, max(chunk, drafts + 1), in ds4_gemma4.h
+(ds4_gemma4_kv_rows) and ds4_gemma4_plan.h (gemma4_kv_capacity), with the
+Rust quote (serving_host::bank_kv_bytes) and its test updated. Session KV at
+ctx 2048 went from 251,863,040 to 252,682,240 bytes. A payload written by the
+old row count is rejected by the body-length check, which is the intended
+failure mode for an unreleased format.
+
+The gate in flight when this handoff was written (started 13:16, ~1300-token
+prompt so the ring has wrapped):
+
+  cd /data/ds4-gemma4 && export DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock
+  P=$(cat /tmp/g4-long.txt)
+  ./ds4 -m /data/vq-artifacts/gguf-family-it-r8 --cuda -c 2048 -p "$P" -n 12 --temp 0
+  ./ds4 -m /data/vq-artifacts/gguf-family-it-r8 --cuda -c 2048 \
+    --mtp /data/vq-artifacts/gguf-family-it-r8/gemma4-vq8-mtp.gguf \
+    --mtp-draft 4 -p "$P" -n 12 --temp 0
+  cmp the two outputs.
+
+The no-draft run finished rc=0 (70 bytes, 12.7 minutes); the drafting run was
+terminated by the environment about 7 minutes in, before its prefill finished,
+so the wrapped-ring comparison is UNPROVEN and must be re-run from scratch.
+If the two differ, the first place to look is the verify forward's ring
+interaction (the block rows) and the drafter's keys=start window, not the
+drafter arithmetic: gates A/B/C already pin the arithmetic on a short prompt.
+Expect each long run to take 12 to 15 minutes on this card, so run the pair
+with no other GPU work and a long timeout.
+
+Remaining steps, in order:
+
+  1. Finish the long gate; compare byte for byte.
+  2. Run `--serving-check` with `--mtp ... --mtp-draft 4` and confirm
+     result: pass (works 10, undeclared 0) with the mtp row declared
+     Sidecar/serial/qualified.
+  3. Decide G4_MTP_DRAFTS: it is 4 today with the comment "keeps the verify
+     row block at the artifact's own layer count", but the checkpoint's
+     generation_config says num_assistant_tokens = 6. Raising it to 6 is a
+     one-line change (G4_MTP_DRAFTS, the Rust GEMMA4_MTP_DRAFTS, the
+     serving_host constant) plus the same gates; the reference supports it.
+  4. Measure speed with ds4-bench, which reports prefill_tps, gen_tps and
+     first_token_sec (TTFT) per frontier:
+       ./ds4-bench -m /data/vq-artifacts/gguf-family-it-r8 --cuda \
+         --prompt-file <file> --ctx-start 2048 --ctx-max 2048 --gen-tokens 32
+     and the same with --mtp ... --mtp-draft 4. No speed number has been
+     recorded yet; the owner asked for it.
+  5. Commit P8 (the include and the 19 files) with the gate lines, then
+     update docs/gemma4-vq.md (the drafter is no longer "pending"), the
+     plan's P8 section and the capability row if the caps change.
+
+Host notes from this unit: /tmp is a 16 GiB tmpfs and was full at 99 percent
+(two 4.4 GB vqtest emit outputs and a 594 MB assistant repack left by the
+subagent); the two emit outputs were removed, the repack at
+/tmp/gemma4-assistant-mtp.gguf was kept. A CUDA build needs several GB free
+there or nvcc fails with "error writing to ...: No space left on device".
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1021,12 +1118,15 @@ once on the 121 GB of unified memory.
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
-    git status --short          # expect no code entries at this handoff;
-                                # P7 is committed in c42e8b31 and dd6772dc.
-                                # A P8 subagent may have a working tree in
-                                # flight here; read its report first.
-    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state dd6772dc until pushed
-    cd /data/VQ_tools && git log --oneline -2    # expect 0fd5f9d, c859d1f
+    git status --short          # expect P8's working tree at this handoff:
+                                #   M the 19 files listed in 4k
+                                #   ?? ds4_gemma4_mtp.inc
+                                # P7 and the P9/docs work are committed.
+    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state e96d09d8 until pushed
+    cd /data/VQ_tools && git log --oneline -2    # expect c37f588, 0fd5f9d
+    cd /data/VQ_tools && git status --short      # the owner's other sessions
+                                                 # may hold files here; do not
+                                                 # commit or revert them
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
     sed -n '1,60p' gemma4-port-handoff.md
