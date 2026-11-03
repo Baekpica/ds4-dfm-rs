@@ -2,14 +2,14 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 2dca7709 (all work is on top of 8c2068b5, unpushed)
+last_updated_commit: 33e30d05 (all work is on top of 8c2068b5, unpushed)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T01:25:00+01:00
+handoff_written_at: 2026-11-03T10:10:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-Gemma-4 26B A4B VQ — complete family port, in the tree's own layout (2026-11-02)
+Gemma-4 26B A4B VQ — complete family port, in the tree's own layout (2026-11-03)
 
 1. What the port must reach
 
@@ -35,6 +35,21 @@ previous state was three primitives reading BF16 weights as float32 (fixed in
 4b): a row-grouped prefill moves this model's logits by a few nats against the
 one-row path, which flips a near-tie in the checklist's continue item. The five
 banks items and the disk items are P7. The commits below are unpushed.
+
+Work queue, in order (details in section 4b and docs/gemma4-port-plan.md):
+
+  1. P6a  make the Q4_K projections row-count invariant for this family so
+          prefill and decode agree bit for bit, then re-measure the chunk
+          spread and re-run --serving-check (continue must stop being WRONG).
+  2. P6b  the reference logits gate on the GB10 against the 48.07 GiB
+          checkpoint (unrun here; the paged run on this host is untested).
+  3. P7   banks, payload save/restore, snapshots, disk KV; remove the
+          ds4_engine_supports_batching refusal (2dca7709) when the lane lands.
+  4. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
+  5. P9   serving: ds4-sys FFI, the ds4-server family arm, chat rendering,
+          stops 1/106/50, serving_host limits, the four-part OpenAI gate.
+  6. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
+          OSV scan, pushes (owner's word required).
 
   25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
   c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
