@@ -13,6 +13,7 @@
 #include "ds4_gemma4.h"
 #include "cuda/gemma4_primitives.cuh"
 #include "cuda/gemma4_attn.cuh"
+#include "cuda/gemma_vq_decode.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
@@ -246,6 +247,28 @@ __global__ static void g4_moe_scatter_kernel(float *dst, const float *src, const
     dst[target] = g4_round(dst[target] + src[i] * weights[pair]);
 }
 
+/* Gemma-4 decode projection: one row reads the GVQ1 bytes directly
+ * (cuda/gemma_vq_decode.cuh) instead of restoring the matrix to bf16 and
+ * calling cuBLAS. The restore stays the fallback for every geometry the
+ * kernel does not take, and DS4_GEMMA4_VQ_GEMV=0 disables the direct path.
+ * Variant and width are the knobs a per-GPU profile will set; today they are
+ * environment variables (variant 0 auto, 1 warp, 2 block; width 128/256/512). */
+static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index,
+        const ds4_gpu_tensor *input) {
+    if (!m || !m->gvq || !out || !input || index >= m->gvq->model->source.size()) { return false; }
+    const char *off = getenv("DS4_GEMMA4_VQ_GEMV");
+    if (off && off[0] == '0' && !off[1]) { return false; }
+    const glmvq_source &s = m->gvq->model->source[index];
+    if (s.storage != GLMVQ_WEIGHT_VQ || !s.vq.main || !s.vq.book || !s.vq.gain) { return false; }
+    int variant = G4_VQ_AUTO, threads = 256;
+    const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
+    if (v && *v) { variant = atoi(v); }
+    const char *t = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
+    if (t && *t) { threads = atoi(t); }
+    return g4_vq_gemv(s.vq, (const float *)input->ptr, (float *)out->ptr,
+        variant, threads, ds4_current_stream()) != 0;
+}
+
 static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
         const ds4_gpu_tensor *weights, const uint32_t *matrices, const int32_t *routes,
         uint32_t rows) {
@@ -306,12 +329,16 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
         g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
             (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
             offsets[e], elements, G4_EMBED);
+        const bool one = n == 1;
         if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather") ||
-            !ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16) ||
-            !ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n, DS4_GVQ_BF16) ||
+            !((one && g4_moe_linear_one(m, m->gate, matrices[e], m->in)) ||
+              ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16)) ||
+            !((one && g4_moe_linear_one(m, m->up, matrices[G4_EXPERTS + e], m->in)) ||
+              ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n, DS4_GVQ_BF16)) ||
             !ds4_gpu_g4_gelu(m->mid, m->gate, m->up, (uint64_t)n * G4_FF) ||
-            !ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
-                DS4_GVQ_BF16)) {
+            !((one && g4_moe_linear_one(m, m->out, matrices[2u * G4_EXPERTS + e], m->mid)) ||
+              ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
+                DS4_GVQ_BF16))) {
             return 0;
         }
         g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
