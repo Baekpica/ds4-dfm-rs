@@ -2,11 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 7cd25a50 (the code state; 1d86327d and 7cd25a50 carry
-  the reference gate's two fixes, and the handoff commit follows them)
+last_updated_commit: faa2489e (ds4 code state: the R13+8 bind; 7cd25a50
+  closed P6b, 1d86327d carried the rotary fix). Sibling VQ_tools: dev at
+  0fd5f9d, the residual stage c859d1f and its recipe.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T10:20:00+01:00
+handoff_written_at: 2026-11-03T11:40:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -46,6 +47,11 @@ checkpoint, returned the reference argmax on all four probes, and found and
 closed the port's rotary pair counts (section 4e). The branch is pushed to
 origin/feat/gemma4-family through 4ba1523c; 1d86327d and 7cd25a50 are local
 and await the owner's word for the push.
+
+A second, better artifact now serves through the same code: the R13+8 build
+(4f) at /data/vq-artifacts/gguf-family-it-r8, 9.95 GiB, expert weight error
+23.38 percent against the original 39.29, and the serving checklist passes
+on it unchanged.
 
 What is still open, in order:
 
@@ -118,6 +124,8 @@ Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
             64 full; found by the reference gate; the test pins them now)
   7cd25a50  fix(gemma4-vq): price the KV ring the graph uses (ring golden in
             the primitive test; kv rows clamped to ctx; plan helper agrees)
+  faa2489e  feat(gemma4-vq): bind the R13+8 residual stage (layout, part and
+            release validation, record links; 23.38 percent artifact loads)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -670,6 +678,77 @@ fresh single prefill cannot trigger it. And the attention golden had no
 wrapped-ring case until 7cd25a50, so the slot mapping every sliding layer
 uses had no unit gate either.
 
+4f. The R13+8 artifact and the VQ toolkit fix (2026-11-03)
+
+Why. The audit in 4e showed the serving artifact is the family recipe without
+its residual stage: 39.29 percent weight relL2 on the expert stacks, against
+the 22.9 percent the sibling R13+8 layers reach. VQ_tools had no residual
+encoder, no GVR8 tensor and no recipe key, so the loss was not a conversion
+defect but a missing mechanism.
+
+What the toolkit gained (VQ_tools c859d1f, recipe 0fd5f9d):
+- build-vq-gpu --residual-bits 8 (or residual_stage.bits in the recipe)
+  trains a 256-entry E4M3 book on the error the stages leave, writes
+  <name>.gvr8.bin (GVR1 header plus one byte per 8-weight vector) and
+  <name>.gvr8_book.bin, and reports the manifest relL2 with the consumer's
+  arithmetic, BF16(C1 + C2) at gain 1.
+- vq-gguf gvr1.rs builds and validates the header (canonical offsets, zero
+  padding, payload digest); emit writes one GVR8 tensor per expert matrix,
+  one 256-entry book per stack, links them in gemma4_vq.residuals, and marks
+  the release format version 2; check re-verifies headers, digests, books and
+  links in both directions.
+- recipes/gemma-4-26b-a4b-family-r8.json is the recipe: the family shape
+  (13-bit, one stage, E4M3, experts only) plus residual_stage bits 8 on all
+  30 layers, id gemma-4-26b-a4b-family-r8. VQ_tools' working tree still
+  carries another line's edits to VQ_tools-handoff.md and
+  docs/recipe-v41-identical.md; neither is part of these commits.
+
+The artifact: /data/vq-artifacts/gguf-family-it-r8, 9.95 GiB, 23805 tensors,
+format version 2. Trunk 8.00 GiB (11520 GVQ1, 11520 GVR8, 120 books, 175
+Q4_K, 30 Q8_0, 391 BF16), embedding 1.38 GiB, mtp 0.58 GiB. The payload
+containers are 7.01 GiB (4.35 stage plus 2.66 residual) at 23.3772 percent
+mean relL2 over the 60 stacks (39.2868 before); 0.59 more bits per weight.
+
+Build and emit, for reproduction:
+  ./bin/build-vq-gpu /data/models/gemma-4-26B-A4B-it OUT \
+      --recipe recipes/gemma-4-26b-a4b-family-r8.json        (819 s)
+  ./target/release/vq-gguf emit --out DIR/gemma4-vq8-trunk.gguf \
+      --recipe recipes/gemma-4-26b-a4b-family-r8.json \
+      --artifact OUT --source /data/models/gemma-4-26B-A4B-it --part trunk \
+      --tokenizer /data/models/gemma-4-26B-A4B-it-hf \
+      --revision 4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+  the embedding and mtp parts as in the 13-bit release; mtp from
+  /data/models/gemma-4-26B-A4B-it-assistant, revision 6e5aaaf4.
+  ./target/release/vq-gguf release --dir DIR --out DIR/release.json \
+      --recipe recipes/gemma-4-26b-a4b-family-r8.json \
+      --config /data/models/gemma-4-26B-A4B-it-hf/config.json
+
+What the port gained (faa2489e): the layout has two contracts chosen by the
+inventory (12177 plain, 23757 with residuals); the part validator parses GVR1
+headers and enforces the all-or-none residuals map; release.json may be
+version 2 but only with the -r8 recipe id; the bind looks up the residual
+books and planes optionally, all-or-none per layer, and links each expert
+record to its plane and the plane to its book (the link gvq_link_res checks).
+
+Measured against the reference, the same probes as 4e:
+
+  probe          artifact   cosine    KL ref||port   top10   argmax
+  A 28 tokens    13-bit     0.9879    0.002371       6/10    818
+  A 28 tokens    R13+8      0.9906    0.000548       6/10    818
+  B 1243 tokens  13-bit     0.9873    0.003730       8/10    1509
+  B 1243 tokens  R13+8      0.9901    0.419508       8/10    1509
+
+Read the B KL carefully: it is one token. 1509 contributes 0.425 of the
+0.4195, because this artifact puts the top logit 0.6 nats below the reference
+(24.5 against 25.125) where the 13-bit artifact put it 0.75 above (25.875).
+Every shape metric improved: cosine, rms delta (2.44 to 2.38 on A, 1.72 to
+1.36 on B) and the runner-up order. Weight error 39 to 23 percent is a better
+approximation of the same model, not a different model; no claim beyond these
+numbers, and no perplexity or benchmark was run.
+
+The serving checklist on this artifact reports reuse prefix, rewind and
+continue exact, "result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)".
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -684,7 +763,11 @@ Artifact (canonical): /data/vq-artifacts/gguf-family-it
 Superseded, do not use as reference: /data/vq-artifacts/gguf-family (no
 revision pin, no tokenizer).
 VQ payload: /data/vq-artifacts/gemma-4-26b-a4b-it-8x8192x1-family (60
-containers, 4.36 GiB, relL2 39.05-39.73 percent).
+containers, 4.36 GiB, relL2 39.05-39.73 percent) for the 13-bit artifact,
+and /data/vq-artifacts/gemma-4-26b-a4b-it-8x8192x1-family with the residual
+sidecars (7.01 GiB, mean 23.3772 percent) behind
+/data/vq-artifacts/gguf-family-it-r8. VQ_tools dev 0fd5f9d carries the recipe
+(recipes/gemma-4-26b-a4b-family-r8.json) and the encoder/emitter (c859d1f).
 Checkpoints: /data/models/gemma-4-26B-A4B-it (weights are revision 4d7ae498;
 its tokenizer files are the base model's), /data/models/gemma-4-26B-A4B-it-hf
 (the instruct revision's config, tokenizer.json, tokenizer_config.json,
@@ -723,10 +806,11 @@ once on the 121 GB of unified memory.
   0.0004-0.0037. That bounds the artifact against the checkpoint at four
   sequence lengths and nothing more: no greedy-text comparison, no
   perplexity, no benchmark, and no claim about the answers the model gives.
-  The artifact's own experts measure 39.05-39.73 percent relL2, and the
-  published families pair that geometry with an 8-bit residual this artifact
-  does not have, so the residual in those cosine and KL numbers is the
-  encoding's error, not the port's.
+  The artifact those numbers describe measures 39.29 percent on its experts;
+  the R13+8 build in section 4f measures 23.38 and was compared on two of the
+  same probes (A: cosine 0.9906, KL 0.00055; B: 0.9901 with the reference
+  argmax). Both are approximations of the checkpoint, so the residual in
+  every cosine and KL number is the encoding's error, not the port's.
 - Context: the model's own maximum is 262144. f16 KV at that length does not
   fit the 12 GiB card beside the trunk; the qualified context must be
   measured by --serving-check, never advertised from metadata.
@@ -752,7 +836,8 @@ once on the 121 GB of unified memory.
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
     git status --short          # expect empty at the handoff commit
-    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state 7cd25a50 until pushed
+    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state faa2489e until pushed
+    cd /data/VQ_tools && git log --oneline -2    # expect 0fd5f9d, c859d1f
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
     sed -n '1,60p' gemma4-port-handoff.md
