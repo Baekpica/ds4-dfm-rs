@@ -2582,9 +2582,57 @@ pub fn render_live_tool_tail(
             ));
         }
         ModelSyntax::Gemma4 => {
-            return Err(RenderError(
-                "Gemma-4 tool results require the canonical template",
-            ));
+            // The canonical template keeps the tool responses inside the
+            // model turn that emitted the calls and, with thinking off,
+            // appends nothing after them: generation continues that same
+            // turn (chat_template.jinja:277-318 and 382-389). With thinking
+            // on it opens the thought channel only.
+            let think = think_mode_enabled(think_mode);
+            let mut calls: &[ToolCall] = &[];
+            for m in msgs[..start].iter().rev() {
+                if m.role == "assistant" {
+                    calls = &m.calls;
+                    break;
+                }
+            }
+            let name_for = |id: &str, own: &str| -> String {
+                if let Some(call) = calls.iter().find(|c| !id.is_empty() && c.id == id) {
+                    return call.name.clone();
+                }
+                if own.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    own.to_string()
+                }
+            };
+            for m in tail {
+                if matches!(m.role.as_str(), "tool" | "function") {
+                    let name = name_for(&m.tool_call_id, &m.name);
+                    append_gemma4_tool_response_named(&mut out, &name, &m.content);
+                    continue;
+                }
+                if m.role == "user" {
+                    // Anthropic carries the results as parts of one user
+                    // message; each part answers its own call.
+                    let mut any = false;
+                    for part in &m.parts {
+                        if let ChatPart::ToolResult { id, content } = part {
+                            let name = name_for(id, &m.name);
+                            append_gemma4_tool_response_named(&mut out, &name, content);
+                            any = true;
+                        }
+                    }
+                    if any {
+                        continue;
+                    }
+                }
+                return Err(RenderError(
+                    "Gemma-4 live tool suffix is not a tool result",
+                ));
+            }
+            if think {
+                put(&mut out, G4_THOUGHT_OPEN);
+            }
         }
         ModelSyntax::Axk2Vq => {
             return Err(RenderError(
@@ -3322,16 +3370,22 @@ fn append_gemma4_tool_response(out: &mut Vec<u8>, m: &ChatMsg) {
     } else {
         m.name.as_str()
     };
+    append_gemma4_tool_response_named(out, name, &m.content);
+}
+
+/// One `<|tool_response>` block. The name is the function the result answers,
+/// as the template resolves it (chat_template.jinja:286-293).
+fn append_gemma4_tool_response_named(out: &mut Vec<u8>, name: &str, content: &str) {
     put(out, G4_RESPONSE_OPEN);
     put(out, name);
     put(out, "{value:");
     let parsed = {
-        let mut p = G4Parser::new(&m.content);
+        let mut p = G4Parser::new(content);
         p.value(0)
     };
     match parsed {
         Some(value) => put(out, &g4_argument(&value, false)),
-        None => put(out, &g4_quote(&m.content)),
+        None => put(out, &g4_quote(content)),
     }
     put(out, "}");
     put(out, G4_RESPONSE_CLOSE);
@@ -3698,6 +3752,117 @@ mod gemma4_tests {
             "<|tool_call>call:lookup{q:<|\"|>capital<|\"|>}<tool_call|>\
              <|tool_response>response:lookup{value:{answer:<|\"|>Paris<|\"|>}}<tool_response|><turn|>\n"
         ));
+    }
+
+    #[test]
+    fn live_tool_tail_keeps_the_responses_in_the_model_turn() {
+        // chat_template.jinja:277-318 renders the results inside the model
+        // turn, and 382-389 appends nothing after them when thinking is off.
+        let call = ChatMsg {
+            role: "assistant".into(),
+            calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "lookup".into(),
+                arguments: "{\"q\":\"capital\"}".into(),
+            }],
+            ..Default::default()
+        };
+        let result = ChatMsg {
+            role: "tool".into(),
+            tool_call_id: "c1".into(),
+            content: "{\"answer\":\"Paris\"}".into(),
+            ..Default::default()
+        };
+        let out = render_live_tool_tail(
+            ModelSyntax::Gemma4,
+            Api::Responses,
+            &[call, result],
+            ThinkMode::None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "<|tool_response>response:lookup{value:{answer:<|\"|>Paris<|\"|>}}<tool_response|>"
+        );
+    }
+
+    #[test]
+    fn live_tool_tail_opens_the_thought_channel_when_thinking() {
+        // chat_template.jinja:388-389: with thinking on, the generation
+        // prompt after a tool response is the open thought channel.
+        let call = ChatMsg {
+            role: "assistant".into(),
+            calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+            }],
+            ..Default::default()
+        };
+        let result = ChatMsg {
+            role: "tool".into(),
+            tool_call_id: "c1".into(),
+            content: "ok".into(),
+            ..Default::default()
+        };
+        let out = render_live_tool_tail(
+            ModelSyntax::Gemma4,
+            Api::Responses,
+            &[call, result],
+            ThinkMode::High,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "<|tool_response>response:lookup{value:<|\"|>ok<|\"|>}<tool_response|><|channel>thought\n"
+        );
+    }
+
+    #[test]
+    fn live_tool_tail_reads_anthropic_parts_by_call_id() {
+        let call = ChatMsg {
+            role: "assistant".into(),
+            calls: vec![
+                ToolCall {
+                    id: "a".into(),
+                    name: "first".into(),
+                    arguments: "{}".into(),
+                },
+                ToolCall {
+                    id: "b".into(),
+                    name: "second".into(),
+                    arguments: "{}".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let result = ChatMsg {
+            role: "user".into(),
+            tool_call_ids: vec!["a".into(), "b".into()],
+            parts: vec![
+                ChatPart::ToolResult {
+                    id: "a".into(),
+                    content: "one".into(),
+                },
+                ChatPart::ToolResult {
+                    id: "b".into(),
+                    content: "two".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let out = render_live_tool_tail(
+            ModelSyntax::Gemma4,
+            Api::Anthropic,
+            &[call, result],
+            ThinkMode::None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "<|tool_response>response:first{value:<|\"|>one<|\"|>}<tool_response|>\
+             <|tool_response>response:second{value:<|\"|>two<|\"|>}<tool_response|>"
+        );
     }
 
     #[test]
