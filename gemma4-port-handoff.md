@@ -2,9 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 8fae06b0 (feat(gemma4-vq): the optional SSD expert
-  stream). That commit carries P8 (4k), the speed unit (4l) and the SSD
-  unit (4m) together; the tree is clean. The SSD unit adds
+last_updated_commit: 521f3046 (docs(handoff): the SSD option committed).
+  The code state is 8fae06b0 (feat(gemma4-vq): the optional SSD expert
+  stream), which carries P8 (4k), the speed unit (4l) and the SSD unit
+  (4m) together; the tree was clean before this handoff edit. This handoff
+  adds section 4n (per-GPU profiles: feasibility and the missing consumer)
+  and updates the open list; it is committed next. The SSD unit adds
   ds4_gemma4_stream.inc and touches the Gemma graph/GPU arms, the engine
   family gate and streaming arm, the Rust SSD admission/quote and the CLI
   help. No GLM file is modified. Sibling VQ_tools: dev at 65ef74d; the
@@ -12,7 +15,7 @@ last_updated_commit: 8fae06b0 (feat(gemma4-vq): the optional SSD expert
   files alone.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T15:39:43+01:00
+handoff_written_at: 2026-11-03T15:54:50+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -69,24 +72,30 @@ The batching refusal is gone; serving.rs declares banks and disk Qualified.
 What is still open, in order:
 
   0. speed  the port was functionally complete at 2.9 decode / 3.9 prefill
-          tok/s zero-copy. The measured fixes are in the working tree (4l):
-          device residency 3.9x, batched projections 2.15x, grouped expert
-          prefill 22x, now 337.9 prefill / 11.1 decode tok/s. Decode is
-          still below the sibling 15-25 tok/s because every token restores
-          its eight selected experts per layer. The default residency is
-          still zero-copy; the measurements use DS4_CUDA_COPY_MODEL=1.
-  0b. SSD  streaming is built and opt-in (4m). The owner's rule is that it
-          stays an option, never a family default. Gemma-only module and
-          engine arms, no GLM edit; split shards supported; the 4070 refuses
-          with the coherent-access message. Remaining: a GB10 run (slot hit
-          rate, the 4 GiB default, the decode gain) before calling the
-          option measured.
-  1. P8   the drafter is written, builds, and passes gates A, B and C on a
-          short prompt; the wrapped-ring gate must be re-run with the new
-          batched prefill (4k, now faster). Then: commit, run
-          --serving-check with --mtp. The one open design question is
-          G4_MTP_DRAFTS = 4 against the checkpoint's num_assistant_tokens =
-          6 (4k).
+          tok/s zero-copy. The measured fixes are committed in 8fae06b0
+          (4l): device residency 3.9x, batched projections 2.15x, grouped
+          expert prefill 22x. Latest resident measurements on the 4070:
+          355.77 prefill / 10.70 decode tok/s (one token) and 342.36 /
+          10.64 (eight tokens, DS4_CUDA_COPY_MODEL=1). Decode is still
+          below the sibling 15-25 tok/s because every token restores its
+          eight selected experts per layer. The profile unit (4n) is the
+          next lever.
+  0b. SSD  streaming is built and opt-in in 8fae06b0 (4m). The owner's rule
+          is that it stays an option, never a family default. Gemma-only
+          module and engine arms, no GLM edit; split shards supported; the
+          4070 refuses with the coherent-access message. Remaining: a GB10
+          run (slot hit rate, the 4 GiB default, the decode gain) before
+          calling the option measured.
+  0c. profiles  per-GPU profile feasibility is recorded in 4n. The format
+          already keys on artifact and GPU, but the Gemma-4 runtime has no
+          consumer and vq-tune measures the standalone vqg_* kernels, not
+          the GVQ path. Decision pending: the decode GEMV profile slice
+          (recommended) or the 4070 discrete-card stream map.
+  1. P8   the drafter is committed in 8fae06b0 and passes gates A, B and C
+          on a short prompt; the wrapped-ring gate must be re-run with the
+          batched prefill (4k). Then: run --serving-check with --mtp. The
+          one open design question is G4_MTP_DRAFTS = 4 against the
+          checkpoint's num_assistant_tokens = 6 (4k).
   2. P9   the four-part OpenAI gate is scripted (tests/gemma4_serving_http_gate.sh)
           and not yet run; the live tool-tail continuation is done
           (be901c46); the serving-host limits are documented.
@@ -1231,6 +1240,93 @@ Measured on the 4070 SUPER (R13+8, ctx 256, 8 greedy tokens, resident):
 Still open: no GB10 run of the Gemma stream (slot hit rate, 4 GiB default
 vs the 5.9 GiB expert set, and the decode gain are unmeasured); the decode
 gap in 4l remains. The 4 GiB default is a policy choice, not a measurement.
+
+4n. Per-GPU profiles: feasibility and the missing consumer (2026-11-03)
+
+The owner asked whether the kernel work can move from a GB10-only shape to
+per-GPU profiles: tune Gemma-4 on the RTX 4070 with the VQ_tools kernel
+tools, write a second profile, and load the profile for the card in use.
+The answer is yes in principle, but not with the current runtime.
+
+What already exists:
+
+  - VQ_tools `vq-tune` writes a per-artifact, per-GPU profile
+    (`docs/profile-optimizer.md`, `c/gpu/vq-profile.h`). It records the
+    exact CUDA device name and an FNV-1a artifact fingerprint; the reader
+    refuses a profile from another artifact or GPU.
+  - `vq-tune --profile PATH` writes anywhere, so
+    `vq-tune.profile.rtx4070` and `vq-tune.profile.gb10` can coexist. The
+    format does not need a new version for that.
+  - The tuner binary exists on this host (`bin/vq-tune`) and the 4070 is
+    the CUDA device it would measure; a full sweep was not run in this
+    investigation. The Gemma 13-bit VQ payload
+    `/data/vq-artifacts/gemma-4-26b-a4b-it-8x8192x1-family` has a
+    manifest (`dim=8 nc=8192 stages=1`) and grouped geometries the generic
+    readiness functions accept: down_proj 360448/128 = 2816 rows x 704
+    cols (generic warp variant; the 88 indices per row are not a whole
+    32-index block, so the DQV3 block kernel is not ready), gate_up_proj
+    180224/128 = 1408 rows x 2816 cols (352 indices per row, so the DQV3
+    block kernel is ready too).
+
+The two gaps found by reading the code:
+
+  1. No runtime consumer. A search of ds4-gemma4 for `VQPROF`,
+     `vq-tune.profile` or `vq_profile` returns nothing. The only
+     `DS4_*PROFILE*` environment variables are stage-timing diagnostics.
+     The model repository is the documented owner of the decision to
+     consume a profile, and it has not made that decision yet.
+  2. The tuner measures different kernels. `vq-tune` calls
+     `vqg_gemv_t` and `vqg_prefill_tile` in `c/gpu/decode-gpu.cu`.
+     Gemma-4 runs `ds4_gpu_gvq_linear` -> `glmvq_gemm`, which restores the
+     VQ matrix to bf16 (`glmvq_restore_bf16`) and calls cuBLAS, plus the
+     grouped expert prefill. The profile's variant, threads and tile
+     entries do not map to those kernels. The tuner's promise that a win
+     there is a win in the model holds for the standalone decoder, not for
+     this runtime.
+
+Two more boundaries:
+
+  - The artifact identity differs. The profile fingerprint is over the VQ
+    payload `manifest.txt` and `.bin` containers. The served runtime opens
+    the GGUF release (`release.json` plus shards); its release metadata
+    does not carry the VQ payload FNV. A profile must either be loaded
+    against the VQ payload directory, or the FNV must be embedded in the
+    GGUF release at emit time, or a GGUF-based profile identity must be
+    added.
+  - The R13+8 residual stage is a copied GVR8 sidecar. `vq-tune` skips
+    copied sidecars by design, so a main-stage profile does not cover the
+    residual restore. Covering it needs a tuner and consumer for GVR8.
+
+The GB10 hardcoding is not the profile system. The SSD stream calls
+`ds4_gpu_set_stream_map`, which requires coherent CUDA host page tables
+(a GB10 property); no profile can change that. The resident path is not
+GB10-only: it runs on the 4070 now (4m). Making SSD streaming work on the
+4070 needs a discrete-card resident-span map and stream design, a separate
+unit from profiles.
+
+Recommended order if the owner wants the profile work:
+
+  A. Decode GEMV profile slice (first). Add a direct VQ GEMV decode kernel
+     for batch 1 adapted from `vqg_gemv` (dim 8, any cols), make its
+     variant/threads selectable per geometry, add the runtime loader with a
+     path from `DS4_VQ_PROFILE` or a flag, and bridge the fingerprint.
+     This targets the decode gap (10.7 tok/s on the 4070 against the
+     sibling 15-25) and the tuner already sweeps the design.
+  B. Prefill profile after A. Either make the existing restore mode
+     (scalar vs vector) profile-driven per geometry, or port the
+     `vqg_prefill` tiles into the grouped path and gate them at 1e-4.
+  C. GVR8 residual tuning and the 4070 stream map are separate units; do
+     not fold them into A.
+
+Evidence commands used (no code changed in this investigation):
+
+  cd /data/ds4-gemma4
+  grep -rn "vq-tune.profile\|VQPROF\|vq_profile" --include=*.c \
+    --include=*.h --include=*.cuh --include=*.inc --include=*.rs .
+  cd /data/VQ_tools
+  grep -n "vqg_gemv_ready\|vqg_prefill_ready" c/gpu/decode-gpu.cu
+  ls /data/vq-artifacts/gemma-4-26b-a4b-it-8x8192x1-family
+  head -5 /data/vq-artifacts/gemma-4-26b-a4b-it-8x8192x1-family/manifest.txt
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
