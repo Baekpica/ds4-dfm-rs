@@ -104,7 +104,7 @@ Gate, in this order:
   counts it found. No quality claim beyond those numbers: the artifact is a
   lossy VQ encoding, so the distributions are close, not equal.
 
-## P7: banks, payloads, snapshots, disk KV
+## P7: banks, payloads, snapshots, disk KV (closed 2026-11-03)
 
 Add `ds4_gemma4_session.inc`, `_payload.inc`, `_batch.inc`,
 `_bank_payload.inc` following ling31's shape: per-bank graph with its own KV,
@@ -113,13 +113,22 @@ KV and the RNG/sampling state, snapshot capture/drop, and the disk-KV
 directory. Gemma's KV is two kinds (ring 1024+chunk for 25 layers, full
 context for 5), so the payload writer must state the per-layer layout
 explicitly and the restore must validate it. `ds4_engine_supports_batching`
-returns false for this family today (2dca7709 stopped the serving check
-crashing in the DeepSeek slab body); the batch include removes that refusal
-and replaces it with the real lane.
+returned false for this family (2dca7709 stopped the serving check crashing in
+the DeepSeek slab body); the batch include removed that refusal and replaced
+it with the real lane.
 
 Gate: `ds4 --serving-check` with banks > 1; a snapshot restore reproducing the
 next token; a disk-KV reload reproducing it again; `ds4_context_memory`
 agreeing with the allocator's measured use.
+
+Result (c42e8b31, dd6772dc): the payload writer emits the DSV4 v3 header with
+the "GVK4" tag and the two row counts; the host validator learned the layout
+(crates/ds4-core/src/payload.rs), which is what the disk item was failing on.
+The bank lane is position-indexed, so partial reuse is a copy and there is no
+checkpoint slab; `ds4_gemma4_bank_payload.inc` serializes one bank through the
+session writer. The checklist prints works 10, FAIL 0, WRONG 0, undeclared 0
+at ctx 2048 on the R13+8 artifact. The serial ring-resume guard noted in the
+handoff (4e) is still open and is the next serial-lane fix.
 
 ## P8: the drafter
 
@@ -142,6 +151,13 @@ limits and `docs/serving-capabilities.md` regeneration.
 Gate: the four-part OpenAI check in the handoff section 1 — GET /v1/models,
 POST /v1/chat/completions returns a completion, the same request twice returns
 identical ids and text, and sm_89 CUDA runs it.
+
+Result so far: the family arm, model id, admission and stop set are in place
+(ids 1, 106 and 50 through `Vocab::is_stop`), and the live tool-tail
+continuation now renders the canonical template instead of refusing
+(be901c46, three unit tests pinning the Responses and Anthropic shapes). The
+four-part gate itself is the remaining run, held back while P8 owns the
+working tree.
 
 ## P10: docs and release
 
