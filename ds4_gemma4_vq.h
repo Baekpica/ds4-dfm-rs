@@ -95,12 +95,25 @@ int ds4_gpu_g4_router_input(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu
     uint32_t scale, uint32_t rows, uint32_t width, float eps, float root);
 int ds4_gpu_g4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, const ds4_gpu_tensor *inv,
     uint32_t rows, uint32_t heads, uint32_t dim, uint32_t pairs);
+/* The same norm and rope in one block per (row, head): the row is staged once
+ * and rotated in place, with the two kernels' arithmetic unchanged. */
+int ds4_gpu_g4_rms_rope(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+    uint32_t weight, const ds4_gpu_tensor *positions, const ds4_gpu_tensor *inv,
+    uint32_t rows, uint32_t heads, uint32_t dim, uint32_t pairs, float eps);
 int ds4_gpu_g4_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
     const ds4_gpu_tensor *logits, uint32_t per_expert, uint32_t rows);
+/* The router projection through cuda/gemma4_router.cuh for one token; 0 for
+ * any other shape or record, so the shared linear stays the fallback. */
+int ds4_gpu_g4_router_logits(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
+    const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_g4_gelu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
     uint64_t count);
 int ds4_gpu_g4_embed_scale(ds4_gpu_tensor *x, uint64_t count);
 int ds4_gpu_g4_softcap(ds4_gpu_tensor *logits, uint64_t count);
+/* The tied BF16 vocabulary head through cuda/gemma4_head.cuh, softcap fused;
+ * 0 when the record is not a BF16 table of the expected width. */
+int ds4_gpu_g4_head(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
+    const ds4_gpu_tensor *input, float cap);
 int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar);
 int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query, const ds4_gpu_tensor *key,
     const ds4_gpu_tensor *value, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,

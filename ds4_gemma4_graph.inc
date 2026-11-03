@@ -551,6 +551,39 @@ static bool g4_attn_prefill(void) {
     return on != 0;
 }
 
+/* Fused RMSNorm + RoPE, off by default (DS4_GEMMA4_FUSE_ROPE=1). The
+ * arithmetic is the two-kernel sequence's; the option exists to A/B it. */
+static bool g4_fuse_rope(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_FUSE_ROPE");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* The family's own BF16 vocabulary head, off by default
+ * (DS4_GEMMA4_HEAD_GEMV=1); the shared linear stays the fallback. */
+static bool g4_head_gemv(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_HEAD_GEMV");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* The family's own router projection, off by default
+ * (DS4_GEMMA4_ROUTER_DOT=1); the shared linear stays the fallback. */
+static bool g4_router_dot(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ROUTER_DOT");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* Dense down through the batch warp8 Q8_0 kernel, off by default
  * (DS4_GEMMA4_Q8_BATCH=1). */
 static bool gemma4_q8_batch(void) {
@@ -651,16 +684,25 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         G4_STEP(ds4_gpu_tensor_copy(g->v, 0, g->k, 0,
             (uint64_t)rows * kv_width * sizeof(float)), "attention_k_eq_v copy");
     }
-    G4_STEP(ds4_gpu_g4_rms(g->gvq, g->q, g->q, gemma4_index(m, l->attn_norm[0]),
-        rows * G4_HEADS, dim, G4_RMS_EPS), "query norm");
-    G4_STEP(ds4_gpu_g4_rms(g->gvq, g->k, g->k, gemma4_index(m, l->attn_norm[1]),
-        rows * kv, dim, G4_RMS_EPS), "key norm");
-    G4_STEP(ds4_gpu_g4_rms(g->gvq, g->v, g->v, DS4_GVQ_NO_LINK,
-        rows * kv, dim, G4_RMS_EPS), "value norm");
-    G4_STEP(ds4_gpu_g4_rope(g->q, g->positions, inv, rows, G4_HEADS, dim, pairs),
-        "query rope");
-    G4_STEP(ds4_gpu_g4_rope(g->k, g->positions, inv, rows, kv, dim, pairs),
-        "key rope");
+    if (g4_fuse_rope()) {
+        G4_STEP(ds4_gpu_g4_rms_rope(g->gvq, g->q, g->q, gemma4_index(m, l->attn_norm[0]),
+            g->positions, inv, rows, G4_HEADS, dim, pairs, G4_RMS_EPS), "query norm + rope");
+        G4_STEP(ds4_gpu_g4_rms_rope(g->gvq, g->k, g->k, gemma4_index(m, l->attn_norm[1]),
+            g->positions, inv, rows, kv, dim, pairs, G4_RMS_EPS), "key norm + rope");
+        G4_STEP(ds4_gpu_g4_rms(g->gvq, g->v, g->v, DS4_GVQ_NO_LINK,
+            rows * kv, dim, G4_RMS_EPS), "value norm");
+    } else {
+        G4_STEP(ds4_gpu_g4_rms(g->gvq, g->q, g->q, gemma4_index(m, l->attn_norm[0]),
+            rows * G4_HEADS, dim, G4_RMS_EPS), "query norm");
+        G4_STEP(ds4_gpu_g4_rms(g->gvq, g->k, g->k, gemma4_index(m, l->attn_norm[1]),
+            rows * kv, dim, G4_RMS_EPS), "key norm");
+        G4_STEP(ds4_gpu_g4_rms(g->gvq, g->v, g->v, DS4_GVQ_NO_LINK,
+            rows * kv, dim, G4_RMS_EPS), "value norm");
+        G4_STEP(ds4_gpu_g4_rope(g->q, g->positions, inv, rows, G4_HEADS, dim, pairs),
+            "query rope");
+        G4_STEP(ds4_gpu_g4_rope(g->k, g->positions, inv, rows, kv, dim, pairs),
+            "key rope");
+    }
     gemma4_probe_at(g->q, il, "q normed roped");
     gemma4_probe_at(g->k, il, "k normed roped");
     gemma4_probe_at(g->v, il, "v normed");
@@ -749,9 +791,21 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     /* Router reads the post-attention residual, not the FFN input. */
     uint32_t router[1] = {gemma4_index(m, l->router)};
     const uint32_t router_width[1] = {G4_EXPERTS};
-    if (!ds4_gpu_g4_router_input(g->gvq, g->tmp, g->cur, gemma4_index(m, l->router_scale), rows, G4_EMBED, G4_RMS_EPS,
-            G4_ROUTER_ROOT) ||
-        !gemma4_projection_rows(g, &g->router_logits, router, router_width, 1u, g->tmp, rows, G4_EMBED) ||
+    bool router_ok = ds4_gpu_g4_router_input(g->gvq, g->tmp, g->cur,
+        gemma4_index(m, l->router_scale), rows, G4_EMBED, G4_RMS_EPS, G4_ROUTER_ROOT);
+    if (router_ok) {
+        const bool own_dot = g4_router_dot() && rows == 1u;
+        router_ok = own_dot
+            ? ds4_gpu_g4_router_logits(g->gvq, g->router_logits,
+                gemma4_index(m, l->router), g->tmp, rows) != 0
+            : gemma4_projection_rows(g, &g->router_logits, router, router_width,
+                1u, g->tmp, rows, G4_EMBED);
+        if (!router_ok && own_dot) {
+            router_ok = gemma4_projection_rows(g, &g->router_logits, router,
+                router_width, 1u, g->tmp, rows, G4_EMBED);
+        }
+    }
+    if (!router_ok ||
         !ds4_gpu_g4_router(g->gvq, g->selected, g->weights, g->router_logits,
             gemma4_index(m, l->router_per_expert), rows)) {
         fprintf(stderr, "ds4: Gemma-4 router failed at layer %u\n", il);
@@ -857,9 +911,16 @@ static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         fprintf(stderr, "ds4: Gemma-4 logits view failed\n");
         return false;
     }
-    const bool ok = ds4_gpu_gvq_linear(g->gvq, g->logits,
-        gemma4_index(m, w->token_embd), last, 1u, DS4_GVQ_BF16) &&
-        ds4_gpu_g4_softcap(g->logits, G4_VOCAB);
+    bool ok = false;
+    if (g4_head_gemv()) {
+        ok = ds4_gpu_g4_head(g->gvq, g->logits, gemma4_index(m, w->token_embd),
+            last, G4_SOFTCAP) != 0;
+    }
+    if (!ok) {
+        ok = ds4_gpu_gvq_linear(g->gvq, g->logits,
+            gemma4_index(m, w->token_embd), last, 1u, DS4_GVQ_BF16) &&
+            ds4_gpu_g4_softcap(g->logits, G4_VOCAB);
+    }
     ds4_gpu_tensor_free(last);
     if (!ok) { fprintf(stderr, "ds4: Gemma-4 vocabulary head failed\n"); }
     gemma4_probe_at(g->logits, G4_LAYERS, "logits");

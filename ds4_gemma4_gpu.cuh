@@ -12,6 +12,8 @@
 
 #include "ds4_gemma4.h"
 #include "cuda/gemma4_primitives.cuh"
+#include "cuda/gemma4_head.cuh"
+#include "cuda/gemma4_router.cuh"
 #include "cuda/gemma4_attn.cuh"
 #include "cuda/gemma4_attn_fp8.cuh"
 #include "cuda/gemma4_attn_fast.cuh"
@@ -230,6 +232,37 @@ extern "C" int ds4_gpu_g4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *position
     return cuda_ok(cudaGetLastError(), "Gemma-4 rope");
 }
 
+/* The norm and the rope in one block per (row, head): the row is staged once
+ * and rotated in place, with g4_rms_kernel's and g4_rope_kernel's arithmetic
+ * unchanged (cuda/gemma4_primitives.cuh). */
+extern "C" int ds4_gpu_g4_rms_rope(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t weight, const ds4_gpu_tensor *positions, const ds4_gpu_tensor *inv,
+        uint32_t rows, uint32_t heads, uint32_t dim, uint32_t pairs, float eps) {
+    const __nv_bfloat16 *w = g4_weight(ctx, weight, dim);
+    if (!out || !in || !positions || !inv || !rows || !heads || !dim || !pairs) { return 0; }
+    if (weight != DS4_GVQ_NO_LINK && !w) { return 0; }
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        in->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
+        inv->bytes < (uint64_t)(dim / 2u) * sizeof(float)) { return 0; }
+    const dim3 grid(heads, rows);
+    g4_rms_rope_kernel<256><<<grid, 256, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)in->ptr, w, (const uint32_t *)positions->ptr,
+        (const float *)inv->ptr, rows, heads, dim, pairs, eps);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 RMS norm + rope");
+}
+
+/* Parallel top-k in the router selection, off by default
+ * (DS4_GEMMA4_ROUTER_PAR=1); the serial scan stays the reference. */
+static bool g4_router_par(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ROUTER_PAR");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 extern "C" int ds4_gpu_g4_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
         ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits, uint32_t per_expert,
         uint32_t rows) {
@@ -238,9 +271,35 @@ extern "C" int ds4_gpu_g4_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
     if (selected->bytes < (uint64_t)rows * G4_USED * sizeof(uint32_t) ||
         weights->bytes < (uint64_t)rows * G4_USED * sizeof(float) ||
         logits->bytes < (uint64_t)rows * G4_EXPERTS * sizeof(float)) { return 0; }
-    g4_router_kernel<<<rows, G4_EXPERTS, 0, ds4_current_stream()>>>((uint32_t *)selected->ptr,
-        (float *)weights->ptr, (const float *)logits->ptr, scale, rows, G4_EXPERTS, G4_USED);
+    if (g4_router_par()) {
+        g4_router_kernel<true><<<rows, G4_EXPERTS, 0, ds4_current_stream()>>>((uint32_t *)selected->ptr,
+            (float *)weights->ptr, (const float *)logits->ptr, scale, rows, G4_EXPERTS, G4_USED);
+    } else {
+        g4_router_kernel<false><<<rows, G4_EXPERTS, 0, ds4_current_stream()>>>((uint32_t *)selected->ptr,
+            (float *)weights->ptr, (const float *)logits->ptr, scale, rows, G4_EXPERTS, G4_USED);
+    }
     return cuda_ok(cudaGetLastError(), "Gemma-4 router");
+}
+
+/* The router projection through the family's own BF16 dot
+ * (cuda/gemma4_router.cuh) for one token; 0 for any other shape or record,
+ * so the shared linear stays the fallback. */
+extern "C" int ds4_gpu_g4_router_logits(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !logits || !input || rows != 1u || index >= ctx->model->source.size()) { return 0; }
+    const glmvq_source &s = ctx->model->source[index];
+    if (ctx->model->records[index].type != GVQ_TYPE_BF16 || s.storage != GLMVQ_WEIGHT_BF16 ||
+        !s.data || s.rows != G4_EXPERTS || s.cols != G4_EMBED) {
+        return 0;
+    }
+    if (input->bytes < (uint64_t)s.cols * sizeof(float) ||
+        logits->bytes < (uint64_t)s.rows * sizeof(float)) {
+        return 0;
+    }
+    g4_router_dot_kernel<<<s.rows, 256, 0, ds4_current_stream()>>>(
+        (const __nv_bfloat16 *)s.data, (const float *)input->ptr, (float *)logits->ptr,
+        s.rows, s.cols);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 router dot");
 }
 
 extern "C" int ds4_gpu_g4_gelu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
@@ -268,6 +327,39 @@ extern "C" int ds4_gpu_g4_softcap(ds4_gpu_tensor *logits, uint64_t count) {
     g4_softcap_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)logits->ptr,
         count, (float)G4_REF_SOFTCAP);
     return cuda_ok(cudaGetLastError(), "Gemma-4 logit softcap");
+}
+
+/* The vocabulary head through the family's own BF16 GEMV
+ * (cuda/gemma4_head.cuh), with the softcap fused into the epilogue. Returns 0
+ * when the record is not a BF16 table of the expected width, so the caller
+ * falls back to the shared linear and its separate softcap. */
+extern "C" int ds4_gpu_g4_head(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
+        const ds4_gpu_tensor *input, float cap) {
+    if (!ctx || !logits || !input || index >= ctx->model->source.size()) { return 0; }
+    const glmvq_source &s = ctx->model->source[index];
+    if (ctx->model->records[index].type != GVQ_TYPE_BF16 || s.storage != GLMVQ_WEIGHT_BF16 ||
+        !s.data || s.cols != G4_EMBED || !s.rows) {
+        return 0;
+    }
+    if (input->bytes < (uint64_t)s.cols * sizeof(float) ||
+        logits->bytes < (uint64_t)s.rows * sizeof(float)) {
+        return 0;
+    }
+    static int sms = 0;
+    if (sms <= 0) {
+        int n = 0;
+        if (cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess || n <= 0) {
+            return 0;
+        }
+        sms = n;
+    }
+    uint32_t blocks = (uint32_t)((s.rows + 7u) / 8u);
+    const uint32_t cap_blocks = (uint32_t)sms * 4u;
+    if (blocks > cap_blocks) { blocks = cap_blocks; }
+    g4_head_gemv_kernel<G4_EMBED, true><<<blocks, 256, 0, ds4_current_stream()>>>(
+        (const __nv_bfloat16 *)s.data, (const float *)input->ptr, (float *)logits->ptr,
+        s.rows, cap);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 vocabulary head");
 }
 
 extern "C" int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar) {

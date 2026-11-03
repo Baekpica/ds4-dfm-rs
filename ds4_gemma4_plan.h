@@ -70,6 +70,10 @@ enum {
     G4_MTP_DRAFTS = G4_MTP_LAYERS
 };
 
+/* Logit softcap (3.9), the checkpoint's final_logit_softcapping = 30
+ * (ds4_gemma4_ref.h:25 carries the oracle's own copy). */
+#define G4_SOFTCAP 30.0f
+
 static inline bool gemma4_is_full(unsigned layer) {
     return layer == 5u || layer == 11u || layer == 17u || layer == 23u ||
            layer == 29u;
