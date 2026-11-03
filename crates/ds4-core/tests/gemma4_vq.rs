@@ -102,3 +102,39 @@ fn official_template_renders_the_reference_text() {
         assert_eq!(text, case["text"].as_str().unwrap(), "{}", case["id"]);
     }
 }
+
+/// The artifact's trunk carries the official template verbatim under GGUF's
+/// `tokenizer.chat_template`, and the engine must render it to the same bytes
+/// the reference engine produced from the checkpoint's `chat_template.jinja`.
+#[test]
+#[ignore = "requires the release in DS4_GEMMA4_MODEL; reads metadata only"]
+fn artifact_carries_the_official_chat_template() {
+    let root = root();
+    let template = ds4_core::chat_template::Template::from_model(&root)
+        .unwrap()
+        .expect("the artifact must carry a chat template");
+    assert!(
+        template.source().contains("tokenizer.chat_template"),
+        "template came from {}",
+        template.source()
+    );
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/gemma4/server-vectors.json"
+    ))
+    .unwrap();
+    for case in fixtures["vectors"].as_array().unwrap() {
+        let Some(expected) = case["expected"].as_str() else {
+            continue;
+        };
+        assert_eq!(
+            template.render(&case["context"]).unwrap(),
+            expected,
+            "{}",
+            case["name"]
+        );
+    }
+    // generation_config.json eos_token_id is [1, 106, 50].
+    let vocab = Vocab::load_path(&root, ModelFamily::Gemma4Vq).unwrap();
+    assert!(vocab.is_stop(1) && vocab.is_stop(106) && vocab.is_stop(50));
+    assert!(!vocab.is_stop(200));
+}

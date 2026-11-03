@@ -1322,6 +1322,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
         ModelSyntax::BeamVq => ChatFormat::Beam,
         ModelSyntax::MinimaxVq => ChatFormat::Minimax,
+        ModelSyntax::Gemma4 => ChatFormat::Gemma4,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3

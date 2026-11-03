@@ -39,6 +39,7 @@ pub enum ChatFormat {
     IQuestQ1,
     Beam,
     Minimax,
+    Gemma4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,9 @@ pub fn think_start(fmt: ChatFormat) -> &'static str {
         ChatFormat::Inkling => crate::render::inkling::THINK,
         ChatFormat::Beam => crate::tools::beam::ANALYSIS,
         ChatFormat::Minimax => crate::tools::minimax::THINK,
+        // The model opens its own thought channel, so the opener is part of
+        // the generated text and must be stripped from the reasoning field.
+        ChatFormat::Gemma4 => crate::render::G4_THOUGHT_OPEN,
         _ => "<think>",
     }
 }
@@ -80,6 +84,7 @@ pub fn think_end(fmt: ChatFormat) -> &'static str {
         ChatFormat::Inkling => crate::render::inkling::END,
         ChatFormat::Beam => crate::tools::beam::END,
         ChatFormat::Minimax => crate::tools::minimax::THINK_END,
+        ChatFormat::Gemma4 => crate::render::G4_THOUGHT_CLOSE,
         _ => "</think>",
     }
 }

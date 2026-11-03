@@ -1175,6 +1175,47 @@ fn parse_dots3_invoke(body: &[u8]) -> Option<ToolCall> {
     Some(tc)
 }
 
+/// Gemma-4 output: reasoning in the `<|channel>thought` channel, then content,
+/// then zero or more `<|tool_call>call:NAME{args}<tool_call|>` blocks. The
+/// reasoning channel is split by the shared `split_reasoning_response`, so this
+/// only separates the calls from the text.
+fn parse_gemma4_generated(text: &[u8]) -> Option<ParsedGenerated> {
+    const START: &[u8] = b"<|tool_call>";
+    const END: &[u8] = b"<tool_call|>";
+    let mut content = Vec::new();
+    let mut calls = Vec::new();
+    let mut pos = 0usize;
+    while let Some(at) = find_substr(&text[pos..], START) {
+        let start = pos + at;
+        let Some(close) = find_substr(&text[start + START.len()..], END) else {
+            // An unclosed call is not a call: keep the text and report not-ok.
+            content.extend_from_slice(&text[pos..]);
+            return Some(ParsedGenerated {
+                content,
+                ok: false,
+                raw_tool_text: String::from_utf8_lossy(&text[start..]).into_owned(),
+                ..Default::default()
+            });
+        };
+        content.extend_from_slice(&text[pos..start]);
+        let body = String::from_utf8_lossy(&text[start + START.len()..start + START.len() + close]);
+        let (name, arguments) = crate::render::gemma4_call_body(&body)?;
+        calls.push(ToolCall {
+            id: String::new(),
+            name,
+            arguments,
+        });
+        pos = start + START.len() + close + END.len();
+    }
+    content.extend_from_slice(&text[pos..]);
+    Some(ParsedGenerated {
+        content,
+        calls,
+        ok: true,
+        ..Default::default()
+    })
+}
+
 fn parse_dots3_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
     let tool_start = b"<dots_function_call>";
     let tool_end = b"</dots_function_call>";
@@ -1973,6 +2014,7 @@ pub fn parse_generated_message(
         ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
+        ModelSyntax::Gemma4 => parse_gemma4_generated(text),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -2159,6 +2201,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder])
         // `<|constrain|>` never occurs in prose; ` to=` may.
         ChatFormat::Beam => find_substr(s, beam::TOOL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_START.as_bytes()),
+        ChatFormat::Gemma4 => find_substr(s, b"<|tool_call>"),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -2206,6 +2249,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
         ChatFormat::Beam => find_substr(s, beam::CALL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_END.as_bytes()),
+        ChatFormat::Gemma4 => find_substr(s, b"<tool_call|>"),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -2416,6 +2460,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
         ChatFormat::Beam => &[beam::TOOL.as_bytes()],
         ChatFormat::Minimax => &[minimax::TOOL_CALL_START.as_bytes()],
+        ChatFormat::Gemma4 => &[b"<|tool_call>"],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -2828,5 +2873,49 @@ mod tool_id_tests {
             mint_tool_id_from(&mut state, "call_"),
             "call_00000000000000000000000000000008"
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma4_split_tests {
+    use super::{parse_generated_for_response, split_reasoning_response};
+    use crate::render::ModelSyntax;
+    use crate::stream::ChatFormat;
+
+    #[test]
+    fn reasoning_channel_is_split_off_the_content() {
+        let (content, reasoning) = split_reasoning_response(
+            b"<|channel>thought\nthink here\n<channel|>Paris.",
+            ChatFormat::Gemma4,
+            false,
+        );
+        assert_eq!(String::from_utf8(content).unwrap(), "Paris.");
+        assert_eq!(String::from_utf8(reasoning).unwrap(), "think here\n");
+    }
+
+    #[test]
+    fn unclosed_reasoning_keeps_the_text_and_the_marker_off() {
+        let (content, reasoning) =
+            split_reasoning_response(b"<|channel>thought\nthink here", ChatFormat::Gemma4, true);
+        assert!(content.is_empty());
+        assert_eq!(String::from_utf8(reasoning).unwrap(), "think here");
+    }
+
+    #[test]
+    fn calls_are_extracted_from_the_answer() {
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nplan\n<channel|>Paris.<|tool_call>call:lookup{q:<|\"|>x<|\"|>}<tool_call|>",
+            true,
+            true,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert_eq!(parsed.calls.len(), 1);
+        assert_eq!(parsed.calls[0].name, "lookup");
+        assert_eq!(parsed.calls[0].arguments, "{\"q\":\"x\"}");
     }
 }

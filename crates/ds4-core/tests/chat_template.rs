@@ -136,6 +136,34 @@ fn step37_python_jinja_parity() {
     }
 }
 
+/// The official Gemma-4 template, rendered by the reference engine
+/// (tests/fixtures/gemma4/make_chat_vectors.py). The template is the file the
+/// artifact ships under tokenizer.chat_template, not a re-implementation.
+#[test]
+fn render_official_gemma4() {
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/gemma4/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/gemma4/server-vectors.json"
+    ))
+    .unwrap();
+    for case in fixtures["vectors"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let rendered = template.render(&case["context"]);
+        match case.get("expected").and_then(Value::as_str) {
+            Some(expected) => assert_eq!(rendered.unwrap(), expected, "{name}"),
+            None => {
+                let error = rendered.unwrap_err().to_string();
+                let wanted = case["error_message"].as_str().unwrap();
+                assert!(error.contains(wanted), "{name}: {error}");
+            }
+        }
+    }
+}
+
 #[test]
 fn step37_invalid_tool_json() {
     let template = Template::compile(

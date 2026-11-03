@@ -205,6 +205,18 @@ const DOTS3_NATIVE_MAX: u32 = 8192;
 const MIMO_PREFILL_CHUNK_ENV: &str = "DS4_MIMO2_PREFILL_CHUNK";
 const MIMO_NATIVE_DEFAULT: u32 = crate::mimo2::PREFILL_CAP;
 const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_MAX;
+// ds4_gemma4_plan.h: the engine's own prefill bound and its KV layout.
+// G4_PREFILL is 2048 but the session runs one row per forward, which is the
+// shape its exact reuse declaration is measured at (see serving_caps).
+const GEMMA4_PREFILL_CHUNK_ENV: &str = "DS4_GEMMA4_PREFILL_CHUNK";
+const GEMMA4_NATIVE_DEFAULT: u32 = 1;
+const GEMMA4_NATIVE_MAX: u32 = 8192;
+const GEMMA4_LAYERS: u32 = 30;
+const GEMMA4_WINDOW: u64 = 1024;
+const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
+const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
+const GEMMA4_FULL_KV_HEADS: u64 = 2;
+const GEMMA4_FULL_HEAD_DIM: u64 = 512;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
@@ -1270,9 +1282,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
-        // No engine yet: the generic ceiling bounds nothing real, and the
-        // family declares no qualified lane.
-        ModelFamily::Gemma4Vq => FAMILY_NATIVE_MAX,
+        ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1362,8 +1372,15 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             AXK2_NATIVE_MAX,
         ),
-        // No engine yet; the ceiling is the generic one.
-        ModelFamily::Gemma4Vq => FAMILY_NATIVE_MAX,
+        // The session prefills one row per forward (ds4_gemma4_bind.inc's
+        // gemma4_prefill_cap reads the same env), so the scheduler's verified
+        // widths do not apply until the batched sums are row-invariant.
+        ModelFamily::Gemma4Vq => env_u32(
+            GEMMA4_PREFILL_CHUNK_ENV,
+            GEMMA4_NATIVE_DEFAULT,
+            1,
+            GEMMA4_NATIVE_MAX,
+        ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
             if caps.variant == Variant::K2Horizon375B {
@@ -3150,6 +3167,25 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
             .saturating_mul(ctx)
             .saturating_mul(solar_kv_row_bytes(shape))
             .saturating_add(solar_checkpoint_slot_bytes(shape));
+    }
+    if shape.family == ModelFamily::Gemma4Vq {
+        // ds4_gemma4_plan.h:55 (gemma4_is_full) and :61 (ds4_gemma4_kv_bytes):
+        // 25 sliding layers hold window + chunk rows in a ring, the five full
+        // layers hold the whole context. The generic 30 x ctx charge prices
+        // layers the engine never allocates at that width.
+        let full_row = GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2;
+        let sliding_row = GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM * 2 * 2;
+        let sliding = ctx.min(GEMMA4_WINDOW + u64::from(native));
+        let mut rows = 0u64;
+        for il in 0..GEMMA4_LAYERS {
+            let is_full = matches!(il, 5 | 11 | 17 | 23 | 29);
+            rows = rows.saturating_add(if is_full {
+                ctx.saturating_mul(full_row)
+            } else {
+                sliding.saturating_mul(sliding_row)
+            });
+        }
+        return rows;
     }
     if shape.family == ModelFamily::Motif3 {
         // Native reserves an extra MTP window even when speculation is off.
@@ -7504,5 +7540,58 @@ exit 1
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ds4_gemma4_plan.h:61-67: 25 sliding layers at window + chunk rows, five
+    /// full layers at the whole context, f16 key and value. At ctx 2048 and
+    /// one row this is the 0.23 GiB the P6 graph line measured.
+    #[test]
+    fn gemma4_bank_kv_prices_the_hybrid_layout() {
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        assert_eq!(bank_kv_bytes(shape, 2048, 1), 251_863_040);
+        // Charging every layer at the full context is what refused the plan.
+        let generic = 30 * 2048 * 2 * 8 * 256 * 2;
+        assert!(bank_kv_bytes(shape, 2048, 1) < generic);
+    }
+
+    /// The session runs one row per forward, so the scheduler's verified
+    /// widths (2, 4, 8, ...) must not fence its native cap.
+    #[test]
+    fn gemma4_declares_the_serial_chunk() {
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(family_native_chunk(caps, 2048), 1);
+        let req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Auto,
+            mem_floor_gb: 2,
+            native_chunk: Some(1),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        facts.host_available_bytes = Some(11 * 1024 * MIB);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(crate::shape::SHAPE_GEMMA4_A4B_VQ),
+            QuoteHost {
+                weights_bytes: 7_200_000_000,
+                mtp_bytes: 0,
+                available_bytes: 11 * 1024 * MIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "chunk_unverified"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            plan.issues
+        );
     }
 }
