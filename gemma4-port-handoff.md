@@ -2,26 +2,26 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: b84e1bb0 (feat(gemma4): fused norm+rope, parallel
-  router top-k, own head and router dot), plus this handoff commit. 4t
-  records the Phase 3 round and the tree is clean. The nine commits on top
-  of d6ad9774 are f0c2b92a (serving-check prefix reference), 19f5b75b (the
-  Gemma VQ header split), 659a152b (optional FP8 full-layer KV and fused
-  expert gate/up), bf6b3989 (optional fast decode attention), c09cfbf9 (the
-  prefill-first plan), 9e23197f (the direct VQ prefill round, pushed to the
-  fork), 2faef6c3 (the attention and dense-down round), 14f27345 (the
-  token-tiled dense down) and b84e1bb0 (Phase 3). This handoff adds 4t and
-  closes Phase 3; the next phase is Phase 7. No GLM file is modified.
+last_updated_commit: 7e67cf1b (feat(gemma4): raise the MTP draft ceiling
+  to six), plus this handoff commit. 4u records the Phase 7 P8 work in
+  flight and the tree is clean. The twelve commits on top of d6ad9774 are
+  f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
+  split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
+  bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
+  plan), 9e23197f (the direct VQ prefill round, pushed to the fork),
+  2faef6c3 (the attention and dense-down round), 14f27345 (the token-tiled
+  dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
+  b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling).
+  No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 (content at 2faef6c3, the
-  round's build; 14f27345 is not synced yet) and
-  ~/models/gguf-family-it-r8.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 7e67cf1b (make cuda-spark,
+  469-482 s, 0 errors) and ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T23:20:00+01:00
+handoff_written_at: 2026-11-04T00:50:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1591,6 +1591,72 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   ownership unit, not part of Phase 3's list.
 - Phase 3 is closed. The next phase in the owner's order is Phase 7 (P8).
 
+4u. Phase 7 P8 in flight: the Spark gates and the six-draft ceiling (2026-11-04)
+
+- Round start b87664cb, after the Phase 3 handoff. The branch is pushed to
+  JLFN/ds4-dfm-rs; the Spark worktree was nine commits behind and is now
+  at 7e67cf1b. Its pre-existing content (the 2faef6c3 tree) is in
+  stash@{0}; the aarch64 test fixtures remain locally modified.
+- Spark build: make cuda-spark, 469 s at b87664cb and 482 s at 7e67cf1b,
+  0 errors. The 4070 cannot hold the trunk plus the 0.58 GiB MTP sidecar
+  copied at ctx 1536: the lazy graph alloc fails and then
+  ds4_session_create fails even with DS4_SESSION_LAZY_GRAPH=0. The Spark
+  (128 GB unified) runs it.
+- Wrapped-ring gate, exact path: prompt /tmp/g4-long.txt (1081 tokens),
+  chunk 4, ring 1029 at four drafts, ctx 1536, n=12, temp 0,
+  DS4_GEMMA4_EXACT_PREFILL=1. Off 126.36 s, on 128.85 s, both 64 bytes,
+  byte-identical. The gate is closed in the exact path.
+- Default batched path, same prompt at chunk 16 (ring 1040): off and on
+  both 66 bytes and identical, but the output differs from the exact path
+  ("paragraph." against "block of"). The 2x2 matrix: exact chunk 4 and 16
+  and default chunk 4 all say "block of"; only default chunk 16 says
+  "paragraph.". Frontier logits: default 4 against 16 relL2 5.86e-2, max
+  7.375, token flip; exact 4 against 16 relL2 4.43e-3, max 0.5, no flip.
+  This is the known grouped-prefill accumulation trade recorded in 4b and
+  Phase 0, confirmed at 1081 tokens; the chunk checks stay on
+  DS4_GEMMA4_EXACT_PREFILL=1, and the P8 on/off pairs are lossless in both
+  paths.
+- Serving check, Spark, ctx 2048, --mtp --mtp-draft 4: pass (works 10,
+  FAIL 0, WRONG 0, undeclared 0). The mtp row still reads "no check yet"
+  (declared Sidecar qualified Serial): the checklist binds and declares
+  the sidecar but does not run a speculative trial. That remains open.
+- Draft matrix, Spark ctx 1024, 1081-token prompt, copy-resident, 32
+  generated tokens: no MTP 6.75 tok/s (first token 0.153 s), draft 2
+  12.87 (0.234), draft 4 15.99 (0.305), draft 6 18.42 (0.372). The spec
+  log shows full acceptance (keep 3/3, 5/5, 7/7) in most rounds, partial
+  at the end. Six drafts is the measured winner.
+- Draft ceiling 6 (7e67cf1b): G4_MTP_DRAFTS is decoupled from
+  G4_MTP_LAYERS (still 4) and raised to the checkpoint's
+  num_assistant_tokens. The Rust validator, the serving quote and its test
+  follow (253,091,840 bytes at ctx 2048, was 252,682,240). The exact gate
+  at six drafts is byte-identical; the ring resize 1029 -> 1031 leaves the
+  no-draft output unchanged (SAME_AS_DRAFT4_OFF).
+- Phase 8 review: Agy_phase8_review.md (40,626 bytes, Gemini 4 Argon,
+  session 14). The GLM acd8aa49 kernel is an absorbed-latent MLA kernel,
+  not a GQA kernel; agy keeps four changes over the subagent's plan: both
+  D=256/GROUP=2 and D=512/GROUP=8 from the first slice (full layers are
+  61.5 percent of 8K attention FLOPs), pack the GQA group into the M=16
+  tile, no score exchange on D=256 and a two-way split on D=512, and fuse
+  the f32/bf16 conversion with one reused KV buffer. Q and K are already
+  bf16-rounded, so the operand conversion is 0 ULP; chunk invariance comes
+  from starting the key loop at (begin_all/32)*32; the gate is max_abs
+  <= 2.5e-3, relL2 <= 1.5e-3, 0.0 chunk diff, the ctx-256 tokens, the
+  four probes, the 8K KL <= 2e-2 and a sha256 repeat. Land after P8/P9 with
+  G4_ATTN_MMA_MIN_ROWS = 16; the standalone header and test are the
+  zero-risk slice.
+- MiniMax/Beam correction: in this tree neither drafter is R13+8.
+  MiniMax's drafter is Q8_0 + BF16, Beam's DFlash2 is Q8_0 + F32/BF16, and
+  MiniMax's R13+8 is the trunk-expert recipe on 20 of 57 layers; Beam's
+  trunk is R13 only. A VQ Gemma drafter would copy MiniMax's trunk format,
+  not its MTP; no sibling has Gemma's separate 262144x1024 head (86
+  percent of the 622 MB sidecar).
+- P8 remaining: a real MTP trial gate (prefix reuse, snapshot, a stop
+  inside an accepted verify block, temp>0 spec_sample_rows), the
+  Gemma-owned verify path (the verify still calls the shared Q4_K/GVQ
+  linear; the multi-row head and device argmax are unmeasured), and the
+  speed number at the serving default. The Phase 3 and P8 options stay
+  default-off.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1942,9 +2008,15 @@ Phase 3 — CLOSED (4t): the vocabulary head, RoPE and the router
 
 Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
 
-  P8 wrapped-ring re-run, then --serving-check --mtp and the
-  G4_MTP_DRAFTS decision (4 against 6; the llama.cpp note suggests 2 may be
-  the better acceptance point on a 12 GiB card, so test 2 as well).
+  P8 IN FLIGHT (4u). Closed: the exact wrapped-ring gate on the Spark
+  (1081 tokens, ring 1029, off/on identical), the default chunk-16 pair
+  (self-consistent; the chunk dependence is the known grouped-prefill
+  trade), the serving checklist (pass, works 10), and the draft matrix
+  (no MTP 6.75, draft 2 12.87, draft 4 15.99, draft 6 18.42 tok/s at ctx
+  1024; six drafts is the ceiling now, 7e67cf1b). Open: a real MTP trial
+  gate (the checklist's mtp row is still "no check yet"), the Gemma-owned
+  verify path (the verify still uses the shared Q4_K/GVQ linear), and the
+  serving-default speed number.
   P9: tests/gemma4_serving_http_gate.sh.
   P10: the HF release directory, the OSV scan, the pushes (owner's word).
   P11: the served-arm comparison and two-stage support in vq-gguf and the
