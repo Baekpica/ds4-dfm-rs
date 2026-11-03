@@ -41,22 +41,39 @@ no extra memory).
 - P5 device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the 30-layer graph
   (ds4_gemma4_graph.inc); both units compile, no session reaches them yet.
 
-## P6: the serial session (numerics run; the reference gate is open)
+## P6: the serial session (closed; the reference gate passed)
 
-State at 2026-11-03, commit 19f25d46: the engine binds the plan, the session
-allocates the graph (KV 0.23 GiB at ctx 2048 with one-row forwards), runs all
-30 layers and returns 262,144 of 262,144 finite logits; two identical runs are
+State at 2026-11-03: the engine binds the plan, the session allocates the
+graph (KV 0.23 GiB at ctx 2048 with one-row forwards), runs all 30 layers and
+returns 262,144 of 262,144 finite logits; two identical runs are
 byte-identical. The nan of the previous state was three primitives reading the
-artifact's BF16 weights as float32 (7dd5b2d8). The prefill spread is closed:
-three paths ordered their sums by the row count (Q4_K projections, the Q8_0
-dense down, the expert route group and the router); each now repeats the
-one-row call per row, and a 41-token prompt's logits are byte-identical at
-chunks 1, 2, 8, 9 and 22. The serving checklist's prefix, rewind and continue
-items are exact, "result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)".
-Section 4b of gemma4-port-handoff.md holds the measurements and the bisect.
-Open: (b) the logits gate against the reference checkpoint. Gate items 1
-(graph line), 2 (determinism), 3 (numerics, spread removed) and 4 (serving
-check) PASS; item 5 is open.
+artifact's BF16 weights as float32 (7dd5b2d8). The prefill spread is closed
+(19f25d46): three paths ordered their sums by the row count (Q4_K projections,
+the Q8_0 dense down, the expert route group and the router); each now repeats
+the one-row call per row. The 41-token prompt's logits are byte-identical at
+chunks 1, 2, 8, 9 and 22, and the 1243-token prompt is byte-identical between
+chunk 1 (ring 1025, 218 wraps) and chunk 256 (ring 1280, no wrap), sha256
+6f2f12688c8bd0127003fceadd1d216f7c5cf847ea1b0e1204b3932e83a4b0eb, so the
+sliding ring and the grouped prefill are both exact past the window.
+
+The reference gate ran on the GB10 against the 48.07 GiB checkpoint with the
+pinned transformers (cc1451df, modeling_gemma4.py sha256 257dc8a7). Four
+probes, all with the reference argmax: 28 tokens (cosine 0.9879, KL ref||port
+0.0024), 1024 tokens (0.9801, 0.00038), 1025 tokens (0.9800, 0.00038) and
+1243 tokens (0.9873, 0.0037); top-10 overlap 6/10, 8/10, 8/10 and 8/10. The
+gate found the port rotating the wrong number of pairs, 64 on sliding layers
+and 128 on full ones where the reference rotates 128 and 64
+(modeling_rope_utils.py:193-265; the reference's own buffers measure 128 and
+64 nonzero). That was a position-proportional phase error: invisible at 28
+tokens, it put the port's 1243-token argmax on 818 instead of 1509. Fixed,
+with a ring golden in the primitive test and a check that pins
+`gemma4_rot(0)`/`gemma4_rot(5)` to the reference pair counts. Section 4e of
+gemma4-port-handoff.md holds the numbers.
+
+The serving checklist's prefix, rewind and continue items are exact, "result:
+pass (works 3, FAIL 0, WRONG 0, undeclared 0)". Section 4b of
+gemma4-port-handoff.md holds the earlier measurements and the bisect. All five
+gate items PASS.
 
 Goal: one prompt in, one token out, deterministically, through the C engine.
 
@@ -77,14 +94,15 @@ Gate, in this order:
 - a first-token run on a fixed prompt twice gives identical ids (determinism)
   — PASS (--dump-logits byte-identical);
 - numeric bring-up: every stage finite, and the prefill row-grouping spread
-  measured and either removed or recorded — finite PASS, spread OPEN (4b);
-- `ds4 --serving-check` on the artifact reports the declared items — runs; the
-  reuse items pass with single-row forwards and continue fails at a grouped
-  prefill width; the bank and disk items are P7;
-- the logits gate against the reference (section 6 risk 1: 48.07 GiB
-  checkpoint, 8.19 GiB active path, paged run untested here; GB10 is the safe
-  host). If the reference cannot run, record the gate as OPEN and do not claim
-  quality.
+  measured and either removed or recorded — finite PASS, spread removed
+  (4b, 19f25d46), and the 1243-token prompt is chunk-invariant;
+- `ds4 --serving-check` on the artifact reports the declared items — PASS for
+  the reuse items with single-row forwards; the bank and disk items are P7;
+- the logits gate against the reference — PASS on the GB10 against the
+  48.07 GiB checkpoint (four probes, reference argmax on all four, cosine
+  0.980-0.988, KL ref||port 0.0004-0.0037), after fixing the rotary pair
+  counts it found. No quality claim beyond those numbers: the artifact is a
+  lossy VQ encoding, so the distributions are close, not equal.
 
 ## P7: banks, payloads, snapshots, disk KV
 

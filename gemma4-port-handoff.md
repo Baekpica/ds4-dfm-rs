@@ -2,11 +2,11 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 19f25d46 (the code state; handoff commits 55b34a71 and
-  this one follow it)
+last_updated_commit: 7cd25a50 (the code state; 1d86327d and 7cd25a50 carry
+  the reference gate's two fixes, and the handoff commit follows them)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T09:20:00+01:00
+handoff_written_at: 2026-11-03T10:20:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -40,25 +40,25 @@ set 1/106/50 from generation_config.json is asserted. P6a is closed
 (19f25d46): a row-grouped prefill now equals the one-row path bit for bit
 (41-token logits byte-identical at chunks 1, 2, 8, 9 and 22), and
 --serving-check reports prefix, rewind and continue exact with
-"result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)". The branch is
-pushed to origin/feat/gemma4-family; the code state is 19f25d46 and this
-file's own commit follows it.
+"result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)". P6b is closed
+(7cd25a50): the reference gate ran on the GB10 against the 48.07 GiB
+checkpoint, returned the reference argmax on all four probes, and found and
+closed the port's rotary pair counts (section 4e). The branch is pushed to
+origin/feat/gemma4-family through 4ba1523c; 1d86327d and 7cd25a50 are local
+and await the owner's word for the push.
 
 What is still open, in order:
 
-  1. P6b  the reference logits gate on the GB10 against the 48.07 GiB
-          checkpoint. Unrun here; the paged run on this host is untested.
-          Nothing above claims quality beyond these two answers and the API
-          run.
-  2. P7   payload save/restore first, then snapshots (free through it), disk
+  1. P7   payload save/restore first, then snapshots (free through it), disk
           KV, and last the banked multi-sequence lane; remove the
           ds4_engine_supports_batching refusal (2dca7709) when that lane
-          lands. Reconnaissance and the exact layout are section 4d.
-  3. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
-  4. P9   the serving remainder: the four-part OpenAI gate, the live
+          lands. Reconnaissance and the exact layout are section 4d. The
+          ring-resume guard noted in 4e belongs to this unit.
+  2. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
+  3. P9   the serving remainder: the four-part OpenAI gate, the live
           tool-tail continuation (it refuses this family and fails rather than
           mis-render), and the serving-host limits in docs.
-  5. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
+  4. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
           OSV scan, pushes (owner's word required).
 
 Operational facts this host needs:
@@ -112,6 +112,12 @@ Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
   19f25d46  P6a: make a grouped prefill repeat the one-row calls
             (Q4_K projections, Q8_0 dense down, router and expert routes;
             logits byte-identical at chunks 1..22; serving check passes)
+  55b34a71  docs(handoff): close P6a, record the P7 reconnaissance
+  4ba1523c  docs(handoff): record the P7 payload plan
+  1d86327d  fix(gemma4-vq): correct the rotary pair counts (128 sliding,
+            64 full; found by the reference gate; the test pins them now)
+  7cd25a50  fix(gemma4-vq): price the KV ring the graph uses (ring golden in
+            the primitive test; kv rows clamped to ctx; plan helper agrees)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -151,11 +157,11 @@ below is the same sequence; the plan file carries the detail.
      OpenAI gate.
   4. The drafter (W5) and the docs (W7).
 
-  Status at 19f25d46: item 1 landed for the serial session (engine load,
-  graph, context memory, prefill cap); item 2's checks ran (determinism,
-  finiteness and the prefill spread all pass; only the reference logits gate
-  P6b is unrun); item 3's family arm, chat rendering and stops landed and the
-  serving checklist passes its reuse items; item 4 is untouched.
+  Status at 7cd25a50: item 1 landed for the serial session (engine load,
+  graph, context memory, prefill cap); item 2's checks all pass, including
+  the reference logits gate (4e); item 3's family arm, chat rendering and
+  stops landed and the serving checklist passes its reuse items; item 4 is
+  untouched.
 
 Known gaps in the graph to close with the session work: decode currently
 recomputes the full row per token (no fused decode kernels), the KV ring
@@ -487,10 +493,10 @@ The closed item: prefill row-grouping used to move the logits (P6a)
 
 Next step, in order:
 
-  a. P6b: the reference logits gate against the 48.07 GiB checkpoint on the
-     GB10 (section 6, risk 1). Unrun on this host; the paged run here is
-     untested. Nothing above claims quality beyond the answers and the API
-     run already recorded.
+  a. P6b closed at 7cd25a50: the reference gate ran on the GB10 against the
+     48.07 GiB checkpoint (section 4e). The four fixes it or its sibling
+     audit produced are in 1d86327d and 7cd25a50; the ring-resume guard it
+     named belongs to P7.
   b. Then P7 (banks, payloads, snapshots, disk KV), P8 (the drafter), the P9
      remainder and P10, in the order of the open list at the top.
 
@@ -564,7 +570,7 @@ the chunk fence, and the generic KV charge. Two remain visible:
     Not a family defect, a host limit to state in the serving docs.
 
 Open at that commit were the row-invariance work and the reference logits
-gate; the first closed in 4b (19f25d46), the second is P6b.
+gate; the first closed in 4b (19f25d46), the second in 4e (7cd25a50).
 
 4d. P7 reconnaissance: what the payload slice needs (2026-11-03)
 
@@ -613,6 +619,57 @@ then gate with --serving-check (the snapshot item should turn from "not
 implemented yet" to a restore that reproduces the next token) and a manual
 save/load run whose logits equal the live run's.
 
+4e. The reference gate: what ran, what it found (P6b closed, 2026-11-03)
+
+Host and stack. The GB10 (gx10-e1d2, 192.168.1.91, 121 GB unified, driver
+580.178.04) runs the reference; the 48.07 GiB checkpoint is at
+/mnt/models/gemma-4-26B-A4B-it (51,644,289,748 B after the rsync, including
+the instruct tokenizer and chat template overlay). Python venv
+/home/leandro/gemma4-ref-venv: torch 2.14.1+cu130 (aarch64, sm_121) and
+transformers 5.23.0.dev0 built from the pinned commit
+cc1451df3b5b218295bc16803569256c53c9d6e2. Key access from this host is
+~/.ssh/id_ed25519_gb10; the gate scripts are tools/gemma4-ref/, also copied to
+/mnt/models/gemma4-ref (ref_logits.py, compare_logits.py,
+ref_rope_variant.py).
+
+Input. Both stacks are fed the same ids: the artifact's chat template with
+the CLI's default system prompt ("You are a helpful assistant"), thinking
+off, which is 28 ids for "The capital of France is" and 1243 for the repeated
+harbour paragraph; the port reports prompt_tokens 28 and 1243, equal to the
+reference render, so no tokenizer or template difference is in play. All
+numbers are post-softcap, full vocabulary, last position.
+
+  probe               ids   ref argmax   port argmax   cosine   KL ref||port   top10
+  A short              28   818          818           0.9879   0.0024         6/10
+  B long             1243   1509         1509          0.9873   0.0037         8/10
+  C window edge      1024   1509         1509          0.9801   0.00038        8/10
+  D first eviction   1025   1509         1509          0.9800   0.00038        8/10
+
+The defect the gate found. Before 1d86327d the graph rotated 64 pairs on
+sliding layers and 128 on full ones; the reference rotates 128 of 128 and 64
+of 256 (modeling_rope_utils.py:193-265) and its own buffers measure 128 and
+64 nonzero. The bisect that separated that from the artifact's error is
+tools/gemma4-ref/ref_rope_variant.py: the reference patched to the port's
+counts still picked 1509 at 1243 tokens, so the artifact did not explain the
+flip; the fixed port returns 1509 at 25.875 against the reference's 25.125.
+Pre-fix numbers, for the record: A cosine 0.9846 and KL 0.0010 (the short
+prompt hid the phase error); B argmax 818 at 15.8125 with the reference token
+at port rank 1, cosine 0.9692, KL ref||port 4.45.
+
+What the gate does not prove. The distributions are close, not equal: the
+artifact is a lossy 8x8192x1 VQ encoding, so the residual (cosine 0.98,
+top-10 overlap 6-8 of 10, max |delta| 8-11 at the top) is the encoding's
+error, not a port defect. No greedy text, perplexity or benchmark was
+compared, and nothing here is a quality claim.
+
+Two findings recorded for P7. The port has no ring-resume guard:
+gemma4_sync_keep returns session_keep_prefix without the ring_holds check that
+Beam, IQuest, Naive and MiMo2 use (ds4.c:77320), so a divergent continuation
+more than two positions behind the newest row can read overwritten slots; a
+fresh single prefill cannot trigger it. And the attention golden had no
+wrapped-ring case until 7cd25a50, so the slot mapping every sliding layer
+uses had no unit gate either.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -648,21 +705,28 @@ minimax_h3::render::tests::mux_pipe_lifetimes asserts fd 3 is closed; with
 `3>&-` its child passes. Not related to this family.
 Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 (compute 8.9). NVCC 13.3 at /usr/local/cuda/bin (not on PATH).
+Reference host: GB10 at leandro@192.168.1.91 (gx10-e1d2, aarch64, 121 GB
+unified, driver 580.178.04, 10 GbE), checkpoint at
+/mnt/models/gemma-4-26B-A4B-it, venv /home/leandro/gemma4-ref-venv (torch
+2.14.1+cu130, transformers at cc1451df). Load of the 48.07 GiB bf16 model
+takes about 9 minutes; one reference process per gate run, and never two at
+once on the 121 GB of unified memory.
 
 6. Risks that must stay visible
 
-- Quality is unmeasured. The reference checkpoint is 48.07 GiB on disk
-  (51.6 GB), not the 7.29 GiB artifact: 42.54 GiB of it is experts, 5.53 GiB
-  everything else (attention 2.33, dense FFN 1.75, embedding 1.38, norms and
-  routers 0.07; measured from the two safetensors headers, 1013 tensors).
-  The experts are stored as 128 separate tensors per layer and projection,
-  so the active path of one token is only top-8 of 128: about 8.19 GiB.
-  A paged reference forward therefore looks feasible inside this host's
-  31 GB, but it is UNTESTED; the GB10 (128 GB) is the safe host. Until the
-  gate runs, "it serves" is a plumbing claim, not a model claim. The
-  artifact's own experts measure 39.05-39.73 percent relL2, and the
+- Quality is measured only at the gate's resolution. The reference checkpoint
+  is 48.07 GiB on disk (51.6 GB), not the 7.29 GiB artifact: 42.54 GiB of it
+  is experts, 5.53 GiB everything else (attention 2.33, dense FFN 1.75,
+  embedding 1.38, norms and routers 0.07; measured from the two safetensors
+  headers, 1013 tensors). The gate ran on the GB10 (section 4e): four probes,
+  the reference argmax on all four, cosine 0.980-0.988, KL ref||port
+  0.0004-0.0037. That bounds the artifact against the checkpoint at four
+  sequence lengths and nothing more: no greedy-text comparison, no
+  perplexity, no benchmark, and no claim about the answers the model gives.
+  The artifact's own experts measure 39.05-39.73 percent relL2, and the
   published families pair that geometry with an 8-bit residual this artifact
-  does not have.
+  does not have, so the residual in those cosine and KL numbers is the
+  encoding's error, not the port's.
 - Context: the model's own maximum is 262144. f16 KV at that length does not
   fit the 12 GiB card beside the trunk; the qualified context must be
   measured by --serving-check, never advertised from metadata.
@@ -687,8 +751,8 @@ Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
-    git status --short          # expect empty at 57b25db0
-    git ls-remote origin feat/gemma4-family   # expect c6e7f72e or later; code state 57b25db0
+    git status --short          # expect empty at the handoff commit
+    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state 7cd25a50 until pushed
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
     sed -n '1,60p' gemma4-port-handoff.md
