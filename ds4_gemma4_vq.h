@@ -70,6 +70,15 @@ int ds4_gpu_g4_attn_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
     uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
     uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes);
 
+/* Decode-only grouped-KV attention: one CTA per KV head, its query heads
+ * sharing one shared-memory K/V tile (cuda/gemma4_attn_fast.cuh). The same
+ * arithmetic as ds4_gpu_g4_attn, so the oracle stays the reference. */
+int ds4_gpu_g4_attn_fast(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+    const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+    const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+    uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
+    uint32_t ring, uint32_t keys);
+
 /* Primitives as tensor calls (cuda/gemma4_primitives.cuh owns the kernels). */
 int ds4_gpu_g4_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
     uint32_t weight, uint32_t rows, uint32_t width, float eps);

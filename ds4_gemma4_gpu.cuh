@@ -14,6 +14,7 @@
 #include "cuda/gemma4_primitives.cuh"
 #include "cuda/gemma4_attn.cuh"
 #include "cuda/gemma4_attn_fp8.cuh"
+#include "cuda/gemma4_attn_fast.cuh"
 #include "cuda/gemma_vq_decode.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 
@@ -314,6 +315,30 @@ extern "C" int ds4_gpu_g4_attn_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         (float *)out->ptr, (const float *)query->ptr, (const uint8_t *)kv->ptr,
         rows, first, heads, kv_heads, dim, window, ring, keys, row_bytes);
     return cuda_ok(cudaGetLastError(), "Gemma-4 FP8 attention");
+}
+
+extern "C" int ds4_gpu_g4_attn_fast(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
+        uint32_t ring, uint32_t keys) {
+    if (!out || !query || !key || !value || !positions || rows != 1u || keys ||
+        !heads || !kv_heads || !dim || dim > 512u || (heads % kv_heads)) { return 0; }
+    const uint32_t group = heads / kv_heads;
+    if (group == 0u || group > 16u || group * 32u > 512u) { return 0; }
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (out->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        value->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        positions->bytes < sizeof(uint32_t)) { return 0; }
+    const uint32_t shared = 2u * 16u * dim * sizeof(__nv_bfloat16);
+    g4_attn_fast_kernel<16><<<kv_heads, group * 32u, shared, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)query->ptr,
+        (const __nv_bfloat16 *)key->ptr, (const __nv_bfloat16 *)value->ptr,
+        first, heads, kv_heads, dim, window, ring, keys, kv_stride);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 fast attention");
 }
 
 /* ------------------------------------------------------- routed experts */

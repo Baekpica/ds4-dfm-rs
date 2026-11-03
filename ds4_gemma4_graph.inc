@@ -529,6 +529,16 @@ static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *o
     return true;
 }
 
+/* Decode-only grouped-KV attention, off by default. */
+static bool g4_attn_fast(void) {
+    static int fast = -1;
+    if (fast < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_FAST");
+        fast = v && v[0] == '1' && !v[1];
+    }
+    return fast != 0;
+}
+
 /* One layer, reference order (semantics 3.6). Returns false on the first
  * failed launch, naming the step: the wrappers report the CUDA error, this
  * names which stage of the block produced it. */
@@ -641,8 +651,14 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
             ring, capacity), "key cache store");
         G4_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows, kv_width,
             ring, capacity), "value cache store");
-        G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
-            first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
+        if (rows == 1u && g4_attn_fast()) {
+            G4_STEP(ds4_gpu_g4_attn_fast(g->attn, g->q, g->kcache[il], g->vcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
+                ring, 0u), "attention");
+        } else {
+            G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions,
+                rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
+        }
     }
     gemma4_probe_at(g->attn, il, "attn out");
     if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
