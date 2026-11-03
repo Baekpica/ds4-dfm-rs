@@ -2,16 +2,16 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 3a33fefa (docs(handoff): the round pushed to the fork,
-  the token tile, the next unit), plus this handoff commit. No code changed
-  in this session: 4s records the decode measurement and the tree is clean.
-  The eight commits on top of d6ad9774 are f0c2b92a (serving-check prefix
-  reference), 19f5b75b (the Gemma VQ header split), 659a152b (optional FP8
-  full-layer KV and fused expert gate/up), bf6b3989 (optional fast decode
-  attention), c09cfbf9 (the prefill-first plan), 9e23197f (the direct VQ
-  prefill round, pushed to the fork), 2faef6c3 (the attention and dense-
-  down round) and 14f27345 (the token-tiled dense down). This handoff adds
-  4s and reorders Phase 7 ahead of Phase 4. No GLM file is modified.
+last_updated_commit: b84e1bb0 (feat(gemma4): fused norm+rope, parallel
+  router top-k, own head and router dot), plus this handoff commit. 4t
+  records the Phase 3 round and the tree is clean. The nine commits on top
+  of d6ad9774 are f0c2b92a (serving-check prefix reference), 19f5b75b (the
+  Gemma VQ header split), 659a152b (optional FP8 full-layer KV and fused
+  expert gate/up), bf6b3989 (optional fast decode attention), c09cfbf9 (the
+  prefill-first plan), 9e23197f (the direct VQ prefill round, pushed to the
+  fork), 2faef6c3 (the attention and dense-down round), 14f27345 (the
+  token-tiled dense down) and b84e1bb0 (Phase 3). This handoff adds 4t and
+  closes Phase 3; the next phase is Phase 7. No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
@@ -21,7 +21,7 @@ last_updated_commit: 3a33fefa (docs(handoff): the round pushed to the fork,
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T22:28:28+01:00
+handoff_written_at: 2026-11-03T23:20:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -87,6 +87,11 @@ What is still open, in order:
           sibling 15-25 tok/s. The measured profile of the remaining time
           is attention 53.1 percent, direct GEMV 10.8, RoPE 6.5, restore
           6.4, router 3.4, gelu 1.4; section 9 phases 1-3 own that work.
+          Phase 3 closed in b84e1bb0 (4t): the same artifact now measures
+          32.76 tok/s decode median and 605.0 prefill, the rope, the router
+          and the head are the family's own kernels, and the remaining
+          measured costs are the VQ expert GEMVs (9.3 ms/step), the decode
+          attention (5.9) and the Q4_K projections (3.3).
   0b. SSD  streaming is built and opt-in in 8fae06b0 (4m). The owner's rule
           is that it stays an option, never a family default. Gemma-only
           module and engine arms, no GLM edit; split shards supported; the
@@ -1553,6 +1558,39 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   and leave the decode as the floor, so the decode's own ceiling with the
   L1 fix has to be measured first.
 
+4t. Phase 3 closed: the vocabulary head, RoPE and the router (2026-11-03, late)
+
+- Round start f64d3d66. The nsys decode window (eight steps, 320.8 ms,
+  40.1 ms/step) put the cost here: rope 5.50 ms/step, the router top-8
+  2.88, the head 3.23 (1.47 GB in 3.10-3.16 ms is 466-474 GB/s, already
+  92-94 percent of the card's 504 GB/s), gate/up 6.24, decode attention
+  5.87, down 3.05, Q4_K projections 3.29, all norms 1.30.
+- Four Gemma-only units, all default-off and all byte-identical on the
+  frontier logits (relL2 0.0, same eight tokens [6113, 1698, 236761,
+  28333, 506, 877, 6910, 3136]):
+  A DS4_GEMMA4_FUSE_ROPE, the fused norm+rope in
+    cuda/gemma4_primitives.cuh (one block per (row, head), the trig spread
+    over the pairs, the two kernels' arithmetic unchanged): 26.22 -> 32.10
+    decode, 557.56 -> 613.63 prefill.
+  B DS4_GEMMA4_ROUTER_PAR, the parallel top-k in g4_router_kernel (k block
+    max passes, the same tie rule and pick-order sum): 27.16 -> 33.60
+    decode.
+  C DS4_GEMMA4_HEAD_GEMV, cuda/gemma4_head.cuh (persistent BF16 GEMV, the
+    input row staged in shared, __ldcs, the softcap fused, the shared
+    kernel's per-lane FMA order and XOR reduction): 34.11 -> 34.82 decode.
+  D DS4_GEMMA4_ROUTER_DOT, cuda/gemma4_router.cuh (the shared BF16 dot's
+    split==8 mapping and partial-sum order): 33.10 -> 35.30 decode.
+- Interleaved timing, same binary, four fresh processes: off 578.36 / 24.40
+  and 575.49 / 24.81, on 579.94 / 31.17 and 630.10 / 34.35. Median decode
+  24.61 -> 32.76 tok/s (+33.1 percent), prefill 576.9 -> 605.0 (+4.9),
+  TTFT 39.5 -> 31.6 ms.
+- The round's record is docs/gemma4-phase3-2026-11-03.md; the design review
+  that shaped it is agy_review_phase3.md (Gemini 4 Argon, session 14).
+- Still sibling code: the Q4_K projections (glmvq_q4_stream and q4_small,
+  3.29 ms/step) and the dense Q8_0 down (0.48 ms/step). They are the next
+  ownership unit, not part of Phase 3's list.
+- Phase 3 is closed. The next phase in the owner's order is Phase 7 (P8).
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1890,15 +1928,17 @@ Phase 2 — fused MoE: the decode gate/up option is in (659a152b, neutral);
   re-run of this round; (4) the exact-prefill gate with the new kernels.
   Do not change the container format.
 
-Phase 3 — the vocabulary head, RoPE and the router
+Phase 3 — CLOSED (4t): the vocabulary head, RoPE and the router
 
-  glmvq_restore is 6.4 percent in 5,973 launches: the 262144x2816 tied head
-  is still restored in chunks. RoPE is a separate launch at 6.5 percent and
-  the router 3.4 percent per layer. A direct GEMV for the head, RoPE folded
-  into the q/k projection epilogue, and the router folded into the gather.
-  Files: ds4_gemma4_graph.inc, cuda/gemma_vq_decode.cuh (head GEMV),
-  cuda/gemma4_primitives.cuh (rope), ds4_gemma4_gpu.cuh (router).
-  Gate: byte-identical eight tokens, then bench.
+  Four Gemma-only units, all default-off and byte-identical on the frontier
+  logits: the fused norm+rope (DS4_GEMMA4_FUSE_ROPE), the parallel router
+  top-k (DS4_GEMMA4_ROUTER_PAR), the family's BF16 head with the fused
+  softcap (DS4_GEMMA4_HEAD_GEMV) and the family's router dot
+  (DS4_GEMMA4_ROUTER_DOT). Interleaved median: decode 24.61 -> 32.76 tok/s
+  (+33.1 percent), prefill 576.9 -> 605.0 (+4.9), TTFT 39.5 -> 31.6 ms.
+  Record: docs/gemma4-phase3-2026-11-03.md. The Q4_K projections and the
+  dense Q8_0 down are still sibling kernels; that is the next ownership
+  unit, separate from this phase.
 
 Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
 
