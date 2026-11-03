@@ -38,6 +38,10 @@ typedef struct ds4_gemma4_graph {
     ds4_gpu_tensor *positions;                             /* [rows] u32 */
     ds4_gpu_tensor *inv_sliding, *inv_full;                /* rope tables */
     ds4_gpu_tensor *kcache[G4_LAYERS], *vcache[G4_LAYERS];
+    /* The five full layers' combined E4M3 rows (K | V | scales) when
+     * DS4_GEMMA4_FULL_KV=fp8; kcache/vcache stay NULL for those layers. */
+    ds4_gpu_tensor *fkcache[G4_LAYERS];
+    bool full_fp8;
     float scalar[G4_LAYERS];
     uint64_t kv_bytes;
     /* The drafter's device state, owned by graph 0 when `--mtp` armed it. */
@@ -59,10 +63,14 @@ typedef struct ds4_gemma4_graph {
  * see G4_SHARED_SLIDING/G4_SHARED_FULL. The rows are already stored by the
  * ordinary forward, post k/v norm and post rope, so publishing is a read. */
 static const ds4_gpu_tensor *gemma4_shared_k(const ds4_gemma4_graph *g, bool full) {
+    /* The full layer is a combined FP8 row; the drafter reads bf16, so the
+     * FP8 option refuses --mtp instead of publishing a row it cannot read. */
+    if (full && g->full_fp8) { return NULL; }
     return g->kcache[gemma4_shared_layer(full)];
 }
 
 static const ds4_gpu_tensor *gemma4_shared_v(const ds4_gemma4_graph *g, bool full) {
+    if (full && g->full_fp8) { return NULL; }
     return g->vcache[gemma4_shared_layer(full)];
 }
 
@@ -156,6 +164,7 @@ static void gemma4_graph_clear(ds4_gemma4_graph *g) {
     for (uint32_t il = 0; il < G4_LAYERS; il++) {
         ds4_gpu_tensor_free(g->kcache[il]);
         ds4_gpu_tensor_free(g->vcache[il]);
+        ds4_gpu_tensor_free(g->fkcache[il]);
     }
     if (g->borrowed) {
         memset(g, 0, sizeof(*g));
@@ -208,11 +217,24 @@ static bool gemma4_graph_bank(ds4_gemma4_graph *g, const ds4_gemma4_graph *owner
     /* The drafter belongs to graph 0: the serial lane drafts, the banked lane
      * does not, and a bank must not free the owner's runtime. */
     g->mtp = NULL;
-    for (uint32_t il = 0; il < G4_LAYERS; il++) { g->kcache[il] = g->vcache[il] = NULL; }
+    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+        g->kcache[il] = g->vcache[il] = NULL;
+        g->fkcache[il] = NULL;
+    }
     for (uint32_t il = 0; il < G4_LAYERS; il++) {
         const uint32_t rows = ds4_gemma4_kv_rows(il, g->ctx, g->cap);
-        const uint64_t bytes = (uint64_t)rows * gemma4_kv_heads(il) *
-            gemma4_head_dim(il) * sizeof(uint16_t);
+        if (g->full_fp8 && gemma4_is_full(il)) {
+            const uint64_t bytes = (uint64_t)rows * ds4_gemma4_full_kv_row();
+            g->fkcache[il] = ds4_gpu_tensor_alloc(bytes);
+            if (!g->fkcache[il]) {
+                fprintf(stderr, "ds4: Gemma-4 bank FP8 KV allocation failed at layer %u\n", il);
+                gemma4_graph_clear(g);
+                return false;
+            }
+            g->kv_bytes += bytes;
+            continue;
+        }
+        const uint64_t bytes = (uint64_t)rows * ds4_gemma4_kv_row(il);
         g->kcache[il] = ds4_gpu_tensor_alloc(bytes);
         g->vcache[il] = ds4_gpu_tensor_alloc(bytes);
         if (!g->kcache[il] || !g->vcache[il]) {
@@ -235,6 +257,7 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     ds4_gemma4_graph *g = xcalloc(1, sizeof(*g));
     g->ctx = ctx;
     g->cap = cap;
+    g->full_fp8 = gemma4_full_kv_fp8();
     /* The activation rows cover one draft round's verify block as well as a
      * prefill chunk (gemma4_token_rows); the KV ring margin stays `cap`. */
     g->rows = gemma4_token_rows(cap);
@@ -294,8 +317,18 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     }
     for (uint32_t il = 0; il < G4_LAYERS; il++) {
         const uint32_t rows = ds4_gemma4_kv_rows(il, ctx, cap);
-        const uint64_t bytes = (uint64_t)rows * gemma4_kv_heads(il) *
-            gemma4_head_dim(il) * sizeof(uint16_t);
+        if (g->full_fp8 && gemma4_is_full(il)) {
+            const uint64_t bytes = (uint64_t)rows * ds4_gemma4_full_kv_row();
+            g->fkcache[il] = ds4_gpu_tensor_alloc(bytes);
+            if (!g->fkcache[il]) {
+                fprintf(stderr, "ds4: Gemma-4 FP8 KV allocation failed at layer %u\n", il);
+                gemma4_graph_release(g);
+                return NULL;
+            }
+            g->kv_bytes += bytes;
+            continue;
+        }
+        const uint64_t bytes = (uint64_t)rows * ds4_gemma4_kv_row(il);
         g->kcache[il] = ds4_gpu_tensor_alloc(bytes);
         g->vcache[il] = ds4_gpu_tensor_alloc(bytes);
         if (!g->kcache[il] || !g->vcache[il]) {
@@ -339,6 +372,8 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     ds4_log(stderr, DS4_LOG_TIMING,
         "ds4: Gemma-4 graph ctx=%u chunk=%u KV=%.2f GiB activation=%.1f MiB\n",
         ctx, cap, (double)g->kv_bytes / 1073741824.0, (double)act * 6.0 / 1048576.0);
+    ds4_log(stderr, DS4_LOG_TIMING, "ds4: Gemma-4 full-layer KV: %s\n",
+        g->full_fp8 ? "E4M3 rows" : "bf16 rows");
     return g;
 }
 
@@ -596,12 +631,19 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     gemma4_probe_at(g->q, il, "q normed roped");
     gemma4_probe_at(g->k, il, "k normed roped");
     gemma4_probe_at(g->v, il, "v normed");
-    G4_STEP(ds4_gpu_g4_kv_store(g->kcache[il], g->k, g->positions, rows, kv_width,
-        ring, capacity), "key cache store");
-    G4_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows, kv_width,
-        ring, capacity), "value cache store");
-    G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
-        first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
+    if (full && g->full_fp8) {
+        G4_STEP(ds4_gpu_g4_kv_store_fp8(g->fkcache[il], g->k, g->v, g->positions, rows,
+            kv_width, kv, dim, ring, capacity), "key/value FP8 cache store");
+        G4_STEP(ds4_gpu_g4_attn_fp8(g->attn, g->q, g->fkcache[il], g->positions, rows,
+            first, G4_HEADS, kv, dim, 0u, ring, 0u, ds4_gemma4_full_kv_row()), "attention");
+    } else {
+        G4_STEP(ds4_gpu_g4_kv_store(g->kcache[il], g->k, g->positions, rows, kv_width,
+            ring, capacity), "key cache store");
+        G4_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows, kv_width,
+            ring, capacity), "value cache store");
+        G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
+            first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
+    }
     gemma4_probe_at(g->attn, il, "attn out");
     if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
     if (hash_stages && rows > 1) { gemma4_probe_row(g->attn, il, "attn out", rows - 1u, heads_width); }

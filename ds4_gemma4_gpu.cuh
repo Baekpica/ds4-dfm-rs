@@ -13,7 +13,9 @@
 #include "ds4_gemma4.h"
 #include "cuda/gemma4_primitives.cuh"
 #include "cuda/gemma4_attn.cuh"
+#include "cuda/gemma4_attn_fp8.cuh"
 #include "cuda/gemma_vq_decode.cuh"
+#include "cuda/gemma4_moe_fused.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
@@ -53,6 +55,120 @@ extern "C" int ds4_gpu_g4_kv_store(ds4_gpu_tensor *dst, const ds4_gpu_tensor *sr
         (__nv_bfloat16 *)dst->ptr, (const float *)src->ptr, (const uint32_t *)positions->ptr,
         rows, width, ring);
     return cuda_ok(cudaGetLastError(), "Gemma-4 KV store");
+}
+
+/* --------------------------------------------------------- FP8 full-layer KV */
+
+/* E4M3 FN value of a magnitude code (ds4_cuda.cu:11876-11881) and the exact
+ * encode the Solar FP8 store uses (ds4_cuda.cu:44324-44343): a binary search
+ * over the 127 magnitudes with round-to-even on a tie, then the sign bit. */
+__device__ __forceinline__ static float g4_e4m3_value(int code) {
+    const int exp = (code >> 3) & 15;
+    const int mant = code & 7;
+    if (exp == 0) { return (float)mant * 0.001953125f; }
+    return (1.0f + (float)mant * 0.125f) * exp2f((float)exp - 7.0f);
+}
+
+__device__ __forceinline__ static uint8_t g4_e4m3_encode(float x) {
+    if (!isfinite(x) || x == 0.0f) { return 0u; }
+    const uint8_t sign = x < 0.0f ? 0x80u : 0u;
+    const float ax = fminf(fabsf(x), 448.0f);
+    int lo = 0, hi = 126;
+    while (lo < hi) {
+        const int mid = (lo + hi + 1) >> 1;
+        if (g4_e4m3_value(mid) <= ax) { lo = mid; } else { hi = mid - 1; }
+    }
+    int best = lo;
+    if (best < 126) {
+        const float bd = fabsf(ax - g4_e4m3_value(best));
+        const float nd = fabsf(ax - g4_e4m3_value(best + 1));
+        if (nd < bd ||
+            (nd == bd && (((best + 1) & 1) == 0) && ((best & 1) != 0))) {
+            best++;
+        }
+    }
+    return sign | (uint8_t)best;
+}
+
+/* f16(amax / quant_max), returned rounded so the codes divide by the value
+ * the row stores (ds4_cuda.cu:44369-44383). */
+__device__ __forceinline__ static float g4_scale_to_f16(
+        float amax, float quant_max, __half *stored) {
+    float scale = isfinite(amax) && amax > 0.0f ? amax / quant_max : 1.0f;
+    if (scale > 65504.0f) { scale = 65504.0f; }
+    __half half_scale = __float2half(scale);
+    float rounded = __half2float(half_scale);
+    if (!(rounded > 0.0f) || !isfinite(rounded)) {
+        half_scale = __float2half(5.960464477539063e-8f);
+        rounded = __half2float(half_scale);
+    }
+    *stored = half_scale;
+    return rounded;
+}
+
+/* One block per (token, KV head): amax over the head's dims, one scale for K
+ * and one for V, then the E4M3 codes. The row is K | V | scales
+ * (ds4_cuda.cu:44407-44480). */
+__global__ static void g4_kv_store_fp8_kernel(uint8_t *dst, const float *k,
+        const float *v, const uint32_t *positions, uint32_t rows,
+        uint32_t kv_heads, uint32_t dim, uint32_t ring) {
+    const uint32_t token = blockIdx.x;
+    const uint32_t head = blockIdx.y;
+    if (token >= rows || head >= kv_heads) { return; }
+    const uint32_t tid = threadIdx.x;
+    const uint64_t kv_dim = (uint64_t)kv_heads * dim;
+    const uint64_t src = ((uint64_t)token * kv_heads + head) * dim;
+    const uint32_t slot = ring ? positions[token] % ring : positions[token];
+    const uint64_t row_bytes = 2u * kv_dim + 2u * (uint64_t)kv_heads * sizeof(uint16_t);
+    uint8_t *row = dst + (uint64_t)slot * row_bytes;
+    __shared__ float k_abs[256];
+    __shared__ float v_abs[256];
+    float kmax = 0.0f, vmax = 0.0f;
+    for (uint32_t d = tid; d < dim; d += blockDim.x) {
+        const float kx = k[src + d];
+        const float vx = v[src + d];
+        if (isfinite(kx)) { kmax = fmaxf(kmax, fabsf(kx)); }
+        if (isfinite(vx)) { vmax = fmaxf(vmax, fabsf(vx)); }
+    }
+    k_abs[tid] = kmax;
+    v_abs[tid] = vmax;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            k_abs[tid] = fmaxf(k_abs[tid], k_abs[tid + stride]);
+            v_abs[tid] = fmaxf(v_abs[tid], v_abs[tid + stride]);
+        }
+        __syncthreads();
+    }
+    __shared__ float kscale, vscale;
+    __half *scales = (__half *)(row + 2u * kv_dim);
+    if (tid == 0u) {
+        kscale = g4_scale_to_f16(k_abs[0], 448.0f, &scales[head]);
+        vscale = g4_scale_to_f16(v_abs[0], 448.0f, &scales[kv_heads + head]);
+    }
+    __syncthreads();
+    const uint64_t head0 = (uint64_t)head * dim;
+    for (uint32_t d = tid; d < dim; d += blockDim.x) {
+        row[head0 + d] = g4_e4m3_encode(k[src + d] / kscale);
+        row[kv_dim + head0 + d] = g4_e4m3_encode(v[src + d] / vscale);
+    }
+}
+
+extern "C" int ds4_gpu_g4_kv_store_fp8(ds4_gpu_tensor *dst, const ds4_gpu_tensor *k,
+        const ds4_gpu_tensor *v, const ds4_gpu_tensor *positions, uint32_t rows,
+        uint32_t width, uint32_t kv_heads, uint32_t head_dim, uint32_t ring,
+        uint32_t capacity) {
+    if (!dst || !k || !v || !positions || !rows || !width || !kv_heads || !head_dim ||
+        !capacity || width != kv_heads * head_dim) { return 0; }
+    const uint64_t row_bytes = 2ull * width + 2ull * kv_heads * sizeof(uint16_t);
+    if (dst->bytes < (uint64_t)capacity * row_bytes ||
+        k->bytes < (uint64_t)rows * width * sizeof(float) ||
+        v->bytes < (uint64_t)rows * width * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    g4_kv_store_fp8_kernel<<<dim3(rows, kv_heads), 256, 0, ds4_current_stream()>>>(
+        (uint8_t *)dst->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        (const uint32_t *)positions->ptr, rows, kv_heads, head_dim, ring);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 FP8 KV store");
 }
 
 /* -------------------------------------------------------------- primitives */
@@ -177,6 +293,29 @@ extern "C" int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
     return cuda_ok(cudaGetLastError(), "Gemma-4 attention");
 }
 
+extern "C" int ds4_gpu_g4_attn_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+        uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+        uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes) {
+    if (!out || !query || !kv || !positions || !rows || !heads || !kv_heads || !dim ||
+        !row_bytes) { return 0; }
+    const uint64_t kv_dim = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (row_bytes < 2u * kv_dim + 2u * kv_heads * sizeof(uint16_t)) { return 0; }
+    if (keys && (!keys || keys > first + rows)) { return 0; }
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        kv->bytes < capacity * row_bytes ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    const uint32_t warps = 4u;
+    const uint64_t jobs = (uint64_t)rows * heads;
+    const uint32_t blocks = (uint32_t)((jobs + warps - 1u) / warps);
+    g4_attn_fp8_kernel<<<blocks, warps * 32u, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)query->ptr, (const uint8_t *)kv->ptr,
+        rows, first, heads, kv_heads, dim, window, ring, keys, row_bytes);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 FP8 attention");
+}
+
 /* ------------------------------------------------------- routed experts */
 
 uint64_t ds4_gpu_g4_moe_bytes(uint32_t chunk) {
@@ -269,6 +408,39 @@ static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index
         variant, threads, ds4_current_stream()) != 0;
 }
 
+/* Fused gate/up + GELU for one route. Off by default; DS4_GEMMA4_MOE_FUSED=1
+ * turns it on, and the separate two-GEMV path stays the reference. */
+static bool g4_moe_fused(void) {
+    static int fused = -1;
+    if (fused < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_FUSED");
+        fused = v && v[0] == '1' && !v[1];
+    }
+    return fused != 0;
+}
+
+static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t gate,
+        uint32_t up, const ds4_gpu_tensor *input) {
+    if (!m || !m->gvq || !out || !input ||
+        gate >= m->gvq->model->source.size() || up >= m->gvq->model->source.size()) {
+        return false;
+    }
+    const glmvq_source &gs = m->gvq->model->source[gate];
+    const glmvq_source &us = m->gvq->model->source[up];
+    if (gs.storage != GLMVQ_WEIGHT_VQ || us.storage != GLMVQ_WEIGHT_VQ ||
+        !gs.vq.main || !gs.vq.book || !gs.vq.gain ||
+        !us.vq.main || !us.vq.book || !us.vq.gain) {
+        return false;
+    }
+    int variant = G4_VQ_AUTO, threads = 256;
+    const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
+    if (v && *v) { variant = atoi(v); }
+    const char *t = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
+    if (t && *t) { threads = atoi(t); }
+    return g4_vq_gemv_glu(gs.vq, us.vq, (const float *)input->ptr, (float *)out->ptr,
+        variant, threads, ds4_current_stream()) != 0;
+}
+
 static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
         const ds4_gpu_tensor *weights, const uint32_t *matrices, const int32_t *routes,
         uint32_t rows) {
@@ -330,12 +502,22 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
             (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
             offsets[e], elements, G4_EMBED);
         const bool one = n == 1;
-        if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather") ||
-            !((one && g4_moe_linear_one(m, m->gate, matrices[e], m->in)) ||
-              ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16)) ||
-            !((one && g4_moe_linear_one(m, m->up, matrices[G4_EXPERTS + e], m->in)) ||
-              ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n, DS4_GVQ_BF16)) ||
-            !ds4_gpu_g4_gelu(m->mid, m->gate, m->up, (uint64_t)n * G4_FF) ||
+        bool ok = cuda_ok(cudaGetLastError(), "Gemma-4 expert gather");
+        bool fused = false;
+        if (ok && one && g4_moe_fused()) {
+            /* One GEMV reads gate and up and writes gelu(gate) * up. */
+            fused = g4_moe_linear_glu_one(m, m->mid, matrices[e],
+                matrices[G4_EXPERTS + e], m->in);
+        }
+        if (ok && !fused) {
+            ok = ((one && g4_moe_linear_one(m, m->gate, matrices[e], m->in)) ||
+                  ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16)) &&
+                 ((one && g4_moe_linear_one(m, m->up, matrices[G4_EXPERTS + e], m->in)) ||
+                  ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n,
+                    DS4_GVQ_BF16)) &&
+                 ds4_gpu_g4_gelu(m->mid, m->gate, m->up, (uint64_t)n * G4_FF);
+        }
+        if (!ok ||
             !((one && g4_moe_linear_one(m, m->out, matrices[2u * G4_EXPERTS + e], m->mid)) ||
               ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
                 DS4_GVQ_BF16))) {

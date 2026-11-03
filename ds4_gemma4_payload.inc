@@ -10,7 +10,8 @@
  *
  * Header (13 u32, the DS4 session contract; n sits at h[7], the slot the
  * shared session loader reads): magic, version, ctx, cap, layers, tag,
- * reserved, n, window, sliding rows, full rows, vocabulary, reserved.
+ * full-layer format (0 bf16, 1 FP8), n, window, sliding rows, full rows,
+ * vocabulary, reserved.
  * A failed or partial restore marks the graph failed, never a usable prefix.
  * The first slice saves each cache whole; a later slice can narrow the ring
  * to the live window if the snapshot file size matters. */
@@ -21,16 +22,21 @@ static uint32_t gemma4_payload_rows(const ds4_gemma4_graph *g, unsigned il) {
     return ds4_gemma4_kv_rows(il, g->ctx, g->cap);
 }
 
-static uint64_t gemma4_payload_row_bytes(unsigned il) {
-    return (uint64_t)gemma4_kv_heads(il) * gemma4_head_dim(il) * sizeof(uint16_t);
+/* One span of a layer: K or V for bf16, the whole K|V|scales row for FP8. */
+static uint64_t gemma4_payload_span_bytes(const ds4_gemma4_graph *g, unsigned il) {
+    const uint64_t rows = gemma4_payload_rows(g, il);
+    if (g->full_fp8 && gemma4_is_full(il)) {
+        return rows * ds4_gemma4_full_kv_row();
+    }
+    return rows * ds4_gemma4_kv_row(il);
 }
 
 static uint64_t gemma4_payload_body(const ds4_gemma4_graph *g, uint32_t n) {
     uint64_t body = (uint64_t)n * sizeof(uint32_t) +
         (uint64_t)DS4_N_VOCAB * sizeof(float);
     for (unsigned il = 0; il < G4_LAYERS; il++) {
-        body += 2u * (uint64_t)gemma4_payload_rows(g, il) *
-            gemma4_payload_row_bytes(il);
+        const uint32_t spans = (g->full_fp8 && gemma4_is_full(il)) ? 1u : 2u;
+        body += spans * gemma4_payload_span_bytes(g, il);
     }
     return body;
 }
@@ -48,11 +54,13 @@ static int gemma4_payload_caches(int save, FILE *fp, ds4_gemma4_graph *g,
         uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
     int rc = 0;
     for (unsigned il = 0; !rc && il < G4_LAYERS; il++) {
-        const uint64_t bytes =
-            (uint64_t)gemma4_payload_rows(g, il) * gemma4_payload_row_bytes(il);
+        const uint64_t bytes = gemma4_payload_span_bytes(g, il);
         if (!bytes) { continue; }
-        ds4_gpu_tensor *const spans[2] = {g->kcache[il], g->vcache[il]};
-        for (unsigned i = 0; !rc && i < 2; i++) {
+        const bool fp8 = g->full_fp8 && gemma4_is_full(il);
+        ds4_gpu_tensor *const spans[2] = {fp8 ? g->fkcache[il] : g->kcache[il],
+            fp8 ? NULL : g->vcache[il]};
+        const unsigned count = fp8 ? 1u : 2u;
+        for (unsigned i = 0; !rc && i < count; i++) {
             rc = save
                 ? payload_write_tensor_span(fp, spans[i], 0, bytes, buf,
                       DS4_SESSION_IO_CHUNK, err, errlen)
@@ -90,7 +98,7 @@ static int gemma4_payload_save(ds4_gemma4_graph *g, const int *tokens,
     }
     const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
         DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION, g->ctx, g->cap,
-        G4_LAYERS, G4_PAYLOAD_TAG, 0u, n, (uint32_t)G4_WINDOW,
+        G4_LAYERS, G4_PAYLOAD_TAG, g->full_fp8 ? 1u : 0u, n, (uint32_t)G4_WINDOW,
         gemma4_payload_rows(g, 0u), gemma4_payload_rows(g, 5u), DS4_N_VOCAB, 0u,
     };
     int rc = 0;
@@ -118,7 +126,7 @@ static int gemma4_payload_restore(ds4_gemma4_graph *g, FILE *fp,
     if (!g->ready || !n || n > g->ctx || h[0] != DS4_SESSION_PAYLOAD_MAGIC ||
         h[1] != DS4_SESSION_PAYLOAD_VERSION || h[2] != g->ctx ||
         h[3] != g->cap || h[4] != G4_LAYERS || h[5] != G4_PAYLOAD_TAG ||
-        h[6] != 0u || h[8] != (uint32_t)G4_WINDOW ||
+        h[6] != (g->full_fp8 ? 1u : 0u) || h[8] != (uint32_t)G4_WINDOW ||
         h[9] != gemma4_payload_rows(g, 0u) ||
         h[10] != gemma4_payload_rows(g, 5u) ||
         h[11] != DS4_N_VOCAB || h[12] != 0u ||

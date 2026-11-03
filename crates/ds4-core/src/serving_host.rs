@@ -3226,7 +3226,16 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         // round's verify block), the five full layers hold the whole context.
         // The generic 30 x ctx charge prices layers the engine never
         // allocates at that width.
-        let full_row = GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2;
+        // ds4_gemma4.h (ds4_gemma4_full_kv_row): the five full layers may
+        // keep E4M3 K | E4M3 V | one f16 scale per KV head each under
+        // DS4_GEMMA4_FULL_KV=fp8; the sliding rings stay bf16.
+        let fp8 = std::env::var("DS4_GEMMA4_FULL_KV").ok().as_deref() == Some("fp8");
+        let full_row = if fp8 {
+            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2
+                + GEMMA4_FULL_KV_HEADS * 2 * 2
+        } else {
+            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2
+        };
         let sliding_row = GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM * 2 * 2;
         let block = u64::from(native).max(GEMMA4_MTP_DRAFTS as u64 + 1);
         let sliding = ctx.min(GEMMA4_WINDOW + block);
