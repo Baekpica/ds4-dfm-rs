@@ -162,21 +162,26 @@ static inline float g4_ref_embed(float row) {
 /* Causal attention, scale 1.0, grouped KV, optional sliding window that
  * includes the query (3.3, 3.4). `ring` is the cache's row count when rows
  * wrap (slot = position % ring); 0 means the cache is indexed by absolute
- * position and `capacity` is first + rows. Accumulation in double: this is the
- * golden value, not the device's arithmetic. */
+ * position and `capacity` is first + rows. `keys` is how many keys the cache
+ * holds (0 = first + rows); the drafter's query sits one past the committed
+ * rows, so it passes `keys = query position` (candidate_generator.py:1316-1327)
+ * and the window's begin stays relative to the query's own position.
+ * Accumulation in double: this is the golden value, not the device's
+ * arithmetic. */
 static inline void g4_ref_attn(float *out, const float *query, const float *key, const float *value,
         uint32_t rows, uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
-        uint32_t window, uint32_t capacity, uint32_t ring) {
+        uint32_t window, uint32_t capacity, uint32_t ring, uint32_t keys) {
     const uint32_t group = heads / kv_heads;
     const uint64_t kv_stride = (uint64_t)kv_heads * dim;
     for (uint32_t r = 0; r < rows; r++) {
         const uint32_t position = first + r;
         const uint32_t begin = window && position + 1 > window ? position + 1 - window : 0u;
+        const uint32_t last = keys && keys <= position ? keys - 1u : position;
         for (uint32_t h = 0; h < heads; h++) {
             const uint32_t kh = h / group;
             const float *q = query + ((uint64_t)r * heads + h) * dim;
             double maximum = -INFINITY;
-            for (uint32_t k = begin; k <= position; k++) {
+            for (uint32_t k = begin; k <= last; k++) {
                 const uint64_t slot = ring ? (uint64_t)(k % ring) : k;
                 const float *kv = key + slot * kv_stride + (uint64_t)kh * dim;
                 double dot = 0.0;
@@ -186,7 +191,7 @@ static inline void g4_ref_attn(float *out, const float *query, const float *key,
             double total = 0.0;
             double acc[512];
             for (uint32_t d = 0; d < dim; d++) { acc[d] = 0.0; }
-            for (uint32_t k = begin; k <= position; k++) {
+            for (uint32_t k = begin; k <= last; k++) {
                 const uint64_t slot = ring ? (uint64_t)(k % ring) : k;
                 const float *kv = key + slot * kv_stride + (uint64_t)kh * dim;
                 double dot = 0.0;

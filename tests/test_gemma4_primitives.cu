@@ -254,33 +254,46 @@ static void router_test() {
  * the double reference, and report the worst absolute difference. `ring` is
  * the cache's row count (slot = position % ring); 0 indexes by absolute
  * position. A ring case fills every slot the visible window reads, which is
- * what a wrapped cache holds. */
+ * what a wrapped cache holds. `keys` is how many keys the producer has
+ * written (0 = first + rows): the drafter's query sits at `first` while the
+ * trunk holds only `first` rows, so its slot at `first` is poisoned here and
+ * must not be read (candidate_generator.py:1316-1327). */
 static void attn_case(const char *name,unsigned rows,unsigned first,unsigned heads,
-        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring) {
+        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring,unsigned keys=0u) {
     const unsigned capacity=ring?ring:first+rows;
     const uint64_t stride=(uint64_t)kv_heads*dim;
-    std::vector<float> keys((uint64_t)capacity*stride),values((uint64_t)capacity*stride);
+    std::vector<float> keys_(capacity*stride),values(capacity*stride);
     std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
-    std::vector<__nv_bfloat16> key16(keys.size()),value16(values.size());
-    const unsigned oldest=(ring&&first+rows>ring)?first+rows-ring:0u;
-    for(unsigned p=oldest;p<first+rows;p++) {
+    std::vector<__nv_bfloat16> key16(keys_.size()),value16(values.size());
+    const unsigned filled=keys?keys:first+rows;
+    const unsigned oldest=(ring&&filled>ring)?filled-ring:0u;
+    for(unsigned p=oldest;p<filled;p++) {
         const uint64_t slot=ring?p%capacity:p;
         for(uint64_t j=0;j<stride;j++) {
             const uint64_t k=(uint64_t)p*stride+j;
-            keys[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
+            keys_[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
             values[slot*stride+j]=g4_ref_bf16(value((unsigned)((k+7)%65536))*0.9f);
-            key16[slot*stride+j]=__float2bfloat16_rn(keys[slot*stride+j]);
+            key16[slot*stride+j]=__float2bfloat16_rn(keys_[slot*stride+j]);
             value16[slot*stride+j]=__float2bfloat16_rn(values[slot*stride+j]);
         }
     }
+    if(keys) {
+        /* Every key and value the producer has not written: a kernel that
+         * reads slot `first` fails loudly instead of drifting. */
+        const uint64_t slot=ring?first%capacity:first;
+        for(uint64_t j=0;j<stride;j++) {
+            keys_[slot*stride+j]=key16[slot*stride+j]=1.0e4f;
+            values[slot*stride+j]=value16[slot*stride+j]=-1.0e4f;
+        }
+    }
     for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
-    g4_ref_attn(expected.data(),query.data(),keys.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity,ring);
+    g4_ref_attn(expected.data(),query.data(),keys_.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity,ring,keys);
     float *dq=device(query),*out;
     __nv_bfloat16 *dk=device(key16),*dv=device(value16);
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     const unsigned warps=4;
     const unsigned jobs=rows*heads;
-    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,ring,stride);
+    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,ring,keys,stride);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,3e-5f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
@@ -299,6 +312,16 @@ static void attn_test() {
      * clobbered slots are older than every visible key. */
     attn_case("attn_sliding_ring_prefill",5,1025,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,
         G4_REF_WINDOW,G4_REF_WINDOW+5u);
+    /* The drafter's shape (candidate_generator.py:1316-1327): one query at
+     * position `first`, only `first` keys written, so the query's own slot
+     * is poisoned and must be skipped, while the sliding window still starts
+     * at first + 1 - window. */
+    attn_case("attn_shared_prefix_sliding",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,4096);
+    attn_case("attn_shared_prefix_sliding_ring",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,G4_REF_WINDOW+1u,4096);
+    attn_case("attn_shared_prefix_full",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,8192);
 }
 
 int main(int argc,char **argv) {

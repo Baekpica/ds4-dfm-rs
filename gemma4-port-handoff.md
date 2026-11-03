@@ -2,16 +2,16 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 3df1ac02 (handoff; ds4 code state e96d09d8 plus the
-  P8 and speed work uncommitted). The working tree carries P8 (section 4k)
-  and the speed unit (section 4l): the same 19 modified files plus the new
-  ds4_gemma4_mtp.inc, with the speed changes inside ds4_gemma4_bind.inc,
-  ds4_gemma4_graph.inc and ds4_gemma4_gpu.cuh. Sibling VQ_tools: dev at
-  65ef74d; the owner is editing that tree from other sessions, so leave its
+last_updated_commit: 97a8fc27 (handoff); the working tree carries P8
+  (section 4k), the speed unit (4l) and the SSD unit (4m) uncommitted. The
+  SSD unit adds ds4_gemma4_stream.inc and touches the Gemma graph/GPU arms,
+  the engine family gate and streaming arm, the Rust SSD admission/quote and
+  the CLI help. No GLM file is modified. Sibling VQ_tools: dev at 65ef74d;
+  the owner is editing that tree from other sessions, so leave its
   uncommitted files alone.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T15:08:06+01:00
+handoff_written_at: 2026-11-03T15:39:43+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -74,10 +74,12 @@ What is still open, in order:
           still below the sibling 15-25 tok/s because every token restores
           its eight selected experts per layer. The default residency is
           still zero-copy; the measurements use DS4_CUDA_COPY_MODEL=1.
-  0b. SSD  streaming support is a new owner requirement (2026-11-03). It
-          must be Gemma-only: a Gemma stream module and Gemma arms in the
-          engine, with no edit to any GLM file. The contract and the VQ1
-          rebasing facts are in 4l.
+  0b. SSD  streaming is built and opt-in (4m). The owner's rule is that it
+          stays an option, never a family default. Gemma-only module and
+          engine arms, no GLM edit; split shards supported; the 4070 refuses
+          with the coherent-access message. Remaining: a GB10 run (slot hit
+          rate, the 4 GiB default, the decode gain) before calling the
+          option measured.
   1. P8   the drafter is written, builds, and passes gates A, B and C on a
           short prompt; the wrapped-ring gate must be re-run with the new
           batched prefill (4k, now faster). Then: commit, run
@@ -1166,6 +1168,68 @@ context, 0.06 GiB of KV at ctx 265 and 17 MiB of activations peaked at
 10,663 MiB. At ctx 2048 the 512-row cap costs 0.63 GiB of KV, so the copy
 is tight but fits; ds4-server still needs --mem-floor-gb 2. A CUDA build
 needs several GiB free on /tmp (16 GiB tmpfs).
+
+4m. SSD streaming is built and opt-in (2026-11-03)
+
+The owner's constraint is explicit: SSD streaming is an option, never a
+family default. Nothing in the Gemma launcher, session path or graph turns
+it on; `--ssd-streaming` is the only trigger, and the default remains the
+resident path (zero-copy unless DS4_CUDA_COPY_MODEL=1 is set).
+
+Native:
+
+  - `ds4_gemma4_stream.inc` is the Gemma-only cache: a bounded device slot
+    pool, pin-before-miss admission, LRU victim, pread from the model fd,
+    and the same stats vocabulary as ds4_glm53_stream.inc. The default
+    budget is 4 GiB; --ssd-streaming-cache-experts N and
+    --ssd-streaming-cache-experts GB override it. The minimum is one route
+    set (8 experts).
+  - `ds4_gemma4_gpu.cuh` adds `ds4_gpu_g4_stream_rebind`: it parses the
+    streamed VQ1/GVR1 headers with the same checks as gvq_link and
+    gvq_link_res, points the plan's host `glmvq_source` at the device slot,
+    and leaves the per-layer book and residual book resident. The device
+    source table is intentionally not updated: only the shared GLM route/
+    decode kernels read it, and this port does not use them.
+  - `ds4_gemma4_gpu.cuh` also adds `ds4_gpu_g4_moe_run_ids`, so the stage
+    reads the route ids once and the grouped MoE reuses them instead of a
+    second D2H read per layer.
+  - The graph stages the largest row prefix whose expert union fits and
+    runs the existing grouped kernel over that prefix. With a cache of at
+    least 128 experts the whole chunk runs in one call.
+  - Split shards are supported. The R13+8 release is two GGUF shards
+    (embedding 1.38 GiB, trunk 8.00 GiB); model_open_split maps them into
+    one page-aligned virtual range. The stream reconstructs the shard bases
+    with fstat and preads from the shard that owns the record. GLM53 still
+    requires one shard.
+  - The family gate admits Gemma-4 and keeps the GLM53 one-shard rule. On
+    a card without coherent CUDA host page tables (the RTX 4070 SUPER)
+    ds4_gpu_set_stream_map refuses; the engine prints the Gemma-specific
+    refusal and closes. The GB10 is the target.
+
+Rust:
+
+  - ssd.rs admits Gemma4Vq on CUDA, allows the native default without the
+    GLM ServingBudget, and passes a fixed expert/GiB cache through. The
+    GLM auto quote (prefill rows, staging banks, 12 GiB reserve) is not
+    applied to Gemma.
+  - serving_host.rs charges the Gemma cache in the host quote (default
+    4 GiB, R13+8 record-size estimate, 1 MiB staging/metadata), and uses
+    the same cgroup-aware available-memory path.
+  - The CLI help now names both families; the flag remains opt-in.
+
+Measured on the 4070 SUPER (R13+8, ctx 256, 8 greedy tokens, resident):
+
+  DS4_CUDA_COPY_MODEL=1, no SSD: 342.36 prefill / 10.64 decode tok/s
+  --ssd-streaming: refused before allocation with
+    "SSD streaming requires coherent CUDA host page tables"
+    "Gemma-4 SSD streaming requires coherent CUDA host page tables (the
+     GB10 shape); this card keeps the resident path"
+  The refusal is the expected result here; the option never changes the
+  resident run's behavior.
+
+Still open: no GB10 run of the Gemma stream (slot hit rate, 4 GiB default
+vs the 5.9 GiB expert set, and the decode gain are unmeasured); the decode
+gap in 4l remains. The 4 GiB default is a policy choice, not a measurement.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

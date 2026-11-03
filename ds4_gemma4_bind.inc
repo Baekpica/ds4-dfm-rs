@@ -166,21 +166,106 @@ static void gemma4_bind(ds4_weights *w, const ds4_model *m) {
     }
 }
 
+/* The drafter part (`gemma4_assistant`), bound from its own model: four
+ * dense layers at hidden 1024 with no k/v projection, its tied 262144 x 1024
+ * table, the final norm, and the two projections across the backbone width.
+ * Every stored type is the artifact's own (Q4_K for the projections, BF16 for
+ * the norms and the layer scalars, crates/ds4-core/src/gemma4_vq/layout.rs
+ * mtp_layouts). */
+static ds4_tensor *gemma4_mtp_named(const ds4_model *m, const char *fmt,
+                                    unsigned il, int has_layer) {
+    char name[160];
+    const int n = has_layer ? snprintf(name, sizeof(name), fmt, il)
+                            : snprintf(name, sizeof(name), "%s", fmt);
+    if (n < 0 || (size_t)n >= sizeof(name)) { ds4_die("Gemma-4 drafter tensor name too long"); }
+    return required_tensor(m, name);
+}
+
+/* A BF16 layer scalar is a one-element tensor; store the value the multiply
+ * uses, exactly as gemma4_scalars does for the trunk's blocks. */
+static float gemma4_mtp_scalar(const ds4_model *m, const ds4_tensor *t) {
+    uint16_t bits = 0;
+    if (!t || !m || !m->map || t->bytes != sizeof(bits) ||
+        t->abs_offset + t->bytes > m->size) {
+        ds4_die("Gemma-4 drafter layer_scalar is not a readable BF16 value");
+    }
+    memcpy(&bits, (const uint8_t *)m->map + t->abs_offset, sizeof(bits));
+    const uint32_t wide = (uint32_t)bits << 16;
+    float value;
+    memcpy(&value, &wide, sizeof(value));
+    return value;
+}
+
+static void gemma4_mtp_bind(ds4_gemma4_mtp *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    /* `tie_word_embeddings` (assistant config.json): this table is lm_head
+     * (modeling_gemma4_assistant.py:110 `_tied_weights_keys`), and the
+     * `use_ordered_embeddings` centroid path is not built (line 129, false
+     * in the checkpoint), so the head is the plain linear at line 193. */
+    w->embed = gemma4_mtp_named(m, "mtp.model.embed_tokens.weight", 0, 0);
+    tensor_expect_layout(w->embed, DS4_TENSOR_BF16, 2, G4_MTP_EMBED, G4_VOCAB, 0);
+    w->norm = gemma4_mtp_named(m, "mtp.model.norm.weight", 0, 0);
+    tensor_expect_layout(w->norm, DS4_TENSOR_BF16, 1, G4_MTP_EMBED, 0, 0);
+    /* pre_projection: Linear(2 * backbone_hidden_size, hidden_size)
+     * (modeling_gemma4_assistant.py:126), so its input is the concatenation
+     * of the trunk's token row and the trunk's last hidden state. */
+    w->pre = gemma4_mtp_named(m, "mtp.pre_projection.weight", 0, 0);
+    tensor_expect_layout(w->pre, DS4_TENSOR_Q4_K, 2, 2 * G4_EMBED, G4_MTP_EMBED, 0);
+    /* post_projection: Linear(hidden_size, backbone_hidden_size) (line 127);
+     * its output is the drafter's next-step hidden half. */
+    w->post = gemma4_mtp_named(m, "mtp.post_projection.weight", 0, 0);
+    tensor_expect_layout(w->post, DS4_TENSOR_Q4_K, 2, G4_MTP_EMBED, G4_EMBED, 0);
+    for (unsigned il = 0; il < G4_MTP_LAYERS; il++) {
+        ds4_gemma4_mtp_layer *l = &w->layer[il];
+        const unsigned dim = gemma4_mtp_head_dim(il);
+        /* The block's four norms in the order the reference runs them
+         * (modeling_gemma4.py:1379-1421): attention in, attention out, FFN
+         * in, FFN out. */
+        static const char *const norms[] = {
+            "mtp.model.layers.%u.input_layernorm.weight",
+            "mtp.model.layers.%u.post_attention_layernorm.weight",
+            "mtp.model.layers.%u.pre_feedforward_layernorm.weight",
+            "mtp.model.layers.%u.post_feedforward_layernorm.weight",
+        };
+        for (unsigned i = 0; i < 4; i++) {
+            l->norm[i] = gemma4_mtp_named(m, norms[i], il, 1);
+            tensor_expect_layout(l->norm[i], DS4_TENSOR_BF16, 1, G4_MTP_EMBED, 0, 0);
+        }
+        l->layer_scalar = gemma4_mtp_named(m, "mtp.model.layers.%u.layer_scalar", il, 1);
+        tensor_expect_layout(l->layer_scalar, DS4_TENSOR_BF16, 1, 1, 0, 0);
+        l->scalar = gemma4_mtp_scalar(m, l->layer_scalar);
+        l->q = gemma4_mtp_named(m, "mtp.model.layers.%u.self_attn.q_proj.weight", il, 1);
+        tensor_expect_layout(l->q, DS4_TENSOR_Q4_K, 2, G4_MTP_EMBED,
+                             G4_MTP_HEADS * dim, 0);
+        l->q_norm = gemma4_mtp_named(m, "mtp.model.layers.%u.self_attn.q_norm.weight", il, 1);
+        tensor_expect_layout(l->q_norm, DS4_TENSOR_BF16, 1, dim, 0, 0);
+        l->o = gemma4_mtp_named(m, "mtp.model.layers.%u.self_attn.o_proj.weight", il, 1);
+        tensor_expect_layout(l->o, DS4_TENSOR_Q4_K, 2, G4_MTP_HEADS * dim,
+                             G4_MTP_EMBED, 0);
+        for (int half = 0; half < 2; half++) {
+            ds4_tensor **slot = half ? &l->up : &l->gate;
+            *slot = gemma4_mtp_named(m, half ? "mtp.model.layers.%u.mlp.up_proj.weight"
+                                             : "mtp.model.layers.%u.mlp.gate_proj.weight",
+                                     il, 1);
+            tensor_expect_layout(*slot, DS4_TENSOR_Q4_K, 2, G4_MTP_EMBED, G4_MTP_FFN, 0);
+        }
+        l->down = gemma4_mtp_named(m, "mtp.model.layers.%u.mlp.down_proj.weight", il, 1);
+        tensor_expect_layout(l->down, DS4_TENSOR_Q4_K, 2, G4_MTP_FFN, G4_MTP_EMBED, 0);
+    }
+}
+
 #ifndef DS4_NO_GPU
 /* Prefill chunk: the sliding-window ring is sized to hold a whole chunk on top
- * of the window, so the cap is the only knob. Default 2048 keeps the
- * ring at 3072 rows per sliding layer.
+ * of the window, so the cap is the only knob. The projections now take the
+ * whole chunk in one grouped GEMM (the Ling-3.1 / A.X-K2 pattern), so a wider
+ * chunk restores each weight once instead of once per token. 512 keeps the
+ * ring at 1536 rows per sliding layer: 0.63 GiB of KV at ctx 2048, which
+ * leaves room for the 9.37 GiB artifact on a 12 GiB card.
  *
- * P6a: batched widths used to order their sums differently from the one-row
- * launches (measured: a 2-row batch moved this model's logits by 2.4 nats,
- * first at the layer-0 o projection). The graph now repeats the one-row call
- * per row for the Q4_K projections, the Q8_0 dense down, the router and the
- * expert routes, so every width is bit-identical to one row (measured: a
- * 41-token prompt's logits are byte-identical at chunks 1, 2, 8, 9 and 22).
- * One row stays the default because it is the measured path: a wider chunk
- * repeats the same launches and buys nothing. */
+ * P6a's chunk-size exactness gate runs with DS4_GEMMA4_EXACT_PREFILL=1,
+ * which selects the one-row calls and is byte-identical at chunks 1..22. */
 static uint32_t gemma4_prefill_cap(uint32_t ctx) {
-    uint32_t cap = 1u;
+    uint32_t cap = ctx < 512u ? ctx : 512u;
     const char *value = getenv("DS4_GEMMA4_PREFILL_CHUNK");
     if (value && *value) {
         char *end = NULL;
@@ -204,7 +289,8 @@ static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap) {
     m.raw_cap = ctx;
     m.raw_bytes = ds4_gemma4_kv_bytes(ctx, cap);
     m.scratch_bytes = gemma4_activation_bytes(cap) +
-        ds4_gpu_gvq_workspace_linear(cap) + ds4_gpu_g4_moe_bytes(cap < 512u ? cap : 512u);
+        ds4_gpu_gvq_workspace_linear(gemma4_token_rows(cap)) +
+        ds4_gpu_g4_moe_bytes(gemma4_token_rows(cap) < 512u ? gemma4_token_rows(cap) : 512u);
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }

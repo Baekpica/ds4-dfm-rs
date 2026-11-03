@@ -3,7 +3,8 @@
  *
  * The KV is two layouts, so the header carries both row counts and the
  * restore refuses a file whose geometry differs: the 25 sliding layers keep a
- * ring of G4_WINDOW + cap rows, and the 5 full layers keep ctx rows. The
+ * ring of G4_WINDOW + the widest block one forward writes rows, and the 5
+ * full layers keep ctx rows. The
  * slot of a row is position % ring, which is what the caches already hold, so
  * the restore copies the rings verbatim and only sets the position.
  *
@@ -168,6 +169,10 @@ static int gemma4_payload_restore(ds4_gemma4_graph *g, FILE *fp,
     if (rc) { free(tokens); return 1; }
     g->position = n;
     g->failed = false;
+    /* The KV rows and the logits are restored; the drafter's hidden row is
+     * not in the payload, so it is republished by the next forward and this
+     * cycle decodes one token instead of drafting (ds4_gemma4_mtp.inc). */
+    gemma4_mtp_drop_hidden(g);
     *tokens_out = tokens;
     return 0;
 }

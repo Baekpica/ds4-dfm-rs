@@ -989,9 +989,15 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             // and the full context) and restores exactly (P7 slice 1).
             disk: Support::Qualified,
             snapshot: Support::Qualified,
+            // The drafter is the family's own `mtp` part (`--mtp`), and it
+            // executes on the serial lane only: the bank driver has no
+            // draft/verify round for this family. Qualified on the gate that
+            // proved it (greedy output identical with drafting on and off,
+            // the verify rows equal to the trunk's own, a deterministic
+            // repeat, `--serving-check` still passing).
             mtp: MtpKind::Sidecar,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Serial,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(262_144),

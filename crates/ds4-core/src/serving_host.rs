@@ -171,6 +171,12 @@ const GLM_MTP_SAVES: u64 = 5;
 const GLM_CHECKPOINT_SLOTS: u64 = 8;
 // Match the reference host's existing admission/watchdog reserve.
 const GLM_SSD_RESERVE_BYTES: u64 = 12 * GIB;
+/// Gemma-4's native default bounded cache (ds4_gemma4_stream.inc).
+const G4_SSD_DEFAULT_BYTES: u64 = 4 * GIB;
+/// One record plus its residual plane is under 1 MiB; keep a rounded host
+/// staging term rather than the GLM 2 MiB/4 MiB contract.
+const G4_SSD_STAGING_BYTES: u64 = 1 << 20;
+const G4_SSD_METADATA_BYTES: u64 = 1 << 20;
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const CGROUP_MEMBERSHIP: &str = "/proc/self/cgroup";
 const CGROUP_CURRENT: &str = "memory.current";
@@ -214,6 +220,9 @@ const GEMMA4_NATIVE_DEFAULT: u32 = 1;
 const GEMMA4_NATIVE_MAX: u32 = 8192;
 const GEMMA4_LAYERS: u32 = 30;
 const GEMMA4_WINDOW: u64 = 1024;
+/// `G4_MTP_DRAFTS` (ds4_gemma4_plan.h): one verify block is drafts + 1 rows,
+/// and the sliding ring must be that much wider than the window.
+const GEMMA4_MTP_DRAFTS: u32 = 4;
 const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
 const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
 const GEMMA4_FULL_KV_HEADS: u64 = 2;
@@ -290,6 +299,45 @@ pub fn fill_quote_facts(
         native =
             crate::ssd_quote::prefill_rows(req, slots, shape.map(|s| s.n_expert_used).unwrap_or(8))
                 .unwrap_or(0);
+    }
+    if caps.family == ModelFamily::Gemma4Vq && req.ssd_streaming {
+        // Native owns the bounded cache; this mirrors its default and the
+        // R13+8 record size so the host quote charges the same order. A plain
+        // 13-bit artifact has no residual plane, so the estimate is
+        // conservative there, never an undercount.
+        let bytes = req
+            .ssd_streaming_cache_bytes
+            .unwrap_or(G4_SSD_DEFAULT_BYTES);
+        facts.ssd_cache_bytes = Some(bytes);
+        facts.ssd_staging_bytes = Some(G4_SSD_STAGING_BYTES);
+        facts.ssd_metadata_bytes = Some(G4_SSD_METADATA_BYTES);
+        if let Some(s) = shape {
+            let elements = u64::from(s.n_embd).saturating_mul(u64::from(s.n_ff_exp));
+            let record = 128u64
+                .saturating_add(u64::from(s.n_ff_exp) * 2)
+                .saturating_add(elements.saturating_mul(3) / 16)
+                .saturating_add(elements / 64);
+            let residual = 128u64.saturating_add(elements / 8);
+            let per_expert = 3u64.saturating_mul(record.saturating_add(residual));
+            if req.ssd_streaming_cache_experts.is_none() {
+                facts.ssd_cache_experts = Some(
+                    (bytes / per_expert.max(1)).min(
+                        u64::from(s.n_layer).saturating_mul(u64::from(s.n_expert)),
+                    ) as u32,
+                );
+            } else {
+                facts.ssd_cache_experts = req.ssd_streaming_cache_experts;
+                if req.ssd_streaming_cache_bytes.is_none() {
+                    facts.ssd_cache_bytes = Some(
+                        per_expert.saturating_mul(u64::from(
+                            req.ssd_streaming_cache_experts.unwrap_or(0),
+                        )),
+                    );
+                }
+            }
+        } else if req.ssd_streaming_cache_experts.is_some() {
+            facts.ssd_cache_experts = req.ssd_streaming_cache_experts;
+        }
     }
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx, native)).unwrap_or(0);
@@ -954,7 +1002,9 @@ pub fn attach_host_quote(
         0
     } else {
         let avail = host_available_bytes(req.backend);
-        if caps.family == ModelFamily::Glm53 && req.ssd_streaming {
+        if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq)
+            && req.ssd_streaming
+        {
             ssd_available(avail)
         } else {
             avail
@@ -3170,13 +3220,16 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
             .saturating_add(solar_checkpoint_slot_bytes(shape));
     }
     if shape.family == ModelFamily::Gemma4Vq {
-        // ds4_gemma4_plan.h:55 (gemma4_is_full) and :61 (ds4_gemma4_kv_bytes):
-        // 25 sliding layers hold window + chunk rows in a ring, the five full
-        // layers hold the whole context. The generic 30 x ctx charge prices
-        // layers the engine never allocates at that width.
+        // ds4_gemma4_plan.h (gemma4_is_full) and ds4_gemma4.h
+        // (ds4_gemma4_kv_rows): 25 sliding layers hold window + the widest
+        // block one forward writes in a ring (the prefill chunk or one draft
+        // round's verify block), the five full layers hold the whole context.
+        // The generic 30 x ctx charge prices layers the engine never
+        // allocates at that width.
         let full_row = GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2;
         let sliding_row = GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM * 2 * 2;
-        let sliding = ctx.min(GEMMA4_WINDOW + u64::from(native));
+        let block = u64::from(native).max(GEMMA4_MTP_DRAFTS as u64 + 1);
+        let sliding = ctx.min(GEMMA4_WINDOW + block);
         let mut rows = 0u64;
         for il in 0..GEMMA4_LAYERS {
             let is_full = matches!(il, 5 | 11 | 17 | 23 | 29);
@@ -7543,16 +7596,66 @@ exit 1
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ds4_gemma4_plan.h:61-67: 25 sliding layers at window + chunk rows, five
-    /// full layers at the whole context, f16 key and value. At ctx 2048 and
-    /// one row this is the 0.23 GiB the P6 graph line measured.
+    /// ds4_gemma4.h (ds4_gemma4_kv_rows): 25 sliding layers at window + the
+    /// widest block one forward writes (here one draft round's five verify
+    /// rows), five full layers at the whole context, f16 key and value. At
+    /// ctx 2048 that is 252,682,240 bytes.
     #[test]
     fn gemma4_bank_kv_prices_the_hybrid_layout() {
         let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
-        assert_eq!(bank_kv_bytes(shape, 2048, 1), 251_863_040);
+        assert_eq!(bank_kv_bytes(shape, 2048, 1), 252_682_240);
         // Charging every layer at the full context is what refused the plan.
         let generic = 30 * 2048 * 2 * 8 * 256 * 2;
         assert!(bank_kv_bytes(shape, 2048, 1) < generic);
+    }
+
+    /// The SSD option is opt-in and its cache is charged in the quote; the
+    /// GLM auto-budget reserve is not applied to Gemma.
+    #[test]
+    fn gemma4_ssd_quote_charges_the_bounded_cache() {
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 7_200_000_000,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            ctx: 2048,
+            ssd_streaming: true,
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        assert_eq!(facts.ssd_cache_bytes, Some(G4_SSD_DEFAULT_BYTES));
+        assert!(facts.ssd_cache_experts.unwrap_or(0) > 0);
+
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            ctx: 2048,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(128),
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        assert!(facts.ssd_cache_bytes.unwrap() >= 128 * 1_000_000);
+        assert_eq!(facts.ssd_cache_experts, Some(128));
+
+        // Without the option nothing is charged.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                ctx: 2048,
+                ..ServingRequest::default()
+            },
+            caps,
+            Some(shape),
+            host,
+        );
+        assert_eq!(facts.ssd_cache_bytes, None);
     }
 
     /// The session runs one row per forward, so the scheduler's verified

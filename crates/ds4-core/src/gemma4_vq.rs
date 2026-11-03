@@ -114,6 +114,13 @@ pub(super) fn layouts() -> Vec<crate::LayoutSpec> {
     layout::layouts()
 }
 
+/// The drafter part's tensor set (`gemma4-vq8-mtp.gguf`): the 4-layer
+/// assistant at hidden 1024 and the two projections across the backbone
+/// width. The host binds `--mtp` against this plan.
+pub(super) fn mtp_layouts() -> Vec<crate::LayoutSpec> {
+    layout::mtp_layouts()
+}
+
 pub(super) fn asset(root: &std::path::Path, name: &str) -> Result<Vec<u8>> {
     release::asset(root, name)
 }

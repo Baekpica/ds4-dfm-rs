@@ -983,6 +983,11 @@ fn mtp_names(shape: &Shape) -> Vec<BindName> {
     if shape.family == ModelFamily::Inkling {
         return inkling_names(crate::inkling::mtp_layouts());
     }
+    // Gemma-4's drafter is its own release part (`gemma4-vq8-mtp.gguf`), so
+    // the sibling plan is exactly that part's layout.
+    if shape.family == ModelFamily::Gemma4Vq {
+        return layout_names(crate::gemma4_vq::mtp_layouts());
+    }
     bind_mtp_names()
 }
 

@@ -1,6 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
-GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc
+GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_stream.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc ds4_gemma4_mtp.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
@@ -321,7 +321,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc ds4_ds41_vision.inc
+ds4.o: ds4.c $(GEMMA4_NATIVE_INCS) $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc ds4_ds41_vision.inc
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.

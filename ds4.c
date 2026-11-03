@@ -5696,6 +5696,11 @@ typedef struct {
  * per-expert scales, one book per expert stack and the 128 x (gate, up,
  * down) GVQ1 matrices. A full layer has no v_proj: v borrows k
  * (attention_k_eq_v). */
+/* Gemma-4 SSD expert cache (ds4_gemma4_stream.inc). The engine owns it and
+ * the graph borrows it; the option is off unless --ssd-streaming asked for
+ * it, and no family default turns it on. */
+typedef struct ds4_gemma4_stream ds4_gemma4_stream;
+
 typedef struct {
     ds4_tensor *norm[7];
     ds4_tensor *layer_scalar;
@@ -5711,6 +5716,28 @@ typedef struct {
     ds4_tensor *gate[G4_EXPERTS], *up[G4_EXPERTS], *down[G4_EXPERTS];
     ds4_tensor *gate_res[G4_EXPERTS], *up_res[G4_EXPERTS], *down_res[G4_EXPERTS];
 } ds4_gemma4_layer;
+
+/* The Gemma-4 drafter, `gemma4_assistant`, bound from its own part (a sidecar
+ * GGUF, `--mtp`). Four dense blocks at hidden 1024: no experts, no k/v
+ * projection, no v_proj and no k_norm (modeling_gemma4.py:1169-1197 skips
+ * them for a shared layer; configuration_gemma4_assistant.py:90-98 requires
+ * every drafter layer to be shared). Its table is the tied head, never an
+ * input embedding: the embedding half of the drafter's input comes from the
+ * TRUNK's table at the backbone width (candidate_generator.py:1336-1337). */
+typedef struct {
+    ds4_tensor *norm[4];   /* input, post-attention, pre-FFN, post-FFN */
+    ds4_tensor *layer_scalar;
+    ds4_tensor *q, *o, *q_norm;
+    ds4_tensor *gate, *up, *down;
+    float scalar;
+} ds4_gemma4_mtp_layer;
+
+typedef struct {
+    ds4_tensor *embed;        /* tied head: 262144 x 1024, no separate lm_head */
+    ds4_tensor *norm;         /* mtp.model.norm, the head's last norm */
+    ds4_tensor *pre, *post;   /* [5632 -> 1024] and [1024 -> 2816] */
+    ds4_gemma4_mtp_layer layer[G4_MTP_LAYERS];
+} ds4_gemma4_mtp;
 
 /* A.X-K2: the gated RMSNorms' rank-16 gates and the routed experts with
  * their gate (4L), up (4L+3) and down (4L+2) books. */
@@ -5736,6 +5763,9 @@ typedef struct {
     ds4_axk2_layer *axk2;       /* A.X-K2 VQ: gated-norm gates and layers 1-60's experts. */
     ds4_mimo2vq_layer *mimo2vq; /* MiMo VQ: layers 1-47's experts (index il - 1). */
     ds4_gemma4_layer *gemma4;   /* Gemma-4 VQ: all 30 layers, experts included. */
+    /* Gemma-4 SSD expert cache, owned by the engine; NULL when the option is
+     * off. The graph stages the selected experts through it. */
+    ds4_gemma4_stream *gemma4_stream;
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -5782,6 +5812,8 @@ typedef struct {
     ds4_tensor *hc_head_fn;
     ds4_tensor *hc_head_scale;
     ds4_layer_weights block;
+    /* Gemma-4 VQ: the drafter part, bound from `--mtp` (`gemma4_mtp_bind`). */
+    ds4_gemma4_mtp *gemma4_mtp;
 } ds4_mtp_weights;
 
 /*
@@ -37283,6 +37315,8 @@ static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap);
 static uint32_t gemma4_prefill_cap(uint32_t ctx);
 static bool gemma4_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                ds4_session_graph_fit_quote *q);
+/* Defined next to the session allocator (ds4_gemma4_mtp.inc for the runtime). */
+static uint64_t gemma4_session_bytes(const ds4_engine *e, uint32_t ctx, uint32_t cap);
 
 ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size) {
     ds4_context_memory m = {0};
@@ -37804,6 +37838,8 @@ struct ds4_engine {
     ds4_model dspark_model;
 #ifndef DS4_NO_GPU
     ds4_glm53_stream glm53_stream;
+    /* Gemma-4's own bounded expert cache; NULL when --ssd-streaming is off. */
+    ds4_gemma4_stream *gemma4_stream;
     ds4_model vision_model;
     ds4_model audio_model;  /* MiMo VQ: the release's audio part. */
     ds4_glm53_vision_weights vision_weights;
@@ -46838,6 +46874,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_beam_graph.inc"
 #include "ds4_minimax_graph.inc"
 #include "ds4_axk2_graph.inc"
+#include "ds4_gemma4_stream.inc"
 #include "ds4_gemma4_graph.inc"
 #include "ds4_mimo2_dflash.inc"
 
@@ -48371,6 +48408,9 @@ struct ds4_session {
     bool axk2_graph_ready;
     ds4_gemma4_graph *gemma4_graph;
     bool gemma4_graph_ready;
+    /* The drafter's device state (ds4_gemma4_mtp.inc), owned by this session's
+     * graph when `--mtp` armed it. */
+    struct ds4_gemma4_mtp_runtime *gemma4_mtp;
     ds4_naive_graph naive_graph;
     bool naive_graph_ready;
     ds4_inkling_graph inkling_graph;
@@ -55033,6 +55073,14 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1 &&
             !(disable && disable[0] == '1' && disable[1] == '\0');
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        /* The drafter is a second checkpoint (`--mtp`), so it arms only when
+         * its part is bound; the serial lane drafts (SpecLane::Serial). */
+        const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
+        return e->backend == DS4_BACKEND_CUDA && e->mtp_ready &&
+            e->mtp_weights.gemma4_mtp != NULL && e->mtp_draft_tokens > 1 &&
+            !(disable && disable[0] == '1' && disable[1] == '\0');
+    }
     return e->mtp_ready;
 }
 
@@ -61060,7 +61108,7 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         return e->backend == DS4_BACKEND_CUDA
-            ? gemma4_session_memory((uint32_t)ctx, gemma4_prefill_cap((uint32_t)ctx)).total_bytes : 0;
+            ? gemma4_session_bytes(e, (uint32_t)ctx, gemma4_prefill_cap((uint32_t)ctx)) : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return e->backend == DS4_BACKEND_CUDA
@@ -73651,12 +73699,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         return 1;
     }
     if (opt->ssd_streaming &&
-        (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
+          DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GEMMA4) ||
          e->backend != DS4_BACKEND_CUDA || load_slice ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||
-         e->model.split_count > 1u)) {
-        fprintf(stderr, "ds4: SSD expert streaming requires one mmap-backed GLM CUDA model "
-                        "without slices, eager warming, anonymous copies or weight IPC\n");
+         (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53 &&
+          e->model.split_count > 1u))) {
+        fprintf(stderr, "ds4: SSD expert streaming requires one full mmap-backed "
+                        "GLM-5.3 or Gemma-4 CUDA model without layer slices, "
+                        "eager warming, anonymous copies or weight IPC\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -73983,6 +74034,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GEMMA4 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_BEAM_VQ) ||
             (dspark_path && dspark_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_NAIVE)) {
             fprintf(stderr,
@@ -74038,6 +74090,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
 #endif
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+            /* Gemma-4's drafter is the assistant checkpoint repacked as its
+             * own part: the four-layer `mtp.model` block plus the two
+             * projections across the backbone width. Refuse a file that is
+             * not that part instead of binding trunk names out of it. */
+            if (!model_find_tensor(&e->mtp_model, "mtp.pre_projection.weight") ||
+                !model_find_tensor(&e->mtp_model, "mtp.model.layers.0.self_attn.q_proj.weight")) {
+                fprintf(stderr, "ds4: MTP file is not the Gemma-4 assistant drafter\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            e->mtp_weights.gemma4_mtp = xcalloc(1, sizeof(*e->mtp_weights.gemma4_mtp));
+            gemma4_mtp_bind(e->mtp_weights.gemma4_mtp, &e->mtp_model);
+            if (e->mtp_draft_tokens > G4_MTP_DRAFTS) { e->mtp_draft_tokens = G4_MTP_DRAFTS; }
         } else {
             mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
         }
@@ -74286,7 +74353,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         bool budget_ok = true; /* --mem-budget-mb L1 gate */
         if (opt->ssd_streaming) {
             ds4_model_map_span_vec spans;
-            if (!glm53_stream_spans(&e->weights, &spans)) {
+            const bool gemma = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4;
+            if (gemma) {
+                if (!gemma4_stream_spans(&e->weights, &e->model, &spans)) {
+                    fprintf(stderr, "ds4: Gemma-4 SSD resident span plan failed\n");
+                    ds4_engine_close(e);
+                    *out = NULL;
+                    return 1;
+                }
+            } else if (!glm53_stream_spans(&e->weights, &spans)) {
                 ds4_engine_close(e);
                 *out = NULL;
                 return 1;
@@ -74305,11 +74380,35 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             free(sizes);
             free(spans.v);
             if (model_map_ok) {
-                model_map_ok = glm53_stream_alloc(&e->glm53_stream,
-                    &e->model, &e->weights, opt);
+                if (gemma) {
+                    /* The option is opt-in: this allocation exists only after
+                     * --ssd-streaming and the family gate above. */
+                    e->gemma4_stream = xcalloc(1, sizeof(*e->gemma4_stream));
+                    model_map_ok = gemma4_stream_alloc(e->gemma4_stream,
+                        &e->model, &e->weights, opt);
+                    if (model_map_ok) {
+                        e->weights.gemma4_stream = e->gemma4_stream;
+                    } else {
+                        gemma4_stream_free(e->gemma4_stream);
+                        e->gemma4_stream = NULL;
+                    }
+                } else {
+                    model_map_ok = glm53_stream_alloc(&e->glm53_stream,
+                        &e->model, &e->weights, opt);
+                }
             }
             fprintf(stderr, "ds4: SSD mandatory resident tensor spans: %.2f GiB\n",
                     (double)resident / 1073741824.0);
+            if (!model_map_ok) {
+                if (gemma) {
+                    fprintf(stderr, "ds4: Gemma-4 SSD streaming requires coherent CUDA "
+                                    "host page tables (the GB10 shape); this card keeps "
+                                    "the resident path\n");
+                }
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
         } else if (load_slice) {
             char load_end[32];
             if (load_output && load_layer_end == UINT32_MAX) {
@@ -74732,6 +74831,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
+        if (e->gemma4_stream &&
+            !gemma4_stream_attach(e->gemma4_stream, e->weights.glmvq_gpu)) {
+            fprintf(stderr, "ds4: Gemma-4 SSD stream attach failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ &&
             !beam_gpu_bind(&e->weights, &e->model)) {
             fprintf(stderr, "ds4: Beam source pointer binding failed\n");
@@ -75075,10 +75181,17 @@ void ds4_engine_close(ds4_engine *e) {
 #ifndef DS4_NO_GPU
     /* The reader borrows the model and layer table until its join. */
     glm53_stream_cancel(&e->glm53_stream);
+    /* The Gemma stream borrows the model map and the weight plan. */
+    gemma4_stream_free(e->gemma4_stream);
+    e->gemma4_stream = NULL;
 #endif
     weights_free(&e->weights);
     vocab_free(&e->vocab);
     ds4_threads_shutdown();
+    /* The Gemma-4 drafter's bound table is allocated by its own bind, not
+     * borrowed from the part's map. */
+    free(e->mtp_weights.gemma4_mtp);
+    e->mtp_weights.gemma4_mtp = NULL;
     if (e->mtp_ready) model_close(&e->mtp_model);
     if (e->dspark_ready) model_close(&e->dspark_model);
 #ifndef DS4_NO_GPU
@@ -75375,11 +75488,19 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     return fits;
 }
 
+/* The session's footprint: the graph, plus the drafter's scratch when the
+ * engine holds the part. The fit check, the governor's quote and the
+ * allocator all read this one function, so they cannot drift. */
+static uint64_t gemma4_session_bytes(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
+    return gemma4_session_memory(ctx, cap).total_bytes +
+        (e && e->mtp_weights.gemma4_mtp ? gemma4_mtp_scratch_bytes() : 0u);
+}
+
 /* Fails closed like every VQ family: a CUDA backend and the whole quote in
  * free memory plus the shared headroom. */
 static bool gemma4_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                ds4_session_graph_fit_quote *q) {
-    const uint64_t need = gemma4_session_memory(ctx, cap).total_bytes;
+    const uint64_t need = gemma4_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     uint64_t available = 0, total = 0;
@@ -75651,19 +75772,33 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     return fits;
 }
 
+/* The drafter's device state, allocated with the graph and owned by it
+ * (ds4_gemma4_mtp.inc). */
+static struct ds4_gemma4_mtp_runtime *gemma4_mtp_create(ds4_gemma4_graph *g,
+        const ds4_gemma4_mtp *w, const ds4_model *m, uint32_t drafts);
+
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_gemma4(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
-        const uint64_t estimate = gemma4_session_memory(ctx, s->prefill_cap).total_bytes;
+        const uint64_t estimate = gemma4_session_bytes(e, ctx, s->prefill_cap);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
-        const bool ok = gemma4_session_fit(e, ctx, s->prefill_cap, NULL) &&
+        bool ok = gemma4_session_fit(e, ctx, s->prefill_cap, NULL) &&
             (s->gemma4_graph = gemma4_graph_create(&e->model, &e->weights, ctx, s->prefill_cap)) != NULL;
+        /* The drafter is armed only when `--mtp` bound its part (has_mtp);
+         * the serial lane speculates through it. A failed allocation fails
+         * the session rather than silently turning drafting off. */
+        if (ok && ds4_engine_has_mtp(e)) {
+            s->gemma4_mtp = gemma4_mtp_create(s->gemma4_graph, e->mtp_weights.gemma4_mtp,
+                &e->mtp_model, (uint32_t)e->mtp_draft_tokens);
+            ok = s->gemma4_mtp != NULL;
+        }
         ds4_gpu_mem_scope_end();
         if (!ok) {
             gemma4_graph_release(s->gemma4_graph); s->gemma4_graph = NULL;
+            s->gemma4_mtp = NULL;
             s->gemma4_graph_ready = false;
             s->graph_alloc_bytes = 0; ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0); return 1;
         }
@@ -77816,6 +77951,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_iquest_session.inc"
 #include "ds4_ling31_session.inc"
 #include "ds4_gemma4_session.inc"
+#include "ds4_gemma4_mtp.inc"
 #include "ds4_beam_session.inc"
 #include "ds4_minimax_session.inc"
 #include "ds4_axk2_session.inc"
@@ -80264,6 +80400,31 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                 tokens[keep - 1] != eos_token &&
                 !ds4_token_is_stop(s->engine, tokens[keep - 1])) { keep++; }
             if (ds4_session_ling31_commit(s, keep, err, errlen)) { return -1; }
+            memcpy(accepted, tokens, (size_t)keep * sizeof(*accepted));
+            return keep;
+        }
+#endif
+        if (ds4_session_eval(s, first_token, err, errlen)) { return -1; }
+        accepted[0] = first_token;
+        return 1;
+    }
+    if (ds4_session_is_gemma4(s)) {
+#if !defined(DS4_NO_GPU)
+        int tokens[G4_MTP_DRAFTS + 1], target[G4_MTP_DRAFTS + 1];
+        const int cap = accepted_cap < max_tokens ? accepted_cap : max_tokens;
+        const int n = ds4_session_gemma4_trial(s, first_token, cap, tokens, target,
+            cap < (int)(sizeof(tokens) / sizeof(tokens[0])) ? cap
+                : (int)(sizeof(tokens) / sizeof(tokens[0])), err, errlen);
+        if (n < 0) { return -1; }
+        if (n) {
+            /* The longest candidate prefix whose rows match the trunk's own
+             * argmax; a stop token ends the accepted prefix, as the plain
+             * decode loop would. */
+            int keep = 1;
+            while (keep < n && tokens[keep] == target[keep - 1] &&
+                tokens[keep - 1] != eos_token &&
+                !ds4_token_is_stop(s->engine, tokens[keep - 1])) { keep++; }
+            if (ds4_session_gemma4_commit(s, keep, err, errlen)) { return -1; }
             memcpy(accepted, tokens, (size_t)keep * sizeof(*accepted));
             return keep;
         }

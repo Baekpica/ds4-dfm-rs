@@ -68,13 +68,22 @@ caches total 251,863,040 bytes (0.23 GiB).
 
 The engine maps the 9.37 GiB release for device access and keeps the
 embedding part on the host: each token's row is gathered from the page cache.
-The graph runs one row per forward by default. Grouped widths used to order
-their sums differently from the one-row launches (a two-row batch moved this
-model's logits by 2.4 nats, first at layer 0's output projection); the graph
-now repeats the one-row call per row for the Q4_K projections, the Q8_0 dense
-down, the router and the expert routes, so every width is bit-identical to one
-row. `DS4_GEMMA4_PREFILL_CHUNK` widens the chunk when an operator wants the
-repeat for a measured reason; the default stays one.
+The prefill chunk defaults to 512 rows (`DS4_GEMMA4_PREFILL_CHUNK` overrides
+it). The Q4_K projections and the expert routes run grouped over the chunk,
+the Ling-3.1 / A.X-K2 prefill shape: each expert matrix is restored once per
+chunk instead of once per route. The grouped Q4 FMA order is not bit-identical
+to the one-row path, the same trade the sibling families make;
+`DS4_GEMMA4_EXACT_PREFILL=1` restores the one-row per-route path for the
+exactness gate, which is byte-identical at chunks 1..22.
+
+SSD streaming is optional and off by default: `--ssd-streaming` moves the
+routed experts through a bounded device slot cache (4 GiB unless
+`--ssd-streaming-cache-experts N|GB` overrides it) and preads each VQ1 record
+from the artifact. Books, norms, attention, the dense FFN and the token table
+stay resident; `--ssd-streaming-cold` advises eviction of consumed expert
+pages. The option uses the GLM53 stream-map contract, which requires coherent
+CUDA host page tables: it runs on the GB10 and refuses on a discrete card,
+where the 4070 SUPER prints the refusal and keeps the resident path.
 
 The forward is the reference's order, layer by layer, with every rounding it
 makes: seven RMS norms per block, q/k norm and RoPE per head, the routed

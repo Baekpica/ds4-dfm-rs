@@ -10,23 +10,38 @@
 #define G4_RMS_EPS 1e-6f
 #define G4_ROUTER_ROOT (1.0f / 53.065996645686f)
 
+/* Defined by ds4_gemma4_mtp.inc: the forward publishes the final-norm row the
+ * drafter extrapolates from, and a rewrite drops it. */
+struct ds4_gemma4_graph;
+struct ds4_gemma4_mtp_runtime;
+static bool gemma4_mtp_publish(struct ds4_gemma4_graph *g, uint32_t row);
+static void gemma4_mtp_drop_hidden(struct ds4_gemma4_graph *g);
+static void gemma4_mtp_runtime_free(struct ds4_gemma4_mtp_runtime *r);
+
 typedef struct ds4_gemma4_graph {
     ds4_gvq_model *model;
     ds4_gvq_ctx *gvq;
     ds4_g4_moe *moe;
-    uint32_t ctx, cap, position;
-    ds4_gpu_tensor *cur, *norm, *branch, *tmp, *exp_acc;   /* [cap][2816] */
-    ds4_gpu_tensor *q, *k, *v, *attn;                      /* [cap][heads*dim] */
-    ds4_gpu_tensor *dense_g, *dense_u, *dense_mid;         /* [cap][2112] */
-    ds4_gpu_tensor *router_logits;                         /* [cap][128] */
-    ds4_gpu_tensor *selected, *weights;                    /* [cap*8] */
+    /* Engine-owned SSD expert cache; NULL unless --ssd-streaming is on. */
+    ds4_gemma4_stream *stream;
+    /* `cap` is the prefill chunk (and the KV ring's margin); `rows` is the
+     * activation row count, the wider of the chunk and one draft round's
+     * verify block (gemma4_token_rows). */
+    uint32_t ctx, cap, rows, position;
+    ds4_gpu_tensor *cur, *norm, *branch, *tmp, *exp_acc;   /* [rows][2816] */
+    ds4_gpu_tensor *q, *k, *v, *attn;                      /* [rows][heads*dim] */
+    ds4_gpu_tensor *dense_g, *dense_u, *dense_mid;         /* [rows][2112] */
+    ds4_gpu_tensor *router_logits;                         /* [rows][128] */
+    ds4_gpu_tensor *selected, *weights;                    /* [rows*8] */
     ds4_gpu_tensor *logits;                                /* [vocab] */
-    ds4_gpu_tensor *tokens;                                /* [cap] i32 */
-    ds4_gpu_tensor *positions;                             /* [cap] u32 */
+    ds4_gpu_tensor *tokens;                                /* [rows] i32 */
+    ds4_gpu_tensor *positions;                             /* [rows] u32 */
     ds4_gpu_tensor *inv_sliding, *inv_full;                /* rope tables */
     ds4_gpu_tensor *kcache[G4_LAYERS], *vcache[G4_LAYERS];
     float scalar[G4_LAYERS];
     uint64_t kv_bytes;
+    /* The drafter's device state, owned by graph 0 when `--mtp` armed it. */
+    struct ds4_gemma4_mtp_runtime *mtp;
     bool ready;
     bool failed;
     /* A bank graph owns its KV caches only; every other pointer, the GVQ
@@ -35,6 +50,21 @@ typedef struct ds4_gemma4_graph {
      * exact (ds4_gemma4_batch.inc). */
     bool borrowed;
 } ds4_gemma4_graph;
+
+/* The K/V the drafter consumes is the trunk's own, never a projection of its
+ * own: modeling_gemma4.py:1219-1239 takes `shared_kv_states[layer_type]` for
+ * a shared layer. The producer of each type is the last non-consumer trunk
+ * layer of that type (configuration_gemma4.py:236-251), which for this trunk
+ * is layer 28 (sliding, the ring) and layer 29 (full, the whole context) -
+ * see G4_SHARED_SLIDING/G4_SHARED_FULL. The rows are already stored by the
+ * ordinary forward, post k/v norm and post rope, so publishing is a read. */
+static const ds4_gpu_tensor *gemma4_shared_k(const ds4_gemma4_graph *g, bool full) {
+    return g->kcache[gemma4_shared_layer(full)];
+}
+
+static const ds4_gpu_tensor *gemma4_shared_v(const ds4_gemma4_graph *g, bool full) {
+    return g->vcache[gemma4_shared_layer(full)];
+}
 
 static uint32_t gemma4_index(const ds4_model *m, const ds4_tensor *t) {
     return t ? (uint32_t)(t - m->tensors) : DS4_GVQ_NO_LINK;
@@ -114,8 +144,9 @@ static bool gemma4_scalars(ds4_gemma4_graph *g, const ds4_model *m, const ds4_we
 static bool gemma4_graph_reset(ds4_gemma4_graph *g);
 
 static uint64_t gemma4_graph_bytes(uint32_t ctx, uint32_t cap) {
+    const uint32_t rows = gemma4_token_rows(cap);
     return gemma4_activation_bytes(cap) + ds4_gemma4_kv_bytes(ctx, cap) +
-        ds4_gpu_gvq_workspace_linear(cap) + ds4_gpu_g4_moe_bytes(cap < 512u ? cap : 512u);
+        ds4_gpu_gvq_workspace_linear(rows) + ds4_gpu_g4_moe_bytes(rows < 512u ? rows : 512u);
 }
 
 /* Frees what the graph owns. A borrowed bank graph owns only its KV rows;
@@ -130,6 +161,8 @@ static void gemma4_graph_clear(ds4_gemma4_graph *g) {
         memset(g, 0, sizeof(*g));
         return;
     }
+    gemma4_mtp_runtime_free(g->mtp);
+    g->mtp = NULL;
     ds4_gpu_g4_moe_free(g->moe);
     ds4_gpu_gvq_free(g->gvq);
     ds4_gpu_tensor_free(g->cur);
@@ -172,6 +205,9 @@ static bool gemma4_graph_bank(ds4_gemma4_graph *g, const ds4_gemma4_graph *owner
     g->failed = false;
     g->position = 0;
     g->kv_bytes = 0;
+    /* The drafter belongs to graph 0: the serial lane drafts, the banked lane
+     * does not, and a bank must not free the owner's runtime. */
+    g->mtp = NULL;
     for (uint32_t il = 0; il < G4_LAYERS; il++) { g->kcache[il] = g->vcache[il] = NULL; }
     for (uint32_t il = 0; il < G4_LAYERS; il++) {
         const uint32_t rows = ds4_gemma4_kv_rows(il, g->ctx, g->cap);
@@ -199,17 +235,22 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     ds4_gemma4_graph *g = xcalloc(1, sizeof(*g));
     g->ctx = ctx;
     g->cap = cap;
+    /* The activation rows cover one draft round's verify block as well as a
+     * prefill chunk (gemma4_token_rows); the KV ring margin stays `cap`. */
+    g->rows = gemma4_token_rows(cap);
+    const uint32_t rows = g->rows;
     g->model = w->glmvq_gpu;
-    g->gvq = ds4_gpu_gvq_create_linear(g->model, ds4_gpu_gvq_workspace_linear(cap), cap);
+    g->stream = w->gemma4_stream;
+    g->gvq = ds4_gpu_gvq_create_linear(g->model, ds4_gpu_gvq_workspace_linear(rows), rows);
     if (!g->gvq) {
         fprintf(stderr, "ds4: Gemma-4 GVQ context creation failed\n");
         gemma4_graph_release(g);
         return NULL;
     }
-    const uint64_t act = (uint64_t)cap * G4_EMBED * sizeof(float);
-    const uint64_t wide = (uint64_t)cap * G4_HEADS * G4_GLOBAL_HEAD_DIM * sizeof(float);
-    const uint64_t narrow = (uint64_t)cap * G4_HEADS * G4_HEAD_DIM * sizeof(float);
-    const uint64_t kvwidest = (uint64_t)cap * G4_KV_HEADS * G4_HEAD_DIM * sizeof(float);
+    const uint64_t act = (uint64_t)rows * G4_EMBED * sizeof(float);
+    const uint64_t wide = (uint64_t)rows * G4_HEADS * G4_GLOBAL_HEAD_DIM * sizeof(float);
+    const uint64_t narrow = (uint64_t)rows * G4_HEADS * G4_HEAD_DIM * sizeof(float);
+    const uint64_t kvwidest = (uint64_t)rows * G4_KV_HEADS * G4_HEAD_DIM * sizeof(float);
 #define G4_ALLOC(field, bytes) do { \
         g->field = ds4_gpu_tensor_alloc(bytes); \
         if (!g->field) { \
@@ -227,15 +268,15 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     G4_ALLOC(k, kvwidest);
     G4_ALLOC(v, kvwidest);
     G4_ALLOC(attn, wide);
-    G4_ALLOC(dense_g, (uint64_t)cap * G4_DENSE * sizeof(float));
-    G4_ALLOC(dense_u, (uint64_t)cap * G4_DENSE * sizeof(float));
-    G4_ALLOC(dense_mid, (uint64_t)cap * G4_DENSE * sizeof(float));
-    G4_ALLOC(router_logits, (uint64_t)cap * G4_EXPERTS * sizeof(float));
-    G4_ALLOC(selected, (uint64_t)cap * G4_USED * sizeof(uint32_t));
-    G4_ALLOC(weights, (uint64_t)cap * G4_USED * sizeof(float));
+    G4_ALLOC(dense_g, (uint64_t)rows * G4_DENSE * sizeof(float));
+    G4_ALLOC(dense_u, (uint64_t)rows * G4_DENSE * sizeof(float));
+    G4_ALLOC(dense_mid, (uint64_t)rows * G4_DENSE * sizeof(float));
+    G4_ALLOC(router_logits, (uint64_t)rows * G4_EXPERTS * sizeof(float));
+    G4_ALLOC(selected, (uint64_t)rows * G4_USED * sizeof(uint32_t));
+    G4_ALLOC(weights, (uint64_t)rows * G4_USED * sizeof(float));
     G4_ALLOC(logits, (uint64_t)G4_VOCAB * sizeof(float));
-    G4_ALLOC(tokens, (uint64_t)cap * sizeof(int32_t));
-    G4_ALLOC(positions, (uint64_t)cap * sizeof(uint32_t));
+    G4_ALLOC(tokens, (uint64_t)rows * sizeof(int32_t));
+    G4_ALLOC(positions, (uint64_t)rows * sizeof(uint32_t));
     G4_ALLOC(inv_sliding, G4_HEAD_DIM / 2u * sizeof(float));
     G4_ALLOC(inv_full, G4_GLOBAL_HEAD_DIM / 2u * sizeof(float));
 #undef G4_ALLOC
@@ -264,7 +305,7 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
         }
         g->kv_bytes += 2u * bytes;
     }
-    g->moe = ds4_gpu_g4_moe_create(g->gvq, cap < 512u ? cap : 512u);
+    g->moe = ds4_gpu_g4_moe_create(g->gvq, rows < 512u ? rows : 512u);
     if (!g->moe || !gemma4_scalars(g, m, w) || !gemma4_graph_reset(g)) {
         gemma4_graph_release(g);
         return NULL;
@@ -304,6 +345,8 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
 static bool gemma4_graph_reset(ds4_gemma4_graph *g) {
     g->position = 0;
     g->failed = false;
+    /* The published hidden belongs to a forward this reset discards. */
+    gemma4_mtp_drop_hidden(g);
     return true;
 }
 
@@ -411,20 +454,24 @@ static bool gemma4_hash_layers(void) {
     return value && !strcmp(value, "all");
 }
 
-/* Q4_K projections of one input, one row at a time when the prefill is
- * grouped. ds4_gpu_gvq_linear changes the Q4 kernel from two rows up: q4m's
- * tile has its own FMA order (cuda/glm_vq_q4m.cuh, header comment), and the
- * small-shape scalar/stream split is chosen per call (cuda/glm_vq_q4.cuh,
- * glmvq_q4_select), so neither a grouped call nor ds4_gpu_gvq_q4_decode_rows
- * (exact only for staged shapes) reproduces the one-row path for every
- * width. This family's reuse declaration is exactness, so the grouped path
- * keeps the one-row call per row and is the one-row result by construction.
- * The precedent is plain_graph_matmul_tensor's raw Q8 fallback in ds4.c,
- * which keeps one row when the reduction geometry moves with the row count. */
+/* P6a kept a grouped prefill bit-identical to the one-row path by repeating
+ * the one-row call per row. That makes prefill read every weight once per
+ * token. The sibling VQ families batch instead (Ling-3.1's l31_mm_many,
+ * A.X-K2's axk2_mm_many: one ds4_gpu_gvq_linear_many over all rows), so the
+ * weight is restored once per chunk and the GEMM amortizes it. The grouped
+ * Q4 kernel has its own FMA order from two rows up (cuda/glm_vq_q4m.cuh),
+ * which is the price of the batch. DS4_GEMMA4_EXACT_PREFILL=1 restores the
+ * one-row calls for the chunk-size exactness gate. */
+static bool gemma4_exact_prefill(void) {
+    return getenv("DS4_GEMMA4_EXACT_PREFILL") != NULL;
+}
+
+/* Q4_K projections of one input: the batched prefill path, or the one-row
+ * path the exactness gate measures. */
 static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *outs,
         const uint32_t *weights, const uint32_t *widths, uint32_t count,
         const ds4_gpu_tensor *in, uint32_t rows, uint32_t cols) {
-    if (rows == 1) {
+    if (rows == 1 || !gemma4_exact_prefill()) {
         return ds4_gpu_gvq_linear_many(g->gvq, outs, weights, count, in, rows, DS4_GVQ_BF16) != 0;
     }
     for (uint32_t r = 0; r < rows; r++) {
@@ -456,6 +503,41 @@ static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *o
         return false; \
     } \
 } while (0)
+
+/* The MoE over one layer's routes. Without the stream this is the single
+ * grouped call. With it, the stage admits the largest row prefix whose
+ * expert union fits the cache and the same grouped kernel runs over that
+ * prefix with the host-side route ids the stage already read. */
+static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
+        const ds4_weights *w, uint32_t il, const uint32_t *experts, uint32_t rows) {
+    if (!g->stream) {
+        return ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected,
+            g->weights, experts, rows) != 0;
+    }
+    for (uint32_t done = 0; done < rows;) {
+        const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il,
+            g->selected, done, rows - done);
+        if (!chunk) { return false; }
+        ds4_gpu_tensor *out = ds4_gpu_tensor_view(g->exp_acc,
+            (uint64_t)done * G4_EMBED * sizeof(float),
+            (uint64_t)chunk * G4_EMBED * sizeof(float));
+        ds4_gpu_tensor *in = ds4_gpu_tensor_view(g->norm,
+            (uint64_t)done * G4_EMBED * sizeof(float),
+            (uint64_t)chunk * G4_EMBED * sizeof(float));
+        ds4_gpu_tensor *wt = ds4_gpu_tensor_view(g->weights,
+            (uint64_t)done * G4_USED * sizeof(float),
+            (uint64_t)chunk * G4_USED * sizeof(float));
+        const bool ok = out && in && wt &&
+            ds4_gpu_g4_moe_run_ids(g->moe, out, in, wt, experts,
+                g->stream->ids, chunk) != 0;
+        ds4_gpu_tensor_free(wt);
+        ds4_gpu_tensor_free(in);
+        ds4_gpu_tensor_free(out);
+        if (!ok) { return false; }
+        done += chunk;
+    }
+    return true;
+}
 
 static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         uint32_t il, uint32_t rows, uint32_t first) {
@@ -519,7 +601,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     G4_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows, kv_width,
         ring, capacity), "value cache store");
     G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
-        first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring), "attention");
+        first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
     gemma4_probe_at(g->attn, il, "attn out");
     if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
     if (hash_stages && rows > 1) { gemma4_probe_row(g->attn, il, "attn out", rows - 1u, heads_width); }
@@ -544,13 +626,14 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     ds4_gpu_tensor *dense_out[2] = {g->dense_g, g->dense_u};
     bool dense_ok = gemma4_projection_rows(g, dense_out, dense, dense_width, 2u, g->norm, rows, G4_EMBED) &&
         ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE);
-    if (dense_ok && rows == 1) {
+    if (dense_ok && (rows == 1 || !gemma4_exact_prefill())) {
+        /* The Q8_0 dense kernel takes the token count directly; one call
+         * over the chunk restores the matrix once, like the Q4 projections
+         * above. */
         dense_ok = ds4_gpu_matmul_q8_0_tensor(g->branch, m->map, m->size,
             l->dense_down->abs_offset, G4_DENSE, G4_EMBED, g->dense_mid, rows) != 0;
     } else if (dense_ok) {
-        /* The Q8_0 dense-vec kernel takes the token count as a template
-         * dimension; keep the one-row call per row for the same reason as
-         * the Q4 projections. */
+        /* Exactness gate: the one-row call per row, as P6a measured. */
         for (uint32_t r = 0; r < rows; r++) {
             ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(g->dense_mid,
                 (uint64_t)r * G4_DENSE * sizeof(float), (uint64_t)G4_DENSE * sizeof(float));
@@ -608,7 +691,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         experts[2u * G4_EXPERTS + e] = gemma4_index(m, l->down[e]);
     }
     if (!ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, l->norm[4]), rows, G4_EMBED, G4_RMS_EPS) ||
-        !ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected, g->weights, experts, rows) ||
+        !gemma4_moe_run(g, m, w, il, experts, rows) ||
         !ds4_gpu_g4_rms(g->gvq, g->exp_acc, g->exp_acc, gemma4_index(m, l->norm[6]), rows, G4_EMBED, G4_RMS_EPS)) {
         fprintf(stderr, "ds4: Gemma-4 experts failed at layer %u\n", il);
         return false;
@@ -633,7 +716,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
 /* tokens at absolute positions first..first+rows-1; logits for the last row. */
 static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         const uint32_t *tokens, uint32_t rows, uint32_t first, bool want_logits) {
-    if (!g->ready || !rows || first + rows > g->ctx) { return false; }
+    if (!g->ready || !rows || first + rows > g->ctx || rows > g->rows) { return false; }
     int32_t ids[G4_PREFILL_MAX];
     uint32_t pos[G4_PREFILL_MAX];
     if (rows > G4_PREFILL_MAX) { return false; }
@@ -672,6 +755,10 @@ static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     }
     gemma4_probe_at(g->norm, G4_LAYERS, "final norm");
     g->position = first + rows;
+    /* The drafter's hidden half is this forward's last final-norm row
+     * (candidate_generator.py:1321-1324, and modeling_gemma4_assistant.py:176
+     * consumes it as `last_hidden_state`); only the last row is ever needed. */
+    if (g->mtp && !gemma4_mtp_publish(g, rows - 1u)) { return false; }
     if (!want_logits) { return true; }
     ds4_gpu_tensor *last = ds4_gpu_tensor_view(g->norm,
         (uint64_t)(rows - 1u) * G4_EMBED * sizeof(float), (uint64_t)G4_EMBED * sizeof(float));

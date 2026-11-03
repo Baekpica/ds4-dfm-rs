@@ -28,6 +28,22 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *moe);
 int ds4_gpu_g4_moe_run(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
     const uint32_t *matrices, uint32_t rows);
+/* The same run with the route ids already on the host (the SSD stage reads
+ * them once); `routes` is rows * G4_USED expert indices. */
+int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+    const ds4_gpu_tensor *weights, const uint32_t *matrices,
+    const int32_t *routes, uint32_t rows);
+
+/* Gemma-only SSD rebind: point the plan's host source entry for `index` at a
+ * device slot holding a byte copy of the VQ1 record. `header` is the first
+ * 128 bytes of that record (the slot copy and the header share the record's
+ * own layout). `res_index`/`res_slot`/`res_header` describe the linked GVR8
+ * residual record, or DS4_GVQ_NO_LINK when the artifact has no residual
+ * stage. The book and residual book stay resident. */
+int ds4_gpu_g4_stream_rebind(ds4_gvq_model *model, uint32_t index,
+    const ds4_gpu_tensor *slot, uint64_t offset, uint64_t bytes, const void *header,
+    uint32_t res_index, const ds4_gpu_tensor *res_slot, uint64_t res_offset,
+    uint64_t res_bytes, const void *res_header);
 
 /* KV store into bf16 slots; `ring` 0 means slot = absolute position. */
 int ds4_gpu_g4_kv_store(ds4_gpu_tensor *dst, const ds4_gpu_tensor *src,
@@ -50,17 +66,21 @@ int ds4_gpu_g4_softcap(ds4_gpu_tensor *logits, uint64_t count);
 int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar);
 int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query, const ds4_gpu_tensor *key,
     const ds4_gpu_tensor *value, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
-    uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring);
+    uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring,
+    uint32_t keys);
 
-/* Sliding layers keep window + chunk rows (a ring): a chunk of `chunk` rows
- * may overwrite the slots it writes, and window + chunk keeps those slots
- * older than the oldest key the first row of that chunk still reads. A full
- * layer keeps the whole context. A context shorter than the ring is clamped to
- * ctx, the largest position the ring can ever hold, so the allocator and the
- * host quote (serving_host) price the same number. */
+/* Sliding layers keep window + the widest block one forward writes (a ring):
+ * that block may overwrite the slots it writes, and window + block keeps those
+ * slots older than the oldest key the first row of the block still reads. The
+ * block is the prefill chunk or one draft round's verify block, whichever is
+ * wider (gemma4_token_rows); with a ring of only window + chunk, a verify
+ * block wider than the chunk would clobber keys its own first rows read. A
+ * full layer keeps the whole context. A context shorter than the ring is
+ * clamped to ctx, the largest position the ring can ever hold, so the
+ * allocator and the host quote (serving_host) price the same number. */
 static inline uint32_t ds4_gemma4_kv_rows(unsigned layer, unsigned ctx, unsigned chunk) {
     if (gemma4_is_full(layer)) { return ctx; }
-    const uint32_t rows = G4_WINDOW + chunk;
+    const uint32_t rows = G4_WINDOW + gemma4_token_rows(chunk);
     return rows < ctx ? rows : ctx;
 }
 

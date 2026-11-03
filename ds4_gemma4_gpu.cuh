@@ -151,12 +151,16 @@ extern "C" int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float s
 extern "C" int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
         const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
         const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
-        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring) {
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring,
+        uint32_t keys) {
     if (!out || !query || !key || !value || !positions || !rows || !heads || !kv_heads || !dim) {
         return 0;
     }
     const uint64_t kv_stride = (uint64_t)kv_heads * dim;
     const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    /* `keys` 0 is first + rows; anything else must fit the cache and cover at
+     * least one key, or the softmax would divide by a zero total. */
+    if (keys && (!keys || keys > first + rows)) { return 0; }
     if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
         query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
         key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
@@ -168,7 +172,7 @@ extern "C" int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
     g4_attn_kernel<<<blocks, warps * 32u, 0, ds4_current_stream()>>>((float *)out->ptr,
         (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
         (const __nv_bfloat16 *)value->ptr, rows, first, heads, kv_heads, dim, window, ring,
-        kv_stride);
+        keys, kv_stride);
     return cuda_ok(cudaGetLastError(), "Gemma-4 attention");
 }
 
@@ -242,13 +246,15 @@ __global__ static void g4_moe_scatter_kernel(float *dst, const float *src, const
     dst[target] = g4_round(dst[target] + src[i] * weights[pair]);
 }
 
-extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
-        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const uint32_t *matrices,
+static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, const int32_t *routes,
         uint32_t rows) {
-    if (!m || !out || !input || !selected || !weights || !matrices || !rows ||
+    if (!m || !out || !input || !weights || !matrices || !routes || !rows ||
         rows > m->chunk) { return 0; }
     const uint64_t pairs = (uint64_t)rows * G4_USED;
-    if (!ds4_gpu_tensor_read(selected, 0, m->routes, pairs * sizeof(int32_t))) { return 0; }
+    if (routes != m->routes) {
+        memcpy(m->routes, routes, (size_t)pairs * sizeof(int32_t));
+    }
     uint32_t counts[G4_EXPERTS] = {}, offsets[G4_EXPERTS + 1] = {}, cursor[G4_EXPERTS];
     for (uint64_t i = 0; i < pairs; i++) {
         const int32_t expert = m->routes[i];
@@ -262,13 +268,14 @@ extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_
     for (uint64_t i = 0; i < pairs; i++) { m->grouped[cursor[m->routes[i]]++] = (uint32_t)i; }
     if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, pairs * sizeof(uint32_t))) { return 0; }
     if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
-    if (rows > 1) {
-        /* A grouped prefill must equal the one-row path bit for bit. An
-         * expert's GEMM takes N rows when two routes group into it, and the
-         * gemm's accumulation order is not invariant in N (the gather and the
-         * scatter are exact copies and a rounded add). Run each route as its
-         * own one-row projection; `grouped` is built expert-ascending, so the
-         * accumulator adds in the same order as the one-row path. */
+    if (rows > 1 && getenv("DS4_GEMMA4_EXACT_PREFILL")) {
+        /* P6a's chunk-size exactness gate: run each route as its own one-row
+         * projection, so the grouped prefill equals the one-row path bit for
+         * bit. This is the fallback for the gate, not the default: it
+         * restores every expert matrix once per route (measured at 72.7% of
+         * the prefill's GPU time on the 4070 SUPER), while the grouped loop
+         * below restores it once per expert per chunk, the Ling-3.1 /
+         * A.X-K2 prefill shape. */
         const uint32_t blocks = (uint32_t)((G4_EMBED + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
         for (uint64_t i = 0; i < pairs; i++) {
             const uint32_t expert = (uint32_t)m->routes[m->grouped[i]];
@@ -312,6 +319,93 @@ extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_
             (const uint32_t *)m->order->ptr, offsets[e], elements, G4_EMBED);
         if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter")) { return 0; }
     }
+    return 1;
+}
+
+extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows) {
+    if (!m || !selected || !rows || rows > m->chunk) { return 0; }
+    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    if (!ds4_gpu_tensor_read(selected, 0, m->routes, pairs * sizeof(int32_t))) {
+        return 0;
+    }
+    return g4_moe_run_routes(m, out, input, weights, matrices, m->routes, rows);
+}
+
+extern "C" int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
+        const uint32_t *matrices, const int32_t *routes, uint32_t rows) {
+    return g4_moe_run_routes(m, out, input, weights, matrices, routes, rows);
+}
+
+/* Rebase a streamed VQ1 record. This mirrors gvq_link's VQ branch (and
+ * gvq_link_res for the residual), but reads the record's own header from the
+ * host staging copy and points the source at the device slot. The book and
+ * residual book are separate resident records, so their pointers stay as the
+ * bind left them. */
+extern "C" int ds4_gpu_g4_stream_rebind(ds4_gvq_model *model, uint32_t index,
+        const ds4_gpu_tensor *slot, uint64_t offset, uint64_t bytes, const void *header,
+        uint32_t res_index, const ds4_gpu_tensor *res_slot, uint64_t res_offset,
+        uint64_t res_bytes, const void *res_header) {
+    if (!model || index >= model->source.size() || !slot || !header || !bytes ||
+        offset > slot->bytes || bytes > slot->bytes - offset || bytes < GVQ_HEADER) {
+        return 0;
+    }
+    const ds4_gvq_record &r = model->records[index];
+    if (r.type != GVQ_TYPE_VQ || r.bytes != bytes || r.book >= model->source.size() ||
+        model->records[r.book].type != GVQ_TYPE_BOOK) { return 0; }
+    const uint8_t *h = (const uint8_t *)header;
+    const uint32_t precision = gvq_u32(h, 20), words = gvq_u32(h, 16);
+    const uint64_t gain = gvq_u64(h, 32), main = gvq_u64(h, 40), plane = gvq_u64(h, 48);
+    const uint64_t elements = (uint64_t)r.rows * r.cols;
+    const bool v1 = h[4] == 1 && !h[5];
+    const bool wide = v1 && h[6] == 13 && words == 8192 && plane;
+    const bool narrow = v1 && h[6] == 12 && words == 4096 && !plane;
+    const bool v2 = h[4] == 2 && !h[5] && plane && r.res == DS4_GVQ_NO_LINK &&
+        ((h[6] == 9 && words == 512) || (h[6] == 10 && words == 1024));
+    const uint64_t main_bytes = v2 ? elements / 8 : elements * 3 / 16;
+    const uint64_t plane_bytes = v2 ? elements * (h[6] - 8u) / 64 : elements / 64;
+    if (memcmp(h, "GVQ1", 4) || (!wide && !narrow && !v2) || h[7] != GLMVQ_VECTOR ||
+        gvq_u32(h, 8) != r.rows || gvq_u32(h, 12) != r.cols ||
+        precision != GLMVQ_E4M3 ||
+        model->records[r.book].bytes != (uint64_t)words * GLMVQ_VECTOR ||
+        gvq_u64(h, 56) != r.bytes ||
+        !gvq_span(gain, (uint64_t)r.rows * sizeof(__half), r.bytes) ||
+        !gvq_span(main, main_bytes, r.bytes) ||
+        ((wide || v2) && !gvq_span(plane, plane_bytes, r.bytes))) { return 0; }
+
+    const uint8_t *data = (const uint8_t *)slot->ptr + offset;
+    glmvq_source &s = model->source[index];
+    s.data = data;
+    s.storage = GLMVQ_WEIGHT_VQ;
+    s.rows = r.rows;
+    s.cols = r.cols;
+    s.vq = {data + main, (wide || v2) ? data + plane : nullptr,
+        model->source[r.book].data, (const __half *)(data + gain),
+        r.rows, r.cols, GLMVQ_E4M3, nullptr, nullptr};
+
+    if (r.res == DS4_GVQ_NO_LINK) {
+        return res_index == DS4_GVQ_NO_LINK;
+    }
+    if (res_index != r.res || res_index >= model->source.size() || !res_slot ||
+        !res_header || res_bytes != model->records[res_index].bytes ||
+        res_offset > res_slot->bytes || res_bytes > res_slot->bytes - res_offset ||
+        res_bytes < GVQ_HEADER) { return 0; }
+    const ds4_gvq_record &rr = model->records[res_index];
+    const uint32_t res_book = rr.book;
+    if (rr.type != GVQ_TYPE_RES || res_book >= model->source.size() ||
+        model->records[res_book].type != GVQ_TYPE_BOOK ||
+        model->records[res_book].bytes != (uint64_t)256u * GLMVQ_VECTOR) { return 0; }
+    const uint8_t *rh = (const uint8_t *)res_header;
+    if (memcmp(rh, "GVR1", 4) || rh[4] != 1 || rh[5] || rh[6] != 8 ||
+        rh[7] != GLMVQ_VECTOR || gvq_u32(rh, 8) != rr.rows ||
+        gvq_u32(rh, 12) != rr.cols || gvq_u32(rh, 16) != 256u ||
+        gvq_u32(rh, 20) != GLMVQ_E4M3 || gvq_u32(rh, 28) ||
+        gvq_u64(rh, 32) != GVQ_HEADER || gvq_u64(rh, 56) != rr.bytes ||
+        !gvq_span(GVQ_HEADER, (uint64_t)rr.rows * rr.cols / 8u, rr.bytes)) { return 0; }
+    s.vq.res = (const uint8_t *)res_slot->ptr + res_offset + GVQ_HEADER;
+    s.vq.res_book = (const uint8_t *)model->source[res_book].data;
     return 1;
 }
 

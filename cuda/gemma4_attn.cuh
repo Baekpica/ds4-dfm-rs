@@ -29,11 +29,20 @@ __device__ __forceinline__ static float g4_warp_sum(float value) {
  * [position - window + 1, position] (semantics 3.4). `ring` is the cache's
  * row count when rows wrap (a sliding layer keeps window + prefill_cap rows,
  * so a prefill batch never overwrites a slot its own rows still read); 0
- * means the cache is indexed by absolute position. */
+ * means the cache is indexed by absolute position.
+ *
+ * `keys` is how many keys the cache actually holds: 0 means first + rows, the
+ * ordinary forward's case. The drafter passes a shorter count, because its
+ * query sits at the position of the token being committed while the trunk has
+ * written only the rows before it (candidate_generator.py:1316-1319 truncates
+ * the shared KV to the committed length; candidate_generator.py:1327 puts the
+ * query at `input_ids.shape[1] - 1`). The window's begin is still relative to
+ * the QUERY's position, as the reference's flipped sliding mask is. */
 __global__ static void g4_attn_kernel(float *out, const float *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t rows, uint32_t first, uint32_t heads, uint32_t kv_heads,
-        uint32_t dim, uint32_t window, uint32_t ring, uint64_t kv_stride) {
+        uint32_t dim, uint32_t window, uint32_t ring, uint32_t keys,
+        uint64_t kv_stride) {
     const uint32_t warp = threadIdx.x / 32u;
     const uint32_t lane = threadIdx.x % 32u;
     const uint64_t job = (uint64_t)blockIdx.x * (blockDim.x / 32u) + warp;
@@ -56,7 +65,8 @@ __global__ static void g4_attn_kernel(float *out, const float *query,
     }
     float maximum = -INFINITY, total = 0.0f;
     const uint32_t begin = window && position + 1 > window ? position + 1 - window : 0u;
-    for (uint32_t k = begin; k <= position; k++) {
+    const uint32_t last = keys && keys <= position ? keys - 1u : position;
+    for (uint32_t k = begin; k <= last; k++) {
         const uint64_t slot = ring ? (uint64_t)(k % ring) : k;
         const __nv_bfloat16 *kv = key + slot * kv_stride + (uint64_t)kv_head * dim;
         float dot = 0.0f;

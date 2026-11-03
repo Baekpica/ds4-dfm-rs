@@ -50,7 +50,24 @@ enum {
     G4_MTP_EMBED = 1024,
     G4_MTP_FFN = 8192,
     G4_MTP_FULL = 3,
-    G4_MTP_HEADS = 16
+    G4_MTP_HEADS = 16,
+    /* The trunk layers that publish the shared K/V. configuration_gemma4.py:
+     * 236-251 designates the last non-consumer layer of each type as the
+     * "store" producer, "even if no layer reuses them: assistant models
+     * (e.g. Gemma4Assistant) read them from the shared_kv_states returned by
+     * the target model". This trunk shares no layer (config.json
+     * num_kv_shared_layers 0), so every layer is a non-consumer and the
+     * producers are the last sliding layer (28) and the last full layer
+     * (29). The pinned property returns early for a 0-sharing config, so the
+     * file and its own comment disagree there; the port follows the stated
+     * rule (docs/gemma4-reference-semantics.md, "Which trunk layers must
+     * publish KV"). */
+    G4_SHARED_SLIDING = 28,
+    G4_SHARED_FULL = 29,
+    /* Draft width the engine clamps `--mtp-draft` to: the assistant drafts
+     * one token per forward at the fixed position, and four keep the verify
+     * row block at the artifact's own layer count (G4_MTP_LAYERS). */
+    G4_MTP_DRAFTS = G4_MTP_LAYERS
 };
 
 static inline bool gemma4_is_full(unsigned layer) {
@@ -74,6 +91,29 @@ static inline double gemma4_rope_base(unsigned layer) {
     return gemma4_is_full(layer) ? 1000000.0 : 10000.0;
 }
 
+/* The drafter's per-layer geometry is its own config.json: layers 0-2 are
+ * sliding at head_dim 256 over the trunk's 8 KV heads, layer 3 is full at
+ * 512 over the trunk's 2 (text_config in the assistant checkpoint). The
+ * rotary is the trunk's: sliding default theta 1e4 with every pair rotating,
+ * full proportional 0.25 at theta 1e6, so the trunk's own tables apply. */
+static inline bool gemma4_mtp_is_full(unsigned layer) {
+    return layer == G4_MTP_FULL;
+}
+
+static inline unsigned gemma4_mtp_head_dim(unsigned layer) {
+    return gemma4_mtp_is_full(layer) ? G4_GLOBAL_HEAD_DIM : G4_HEAD_DIM;
+}
+
+static inline unsigned gemma4_mtp_rot(unsigned layer) {
+    return gemma4_rot(gemma4_mtp_is_full(layer) ? G4_SHARED_FULL : G4_SHARED_SLIDING);
+}
+
+/* The published K/V of one layer type: the trunk layer, its cache geometry
+ * and the KV head count the drafter's 16 query heads group over. */
+static inline unsigned gemma4_shared_layer(bool full) {
+    return full ? G4_SHARED_FULL : G4_SHARED_SLIDING;
+}
+
 typedef struct {
     uint64_t full, sliding, scratch;
 } ds4_gemma4_memory;
@@ -83,13 +123,22 @@ typedef struct {
  * attention buffers (allocated at the full-layer width for every layer), the
  * two KV row widths, the router scores and the top-8 selection, and the
  * tied-table logits. The graph allocates exactly this and the estimator
- * quotes the same number, so the two cannot drift. */
+ * quotes the same number, so the two cannot drift.
+ *
+ * The token and position rows are the LARGER of the chunk and one draft
+ * round's verify block (G4_MTP_DRAFTS + 1): the drafter's verify forward runs
+ * the whole candidate block through the same graph. */
+static inline uint32_t gemma4_token_rows(unsigned cap) {
+    return cap < G4_MTP_DRAFTS + 1u ? G4_MTP_DRAFTS + 1u : cap;
+}
+
 static inline uint64_t gemma4_activation_bytes(unsigned cap) {
-    const uint64_t rows = (uint64_t)cap;
+    const uint64_t rows = gemma4_token_rows(cap);
     return rows * ((uint64_t)5u * G4_EMBED + 3u * G4_DENSE +
         (uint64_t)G4_HEADS * G4_GLOBAL_HEAD_DIM + (uint64_t)G4_HEADS * G4_HEAD_DIM +
         2u * G4_KV_HEADS * G4_HEAD_DIM + (uint64_t)G4_GLOBAL_KV_HEADS * G4_GLOBAL_HEAD_DIM +
         G4_EXPERTS + 2u * G4_USED) * sizeof(float) +
+        (uint64_t)gemma4_token_rows(cap) * (sizeof(int32_t) + sizeof(uint32_t)) +
         (uint64_t)G4_VOCAB * sizeof(float);
 }
 
@@ -101,7 +150,7 @@ static inline uint64_t gemma4_activation_bytes(unsigned cap) {
 static inline unsigned gemma4_kv_capacity(unsigned layer, unsigned ctx,
                                           unsigned cap) {
     if (gemma4_is_full(layer)) { return ctx; }
-    const unsigned needed = G4_WINDOW + cap;
+    const unsigned needed = G4_WINDOW + gemma4_token_rows(cap);
     return ctx < needed ? ctx : needed;
 }
 
@@ -132,6 +181,27 @@ static inline ds4_gemma4_memory gemma4_memory(unsigned ctx, unsigned cap) {
         G4_USED * G4_EMBED + 8u;
     m.scratch = ((uint64_t)cap * row + G4_VOCAB) * sizeof(float);
     return m;
+}
+
+/* The drafter's device scratch, one number for the allocator and the quote:
+ * the trunk hidden row and the token row it is concatenated with, the
+ * drafter's residual stream and its norm, the wide query/attention rows at
+ * the full layer's width, the o projection and the three MLP rows, plus the
+ * drafter's own vocabulary head (one row) and the verify block's logits (one
+ * row per accepted candidate, G4_MTP_DRAFTS + 1). */
+static inline uint64_t gemma4_mtp_scratch_bytes(void) {
+    const uint64_t floats =
+        (uint64_t)G4_EMBED +            /* hidden: the trunk's final-norm row */
+        (uint64_t)G4_EMBED +            /* emb: the trunk's token row */
+        (uint64_t)2u * G4_EMBED +       /* cat: [emb | hidden], 2 * 2816 */
+        (uint64_t)2u * G4_MTP_EMBED +   /* x, xn */
+        (uint64_t)2u * G4_MTP_HEADS * G4_GLOBAL_HEAD_DIM +  /* q, attn */
+        (uint64_t)G4_MTP_EMBED +        /* o projection */
+        (uint64_t)3u * G4_MTP_FFN +     /* mlp gate, up, product */
+        (uint64_t)G4_VOCAB +            /* the drafter's head, one row */
+        (uint64_t)(G4_MTP_DRAFTS + 1u) * G4_VOCAB;  /* verify rows */
+    return floats * sizeof(float) +
+        (G4_MTP_DRAFTS + 1u) * sizeof(int32_t) + sizeof(uint32_t);
 }
 
 #endif
