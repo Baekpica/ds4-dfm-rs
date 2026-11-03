@@ -984,8 +984,10 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             bank_support: Support::None,
             reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
+            // The session payload carries both KV layouts (the sliding ring
+            // and the full context) and restores exactly (P7 slice 1).
             disk: Support::None,
-            snapshot: Support::None,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,

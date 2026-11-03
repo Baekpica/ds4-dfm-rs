@@ -53169,6 +53169,7 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_naive_payload.inc"
 #include "ds4_iquest_payload.inc"
 #include "ds4_ling31_payload.inc"
+#include "ds4_gemma4_payload.inc"
 #include "ds4_beam_payload.inc"
 #include "ds4_minimax_payload.inc"
 #include "ds4_axk2_payload.inc"
@@ -56293,6 +56294,10 @@ static int ds4_session_eval_speculative_batch_first3(
 
 uint64_t ds4_session_payload_bytes(ds4_session *s) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_gemma4(s)) {
+        return s->checkpoint_valid && s->gemma4_graph_ready && s->gemma4_graph
+            ? gemma4_payload_bytes(s->gemma4_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
     if (ds4_session_is_iquest(s)) {
         return s->checkpoint_valid && s->iquest_graph_ready ? iquest_payload_bytes(&s->iquest_graph, (unsigned)s->checkpoint.len) : 0;
     }
@@ -56523,6 +56528,14 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_gemma4(s)) {
+        if (!ds4_session_payload_bytes(s)) {
+            payload_set_err(err, errlen, "Gemma-4 has no snapshot-ready checkpoint");
+            return 1;
+        }
+        return gemma4_payload_save(s->gemma4_graph, s->checkpoint.v,
+            (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
     if (ds4_session_is_iquest(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "IQuest-Q1 has no snapshot-ready checkpoint"); return 1; }
         return iquest_payload_save(&s->iquest_graph, s->checkpoint.v, (unsigned)s->checkpoint.len, s->logits, fp, err, errlen);
@@ -57172,13 +57185,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     const uint32_t payload_version = h[1];
 #ifndef DS4_NO_GPU
-    /* Gemma-4's KV is two layouts (a sliding ring and the full context) and
-     * its payload file lands in P7; until then a DeepSeek-shaped record must
-     * not be read into these rings. */
-    if (ds4_session_is_gemma4(s)) {
-        payload_set_err(err, errlen, "Gemma-4 disk KV restore is not implemented yet");
-        return 1;
-    }
+
     if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
     if (ds4_session_is_solar(s)) {
         return session_solar_load_payload(
@@ -57188,7 +57195,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
@@ -57210,6 +57217,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             ? naive_payload_restore(&s->naive_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_mimo2(s)
             ? mimo2_payload_restore(&s->mimo2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_gemma4(s)
+            ? gemma4_payload_restore(s->gemma4_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_qwen4exp(s)
             ? qwen4exp_payload_restore_graph(
                   &s->qwen_graph, s->engine->qwen_ple_store,
