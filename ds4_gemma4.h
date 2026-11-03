@@ -52,10 +52,16 @@ int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query, const ds4_
     const ds4_gpu_tensor *value, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
     uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window, uint32_t ring);
 
-/* Sliding layers keep window + chunk rows (a ring); a full layer keeps the
- * whole context. These helpers are the single place that decides layout. */
+/* Sliding layers keep window + chunk rows (a ring): a chunk of `chunk` rows
+ * may overwrite the slots it writes, and window + chunk keeps those slots
+ * older than the oldest key the first row of that chunk still reads. A full
+ * layer keeps the whole context. A context shorter than the ring is clamped to
+ * ctx, the largest position the ring can ever hold, so the allocator and the
+ * host quote (serving_host) price the same number. */
 static inline uint32_t ds4_gemma4_kv_rows(unsigned layer, unsigned ctx, unsigned chunk) {
-    return gemma4_is_full(layer) ? ctx : G4_WINDOW + chunk;
+    if (gemma4_is_full(layer)) { return ctx; }
+    const uint32_t rows = G4_WINDOW + chunk;
+    return rows < ctx ? rows : ctx;
 }
 
 static inline uint64_t ds4_gemma4_kv_bytes(unsigned ctx, unsigned chunk) {
