@@ -29,6 +29,11 @@ typedef struct ds4_gemma4_graph {
     uint64_t kv_bytes;
     bool ready;
     bool failed;
+    /* A bank graph owns its KV caches only; every other pointer, the GVQ
+     * context and the expert scratch belong to graph 0. Bank forwards are
+     * serialized under the engine generation lock, so sharing them is
+     * exact (ds4_gemma4_batch.inc). */
+    bool borrowed;
 } ds4_gemma4_graph;
 
 static uint32_t gemma4_index(const ds4_model *m, const ds4_tensor *t) {
@@ -113,8 +118,18 @@ static uint64_t gemma4_graph_bytes(uint32_t ctx, uint32_t cap) {
         ds4_gpu_gvq_workspace_linear(cap) + ds4_gpu_g4_moe_bytes(cap < 512u ? cap : 512u);
 }
 
-static void gemma4_graph_release(ds4_gemma4_graph *g) {
+/* Frees what the graph owns. A borrowed bank graph owns only its KV rows;
+ * the rest is graph 0's and outlives it. */
+static void gemma4_graph_clear(ds4_gemma4_graph *g) {
     if (!g) { return; }
+    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+        ds4_gpu_tensor_free(g->kcache[il]);
+        ds4_gpu_tensor_free(g->vcache[il]);
+    }
+    if (g->borrowed) {
+        memset(g, 0, sizeof(*g));
+        return;
+    }
     ds4_gpu_g4_moe_free(g->moe);
     ds4_gpu_gvq_free(g->gvq);
     ds4_gpu_tensor_free(g->cur);
@@ -137,11 +152,42 @@ static void gemma4_graph_release(ds4_gemma4_graph *g) {
     ds4_gpu_tensor_free(g->positions);
     ds4_gpu_tensor_free(g->inv_sliding);
     ds4_gpu_tensor_free(g->inv_full);
-    for (uint32_t il = 0; il < G4_LAYERS; il++) {
-        ds4_gpu_tensor_free(g->kcache[il]);
-        ds4_gpu_tensor_free(g->vcache[il]);
-    }
+    memset(g, 0, sizeof(*g));
+}
+
+static void gemma4_graph_release(ds4_gemma4_graph *g) {
+    if (!g) { return; }
+    gemma4_graph_clear(g);
     free(g);
+}
+
+/* A bank graph: its own KV rows, everything else borrowed from graph 0. The
+ * row count is the same function the allocator, the payload and the serving
+ * quote use, so the ring is exactly as wide as the forward writes it. */
+static bool gemma4_graph_bank(ds4_gemma4_graph *g, const ds4_gemma4_graph *owner) {
+    if (!g || !owner || !owner->ready) { return false; }
+    *g = *owner;
+    g->borrowed = true;
+    g->ready = false;
+    g->failed = false;
+    g->position = 0;
+    g->kv_bytes = 0;
+    for (uint32_t il = 0; il < G4_LAYERS; il++) { g->kcache[il] = g->vcache[il] = NULL; }
+    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+        const uint32_t rows = ds4_gemma4_kv_rows(il, g->ctx, g->cap);
+        const uint64_t bytes = (uint64_t)rows * gemma4_kv_heads(il) *
+            gemma4_head_dim(il) * sizeof(uint16_t);
+        g->kcache[il] = ds4_gpu_tensor_alloc(bytes);
+        g->vcache[il] = ds4_gpu_tensor_alloc(bytes);
+        if (!g->kcache[il] || !g->vcache[il]) {
+            fprintf(stderr, "ds4: Gemma-4 bank KV allocation failed at layer %u\n", il);
+            gemma4_graph_clear(g);
+            return false;
+        }
+        g->kv_bytes += 2u * bytes;
+    }
+    g->ready = true;
+    return gemma4_graph_reset(g);
 }
 
 static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,

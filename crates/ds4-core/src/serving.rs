@@ -970,23 +970,24 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
-        // gemma4_vq runs the serial session: one forward in, one token out,
-        // with a kept prefix checkpoint so a sync can resume, rewind and
-        // continue. Every reuse item is exact because the session's prefill
-        // is one row per forward (ds4_gemma4_bind.inc: the batched widths
-        // order their sums differently, measured at 2.4 nats). Banks, disk,
-        // snapshot and speculative decode are P7/P8 and stay undeclared. Its
-        // MTP drafter is a second checkpoint, hence Sidecar.
+        // gemma4_vq serves both lanes. The serial session runs one row per
+        // forward with a kept prefix checkpoint; the banked lane owns each
+        // bank's KV caches of both layouts over graph 0's scratch
+        // (ds4_gemma4_batch.inc). Every cache row is position-indexed, so any
+        // prefix of a bank is exact and partial reuse needs no checkpoint
+        // slots; the session payload carries both layouts and restores
+        // exactly, and a bank serializes through it. Its MTP drafter is a
+        // second checkpoint, hence Sidecar.
         ModelFamily::Gemma4Vq => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
+            banks: BankLane::Persistent,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
             // The session payload carries both KV layouts (the sliding ring
             // and the full context) and restores exactly (P7 slice 1).
-            disk: Support::None,
+            disk: Support::Qualified,
             snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::None,

@@ -43,6 +43,9 @@ const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
 const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
 const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
 const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
+// Gemma-4 carries two KV layouts: word 8 is the sliding-ring size and words
+// 9/10 are the per-layout row counts, so word 12 stays zero.
+const LAYOUT_GEMMA4: u32 = u32::from_le_bytes(*b"GVK4");
 const MINIMAX_DRAFT_WINDOW: u32 = 4096;
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
@@ -66,6 +69,7 @@ pub enum PayloadLayout {
     BeamVq,
     MinimaxVq,
     Axk2Vq,
+    Gemma4Vq,
 }
 
 impl PayloadLayout {
@@ -91,6 +95,7 @@ impl PayloadLayout {
             LAYOUT_BEAM => Self::BeamVq,
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
+            LAYOUT_GEMMA4 => Self::Gemma4Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -115,6 +120,7 @@ impl PayloadLayout {
             Self::BeamVq => ModelFamily::BeamVq,
             Self::MinimaxVq => ModelFamily::MinimaxVq,
             Self::Axk2Vq => ModelFamily::Axk2Vq,
+            Self::Gemma4Vq => ModelFamily::Gemma4Vq,
         }
     }
 
@@ -134,6 +140,7 @@ impl PayloadLayout {
                         | Self::BeamVq
                         | Self::MinimaxVq
                         | Self::Axk2Vq
+                        | Self::Gemma4Vq
                 ))
     }
 
@@ -378,6 +385,26 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
             {
                 return Err(err("invalid GLM session payload token"));
+            }
+        }
+        // Gemma-4 word 12 is reserved (zero). Words 8/9/10 describe the two
+        // KV layouts and the native reader re-derives them from its geometry,
+        // so the host validates only the serialized timeline.
+        PayloadLayout::Gemma4Vq => {
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+                || p.fields[12] != 0
+            {
+                return Err(err("invalid Gemma-4 session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid Gemma-4 session payload token"));
             }
         }
         // QWN3 word 12 is the PLE convolution byte count, not live rows.
