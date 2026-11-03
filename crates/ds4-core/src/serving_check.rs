@@ -27,9 +27,11 @@
 //! on the prefill grid a kept prefix repeats the fresh arithmetic, so a
 //! difference points at reuse, not at chunking. Where reuse changes the
 //! arithmetic, a second reference without reuse carries the same change:
-//! continue keeps rows decode wrote (U fed by decode), and a rewind kept off
-//! the grid re-prefills from there (T synced in two parts split at the kept
-//! row). A row agrees when its top-1 is a reference's. Two references set a
+//! continue keeps rows decode wrote (U fed by decode), a prefix kept off
+//! the grid compares against the same split with its tail fed one token at
+//! a time, and a rewind kept off the grid re-prefills from there (T synced
+//! in two parts split at the kept row). A row agrees when its top-1 is a
+//! reference's. Two references set a
 //! noise floor, the most they move a row's top-1 lead over its runner-up;
 //! a pick a reference ranks within it is a near tie, any other flip reuse.
 //! Session items compare the top-1 at the frontier and after each forced
@@ -531,8 +533,9 @@ fn fed(s: &mut Session<'_>, p: &Prompts, forced: &[i32], vocab: usize) -> Result
     decode(s, vocab, forced)
 }
 
-/// T prefilled in two syncs split at `k`: a rewind's chunking when it kept
-/// `k` off the grid, from an extension the prefix item checks.
+/// T prefilled in two syncs split at `k`: the chunking a kept prefix uses.
+/// This is also the prefix item's own execution path, so it is only a
+/// reference for a rewind, whose first sync is a different width.
 fn extended(
     s: &mut Session<'_>,
     t: &[i32],
@@ -543,6 +546,24 @@ fn extended(
     s.invalidate();
     sync(s, &t[..k])?;
     sync(s, t)?;
+    decode(s, vocab, forced)
+}
+
+/// T[..k] prefilled cold, then T[k..] fed one token at a time: the same
+/// chunk boundary as a prefix kept at `k`, without reusing the second
+/// sync. A prefix kept off the grid continues in a narrower chunk than the
+/// fresh one-chunk prefill, so this is the reuse-free arithmetic to
+/// compare against; `extended` cannot serve that role because it repeats
+/// the prefix item's own two-sync path and would compare the item to
+/// itself.
+fn fed_from(
+    s: &mut Session<'_>,
+    t: &[i32],
+    k: usize,
+    forced: &[i32],
+    vocab: usize,
+) -> Result<Rows> {
+    decoded(s, &t[..k], &t[k..])?;
     decode(s, vocab, forced)
 }
 
@@ -640,20 +661,29 @@ fn session_items(
             Ok(Some(kept_rows)) => kept_rows,
         };
 
-        // A rewind kept off the grid re-prefills from there: its chunking.
-        let off_grid = match item {
-            Item::Rewind if kept as usize != p.m => {
-                Some(extended(s, &p.t, kept as usize, forced, vocab)?)
+        // A kept prefix off the prefill grid continues in a narrower chunk
+        // than the fresh one-chunk prefill, so the two arithmetics differ.
+        // The prefix item gets a reuse-free reference at the same split
+        // (the tail fed one token at a time); the rewind item, whose own
+        // first sync is a different width, gets the two-sync path.
+        let k = kept as usize;
+        let on_grid = list.grid == 0 || k % list.grid as usize == 0;
+        let extra = if !on_grid {
+            match item {
+                Item::Prefix => Some(("decode-fed", fed_from(s, &p.t, k, forced, vocab)?)),
+                Item::Rewind => Some(("split", extended(s, &p.t, k, forced, vocab)?)),
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
         let mut refs: Vec<Reference<'_>> = match (item, &live) {
             (Item::Prefix | Item::Rewind, _) => vec![("prefill", &fresh_t)],
             (Item::SessionDisk | Item::Snapshot, Some(rows)) => vec![("live", rows)],
             _ => vec![("prefill", &fresh_u), ("decode-fed", &fed_u)],
         };
-        if let Some(rows) = &off_grid {
-            refs.push(("split", rows));
+        if let Some((name, rows)) = &extra {
+            refs.push((name, rows));
         }
         list.rows.push((item, compare(&refs, &got, kept)));
 
