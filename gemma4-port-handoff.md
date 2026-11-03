@@ -2,23 +2,25 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 2faef6c3 (perf(gemma4): tiled prefill attention,
-  batch Q8_0 dense down, deterministic scatter), plus this handoff commit.
-  The seven commits on top of d6ad9774 are f0c2b92a (serving-check prefix
+last_updated_commit: 14f27345 (perf(gemma4): token-tiled Q8_0 dense down,
+  four tokens per weight read), plus this handoff commit.
+  The eight commits on top of d6ad9774 are f0c2b92a (serving-check prefix
   reference), 19f5b75b (the Gemma VQ header split), 659a152b (optional FP8
   full-layer KV and fused expert gate/up), bf6b3989 (optional fast decode
   attention), c09cfbf9 (the prefill-first plan), 9e23197f (the direct VQ
-  prefill round, pushed to the fork) and 2faef6c3 (the attention and dense-
-  down round). This handoff adds 4r and updates section 9. No GLM file is
-  modified. Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6;
-  dev stays 65ef74d; the owner edits that tree from other sessions, so
-  leave its uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 (content at 9e23197f; its git
-  HEAD reads d6ad9774) and ~/models/gguf-family-it-r8.
+  prefill round, pushed to the fork), 2faef6c3 (the attention and dense-
+  down round) and 14f27345 (the token-tiled dense down). This handoff adds
+  4r and updates section 9. No GLM file is modified. Sibling VQ_tools:
+  branch feature/gvq1-gemv-profile at be8c7e6; dev stays 65ef74d; the
+  owner edits that tree from other sessions, so leave its uncommitted
+  files alone.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 (content at 2faef6c3, the
+  round's build; 14f27345 is not synced yet) and
+  ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T20:24:57+01:00
+handoff_written_at: 2026-11-03T21:52:16+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1685,16 +1687,30 @@ once on the 121 GB of unified memory.
   existing batch warp8 kernel for that shape (16 rows per block, 16
   threads per row, one token per block). 138.2 -> 65.1 ms. The fp32 sum
   order changes: eight tokens identical, frontier logits relL2 5.10e-2
-  with the same argmax and the same top-5 set.
+  with the same argmax and the same top-5 set. A second kernel in the same
+  entry, matmul_q8_0_preq_batch_warp8_tok_kernel<4>, then tiles four
+  tokens per weight read: 65.1 -> 51.8 ms (TOK 8 measured 1.88 ms per
+  layer, worse, so 4 stays). Against the batch kernel the frontier logits
+  move relL2 3.89e-2, tokens identical.
 - Measured, ctx 256 copy-resident, three fresh-process runs per arm, all
   four options against none: prefill 395.51 -> 543.19 tok/s median (+37.3
   percent, mean +39.6), decode 13.12 -> 24.76 (+88.7 percent). Total GPU
-  kernel time 511.5 -> 305.0 ms. The off arm is itself faster than 4q's
-  338.14 because expf serves the oracle path too; the like-for-like number
-  is the same-binary A/B.
+  kernel time 511.5 -> 305.0 ms (288.0 with the token tile). The off arm
+  is itself faster than 4q's 338.14 because expf serves the oracle path
+  too; the like-for-like number is the same-binary A/B. A second A/B after
+  the token tile ran on a host with load average about 4.4 and gave
+  362.94 -> 613.20 (+69 percent) with a wide spread; its off median moved
+  8 percent with no code change, so treat the end-to-end medians as noisy
+  and the kernel attribution as the evidence.
+- GB10 (same round, R5, same protocol, monitor subagent): build clean,
+  two full-stack gen-8 runs byte-identical, same eight-token array;
+  prefill 274.44 -> 422.55 tok/s median (+54.0 percent), decode 13.47 ->
+  16.89 (+25.4 percent), first token 0.074 -> 0.058 s. The GB10's decode
+  gain is smaller than the 4070's because the attention was a smaller
+  share of its decode step.
 - Still the largest kernels at ctx 256 with the whole stack on: the VQ
-  gate/up item kernel 100.2 ms, the dense down 65.1, the VQ down 43.3,
-  rope 22.3, the Q4_K projections 13.5, the tile attention 9.6.
+  gate/up item kernel 100.0 ms, the dense down 51.8, the VQ down 42.3,
+  rope 18.1, the Q4_K projections 15.6, the tile attention 9.5.
 - Not done: the GB10 has not been re-measured with this round's kernels;
   the token-tiled dense down (the batch kernel re-reads each weight row
   once per token, L2-served) is the next unit for that shape; the exact-
