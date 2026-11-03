@@ -2,15 +2,16 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: e96d09d8 (ds4 code state; P7 closed in c42e8b31 and
-  dd6772dc, the P9 tail and docs in be901c46..89fa33b7). The working tree
-  carries P8 uncommitted (section 4k): 19 modified files plus the new
-  ds4_gemma4_mtp.inc, the ring fix included. Sibling VQ_tools: dev at
-  c37f588, the docs/wiki rewrite committed; the owner is also editing that
-  tree from other sessions, so leave its uncommitted files alone.
+last_updated_commit: 3df1ac02 (handoff; ds4 code state e96d09d8 plus the
+  P8 and speed work uncommitted). The working tree carries P8 (section 4k)
+  and the speed unit (section 4l): the same 19 modified files plus the new
+  ds4_gemma4_mtp.inc, with the speed changes inside ds4_gemma4_bind.inc,
+  ds4_gemma4_graph.inc and ds4_gemma4_gpu.cuh. Sibling VQ_tools: dev at
+  65ef74d; the owner is editing that tree from other sessions, so leave its
+  uncommitted files alone.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T13:40:00+01:00
+handoff_written_at: 2026-11-03T15:08:06+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -66,11 +67,23 @@ The batching refusal is gone; serving.rs declares banks and disk Qualified.
 
 What is still open, in order:
 
+  0. speed  the port was functionally complete at 2.9 decode / 3.9 prefill
+          tok/s zero-copy. The measured fixes are in the working tree (4l):
+          device residency 3.9x, batched projections 2.15x, grouped expert
+          prefill 22x, now 337.9 prefill / 11.1 decode tok/s. Decode is
+          still below the sibling 15-25 tok/s because every token restores
+          its eight selected experts per layer. The default residency is
+          still zero-copy; the measurements use DS4_CUDA_COPY_MODEL=1.
+  0b. SSD  streaming support is a new owner requirement (2026-11-03). It
+          must be Gemma-only: a Gemma stream module and Gemma arms in the
+          engine, with no edit to any GLM file. The contract and the VQ1
+          rebasing facts are in 4l.
   1. P8   the drafter is written, builds, and passes gates A, B and C on a
-          short prompt; the wrapped-ring gate is the run in flight (4k).
-          Then: commit, run --serving-check with --mtp, and measure speed
-          with ds4-bench. The one open design question is G4_MTP_DRAFTS = 4
-          against the checkpoint's num_assistant_tokens = 6 (4k).
+          short prompt; the wrapped-ring gate must be re-run with the new
+          batched prefill (4k, now faster). Then: commit, run
+          --serving-check with --mtp. The one open design question is
+          G4_MTP_DRAFTS = 4 against the checkpoint's num_assistant_tokens =
+          6 (4k).
   2. P9   the four-part OpenAI gate is scripted (tests/gemma4_serving_http_gate.sh)
           and not yet run; the live tool-tail continuation is done
           (be901c46); the serving-host limits are documented.
@@ -1032,6 +1045,120 @@ subagent); the two emit outputs were removed, the repack at
 /tmp/gemma4-assistant-mtp.gguf was kept. A CUDA build needs several GB free
 there or nvcc fails with "error writing to ...: No space left on device".
 
+4l. The speed unit: measured, fixed, and the SSD contract (2026-11-03)
+
+The owner rejected the first speed reading ("this speed are not correct")
+and required the comparison to the sibling VQ families, not a guess. The
+measurements below are ds4-bench on the R13+8 artifact, a 256-token prompt,
+ctx 256, 8 greedy tokens, one run per configuration:
+
+  configuration                                      prefill   decode
+  zero-copy (the engine's default on this card)         3.94      2.91
+  DS4_CUDA_COPY_MODEL=1, per-route prefill             15.41     11.22
+  + batched projections (grouped GEMM per matrix)      33.22     10.99
+  + grouped expert prefill (expert-grouped rows)      337.86     11.12
+
+The 13-bit artifact under the same copy + per-route path measures 15.45 /
+11.23, so the residual stage is not the cost.
+
+The zero-copy finding: peak VRAM during the 3.94/2.91 run was 1083 MiB and
+the engine logged "CUDA registered 9.37 GiB model mapping for device
+access" and "map 9.37 GiB, device 0.00 GiB, host-pinned 9.37 GiB". The GPU
+was 100 percent busy at about 60 W: every weight was read over PCIe. On a
+discrete card ds4_gpu_materialize_model_plan returns before the eager pass
+(it gates on cudaDevAttrIntegrated) and ds4_gpu_set_model_map registers the
+whole mmap. DS4_CUDA_COPY_MODEL=1 is the existing lever: it copied the
+9.37 GiB in 2.96 s, set g_model_device_owned, and the copy run peaked at
+10,663 MiB of VRAM at 100 percent utilization.
+
+The profile that found the prefill defect: nsys on one 256-token chunk
+showed glmvq_restore at 72.7 percent of GPU time, 185,040 launches, which
+is 720 per token (8 experts x 3 matrices x 30 layers). The P6a exactness
+decision had put the per-route one-row loop on rows > 1 and left the
+expert-grouped loop only for rows == 1, so a chunk restored every expert
+matrix once per route. The siblings do the opposite: Ling-3.1's
+l31_mm_many and A.X-K2's axk2_mm_many pass all rows to one grouped linear,
+and their MoE groups by expert.
+
+The changes, all Gemma-only. cuda/glm_vq.cuh and cuda/glm_vq_ops.cuh were
+briefly edited and are now byte-identical to HEAD (git diff empty); no GLM
+file is modified.
+
+  ds4_gemma4_graph.inc  gemma4_projection_rows calls
+    ds4_gpu_gvq_linear_many over all rows; the Q8_0 dense down takes the
+    chunk in one ds4_gpu_matmul_q8_0_tensor call; the per-row loop remains
+    only as the DS4_GEMMA4_EXACT_PREFILL gate.
+  ds4_gemma4_bind.inc   gemma4_prefill_cap defaults to min(ctx, 512), not
+    1. At ctx 2048 the sliding ring is window + 512 = 1536 rows, 0.63 GiB
+    of KV, which leaves room for the 9.37 GiB artifact on the 12 GiB card.
+  ds4_gemma4_gpu.cuh    g4_moe_run uses the expert-grouped loop for
+    rows > 1 by default (one restore per expert per chunk); the per-route
+    one-row loop is behind DS4_GEMMA4_EXACT_PREFILL. This is the 22x.
+
+The exactness gate is preserved, not deleted: run the chunk-size checks
+with DS4_GEMMA4_EXACT_PREFILL=1. The default prefill now has the sibling
+GEMM accumulation order, so it is not byte-identical to the one-row path;
+that is the same trade the siblings make.
+
+Decode is the remaining gap. Every token still calls glmvq_restore 720
+times (8 experts x 3 x 30), each materializing a bf16 matrix and then
+running cuBLAS. The shared VQ decode kernels (glmvq_decode_gu/down, the
+Ling-3.1 l31_decode_run path) cannot take this geometry: their loaders
+static_assert whole 256-input k-steps and, with a residual stage, whole
+2048-input blocks. Gemma's gate/up rows are 2816 wide (2048 + 768) and the
+down rows are 704 (2.75 steps), so the templates refuse at compile time.
+Generalizing them means editing cuda/glm_vq_decode.cuh, a GLM file and
+off-limits. The next decode step is a Gemma-only kernel or a Gemma-only
+vector restore, not a shared-header change.
+
+SSD streaming contract for the Gemma-only module (not built yet):
+
+  - The VQ1 header stores gain/main/plane as offsets relative to the
+    record's data start (ds4_glmvq_gpu.cuh gvq_link: data + main, data +
+    gain). A streamed record can be copied byte-for-byte into a device
+    slot and its glmvq_source rebased by setting s.data = slot. The
+    per-matrix book and residual book stay resident (separate records,
+    64 KiB and 2 KiB).
+  - The linear path (ds4_gpu_gvq_linear -> glmvq_gemm) reads the host
+    glmvq_source, so updating model->source[index] after a load is enough
+    for the current MoE path; the device source table only matters to the
+    shared route/decode kernels, which this port does not use.
+  - The GLM53 stream is the contract to mirror, not to edit: slot pool,
+    LRU, pread from the model fd, stats. The Gemma sizes differ: the
+    expert set is about 5.9 GiB, one record about 550 KiB, and one token
+    touches 8 experts x 3 x 30 = 720 records (about 387 MiB) with no cache
+    hit. A slot pool that holds most of the 5.9 GiB is the only
+    configuration that can beat the resident path on this card; the
+    option is still useful for the 13-bit artifact, larger contexts and
+    banks.
+  - The family gate in ds4.c refuses ssd_streaming for every non-GLM53
+    family (the DS4_MODEL_FAMILY != GLM53 arm). Adding a Gemma arm there
+    and a gemma4_stream member/arm is engine work, not a GLM edit; do not
+    change glm53_stream_* or ds4_glm53_cache.h.
+
+Commands used (no other GPU work; DS4_LOCK_FILE away from /tmp/ds4.lock):
+
+  cd /data/ds4-gemma4
+  export DS4_LOCK_FILE=/tmp/ds4-gemma4-bench.lock DS4_CUDA_COPY_MODEL=1
+  ./ds4-bench -m /data/vq-artifacts/gguf-family-it-r8 --cuda \
+    --prompt-file /tmp/g4-bench-256.txt --ctx-start 256 --ctx-max 256 \
+    --gen-tokens 8 --csv /tmp/g4-bench-grouped.csv
+
+The profile command was:
+
+  /usr/local/cuda/bin/nsys profile -o /tmp/g4-prof --force-overwrite true \
+    --stats=true ./ds4-bench -m /data/vq-artifacts/gguf-family-it-r8 \
+    --cuda --prompt-file /tmp/g4-bench-256.txt --ctx-start 256 --ctx-max 256 \
+    --gen-tokens 1
+
+The kernel summary is in /tmp/g4-prof.log (scratch, not in the repo).
+
+Host facts: the RTX 4070 SUPER has 12 GiB; the 9.37 GiB copy plus the CUDA
+context, 0.06 GiB of KV at ctx 265 and 17 MiB of activations peaked at
+10,663 MiB. At ctx 2048 the 512-row cap costs 0.63 GiB of KV, so the copy
+is tight but fits; ds4-server still needs --mem-floor-gb 2. A CUDA build
+needs several GiB free on /tmp (16 GiB tmpfs).
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1118,20 +1245,24 @@ once on the 121 GB of unified memory.
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
-    git status --short          # expect P8's working tree at this handoff:
-                                #   M the 19 files listed in 4k
-                                #   ?? ds4_gemma4_mtp.inc
+    git status --short          # expect P8 + the speed unit in the working
+                                # tree: the 19 files listed in 4k (the speed
+                                # changes live in ds4_gemma4_bind.inc,
+                                # ds4_gemma4_graph.inc, ds4_gemma4_gpu.cuh)
+                                # and ?? ds4_gemma4_mtp.inc
                                 # P7 and the P9/docs work are committed.
     git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state e96d09d8 until pushed
-    cd /data/VQ_tools && git log --oneline -2    # expect c37f588, 0fd5f9d
+    cd /data/VQ_tools && git log --oneline -2    # expect 65ef74d, b47dae6
     cd /data/VQ_tools && git status --short      # the owner's other sessions
                                                  # may hold files here; do not
                                                  # commit or revert them
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
     sed -n '1,60p' gemma4-port-handoff.md
-    # the gate, one command
+    # the gate, one command (R13+8 is the target; the copy is the measured
+    # residency lever, section 4l)
     make cuda CUDA_ARCH=sm_89 && \
       DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock DS4_GEMMA4_DEBUG=1 \
-      ./ds4 -m /data/vq-artifacts/gguf-family-it --cuda -c 2048 \
+      DS4_CUDA_COPY_MODEL=1 \
+      ./ds4 -m /data/vq-artifacts/gguf-family-it-r8 --cuda -c 2048 \
       --token-ids 2,818,5279 --predict 2 --temp 0
