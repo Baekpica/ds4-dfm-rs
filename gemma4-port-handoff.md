@@ -2,12 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 521f3046 (docs(handoff): the SSD option committed).
-  The code state is 8fae06b0 (feat(gemma4-vq): the optional SSD expert
-  stream), which carries P8 (4k), the speed unit (4l) and the SSD unit
-  (4m) together; the tree was clean before this handoff edit. This handoff
-  adds section 4n (per-GPU profiles: feasibility and the missing consumer)
-  and updates the open list; it is committed next. The SSD unit adds
+last_updated_commit: f5ce5d23 (docs(handoff): per-GPU profiles, the gap and
+  the next lever). The code state is 8fae06b0 (feat(gemma4-vq): the
+  optional SSD expert stream), which carries P8 (4k), the speed unit (4l)
+  and the SSD unit (4m) together. This handoff adds section 4n (per-GPU
+  profiles: feasibility and the missing consumer) and updates the open
+  list. The SSD unit adds
   ds4_gemma4_stream.inc and touches the Gemma graph/GPU arms, the engine
   family gate and streaming arm, the Rust SSD admission/quote and the CLI
   help. No GLM file is modified. Sibling VQ_tools: dev at 65ef74d; the
