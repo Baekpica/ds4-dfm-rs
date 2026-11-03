@@ -57,10 +57,23 @@ static bool gemma4_gpu_bind(ds4_weights *w, const ds4_model *m) {
         const ds4_gemma4_layer *l = &w->gemma4[il];
         const uint32_t down = gemma4_index(m, l->book_down);
         const uint32_t gate_up = gemma4_index(m, l->book_gate_up);
+        /* R13+8: each expert matrix points at its GVR8 plane and that plane's
+         * record at the 256-entry residual book, the link gvq_link_res
+         * validates at bind time. */
+        const uint32_t res_down = gemma4_index(m, l->res_book_down);
+        const uint32_t res_gate_up = gemma4_index(m, l->res_book_gate_up);
         for (uint32_t e = 0; e < G4_EXPERTS; e++) {
             records[gemma4_index(m, l->gate[e])].book = gate_up;
             records[gemma4_index(m, l->up[e])].book = gate_up;
             records[gemma4_index(m, l->down[e])].book = down;
+            if (res_down != DS4_GVQ_NO_LINK && res_gate_up != DS4_GVQ_NO_LINK) {
+                records[gemma4_index(m, l->gate[e])].res = gemma4_index(m, l->gate_res[e]);
+                records[gemma4_index(m, l->up[e])].res = gemma4_index(m, l->up_res[e]);
+                records[gemma4_index(m, l->down[e])].res = gemma4_index(m, l->down_res[e]);
+                records[gemma4_index(m, l->gate_res[e])].book = res_gate_up;
+                records[gemma4_index(m, l->up_res[e])].book = res_gate_up;
+                records[gemma4_index(m, l->down_res[e])].book = res_down;
+            }
         }
     }
     w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);

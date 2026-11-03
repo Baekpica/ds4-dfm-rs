@@ -25,7 +25,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
-    fail, q8_scale_finite, Result, ALIGN, Q4_BYTES, Q4_K, Q8_0, Q8_BYTES, RECIPE, VARIANT,
+    fail, q8_scale_finite, Result, ALIGN, Q4_BYTES, Q4_K, Q8_0, Q8_BYTES, RECIPE, RECIPE_R8,
+    VARIANT,
 };
 use crate::gguf::{GgufError, GgufFile};
 use crate::mapped::page_size;
@@ -34,7 +35,10 @@ use crate::tensors::{ShardPlan, TensorError, TensorInventory};
 const MAX_METADATA: u64 = 64 * 1024 * 1024;
 const RELEASE: &str = "release.json";
 const FILES: &str = "files.json";
+/// Format version 1 is the plain 13-bit artifact; version 2 is R13+8 and
+/// carries its own recipe id, so the two cannot be mistaken for each other.
 const FORMAT_VERSION: u64 = 1;
+const RESIDUAL_FORMAT_VERSION: u64 = 2;
 const CONTEXT: u64 = 262_144;
 
 /// Device-inventory features: the MTP drafter joins the trunk on request.
@@ -198,6 +202,16 @@ struct Part {
     entry: Value,
 }
 
+/// The release version decides which recipe id must accompany it.
+fn version_recipe(release: &serde_json::Value) -> Result<bool> {
+    let recipe = text(release, "recipe_id")?;
+    Ok(match number(release, "format_version")? {
+        FORMAT_VERSION => recipe.as_bytes() == RECIPE,
+        RESIDUAL_FORMAT_VERSION => recipe.as_bytes() == RECIPE_R8,
+        _ => false,
+    })
+}
+
 /// The verified release entrypoint: the device-copied parts in release order
 /// (the trunk, and the MTP drafter on request) with the embedding part last.
 fn release_parts(root: &Path, feature: Gemma4VqFeature) -> Result<Vec<Part>> {
@@ -211,10 +225,9 @@ fn release_parts(root: &Path, feature: Gemma4VqFeature) -> Result<Vec<Part>> {
     if text(&release, "format")?.as_bytes() != VARIANT
         || text(&release, "variant")?.as_bytes() != VARIANT
         || text(&release, "architecture")? != "gemma4_vq"
-        || text(&release, "recipe_id")?.as_bytes() != RECIPE
         || text(&release, "entrypoint")? != RELEASE
         || text(&release, "source_model_type")? != "gemma4"
-        || number(&release, "format_version")? != FORMAT_VERSION
+        || !version_recipe(&release)?
         || number(&release, "context_length")? != CONTEXT
         || release.get("test_subset").and_then(Value::as_bool) != Some(false)
         || release.get("dry_run").and_then(Value::as_bool) != Some(false)
@@ -235,7 +248,7 @@ fn release_parts(root: &Path, feature: Gemma4VqFeature) -> Result<Vec<Part>> {
             .ok_or(fail("part missing from files.json"))?;
         if !name.ends_with(".gguf")
             || !names.insert(name.to_owned())
-            || text(entry, "part_recipe_id")?.as_bytes() != RECIPE
+            || text(entry, "part_recipe_id")? != text(&release, "recipe_id")?
             || listed.get("sha256") != entry.get("sha256")
             || listed.get("bytes") != entry.get("bytes")
         {

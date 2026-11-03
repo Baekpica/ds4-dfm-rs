@@ -5704,7 +5704,12 @@ typedef struct {
     ds4_tensor *dense_gate, *dense_up, *dense_down;
     ds4_tensor *router, *router_scale, *router_per_expert;
     ds4_tensor *book_down, *book_gate_up;
+    /* R13+8 artifacts (format version 2) carry a 256-entry residual book and
+     * one GVR8 index plane per expert matrix; the plain family artifact
+     * leaves all of these null. */
+    ds4_tensor *res_book_down, *res_book_gate_up;
     ds4_tensor *gate[G4_EXPERTS], *up[G4_EXPERTS], *down[G4_EXPERTS];
+    ds4_tensor *gate_res[G4_EXPERTS], *up_res[G4_EXPERTS], *down_res[G4_EXPERTS];
 } ds4_gemma4_layer;
 
 /* A.X-K2: the gated RMSNorms' rank-16 gates and the routed experts with

@@ -36,14 +36,21 @@ const NAMESPACE: &[u8] = b"gemma4_vq.";
 const VARIANT: &[u8] = b"gemma4-a4b-vq8";
 const SOURCE_MODEL: &[u8] = b"gemma4";
 const RECIPE: &[u8] = b"gemma-4-26b-a4b-family";
+/// The R13+8 build of the same family recipe: the payload above plus a GVR8
+/// residual tensor per expert matrix, container format version 2.
+const RECIPE_R8: &[u8] = b"gemma-4-26b-a4b-family-r8";
 const ALIGN: u64 = 128;
 const HEADER: u64 = 128;
 const VECTOR: u8 = 8;
 const WORDS: u32 = 8192;
 const FORMAT_VERSION: u32 = 1;
+const RESIDUAL_VERSION: u32 = 2;
+const RESIDUAL_BITS: u8 = 8;
+const RESIDUAL_WORDS: u32 = 256;
 const E4M3: u32 = 1;
 const CODEBOOK: u32 = 0x4756_4342;
 const VQ: u32 = 0x4756_5138;
+const RESIDUAL: u32 = 0x4756_5238;
 const F32: u32 = 0;
 const BF16: u32 = 30;
 const Q8_0: u32 = 8;
@@ -138,7 +145,10 @@ pub(super) fn validate_inventory(
     inventory: &crate::TensorInventory,
     feature: Gemma4VqFeature,
 ) -> std::result::Result<(), crate::ValidateError> {
-    let mut specs = layout::layouts();
+    // The R13+8 build carries the residual tensors; the plain build does not,
+    // and the inventory itself decides which contract applies.
+    let residual = inventory.tensors.iter().any(|t| t.typ == RESIDUAL);
+    let mut specs = layout::layouts_with(residual);
     if feature == Gemma4VqFeature::Mtp {
         specs.extend(layout::mtp_layouts());
     }
@@ -262,6 +272,88 @@ impl Header {
     }
 }
 
+/// GVR8: one index byte per 8-weight vector into a K=256 E4M3 book; the
+/// parent GVQ1 matrix supplies the row gain. 128-byte header, payload digest
+/// at 96..128, canonical offsets (crates/vq-gguf/src/gvr1.rs).
+struct ResidualHeader {
+    book: u32,
+    size: u64,
+}
+
+impl ResidualHeader {
+    fn parse(data: &[u8], tensor: &TensorInfo) -> Result<Self> {
+        let h = span(data, tensor.abs_offset, HEADER)?;
+        let rows = u64::from(u32_at(h, 8));
+        let cols = u64::from(u32_at(h, 12));
+        if &h[..4] != b"GVR1"
+            || h[4..6] != [1, 0]
+            || h[6] != RESIDUAL_BITS
+            || h[7] != VECTOR
+            || u32_at(h, 16) != RESIDUAL_WORDS
+            || u32_at(h, 20) != E4M3
+            || u32_at(h, 28) != 0
+            || rows == 0
+            || cols == 0
+            || cols % 64 != 0
+            || tensor.ndim != 2
+            || tensor.dim[..2] != [cols, rows]
+        {
+            return Err(fail("invalid GVR1 header/shape"));
+        }
+        let end = rows
+            .checked_mul(cols / u64::from(VECTOR))
+            .and_then(|n| n.checked_add(HEADER))
+            .ok_or(TensorError::Overflow)?;
+        let size = align(end)?;
+        if [u64_at(h, 32), u64_at(h, 40), u64_at(h, 48), u64_at(h, 56)] != [HEADER, 0, 0, size] {
+            return Err(fail("noncanonical GVR1 offsets"));
+        }
+        let payload = span(data, tensor.abs_offset, size)?;
+        if Sha256::digest(&payload[HEADER as usize..end as usize])[..] != h[96..128] {
+            return Err(fail("GVR1 payload checksum"));
+        }
+        zeros(payload, end, size)?;
+        Ok(Self {
+            book: u32_at(h, 24),
+            size,
+        })
+    }
+}
+
+/// `gemma4_vq.residuals` maps each GVQ1 expert matrix to its GVR8 tensor. The
+/// stage is all-or-none: every 13-bit matrix has exactly one residual and
+/// every residual one parent (ds4-core/src/glm_vq.rs has the same rule).
+fn validate_residuals(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
+    let map = object(g, "gemma4_vq.residuals")?;
+    let residuals = tensors.iter().filter(|t| t.typ == RESIDUAL).count();
+    let matrices = tensors.iter().filter(|t| t.typ == VQ).count();
+    if residuals == 0 && map.is_empty() {
+        return Ok(());
+    }
+    if g.get_u32("gemma4_vq.format_version") != Some(RESIDUAL_VERSION) {
+        return Err(fail("residual stage needs container version 2"));
+    }
+    let by_name: HashMap<_, _> = tensors.iter().map(|t| (t.name.as_str(), t)).collect();
+    let mut linked = HashSet::new();
+    for (parent, value) in &map {
+        let name = value.as_str().ok_or(fail("invalid residual link"))?;
+        let (Some(p), Some(r)) = (by_name.get(parent.as_str()), by_name.get(name)) else {
+            return Err(fail("missing residual parent/tensor"));
+        };
+        if p.typ != VQ
+            || r.typ != RESIDUAL
+            || p.dim[..2] != r.dim[..2]
+            || !linked.insert(r.name.as_str())
+        {
+            return Err(fail("residual link type/shape/duplicate"));
+        }
+    }
+    if linked.len() != residuals || residuals != matrices {
+        return Err(fail("partial or unlinked residual stage"));
+    }
+    Ok(())
+}
+
 /// A payload's codebook reference: tensor index, book ID and words.
 struct BookLink {
     tensor: usize,
@@ -320,9 +412,12 @@ fn validate_books(g: &GgufFile, tensors: &[TensorInfo], links: &[BookLink]) -> R
                 hash
             }
         };
-        // The payload digest (header 96..128) is the converter's own check:
-        // release.json's part SHA256 already covers every payload byte.
-        if raw(g.as_bytes(), &tensors[link.tensor])?[64..96] != hash {
+        // A GVQ1 header carries the book digest at 64..96; a GVR1 header does
+        // not (its own payload digest at 96..128 was checked when the header
+        // was parsed), so only the GVQ1 link compares the book here.
+        if tensors[link.tensor].typ == VQ
+            && raw(g.as_bytes(), &tensors[link.tensor])?[64..96] != hash
+        {
             return Err(fail("codebook checksum"));
         }
         used.insert(id);
@@ -338,12 +433,19 @@ fn validate_books(g: &GgufFile, tensors: &[TensorInfo], links: &[BookLink]) -> R
 }
 
 fn part_metadata(g: &GgufFile) -> Result<()> {
+    // Version 1 is the plain 13-bit artifact; version 2 adds the R13+8
+    // residual tensors and carries the -r8 recipe id. Either is accepted, and
+    // the version decides which recipe id must accompany it.
+    let supported = match g.get_u32("gemma4_vq.format_version") {
+        Some(FORMAT_VERSION) => g.get_string("gemma4_vq.recipe_id") == Some(RECIPE),
+        Some(RESIDUAL_VERSION) => g.get_string("gemma4_vq.recipe_id") == Some(RECIPE_R8),
+        _ => false,
+    };
     if g.get_string("general.architecture") != Some(ARCH)
         || g.alignment != ALIGN
-        || g.get_u32("gemma4_vq.format_version") != Some(FORMAT_VERSION)
+        || !supported
         || g.get_string("gemma4_vq.variant") != Some(VARIANT)
         || g.get_string("gemma4_vq.source_model_type") != Some(SOURCE_MODEL)
-        || g.get_string("gemma4_vq.recipe_id") != Some(RECIPE)
         || !matches!(
             g.get_string("gemma4_vq.part_role"),
             Some(b"trunk") | Some(b"embedding") | Some(b"mtp")
@@ -412,6 +514,15 @@ pub(super) fn validate_part(
                 });
                 header.size
             }
+            RESIDUAL => {
+                let header = ResidualHeader::parse(g.as_bytes(), t)?;
+                links.push(BookLink {
+                    tensor: i,
+                    book: header.book,
+                    words: RESIDUAL_WORDS,
+                });
+                header.size
+            }
             _ => return Err(fail("unsupported tensor type")),
         };
         let bytes = raw(g.as_bytes(), t)?;
@@ -445,5 +556,6 @@ pub(super) fn validate_part(
     if end != g.as_bytes().len() as u64 {
         return Err(fail("trailing/missing bytes"));
     }
-    validate_books(g, tensors, &links)
+    validate_books(g, tensors, &links)?;
+    validate_residuals(g, tensors)
 }

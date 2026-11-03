@@ -22,6 +22,20 @@ static ds4_tensor *gemma4_named(const ds4_model *m, const char *fmt,
     return required_tensor(m, name);
 }
 
+/* An R13+8-only tensor: null on the plain artifact, which the caller treats
+ * as "this stack has no residual stage". */
+static ds4_tensor *gemma4_optional(const ds4_model *m, const char *fmt,
+                                   unsigned il, unsigned expert, int has_expert) {
+    char name[160];
+    const int n = has_expert
+        ? snprintf(name, sizeof(name), fmt, il, expert)
+        : snprintf(name, sizeof(name), fmt, il);
+    if (n < 0 || (size_t)n >= sizeof(name)) {
+        ds4_die("Gemma-4 tensor name too long");
+    }
+    return model_find_tensor(m, name);
+}
+
 static void gemma4_bind(ds4_weights *w, const ds4_model *m) {
     w->token_embd = required_tensor(m, "model.embed_tokens.weight");
     tensor_expect_layout(w->token_embd, DS4_TENSOR_BF16, 2, G4_EMBED, G4_VOCAB, 0);
@@ -110,6 +124,44 @@ static void gemma4_bind(ds4_weights *w, const ds4_model *m) {
             tensor_expect_layout(l->down[e], DS4_TENSOR_GLM_VQ, 2, G4_FF, G4_EMBED, 0);
             tensor_expect_layout(l->gate[e], DS4_TENSOR_GLM_VQ, 2, G4_EMBED, G4_FF, 0);
             tensor_expect_layout(l->up[e], DS4_TENSOR_GLM_VQ, 2, G4_EMBED, G4_FF, 0);
+        }
+
+        /* The residual stage is all-or-none per artifact: an R13+8 build
+         * carries the two 256-entry books and a plane for every one of the
+         * 384 expert matrices, and a plain build carries none of them. */
+        l->res_book_down = gemma4_optional(
+            m, "model.layers.%u.experts.down_proj.vq_residual_book", il, 0, 0);
+        l->res_book_gate_up = gemma4_optional(
+            m, "model.layers.%u.experts.gate_up_proj.vq_residual_book", il, 0, 0);
+        bool any_res = l->res_book_down || l->res_book_gate_up;
+        for (unsigned e = 0; e < G4_EXPERTS; e++) {
+            l->down_res[e] = gemma4_optional(
+                m, "model.layers.%u.experts.%u.down_proj.res", il, e, 1);
+            l->gate_res[e] = gemma4_optional(
+                m, "model.layers.%u.experts.%u.gate_proj.res", il, e, 1);
+            l->up_res[e] = gemma4_optional(
+                m, "model.layers.%u.experts.%u.up_proj.res", il, e, 1);
+            any_res = any_res || l->down_res[e] || l->gate_res[e] || l->up_res[e];
+        }
+        if (any_res) {
+            if (!l->res_book_down || !l->res_book_gate_up) {
+                ds4_die("Gemma-4 residual books are missing from an R13+8 part");
+            }
+            tensor_expect_layout(l->res_book_down, DS4_TENSOR_GLM_BOOK, 2,
+                                 G4_VECTOR, 256, 0);
+            tensor_expect_layout(l->res_book_gate_up, DS4_TENSOR_GLM_BOOK, 2,
+                                 G4_VECTOR, 256, 0);
+            for (unsigned e = 0; e < G4_EXPERTS; e++) {
+                if (!l->down_res[e] || !l->gate_res[e] || !l->up_res[e]) {
+                    ds4_die("Gemma-4 residual stage is partial");
+                }
+                tensor_expect_layout(l->down_res[e], DS4_TENSOR_GLM_RES, 2,
+                                     G4_FF, G4_EMBED, 0);
+                tensor_expect_layout(l->gate_res[e], DS4_TENSOR_GLM_RES, 2,
+                                     G4_EMBED, G4_FF, 0);
+                tensor_expect_layout(l->up_res[e], DS4_TENSOR_GLM_RES, 2,
+                                     G4_EMBED, G4_FF, 0);
+            }
         }
     }
 }

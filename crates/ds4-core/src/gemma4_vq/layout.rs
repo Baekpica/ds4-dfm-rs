@@ -11,7 +11,7 @@
 //! dense FFN 2112, expert FFN 704, 128 experts, vocab 262144, tied
 //! embeddings, `attention_k_eq_v`) and its safetensors headers for the
 //! per-layer shapes.
-use super::{BF16, CODEBOOK, Q4_K, Q8_0, VECTOR, VQ, WORDS};
+use super::{BF16, CODEBOOK, Q4_K, Q8_0, RESIDUAL, RESIDUAL_WORDS, VECTOR, VQ, WORDS};
 use crate::{LayoutSpec, TypeClass};
 
 /// The token table the head ties to: there is no `lm_head` in the artifact.
@@ -106,7 +106,10 @@ fn dense_mlp(out: &mut Vec<LayoutSpec>, prefix: &str) {
 /// One layer's routed experts: a book per stack and one GVQ1 matrix per
 /// expert. The checkpoint stores gate and up fused in one stack, and the
 /// split gives that stack one book for both halves.
-fn experts(out: &mut Vec<LayoutSpec>, prefix: &str) {
+///
+/// `residual` is the R13+8 build: a second 256-entry book per stack and one
+/// GVR8 index plane per matrix, named `<matrix>.res` (crates/vq-gguf/src/gvr1.rs).
+fn experts(out: &mut Vec<LayoutSpec>, prefix: &str, residual: bool) {
     for stack in ["down_proj", "gate_up_proj"] {
         exact(
             out,
@@ -114,6 +117,14 @@ fn experts(out: &mut Vec<LayoutSpec>, prefix: &str) {
             CODEBOOK,
             &[u64::from(WORDS), u64::from(VECTOR)],
         );
+        if residual {
+            exact(
+                out,
+                format!("{prefix}.{stack}.vq_residual_book"),
+                CODEBOOK,
+                &[u64::from(RESIDUAL_WORDS), u64::from(VECTOR)],
+            );
+        }
     }
     for expert in 0..EXPERTS {
         for (name, shape) in [
@@ -121,12 +132,16 @@ fn experts(out: &mut Vec<LayoutSpec>, prefix: &str) {
             ("up_proj", [FFN, EMBED]),
             ("down_proj", [EMBED, FFN]),
         ] {
-            exact(out, format!("{prefix}.{expert}.{name}"), VQ, &shape);
+            let matrix = format!("{prefix}.{expert}.{name}");
+            exact(out, matrix.clone(), VQ, &shape);
+            if residual {
+                exact(out, format!("{matrix}.res"), RESIDUAL, &shape);
+            }
         }
     }
 }
 
-fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
+fn layer(out: &mut Vec<LayoutSpec>, il: u32, residual: bool) {
     let p = format!("model.layers.{il}");
     for name in [
         "input_layernorm",
@@ -158,15 +173,22 @@ fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
         BF16,
         &[u64::from(EXPERTS)],
     );
-    experts(out, &format!("{p}.experts"));
+    experts(out, &format!("{p}.experts"), residual);
 }
 
+/// The plain 13-bit family artifact (format version 1).
 pub(super) fn layouts() -> Vec<LayoutSpec> {
+    layouts_with(false)
+}
+
+/// The R13+8 artifact (format version 2): the same set plus the residual
+/// books and index planes.
+pub(super) fn layouts_with(residual: bool) -> Vec<LayoutSpec> {
     let mut out = Vec::new();
     exact(&mut out, EMBEDDING.into(), BF16, &[VOCAB, EMBED]);
     exact(&mut out, "model.norm.weight".into(), BF16, &[EMBED]);
     for il in 0..LAYERS {
-        layer(&mut out, il);
+        layer(&mut out, il, residual);
     }
     out
 }
@@ -284,6 +306,27 @@ mod tests {
         assert_eq!(names.len(), all.len());
     }
 
+    /// The R13+8 artifact adds one 256-entry residual book per stack and one
+    /// GVR8 plane per expert matrix, and nothing else.
+    #[test]
+    fn residual_layouts_cover_the_r8_artifact_counts() {
+        let all = layouts_with(true);
+        assert_eq!(all.len(), 23_757);
+        assert_eq!(of(&all, VQ), 11_520);
+        assert_eq!(of(&all, RESIDUAL), 11_520);
+        assert_eq!(of(&all, CODEBOOK), 120);
+        let res_book = all
+            .iter()
+            .find(|s| s.name == "model.layers.0.experts.down_proj.vq_residual_book")
+            .expect("residual book");
+        assert_eq!(res_book.dim[..2], [8, 256]);
+        let plane = all
+            .iter()
+            .find(|s| s.name == "model.layers.0.experts.0.down_proj.res")
+            .expect("residual plane");
+        assert_eq!(plane.dim[..2], [704, 2816]);
+    }
+
     /// Every expert matrix is 704 x 2816 in the artifact's column-major
     /// order, and the down projection is the transposed pair.
     #[test]
@@ -349,7 +392,8 @@ mod tests {
                 (name, typ, dims)
             })
             .collect();
-        let mut have: Vec<(String, u32, Vec<u64>)> = layouts()
+        let residual = want.iter().any(|(_, typ, _)| *typ == RESIDUAL);
+        let mut have: Vec<(String, u32, Vec<u64>)> = layouts_with(residual)
             .into_iter()
             .map(|s| {
                 let TypeClass::Exact(typ) = s.class else {
