@@ -51,7 +51,10 @@ and await the owner's word for the push.
 A second, better artifact now serves through the same code: the R13+8 build
 (4f) at /data/vq-artifacts/gguf-family-it-r8, 9.95 GiB, expert weight error
 23.38 percent against the original 39.29, and the serving checklist passes
-on it unchanged.
+on it unchanged. It is the artifact every remaining gate runs on: P7's
+payload, snapshots and disk KV, P8's drafter and P9's OpenAI check are all
+measured against this directory, and the checklist must pass on it end to
+end. The 13-bit artifact stays as the comparison point, not a second target.
 
 What is still open, in order:
 
@@ -752,8 +755,25 @@ Every shape metric improved: cosine, rms delta (2.44 to 2.38 on A, 1.72 to
 approximation of the same model, not a different model; no claim beyond these
 numbers, and no perplexity or benchmark was run.
 
-The serving checklist on this artifact reports reuse prefix, rewind and
-continue exact, "result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)".
+The serving checklist on this artifact, the full list, so the next session
+knows exactly what still fails and why:
+
+  reuse     prefix     qualified  works   kept 17, top-1 17/17, exact
+  reuse     rewind     qualified  works   kept 21, top-1 17/17, exact
+  reuse     continue   qualified  works   kept 38, top-1 17/17 (prefill 17,
+                                           decode-fed 17), exact
+  disk      session    -          no      session payload was written for a
+                                           different model family        (P7)
+  snapshot  session    -          no      Gemma-4 disk KV restore is not
+                                           implemented yet                (P7)
+  banks     warm/fork/partial/disk/width  no   batch_ctx_create: this model
+                                           does not implement the
+                                           multi-sequence graph           (P7)
+  mtp       lossless              no check yet  declared Sidecar - None   (P8)
+  result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)
+
+Everything marked P7 or P8 is the remaining work; the three reuse items and
+the result line are the checklist passing on this artifact today.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

@@ -152,6 +152,13 @@ word required; never upstream to Baekpica).
 
 ## P11: artifact quality comparison (R13+8 vs 8x4096x2)
 
+The R13+8 artifact is the one artifact under test for every remaining
+checklist item: P7's payload save/restore, snapshots and disk KV, P8's
+drafter and P9's OpenAI gate all run on /data/vq-artifacts/gguf-family-it-r8,
+and the serving checklist must pass on it end to end before this phase's
+comparison means anything. The 13-bit artifact stays as the reference point,
+not as a second shipping target.
+
 Today the port serves the R13+8 artifact (9.95 GiB, 23.3772 percent mean
 expert relL2, 7.01 GiB of payload). The second option on the table is the
 two-stage 8x4096x2 build, which measures 18.7685 percent at 3.0340 bits per
