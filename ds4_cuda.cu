@@ -9250,6 +9250,68 @@ __global__ static void matmul_q8_0_preq_batch_warp8_kernel(
     if (lane == 0) out[tok * out_stride + row] = acc;
 }
 
+/* The batch warp8 kernel with a token tile: each weight block is loaded once
+ * and dotted against TOK tokens. The per-token sum structure is the kernel
+ * above's own -- same b order, same acc/acc_hi split at group_width, same
+ * 16-thread reduction -- but the compiler schedules the four independent
+ * accumulators differently, so the two kernels are NOT bit-identical in
+ * practice: at ctx 256 the frontier logits move relL2 3.9e-2 while the eight
+ * greedy tokens stay identical (the same class the batch kernel itself has
+ * against the preq kernel, 5.1e-2). What changes is the number of weight
+ * reads: once per TOK tokens instead of once per token. Gemma's dense down
+ * re-read each weight row 256 times per chunk at ctx 256, which is what made
+ * it 2.17 ms per layer at 1.4 TFLOP/s. TOK 4 measured 1.72 ms per layer;
+ * TOK 8 was worse (1.88), so the compute, not the traffic, is the limit
+ * beyond 4. */
+template <uint32_t TOK>
+__global__ static void matmul_q8_0_preq_batch_warp8_tok_kernel(
+        float *out,
+        const unsigned char *w,
+        const int8_t *xq,
+        const float *xscale,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        uint64_t out_stride,
+        uint64_t n_tok,
+        uint64_t blocks,
+        int use_dp4a) {
+    constexpr uint32_t group_width = 16u;
+    const uint64_t row = (uint64_t)blockIdx.x * (256u / group_width) +
+                         threadIdx.x / group_width;
+    const uint64_t tok0 = (uint64_t)blockIdx.y * TOK;
+    const uint32_t lane = threadIdx.x & (group_width - 1u);
+    if (row >= out_dim || tok0 >= n_tok) return;
+
+    const unsigned char *wr = w + row * blocks * 34;
+    float acc[TOK], acc_hi[TOK];
+    #pragma unroll
+    for (uint32_t j = 0; j < TOK; j++) { acc[j] = 0.0f; acc_hi[j] = 0.0f; }
+    for (uint64_t b = lane; b < blocks; b += group_width) {
+        const uint64_t i0 = b * 32;
+        const uint64_t bn = in_dim - i0 < 32 ? in_dim - i0 : 32;
+        const __half *scale_h = (const __half *)(wr + b * 34);
+        const int8_t *qs = (const int8_t *)(wr + b * 34 + 2);
+        const float ws = __half2float(*scale_h);
+        #pragma unroll
+        for (uint32_t j = 0; j < TOK; j++) {
+            if (tok0 + j >= n_tok) break;
+            const int8_t *xqb = xq + (tok0 + j) * blocks * 32 + b * 32;
+            const int dot = dot_i8_block(qs, xqb, bn, use_dp4a);
+            const float term = ws * xscale[(tok0 + j) * blocks + b] * (float)dot;
+            if (b < group_width) acc[j] += term;
+            else acc_hi[j] += term;
+        }
+    }
+    #pragma unroll
+    for (uint32_t j = 0; j < TOK; j++) {
+        if (tok0 + j >= n_tok) break;
+        float v = acc[j] + acc_hi[j];
+        for (uint32_t offset = group_width / 2u; offset > 0u; offset >>= 1u)
+            v += __shfl_down_sync(0xffffffffu, v, offset, group_width);
+        if (lane == 0) out[(tok0 + j) * out_stride + row] = v;
+    }
+}
+
 __global__ static void matmul_q8_0_preq_n2_warp8_kernel(
         float *out,
         const unsigned char *w,
@@ -25815,8 +25877,8 @@ extern "C" int ds4_gpu_matmul_q8_0_dense_batch(ds4_gpu_tensor *out, const void *
     quantize_q8_0_f32_kernel<<<qgrid, 32, 0, ds4_current_stream()>>>(xq, xscale,
         (const float *)x->ptr, in_dim, blocks);
     if (!cuda_ok(cudaGetLastError(), "q8_0 dense batch quantize")) return 0;
-    dim3 bgrid(((unsigned)out_dim + 15u) / 16u, (unsigned)n_tok, 1);
-    matmul_q8_0_preq_batch_warp8_kernel<16u><<<bgrid, 256, 0, ds4_current_stream()>>>(
+    dim3 bgrid(((unsigned)out_dim + 15u) / 16u, (unsigned)((n_tok + 3u) / 4u), 1);
+    matmul_q8_0_preq_batch_warp8_tok_kernel<4u><<<bgrid, 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, reinterpret_cast<const unsigned char *>(wptr), xq, xscale,
         in_dim, out_dim, out_dim, n_tok, blocks, use_dp4a);
     return cuda_ok(cudaGetLastError(), "q8_0 dense batch launch");
