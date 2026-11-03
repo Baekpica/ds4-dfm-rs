@@ -330,9 +330,10 @@ impl Default for OpenTuning {
 /// Validate common draft controls before metadata validation or GPU allocation.
 /// Native L31_MTP_DRAFTS: each draft adds one 276 MiB KDA journal slot.
 const LING31_MTP_DRAFTS: i32 = 3;
-/// Native G4_MTP_DRAFTS: the Gemma-4 drafter's four layers, one verified row
-/// block (`G4_MTP_DRAFTS` in ds4_gemma4_plan.h).
-const GEMMA4_MTP_DRAFTS: i32 = 4;
+/// Native G4_MTP_DRAFTS: the Gemma-4 drafter's four layers, up to six draft
+/// steps (`G4_MTP_DRAFTS` in ds4_gemma4_plan.h; the checkpoint's
+/// num_assistant_tokens is 6).
+const GEMMA4_MTP_DRAFTS: i32 = 6;
 
 /// DSpark's seven block rows each propose one token (anchor-first).
 const MINIMAX_MTP_DRAFTS: i32 = 7;
@@ -349,7 +350,7 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     } else if family == ModelFamily::Ling31Vq && draft > LING31_MTP_DRAFTS {
         "Ling-3.1 accepts at most three recursive draft tokens"
     } else if family == ModelFamily::Gemma4Vq && draft > GEMMA4_MTP_DRAFTS {
-        "Gemma-4 accepts at most four recursive draft tokens"
+        "Gemma-4 accepts at most six recursive draft tokens"
     } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
         "MiniMax DSpark drafts at most seven tokens per block"
     } else {

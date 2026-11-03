@@ -64,10 +64,11 @@ enum {
      * publish KV"). */
     G4_SHARED_SLIDING = 28,
     G4_SHARED_FULL = 29,
-    /* Draft width the engine clamps `--mtp-draft` to: the assistant drafts
-     * one token per forward at the fixed position, and four keep the verify
-     * row block at the artifact's own layer count (G4_MTP_LAYERS). */
-    G4_MTP_DRAFTS = G4_MTP_LAYERS
+    /* Draft width the engine clamps `--mtp-draft` to. The assistant drafts
+     * one token per forward at the fixed position; the checkpoint's
+     * num_assistant_tokens is 6 (gemma-4-26B-A4B-it-assistant/config.json),
+     * so the ceiling is six draft steps over the artifact's four layers. */
+    G4_MTP_DRAFTS = 6
 };
 
 /* Logit softcap (3.9), the checkpoint's final_logit_softcapping = 30

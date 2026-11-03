@@ -222,7 +222,7 @@ const GEMMA4_LAYERS: u32 = 30;
 const GEMMA4_WINDOW: u64 = 1024;
 /// `G4_MTP_DRAFTS` (ds4_gemma4_plan.h): one verify block is drafts + 1 rows,
 /// and the sliding ring must be that much wider than the window.
-const GEMMA4_MTP_DRAFTS: u32 = 4;
+const GEMMA4_MTP_DRAFTS: u32 = 6;
 const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
 const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
 const GEMMA4_FULL_KV_HEADS: u64 = 2;
@@ -7606,13 +7606,13 @@ exit 1
     }
 
     /// ds4_gemma4.h (ds4_gemma4_kv_rows): 25 sliding layers at window + the
-    /// widest block one forward writes (here one draft round's five verify
+    /// widest block one forward writes (here one draft round's seven verify
     /// rows), five full layers at the whole context, f16 key and value. At
-    /// ctx 2048 that is 252,682,240 bytes.
+    /// ctx 2048 that is 253,091,840 bytes.
     #[test]
     fn gemma4_bank_kv_prices_the_hybrid_layout() {
         let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
-        assert_eq!(bank_kv_bytes(shape, 2048, 1), 252_682_240);
+        assert_eq!(bank_kv_bytes(shape, 2048, 1), 253_091_840);
         // Charging every layer at the full context is what refused the plan.
         let generic = 30 * 2048 * 2 * 8 * 256 * 2;
         assert!(bank_kv_bytes(shape, 2048, 1) < generic);
