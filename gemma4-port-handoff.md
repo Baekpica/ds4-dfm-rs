@@ -2,7 +2,7 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 57b25db0 (pushed to origin/feat/gemma4-family)
+last_updated_commit: 57b25db0 (the code state; this file's own commit is c6e7f72e)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
 handoff_written_at: 2026-11-03T08:07:17+01:00
@@ -605,7 +605,7 @@ Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
     git status --short          # expect empty at 57b25db0
-    git ls-remote origin feat/gemma4-family   # expect 57b25db0
+    git ls-remote origin feat/gemma4-family   # expect c6e7f72e or later; code state 57b25db0
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
     sed -n '1,60p' gemma4-port-handoff.md
