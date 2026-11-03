@@ -58,16 +58,20 @@ __global__ static void g4_attn_fast_kernel(float *out, const float *query,
     const uint32_t tile_values = TILE * dim;
     for (uint32_t base = begin; base <= last; base += TILE) {
         const uint32_t count = last - base + 1 < TILE ? last - base + 1 : TILE;
+        /* Vectorized staging (uint4 = 8 bf16, and dim and kv_stride are
+         * multiples of 8): the 2-byte copy this loop used to do cost more
+         * than the arithmetic at ctx 256. */
+        const uint32_t vecs = dim / 8u;
         for (uint32_t t = 0; t < count; t++) {
             const uint32_t k = base + t;
             const uint64_t slot = ring ? (uint64_t)(k % ring) : k;
-            const __nv_bfloat16 *ks = key + slot * kv_stride + (uint64_t)kv_head * dim;
-            const __nv_bfloat16 *vs = value + slot * kv_stride + (uint64_t)kv_head * dim;
-            __nv_bfloat16 *kt = tile + t * dim;
-            __nv_bfloat16 *vt = tile + tile_values + t * dim;
-            for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) {
-                kt[d] = ks[d];
-                vt[d] = vs[d];
+            const uint4 *ks = (const uint4 *)(key + slot * kv_stride + (uint64_t)kv_head * dim);
+            const uint4 *vs = (const uint4 *)(value + slot * kv_stride + (uint64_t)kv_head * dim);
+            uint4 *kt = (uint4 *)(tile + (size_t)t * dim);
+            uint4 *vt = (uint4 *)(tile + tile_values + (size_t)t * dim);
+            for (uint32_t v = threadIdx.x; v < vecs; v += blockDim.x) {
+                kt[v] = ks[v];
+                vt[v] = vs[v];
             }
         }
         __syncthreads();
@@ -82,8 +86,8 @@ __global__ static void g4_attn_fast_kernel(float *out, const float *query,
             dot = g4_fa_warp_sum(dot);
             dot = __shfl_sync(0xffffffffu, dot, 0);
             const float m_new = fmaxf(maximum, dot);
-            const float alpha = (float)exp((double)(maximum - m_new));
-            const float p = (float)exp((double)(dot - m_new));
+            const float alpha = expf(maximum - m_new);
+            const float p = expf(dot - m_new);
             total = total * alpha + p;
             maximum = m_new;
             for (uint32_t i = 0; i < per_lane && i < 16u; i++) {

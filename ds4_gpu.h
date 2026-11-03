@@ -909,6 +909,19 @@ int ds4_gpu_matmul_q8_0_tensor(
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
 
+/* The batch warp8 Q8_0 path for a K the shared dispatcher will not take
+ * (Gemma's dense down, K = 2112). Same result class; the token sequence is
+ * the gate. */
+int ds4_gpu_matmul_q8_0_dense_batch(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
+
 int ds4_gpu_matmul_q4_K_tensor(
         ds4_gpu_tensor       *out,
         const void           *model_map,

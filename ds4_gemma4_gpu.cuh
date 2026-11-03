@@ -15,6 +15,7 @@
 #include "cuda/gemma4_attn.cuh"
 #include "cuda/gemma4_attn_fp8.cuh"
 #include "cuda/gemma4_attn_fast.cuh"
+#include "cuda/gemma4_attn_tile.cuh"
 #include "cuda/gemma_vq_decode.cuh"
 #include "cuda/gemma_vq_prefill.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
@@ -30,6 +31,9 @@ struct ds4_g4_moe {
     ds4_gpu_tensor *in, *out, *gate, *up, *mid, *order;
     int32_t *routes;
     uint32_t *grouped;
+    ds4_gpu_tensor *tokpair;    /* per token, its G4_USED grouped rows in expert order */
+    uint32_t *htokpair;         /* host staging for the same list */
+    uint32_t htokfill[G4_PREFILL_MAX];
     ds4_gpu_tensor *items;      /* g4_vqp_item[items_cap] on the device */
     ds4_gpu_tensor *qmat;       /* glmvq_matrix[3 * G4_EXPERTS] on the device */
     g4_vqp_item *hitems;        /* host staging for the same list */
@@ -349,6 +353,48 @@ extern "C" int ds4_gpu_g4_attn_fast(ds4_gpu_tensor *out, const ds4_gpu_tensor *q
     return cuda_ok(cudaGetLastError(), "Gemma-4 fast attention");
 }
 
+/* Prefill fast attention: one CTA per (row tile, KV head), the tile staged
+ * once for the block's warps (cuda/gemma4_attn_tile.cuh). Off by default;
+ * DS4_GEMMA4_ATTN_PREFILL=1 selects it for rows > 1, and the oracle stays
+ * the reference. Same arithmetic, so the exact-prefill gate still holds. */
+extern "C" int ds4_gpu_g4_attn_tile(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
+        uint32_t ring, uint32_t keys) {
+    if (!out || !query || !key || !value || !positions || rows < 2u || !heads ||
+        !kv_heads || !dim || dim > 512u || (dim % 8u) || (heads % kv_heads)) { return 0; }
+    const uint32_t group = heads / kv_heads;
+    if (group == 0u || group > 16u) { return 0; }
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (keys && (!keys || keys > first + rows)) { return 0; }
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        value->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    /* 8 warps per block: 4 rows x 2 heads (sliding) or 1 row x 8 heads
+     * (full). The tile is 16 KiB either way (16 keys at dim 256, 8 at 512). */
+    const uint32_t rtile = group <= 2u ? 4u : (group <= 4u ? 2u : 1u);
+    const uint32_t warps = rtile * group;
+    const uint32_t blocks = (rows + rtile - 1u) / rtile;
+    if (dim <= 256u) {
+        const uint32_t shared = 2u * 16u * dim * sizeof(__nv_bfloat16);
+        g4_attn_tile_kernel<16><<<dim3(kv_heads, blocks), warps * 32u, shared,
+            ds4_current_stream()>>>((float *)out->ptr, (const float *)query->ptr,
+            (const __nv_bfloat16 *)key->ptr, (const __nv_bfloat16 *)value->ptr,
+            rows, first, heads, kv_heads, dim, window, ring, keys, kv_stride, rtile);
+    } else {
+        const uint32_t shared = 2u * 8u * dim * sizeof(__nv_bfloat16);
+        g4_attn_tile_kernel<8><<<dim3(kv_heads, blocks), warps * 32u, shared,
+            ds4_current_stream()>>>((float *)out->ptr, (const float *)query->ptr,
+            (const __nv_bfloat16 *)key->ptr, (const __nv_bfloat16 *)value->ptr,
+            rows, first, heads, kv_heads, dim, window, ring, keys, kv_stride, rtile);
+    }
+    return cuda_ok(cudaGetLastError(), "Gemma-4 tiled prefill attention");
+}
+
 /* ------------------------------------------------------- routed experts */
 
 uint64_t ds4_gpu_g4_moe_bytes(uint32_t chunk) {
@@ -374,6 +420,8 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->order = ds4_gpu_tensor_alloc(pairs * sizeof(uint32_t));
     m->routes = (int32_t *)calloc((size_t)pairs, sizeof(int32_t));
     m->grouped = (uint32_t *)calloc((size_t)pairs, sizeof(uint32_t));
+    m->tokpair = ds4_gpu_tensor_alloc(pairs * sizeof(uint32_t));
+    m->htokpair = (uint32_t *)calloc((size_t)pairs, sizeof(uint32_t));
     /* Every expert's token tiles sum to at most pairs / BN + one per expert,
      * so the layer list is bounded by that many token tiles times the
      * matrix's row tiles (the down projection has the most). */
@@ -385,7 +433,8 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->hitems = (g4_vqp_item *)calloc(m->items_cap, sizeof(g4_vqp_item));
     m->hqmat = (glmvq_matrix *)calloc(3u * G4_EXPERTS, sizeof(glmvq_matrix));
     if (!m->in || !m->out || !m->gate || !m->up || !m->mid || !m->order ||
-        !m->routes || !m->grouped || !m->items || !m->qmat || !m->hitems || !m->hqmat) {
+        !m->routes || !m->grouped || !m->tokpair || !m->htokpair || !m->items || !m->qmat ||
+        !m->hitems || !m->hqmat) {
         ds4_gpu_g4_moe_free(m);
         return nullptr;
     }
@@ -400,10 +449,12 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *m) {
     ds4_gpu_tensor_free(m->up);
     ds4_gpu_tensor_free(m->mid);
     ds4_gpu_tensor_free(m->order);
+    ds4_gpu_tensor_free(m->tokpair);
     ds4_gpu_tensor_free(m->items);
     ds4_gpu_tensor_free(m->qmat);
     free(m->routes);
     free(m->grouped);
+    free(m->htokpair);
     free(m->hitems);
     free(m->hqmat);
     free(m);
@@ -431,6 +482,37 @@ __global__ static void g4_moe_scatter_kernel(float *dst, const float *src, const
     const uint32_t column = (uint32_t)(i % width);
     const uint64_t target = (uint64_t)(pair / G4_USED) * width + column;
     dst[target] = g4_round(dst[target] + src[i] * weights[pair]);
+}
+
+/* The same accumulation over every expert of one layer in ONE launch, with
+ * one thread per output element. The racy form above is only correct when a
+ * launch carries a single expert's rows (each target is then touched once);
+ * over all pairs at once, G4_USED threads would read-modify-write the same
+ * output row, so the order of the eight contributions and lost updates would
+ * vary run to run. That is not a theoretical concern: two identical
+ * direct-prefill runs on the GB10 differed by relL2 0.085 to 0.125 on the
+ * frontier logits while the per-expert path was bit-reproducible.
+ *
+ * `tokpair` lists, for each token, its G4_USED grouped rows in ASCENDING
+ * EXPERT order (the host builds it by walking the grouped list, which is
+ * expert-major). The reference loop scatters expert 0..127 in that same
+ * order, so this kernel reproduces its sequence of rounded additions
+ * exactly: acc starts at the caller's zero fill, then
+ * acc = bf16(acc + down * weight) eight times, and the single store is the
+ * value the eighth reference launch would have left. */
+__global__ static void g4_moe_scatter_ordered_kernel(float *dst, const float *src,
+        const float *weights, const uint32_t *order, const uint32_t *tokpair,
+        uint64_t elements, uint32_t width) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= elements) { return; }
+    const uint32_t token = (uint32_t)(i / width);
+    const uint32_t column = (uint32_t)(i % width);
+    float acc = 0.0f;
+    for (uint32_t j = 0; j < G4_USED; j++) {
+        const uint32_t row = tokpair[(uint64_t)token * G4_USED + j];
+        acc = g4_round(acc + src[(uint64_t)row * width + column] * weights[order[row]]);
+    }
+    dst[(uint64_t)token * width + column] = acc;
 }
 
 /* Gemma-4 decode projection: one row reads the GVQ1 bytes directly
@@ -588,6 +670,8 @@ static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_
     }
     const uint64_t elements = pairs * G4_EMBED;
     const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    const uint32_t scatter_blocks = (uint32_t)(((uint64_t)rows * G4_EMBED + GLMVQ_THREADS - 1) /
+        GLMVQ_THREADS);
     g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
         (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
         0u, elements, G4_EMBED);
@@ -615,9 +699,10 @@ static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_
             (float *)m->out->ptr, G4_EMBED, ds4_current_stream())) {
         return 0;
     }
-    g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+    g4_moe_scatter_ordered_kernel<<<scatter_blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)m->out->ptr, (const float *)weights->ptr,
-        (const uint32_t *)m->order->ptr, 0u, elements, G4_EMBED);
+        (const uint32_t *)m->order->ptr, (const uint32_t *)m->tokpair->ptr,
+        (uint64_t)rows * G4_EMBED, G4_EMBED);
     return cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter") ? 1 : 0;
 }
 
@@ -642,6 +727,20 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
     }
     for (uint64_t i = 0; i < pairs; i++) { m->grouped[cursor[m->routes[i]]++] = (uint32_t)i; }
     if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, pairs * sizeof(uint32_t))) { return 0; }
+    /* Per token, its grouped rows in the order the reference adds them: the
+     * grouped list is expert-major, so walking it in index order appends
+     * each token's experts in ascending expert id. Only the direct prefill
+     * consumes it; the one-row path leaves it alone. */
+    if (rows > 1u) {
+        for (uint32_t t = 0; t < rows; t++) { m->htokfill[t] = 0; }
+        for (uint64_t r = 0; r < pairs; r++) {
+            const uint32_t token = m->grouped[r] / G4_USED;
+            m->htokpair[(uint64_t)token * G4_USED + m->htokfill[token]++] = (uint32_t)r;
+        }
+        if (!ds4_gpu_tensor_write(m->tokpair, 0, m->htokpair, pairs * sizeof(uint32_t))) {
+            return 0;
+        }
+    }
     if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
     if (rows > 1 && getenv("DS4_GEMMA4_EXACT_PREFILL")) {
         /* P6a's chunk-size exactness gate: run each route as its own one-row

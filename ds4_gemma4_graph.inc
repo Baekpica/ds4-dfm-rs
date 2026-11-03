@@ -539,6 +539,29 @@ static bool g4_attn_fast(void) {
     return fast != 0;
 }
 
+/* Prefill (rows > 1) grouped-KV attention with the shared K/V tile, off by
+ * default. Separate from DS4_GEMMA4_ATTN_FAST so the two can be measured
+ * apart; the oracle stays for both until they are folded together. */
+static bool g4_attn_prefill(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_PREFILL");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* Dense down through the batch warp8 Q8_0 kernel, off by default
+ * (DS4_GEMMA4_Q8_BATCH=1). */
+static bool gemma4_q8_batch(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_Q8_BATCH");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* One layer, reference order (semantics 3.6). Returns false on the first
  * failed launch, naming the step: the wrappers report the CUDA error, this
  * names which stage of the block produced it. */
@@ -655,6 +678,10 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
             G4_STEP(ds4_gpu_g4_attn_fast(g->attn, g->q, g->kcache[il], g->vcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
                 ring, 0u), "attention");
+        } else if (rows > 1u && g4_attn_prefill()) {
+            G4_STEP(ds4_gpu_g4_attn_tile(g->attn, g->q, g->kcache[il], g->vcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
+                ring, 0u), "attention");
         } else {
             G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions,
                 rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring, 0u), "attention");
@@ -684,7 +711,13 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     ds4_gpu_tensor *dense_out[2] = {g->dense_g, g->dense_u};
     bool dense_ok = gemma4_projection_rows(g, dense_out, dense, dense_width, 2u, g->norm, rows, G4_EMBED) &&
         ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE);
-    if (dense_ok && (rows == 1 || !gemma4_exact_prefill())) {
+    if (dense_ok && rows > 1u && gemma4_q8_batch() && !gemma4_exact_prefill()) {
+        /* Gemma's dense down is K = 8*256 + 64; the shared dispatcher's
+         * tile path refuses it and falls to the per-element preq kernel.
+         * The batch warp8 entry keeps every thread busy (see ds4_cuda.cu). */
+        dense_ok = ds4_gpu_matmul_q8_0_dense_batch(g->branch, m->map, m->size,
+            l->dense_down->abs_offset, G4_DENSE, G4_EMBED, g->dense_mid, rows) != 0;
+    } else if (dense_ok && (rows == 1 || !gemma4_exact_prefill())) {
         /* The Q8_0 dense kernel takes the token count directly; one call
          * over the chunk restores the matrix once, like the Q4 projections
          * above. */

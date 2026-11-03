@@ -25783,6 +25783,45 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
     return cuda_ok(cudaGetLastError(), "matmul_q8_0 launch");
 }
 
+/* Gemma dense down: Q8_0 with K = 8*256 + 64 (2112). The tile-based MMQ path
+ * refuses a K that is not a multiple of 256, and the per-element preq kernel
+ * that remains runs one block per (row, token) with only K/32 of its 256
+ * threads active. This entry runs the batch warp8 kernel instead: 16 output
+ * rows per block, 16 threads per row, one token per block, so all 256
+ * threads are busy and the 16 rows share the token's quantized activations.
+ * Same per-block int8 dot and fp32 scale product as the preq kernel; the
+ * fp32 sum order differs, so the gate is the token sequence. */
+extern "C" int ds4_gpu_matmul_q8_0_dense_batch(ds4_gpu_tensor *out, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
+        const ds4_gpu_tensor *x, uint64_t n_tok) {
+    if (!out || !x || !model_map || !in_dim || !out_dim || !n_tok) return 0;
+    const uint64_t blocks = (in_dim + 31u) / 32u;
+    if (weight_offset > model_size || out_dim > UINT64_MAX / (blocks * 34u)) return 0;
+    const uint64_t weight_bytes = out_dim * blocks * 34u;
+    if (weight_bytes > model_size - weight_offset) return 0;
+    if (x->bytes < n_tok * in_dim * sizeof(float) ||
+        out->bytes < n_tok * out_dim * sizeof(float)) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, "q8_0");
+    if (!wptr) return 0;
+    const uint64_t xq_bytes = n_tok * blocks * 32u;
+    const uint64_t scale_offset = (xq_bytes + 15u) & ~15ull;
+    const uint64_t tmp_bytes = scale_offset + n_tok * blocks * sizeof(float);
+    void *tmp = cuda_tmp_alloc(tmp_bytes, "q8_0 dense batch");
+    if (!tmp) return 0;
+    int8_t *xq = (int8_t *)tmp;
+    float *xscale = (float *)((char *)tmp + scale_offset);
+    const int use_dp4a = cuda_q8_use_dp4a();
+    dim3 qgrid((unsigned)blocks, (unsigned)n_tok, 1);
+    quantize_q8_0_f32_kernel<<<qgrid, 32, 0, ds4_current_stream()>>>(xq, xscale,
+        (const float *)x->ptr, in_dim, blocks);
+    if (!cuda_ok(cudaGetLastError(), "q8_0 dense batch quantize")) return 0;
+    dim3 bgrid(((unsigned)out_dim + 15u) / 16u, (unsigned)n_tok, 1);
+    matmul_q8_0_preq_batch_warp8_kernel<16u><<<bgrid, 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, reinterpret_cast<const unsigned char *>(wptr), xq, xscale,
+        in_dim, out_dim, out_dim, n_tok, blocks, use_dp4a);
+    return cuda_ok(cudaGetLastError(), "q8_0 dense batch launch");
+}
+
 extern "C" int ds4_gpu_matmul_q8_0_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint64_t n_tok) {
     return cuda_matmul_q8_0_tensor_labeled(out, model_map, model_size, weight_offset,
                                            in_dim, out_dim, x, n_tok, "q8_0");

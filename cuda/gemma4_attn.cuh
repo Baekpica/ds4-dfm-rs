@@ -76,10 +76,17 @@ __global__ static void g4_attn_kernel(float *out, const float *query,
         }
         dot = g4_warp_sum(dot);
         dot = __shfl_sync(0xffffffffu, dot, 0);
-        /* softmax probability against a running maximum, float32 */
+        /* Softmax in float32, which is the reference's own arithmetic:
+         * modeling_gemma4.py:839 calls F.softmax(attn_weights, dim=-1,
+         * dtype=torch.float32), so the exponent is a float32 exp. This
+         * kernel used a double exp until 2026-11-03; on the consumer cards
+         * the FP64 pipe runs at 1/64 of FP32 and two double exps per key
+         * dominated the prefill attention (139.8 ms of the 511 ms GPU time
+         * at ctx 256 on the 4070 SUPER). expf keeps the reference's
+         * precision class and moves the work to the FP32 pipe. */
         const float m_new = fmaxf(maximum, dot);
-        const float alpha = (float)exp((double)(maximum - m_new));
-        const float p = (float)exp((double)(dot - m_new));
+        const float alpha = expf(maximum - m_new);
+        const float p = expf(dot - m_new);
         total = total * alpha + p;
         maximum = m_new;
         const __nv_bfloat16 *vv = value + slot * kv_stride + (uint64_t)kv_head * dim;

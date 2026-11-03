@@ -77,8 +77,8 @@ __global__ static void g4_attn_fp8_kernel(float *out, const float *query,
         dot = g4_fp8_warp_sum(dot);
         dot = __shfl_sync(0xffffffffu, dot, 0) * kscale;
         const float m_new = fmaxf(maximum, dot);
-        const float alpha = (float)exp((double)(maximum - m_new));
-        const float p = (float)exp((double)(dot - m_new));
+        const float alpha = expf(maximum - m_new);
+        const float p = expf(dot - m_new);
         total = total * alpha + p;
         maximum = m_new;
         for (uint32_t i = 0; i < per_lane && i < 16u; i++) {
