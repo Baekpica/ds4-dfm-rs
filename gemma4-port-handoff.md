@@ -2,13 +2,14 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 97a8fc27 (handoff); the working tree carries P8
-  (section 4k), the speed unit (4l) and the SSD unit (4m) uncommitted. The
-  SSD unit adds ds4_gemma4_stream.inc and touches the Gemma graph/GPU arms,
-  the engine family gate and streaming arm, the Rust SSD admission/quote and
-  the CLI help. No GLM file is modified. Sibling VQ_tools: dev at 65ef74d;
-  the owner is editing that tree from other sessions, so leave its
-  uncommitted files alone.
+last_updated_commit: 8fae06b0 (feat(gemma4-vq): the optional SSD expert
+  stream). That commit carries P8 (4k), the speed unit (4l) and the SSD
+  unit (4m) together; the tree is clean. The SSD unit adds
+  ds4_gemma4_stream.inc and touches the Gemma graph/GPU arms, the engine
+  family gate and streaming arm, the Rust SSD admission/quote and the CLI
+  help. No GLM file is modified. Sibling VQ_tools: dev at 65ef74d; the
+  owner is editing that tree from other sessions, so leave its uncommitted
+  files alone.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
 handoff_written_at: 2026-11-03T15:39:43+01:00
