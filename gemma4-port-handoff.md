@@ -69,12 +69,16 @@ What is still open, in order:
           mis-render), and the serving-host limits in docs.
   4. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
           OSV scan, pushes (owner's word required).
-  5. P11  artifact quality comparison, after P9: R13+8 (the default, still
-          serving) against the two-stage 8x4096x2 build, on the P6b probes
-          and greedy text through the OpenAI path. The served arm needs
-          two-stage support in vq-gguf and in the ds4 GVQ reader first; the
-          weight-space arm can run now. The protocol and the decision rule
-          are docs/gemma4-port-plan.md P11.
+  5. P11  artifact quality comparison, after P9: R13+8 (the artifact under
+          test, still serving) against the two-stage 8x4096x2 build, on the
+          P6b probes and greedy text through the OpenAI path. The served arm
+          needs two-stage support in vq-gguf and in the ds4 GVQ reader first;
+          the weight-space arm can run now. The protocol and the decision
+          rule are docs/gemma4-port-plan.md P11. The experts-only two-stage
+          build was started at 11:47 into /data/tmp/vq-2stage (recipe
+          recipes/gemma-4-26b-a4b-family-2stage.json); if it finished, run
+          vq-quality over that directory and record the 60-stack mean beside
+          the R13+8 23.3772 before anything else in this item.
 
 Operational facts this host needs:
 
