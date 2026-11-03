@@ -2,14 +2,15 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 151dc611 (ds4 code state: the R13+8 bind at faa2489e;
-  7cd25a50 closed P6b, 1d86327d carried the rotary fix). The working tree
-  additionally carries P7 slice 1 uncommitted (section 4g: the payload
-  include, the three ds4.c arms and the snapshot declaration). Sibling
-  VQ_tools: dev at 0fd5f9d, the residual stage c859d1f and its recipe.
+last_updated_commit: dd6772dc (ds4 code state: P7 closed. c42e8b31 carried the
+  session payload and snapshot; dd6772dc carried the disk layout, the banked
+  lane and the capability flip. Earlier: the R13+8 bind at faa2489e,
+  7cd25a50 closed P6b, 1d86327d carried the rotary fix). Sibling VQ_tools:
+  dev at 0fd5f9d, the residual stage c859d1f and its recipe; a docs/wiki
+  rewrite is in flight there.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T11:47:48+01:00
+handoff_written_at: 2026-11-03T12:30:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -58,29 +59,22 @@ payload, snapshots and disk KV, P8's drafter and P9's OpenAI check are all
 measured against this directory, and the checklist must pass on it end to
 end. The 13-bit artifact stays as the comparison point, not a second target.
 
-P7 slice 1 is written and uncommitted (4g). ds4_gemma4_payload.inc carries
-the save/restore for both KV layouts, the three ds4.c dispatch arms are
-wired, the code builds, and the serving check's snapshot item already
-reported "works, kept 38, top-1 17/17, exact" on the R13+8 artifact. What
-remains is the declaration: serving.rs was flipped to snapshot Qualified
-after that run, and the rerun that would confirm "undeclared 0" was killed
-before it finished. Nothing about slice 1 is in doubt except the checklist
-line itself, so the gate is the first action of the next session.
+P7 is closed (4g, 4h). The session payload, snapshots, the disk session
+payload and the banked multi-sequence lane all pass the serving checklist on
+the R13+8 artifact: result: pass (works 10, FAIL 0, WRONG 0, undeclared 0).
+The batching refusal is gone; serving.rs declares banks and disk Qualified.
 
 What is still open, in order:
 
-  1. P7   the payload gate (4g), then snapshots (free through it), disk KV,
-          and last the banked multi-sequence lane; remove the
-          ds4_engine_supports_batching refusal (2dca7709) when that lane
-          lands. Reconnaissance and the exact layout are section 4d. The
-          ring-resume guard noted in 4e belongs to this unit.
-  2. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
-  3. P9   the serving remainder: the four-part OpenAI gate, the live
+  1. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft. In flight with a
+          subagent; the reference files are pinned in /tmp/g4ref and their
+          hashes match section 5's table.
+  2. P9   the serving remainder: the four-part OpenAI gate, the live
           tool-tail continuation (it refuses this family and fails rather than
           mis-render), and the serving-host limits in docs.
-  4. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
+  3. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
           OSV scan, pushes (owner's word required).
-  5. P11  artifact quality comparison, after P9: R13+8 (the artifact under
+  4. P11  artifact quality comparison, after P9: R13+8 (the artifact under
           test, still serving) against the two-stage 8x4096x2 build, on the
           P6b probes and greedy text through the OpenAI path. The served arm
           needs two-stage support in vq-gguf and in the ds4 GVQ reader first;
@@ -151,6 +145,11 @@ Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
   faa2489e  feat(gemma4-vq): bind the R13+8 residual stage (layout, part and
             release validation, record links; 23.38 percent artifact loads)
   151dc611  docs(handoff): note the two-stage build in flight for P11
+  e5cf90e3  docs(handoff): P7 slice 1 is written, its gate is the next action
+  c42e8b31  feat(gemma4-vq): session payload carries both KV layouts
+            (snapshot session qualified works; pass works 4, undeclared 0)
+  dd6772dc  feat(gemma4-vq): the banked lane and the disk payload
+            (disk session and all five bank items work; pass works 10)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -849,6 +848,55 @@ Then commit ds4_gemma4_payload.inc, ds4.c and serving.rs together with the
 checklist line and this section. P7 continues at disk KV (ds4_kvstore, the
 row-count derivation above is what it needs), then the banked lane.
 
+4h. P7 closed: the disk layout and the banked lane (2026-11-03)
+
+Both remaining items landed in dd6772dc and the gate printed, on the R13+8
+artifact at ctx 2048 with prompt "Hello":
+
+  reuse     prefix/rewind/continue  qualified  works  kept 21/21/38, exact
+  disk      session                 qualified  works  kept 38, top-1 17/17, exact
+  snapshot  session                 qualified  works  kept 38, top-1 17/17, exact
+  banks     warm/fork/partial/disk  qualified  works  kept 21, tokens 16/16
+  banks     width                   qualified  works  tokens 16/16 + 16/16
+  result: pass (works 10, FAIL 0, WRONG 0, undeclared 0)
+
+Two mechanisms, no checkpoint slab and no ring-resume guard needed:
+
+  - The host payload validator (crates/ds4-core/src/payload.rs) now knows
+    the "GVK4" layout: word 8 is the sliding-ring size, words 9 and 10 the
+    per-layout row counts and word 12 stays zero, so it validates the
+    serialized timeline (version, context, token count, vocabulary) and
+    leaves the caches to the native reader. Before this the disk item failed
+    at save with "written for a different model family" even though the
+    native side was correct.
+  - ds4_gemma4_batch.inc is the multi-sequence graph. Each bank owns its KV
+    caches of both layouts; graph 0's GVQ context, expert scratch and
+    working rows are borrowed, because the scheduler serializes bank forwards
+    under the engine generation lock (A.X-K2's shape). Every cache row is
+    position-indexed (sliding slot = position % rows, full slot = position),
+    so copying the first min(pos, rows) rows copies exactly the slots the
+    positions below pos occupy. That makes any prefix of a bank exact: fork
+    and partial reuse are copies (or an in-place rewind) and no checkpoint
+    slots are needed. ds4_gemma4_bank_payload.inc serializes one bank through
+    the same DSV4 v3 writer the session uses.
+  - gemma4_graph_release split into clear (what the graph owns) plus free,
+    with a borrowed flag, so bank graphs free only their KV.
+  - ds4.c gained the batch create/fit (base = gemma4_session_memory, each
+    extra bank = ds4_gemma4_kv_bytes), the three bank payload arms, and the
+    driver dispatch for prefill, decode, copy, fork, reset, logits and trim;
+    the ds4_engine_supports_batching refusal is gone. serving.rs declares
+    banks Persistent/Qualified and disk Qualified.
+  - At ctx 2048 the fit chose 2 banks with 4.23 GiB spare on the 12 GiB
+    card; the batch fit headroom line reads floor 4 GiB + burst 2 GiB.
+
+Not done in this unit, and why it does not block the checklist: the
+ring-resume guard noted in 4e (gemma4_sync_keep returns
+session_keep_prefix without the ring_holds check the other ring families
+use). The banked lane is exact, but the serial lane can still accept a
+divergent continuation that reaches back past the rows the ring still holds
+and read overwritten slots. It is a real defect, it is not exercised by any
+checklist item, and it is recorded here as the next serial-lane fix.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -935,11 +983,11 @@ once on the 121 GB of unified memory.
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
-    git status --short          # expect three entries at this handoff:
-                                #   M crates/ds4-core/src/serving.rs
-                                #   M ds4.c
-                                #   ?? ds4_gemma4_payload.inc      (P7 slice 1)
-    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state 151dc611 until pushed
+    git status --short          # expect no code entries at this handoff;
+                                # P7 is committed in c42e8b31 and dd6772dc.
+                                # A P8 subagent may have a working tree in
+                                # flight here; read its report first.
+    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; code state dd6772dc until pushed
     cd /data/VQ_tools && git log --oneline -2    # expect 0fd5f9d, c859d1f
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
     # the state blocks, from the working tree
