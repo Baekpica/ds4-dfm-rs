@@ -2,10 +2,10 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 33e30d05 (all work is on top of 8c2068b5, unpushed)
+last_updated_commit: 9b6f4a67 (pushed to origin/feat/gemma4-family)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T10:10:00+01:00
+handoff_written_at: 2026-11-03T08:04:30+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -434,6 +434,60 @@ Measured facts from these runs:
     EmbeddingGemma server; 11.3 GiB of the 12 GiB card was free.
   - A 22-token prefill plus one token costs about 50 s wall, most of it
     weight registration; the graph free is clean (exit 0).
+
+4c. The official chat template served end to end (2026-11-03, commit 9b6f4a67)
+
+The template was already read from the artifact (chat_template.rs's release
+arm), but nothing pinned it and the server had no family arm, so no chat
+request could be rendered or split. What landed:
+
+  tests/fixtures/gemma4/chat_template.jinja, provenance.json (sha256
+  ae53464b..., revision 4d7ae498, eos [1,106,50]), generation_config.json,
+  make_chat_vectors.py and server-vectors.json: ten vectors rendered by the
+  independent Python oracle (jinja2 3.1.6) covering thinking off/on, a system
+  turn, tool declarations, tool results, preserved tool thinking, media
+  placeholders, no generation prompt, and the template's rejection of string
+  tool arguments.
+  crates/ds4-core/tests/chat_template.rs: render_official_gemma4 reproduces
+  all ten byte for byte.
+  crates/ds4-core/tests/gemma4_vq.rs: artifact_carries_the_official_chat_
+  template reads the template out of the GGUF, renders the same vectors and
+  asserts the three stops.
+  ds4-server: ModelSyntax::Gemma4 (variant 23) with chat format, tool markers,
+  streaming thought close, generated-output parser, retry policy and the
+  canonical fallback renderer; think_start now strips the
+  <|channel>thought opener from reasoning_content.
+  serving_host.rs: the family declares its one-row prefill cap (same env the
+  engine reads) so the scheduler's verified-width fence no longer refuses the
+  exact serial plan, and bank_kv_bytes prices the hybrid layout the way
+  ds4_gemma4_plan.h allocates it (251,863,040 bytes at ctx 2048, the 0.23 GiB
+  the graph line reported, against 0.47 GiB generic).
+
+Evidence:
+
+  cargo test -p ds4-core --test chat_template            8 passed
+  cargo test -p ds4-core --lib serving_host::tests::gemma4  2 passed
+  cargo test -p ds4-server gemma4                         9 passed
+  DS4_GEMMA4_MODEL=... cargo test --test gemma4_vq -- --ignored artifact_carries
+                                                          1 passed
+  POST /v1/chat/completions, ctx 2048, --mem-floor-gb 2, temp 0:
+    finish_reason stop, content "The largest city in Sweden is **Stockholm**.",
+    144 completion tokens, 55 s, reasoning_content clean of control markers.
+  The CLI one-shot path renders the same template: -p "What is the name of the
+  biggest city in Sweden?" began in <|channel>thought and answered correctly.
+
+Two family defects were fixed on the way, both found by trying to serve:
+the chunk fence, and the generic KV charge. Two remain visible:
+
+  - The live tool-tail continuation refuses this family (it needs the
+    canonical template); a tool-result follow-up on a cached continuation
+    fails rather than silently mis-rendering.
+  - The server needs --mem-floor-gb 2 on this 12 GiB card: 6.71 GiB of
+    weights plus the default 4 GiB floor leaves no room for the quote.
+    Not a family defect, a host limit to state in the serving docs.
+
+Open, unchanged: the row-invariance work (4b next step a/b) and the logits
+gate against the 48.07 GiB reference on the GB10.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
