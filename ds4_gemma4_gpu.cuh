@@ -16,17 +16,25 @@
 #include "cuda/gemma4_attn_fp8.cuh"
 #include "cuda/gemma4_attn_fast.cuh"
 #include "cuda/gemma_vq_decode.cuh"
+#include "cuda/gemma_vq_prefill.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
- * device order table the host grouping writes each layer. */
+ * device order table the host grouping writes each layer. The direct VQ
+ * prefill pass adds the layer's work-item list and the uploaded matrix
+ * table; both are built on the host per layer and are bounded by the chunk. */
 struct ds4_g4_moe {
     ds4_gvq_ctx *gvq;
     uint32_t chunk;
     ds4_gpu_tensor *in, *out, *gate, *up, *mid, *order;
     int32_t *routes;
     uint32_t *grouped;
+    ds4_gpu_tensor *items;      /* g4_vqp_item[items_cap] on the device */
+    ds4_gpu_tensor *qmat;       /* glmvq_matrix[3 * G4_EXPERTS] on the device */
+    g4_vqp_item *hitems;        /* host staging for the same list */
+    glmvq_matrix *hqmat;        /* host staging for the matrix table */
+    uint32_t items_cap;
 };
 
 /* ---------------------------------------------------------------- KV store */
@@ -366,8 +374,18 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->order = ds4_gpu_tensor_alloc(pairs * sizeof(uint32_t));
     m->routes = (int32_t *)calloc((size_t)pairs, sizeof(int32_t));
     m->grouped = (uint32_t *)calloc((size_t)pairs, sizeof(uint32_t));
+    /* Every expert's token tiles sum to at most pairs / BN + one per expert,
+     * so the layer list is bounded by that many token tiles times the
+     * matrix's row tiles (the down projection has the most). */
+    const uint32_t token_tiles = (uint32_t)(pairs / G4_VQP_BN) + G4_EXPERTS;
+    const uint32_t row_tiles = (G4_EMBED + G4_VQP_BM - 1u) / G4_VQP_BM;
+    m->items_cap = token_tiles * row_tiles;
+    m->items = ds4_gpu_tensor_alloc((uint64_t)m->items_cap * sizeof(g4_vqp_item));
+    m->qmat = ds4_gpu_tensor_alloc(3u * G4_EXPERTS * sizeof(glmvq_matrix));
+    m->hitems = (g4_vqp_item *)calloc(m->items_cap, sizeof(g4_vqp_item));
+    m->hqmat = (glmvq_matrix *)calloc(3u * G4_EXPERTS, sizeof(glmvq_matrix));
     if (!m->in || !m->out || !m->gate || !m->up || !m->mid || !m->order ||
-        !m->routes || !m->grouped) {
+        !m->routes || !m->grouped || !m->items || !m->qmat || !m->hitems || !m->hqmat) {
         ds4_gpu_g4_moe_free(m);
         return nullptr;
     }
@@ -382,8 +400,12 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *m) {
     ds4_gpu_tensor_free(m->up);
     ds4_gpu_tensor_free(m->mid);
     ds4_gpu_tensor_free(m->order);
+    ds4_gpu_tensor_free(m->items);
+    ds4_gpu_tensor_free(m->qmat);
     free(m->routes);
     free(m->grouped);
+    free(m->hitems);
+    free(m->hqmat);
     free(m);
 }
 
@@ -466,6 +488,139 @@ static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t g
         variant, threads, ds4_current_stream()) != 0;
 }
 
+/* Direct VQ prefill GEMM for the grouped expert path (tokens > 1). Off by
+ * default; DS4_GEMMA4_VQ_PREFILL=1 turns it on, and the restore + cuBLAS
+ * path stays the reference. One tile decodes both gate and up records and
+ * writes gelu(gate) * up, or one record for the down projection. */
+static bool g4_vq_prefill(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_VQ_PREFILL");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* Debug: compare the direct prefill GEMM against the restore + cuBLAS path
+ * on the live expert records. DS4_GEMMA4_VQ_VERIFY=1 prints the first
+ * groups' relL2 and max abs difference for gate and down. */
+static bool g4_moe_verify(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_VQ_VERIFY");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+static void g4_moe_verify_pair(const char *what, const ds4_gpu_tensor *got,
+        const ds4_gpu_tensor *want, uint64_t count) {
+    static float *a = nullptr, *b = nullptr;
+    static uint64_t cap = 0;
+    if (count > cap) {
+        free(a); free(b);
+        cap = count;
+        a = (float *)malloc(cap * sizeof(float));
+        b = (float *)malloc(cap * sizeof(float));
+    }
+    if (!a || !b || !ds4_gpu_tensor_read(got, 0, a, count * sizeof(float)) ||
+        !ds4_gpu_tensor_read(want, 0, b, count * sizeof(float))) {
+        fprintf(stderr, "ds4: VQ verify %s: read failed\n", what);
+        return;
+    }
+    double num = 0.0, den = 0.0, mx = 0.0;
+    for (uint64_t i = 0; i < count; i++) {
+        const double d = (double)a[i] - (double)b[i];
+        num += d * d;
+        den += (double)b[i] * b[i];
+        if (fabs(d) > mx) { mx = fabs(d); }
+    }
+    fprintf(stderr, "ds4: VQ verify %s: relL2 %.3e max %.3e first %.6f/%.6f\n",
+        what, sqrt(num / (den > 0.0 ? den : 1.0)), mx, a[0], b[0]);
+}
+
+/* Direct VQ prefill for the whole layer: gather every route row once, run
+ * the fused gate/up over all experts' work items in one launch, then the
+ * down projection, then scatter every route once. Returns 0 without touching
+ * the layer when any routed expert's matrices are outside the tile geometry,
+ * so the caller falls back to the per-expert restore + cuBLAS loop.
+ *
+ * The gather and scatter keep the reference's grouped order (m->order is the
+ * stable counting sort by expert), so each output row's index_add sees the
+ * same sequence of expert contributions the per-expert loop would produce. */
+static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows,
+        const uint32_t *counts, const uint32_t *offsets) {
+    if (!m || !m->items || !m->qmat || !m->hitems || !m->hqmat) { return 0; }
+    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        if (!counts[e]) { continue; }
+        for (uint32_t w = 0; w < 3u; w++) {
+            const uint32_t index = matrices[w * G4_EXPERTS + e];
+            if (index >= m->gvq->model->source.size()) { return 0; }
+            const glmvq_source &s = m->gvq->model->source[index];
+            if (s.storage != GLMVQ_WEIGHT_VQ || !g4_vq_prefill_ready(s.vq)) { return 0; }
+            m->hqmat[w * G4_EXPERTS + e] = s.vq;
+        }
+        const glmvq_matrix &gate = m->hqmat[e];
+        const glmvq_matrix &up = m->hqmat[G4_EXPERTS + e];
+        const glmvq_matrix &down = m->hqmat[2u * G4_EXPERTS + e];
+        if (gate.rows != G4_FF || gate.cols != G4_EMBED ||
+            up.rows != G4_FF || up.cols != G4_EMBED ||
+            down.rows != G4_EMBED || down.cols != G4_FF) {
+            return 0;
+        }
+    }
+    uint32_t count = 0;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const uint32_t n = counts[e];
+        if (!n) { continue; }
+        for (uint32_t row0 = 0; row0 < G4_FF; row0 += G4_VQP_BM) {
+            for (uint32_t t0 = 0; t0 < n; t0 += G4_VQP_BN) {
+                if (count >= m->items_cap) { return 0; }
+                m->hitems[count++] = {e, G4_EXPERTS + e, row0, offsets[e] + t0, offsets[e] + n};
+            }
+        }
+    }
+    if (!ds4_gpu_tensor_write(m->qmat, 0, m->hqmat, 3u * G4_EXPERTS * sizeof(glmvq_matrix)) ||
+        !ds4_gpu_tensor_write(m->items, 0, m->hitems, (uint64_t)count * sizeof(g4_vqp_item))) {
+        return 0;
+    }
+    const uint64_t elements = pairs * G4_EMBED;
+    const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
+        0u, elements, G4_EMBED);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather")) { return 0; }
+    if (!g4_vq_gemm_items((const g4_vqp_item *)m->items->ptr, count,
+            (const glmvq_matrix *)m->qmat->ptr, true, (const float *)m->in->ptr, G4_EMBED,
+            (float *)m->mid->ptr, G4_FF, ds4_current_stream())) {
+        return 0;
+    }
+    count = 0;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const uint32_t n = counts[e];
+        if (!n) { continue; }
+        for (uint32_t row0 = 0; row0 < G4_EMBED; row0 += G4_VQP_BM) {
+            for (uint32_t t0 = 0; t0 < n; t0 += G4_VQP_BN) {
+                if (count >= m->items_cap) { return 0; }
+                m->hitems[count++] = {2u * G4_EXPERTS + e, 0u, row0, offsets[e] + t0,
+                    offsets[e] + n};
+            }
+        }
+    }
+    if (!ds4_gpu_tensor_write(m->items, 0, m->hitems, (uint64_t)count * sizeof(g4_vqp_item)) ||
+        !g4_vq_gemm_items((const g4_vqp_item *)m->items->ptr, count,
+            (const glmvq_matrix *)m->qmat->ptr, false, (const float *)m->mid->ptr, G4_FF,
+            (float *)m->out->ptr, G4_EMBED, ds4_current_stream())) {
+        return 0;
+    }
+    g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)m->out->ptr, (const float *)weights->ptr,
+        (const uint32_t *)m->order->ptr, 0u, elements, G4_EMBED);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter") ? 1 : 0;
+}
+
 static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
         const ds4_gpu_tensor *weights, const uint32_t *matrices, const int32_t *routes,
         uint32_t rows) {
@@ -518,6 +673,13 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
         }
         return 1;
     }
+    if (rows > 1 && g4_vq_prefill()) {
+        /* The whole layer in one pass: one gather, one gate/up launch over
+         * every expert's work items, one down launch, one scatter. */
+        if (g4_moe_run_prefill(m, out, input, weights, matrices, rows, counts, offsets)) {
+            return 1;
+        }
+    }
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         const uint32_t n = counts[e];
         if (!n) { continue; }
@@ -528,8 +690,37 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
             offsets[e], elements, G4_EMBED);
         const bool one = n == 1;
         bool ok = cuda_ok(cudaGetLastError(), "Gemma-4 expert gather");
+        static int reports = 0;
+        if (ok && g4_moe_verify() && !one && reports < 6) {
+            const glmvq_source &gs = m->gvq->model->source[matrices[e]];
+            const glmvq_source &us = m->gvq->model->source[matrices[G4_EXPERTS + e]];
+            reports++;
+            ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[e], m->in, n, DS4_GVQ_BF16);
+            /* Reference against itself at half the token count before the
+             * scratch is overwritten: cuBLAS picks its split-K by shape, so
+             * this is the port's own chunk-width noise, the band the direct
+             * kernel has to sit in. */
+            if (n >= 4) {
+                const uint32_t half = n / 2;
+                ds4_gpu_gvq_linear(m->gvq, m->up, matrices[e], m->in, half, DS4_GVQ_BF16);
+                g4_moe_verify_pair("ref gate n/2 vs n", m->up, m->gate, (uint64_t)half * G4_FF);
+            }
+            g4_vq_gemm(gs.vq, (const float *)m->in->ptr, gs.vq.cols,
+                (float *)m->up->ptr, gs.vq.rows, n, ds4_current_stream());
+            g4_moe_verify_pair("gate", m->up, m->gate, (uint64_t)n * G4_FF);
+            ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + e], m->in, n, DS4_GVQ_BF16);
+            if (n >= 4) {
+                const uint32_t half = n / 2;
+                ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[G4_EXPERTS + e], m->in, half,
+                    DS4_GVQ_BF16);
+                g4_moe_verify_pair("ref up n/2 vs n", m->gate, m->up, (uint64_t)half * G4_FF);
+            }
+            g4_vq_gemm(us.vq, (const float *)m->in->ptr, us.vq.cols,
+                (float *)m->gate->ptr, us.vq.rows, n, ds4_current_stream());
+            g4_moe_verify_pair("up", m->gate, m->up, (uint64_t)n * G4_FF);
+        }
         bool fused = false;
-        if (ok && one && g4_moe_fused()) {
+        if (ok && !fused && one && g4_moe_fused()) {
             /* One GEMV reads gate and up and writes gelu(gate) * up. */
             fused = g4_moe_linear_glu_one(m, m->mid, matrices[e],
                 matrices[G4_EXPERTS + e], m->in);
@@ -542,10 +733,21 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
                     DS4_GVQ_BF16)) &&
                  ds4_gpu_g4_gelu(m->mid, m->gate, m->up, (uint64_t)n * G4_FF);
         }
-        if (!ok ||
-            !((one && g4_moe_linear_one(m, m->out, matrices[2u * G4_EXPERTS + e], m->mid)) ||
-              ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
-                DS4_GVQ_BF16))) {
+        bool down = false;
+        if (ok && g4_moe_verify() && !one && reports <= 6) {
+            const glmvq_source &ds = m->gvq->model->source[matrices[2u * G4_EXPERTS + e]];
+            ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
+                DS4_GVQ_BF16);
+            g4_vq_gemm(ds.vq, (const float *)m->mid->ptr, ds.vq.cols,
+                (float *)m->in->ptr, ds.vq.rows, n, ds4_current_stream());
+            g4_moe_verify_pair("down", m->in, m->out, (uint64_t)n * G4_EMBED);
+        }
+        if (ok && !down) {
+            down = (one && g4_moe_linear_one(m, m->out, matrices[2u * G4_EXPERTS + e], m->mid)) ||
+                ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + e], m->mid, n,
+                    DS4_GVQ_BF16);
+        }
+        if (!ok || !down) {
             return 0;
         }
         g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
