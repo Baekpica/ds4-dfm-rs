@@ -2,25 +2,26 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 14f27345 (perf(gemma4): token-tiled Q8_0 dense down,
-  four tokens per weight read), plus this handoff commit.
+last_updated_commit: 3a33fefa (docs(handoff): the round pushed to the fork,
+  the token tile, the next unit), plus this handoff commit. No code changed
+  in this session: 4s records the decode measurement and the tree is clean.
   The eight commits on top of d6ad9774 are f0c2b92a (serving-check prefix
   reference), 19f5b75b (the Gemma VQ header split), 659a152b (optional FP8
   full-layer KV and fused expert gate/up), bf6b3989 (optional fast decode
   attention), c09cfbf9 (the prefill-first plan), 9e23197f (the direct VQ
   prefill round, pushed to the fork), 2faef6c3 (the attention and dense-
   down round) and 14f27345 (the token-tiled dense down). This handoff adds
-  4r and updates section 9. No GLM file is modified. Sibling VQ_tools:
-  branch feature/gvq1-gemv-profile at be8c7e6; dev stays 65ef74d; the
-  owner edits that tree from other sessions, so leave its uncommitted
-  files alone.
+  4s and reorders Phase 7 ahead of Phase 4. No GLM file is modified.
+  Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
+  65ef74d; the owner edits that tree from other sessions, so leave its
+  uncommitted files alone.
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 (content at 2faef6c3, the
   round's build; 14f27345 is not synced yet) and
   ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T21:56:16+01:00
+handoff_written_at: 2026-11-03T22:28:28+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1501,6 +1502,57 @@ compile for sm_121a and the first build failed only at the cargo step for
 that reason). The 406 checklist, the FP8 long-context gate and the
 fast-attention bench at ctx 2048 are the open Spark runs.
 
+4s. The 2026-11-03 decode measurement: the VQ GEMM is latency-bound on the
+    codebook, not conversion-bound (no commit; the tree is clean)
+
+- What is measured, and how. The VQ expert GEMM (g4_vq_gemm_items_kernel)
+  is 142.2 ms of the 288.0 ms of GPU time at ctx 256: 100.0 gate/up plus
+  42.3 down. A temporary DS4_GEMMA4_VQ_SPLIT knob (since reverted) skipped
+  the compute or the decode, and each arm was profiled with nsys. Same
+  binary, same prompt, ctx 256 copy-resident, 30 layers:
+    gate/up  normal 95.94  decode only 50.04  compute only 34.62
+    down     normal 41.87  decode only 24.73  compute only 16.00
+  The phases are additive (50.04 + 34.62 = 84.66 against 95.94), so the
+  decode is 52 percent of gate/up and 59 percent of down, and it does not
+  overlap the compute at two blocks per SM.
+- The compute is at the hardware limit: 16.6 G padded MACs in 34.6 ms over
+  48 SMs at about 2.4 GHz is 128 FMA/cycle/SM, the full scalar FP32 issue
+  rate. Its only waste is the token tile: 2064 routes over 128 experts is
+  16.1 tokens per expert against BN = 32, so about half of the compute is
+  padding. The row tile is exact (704 = 11 x 64, 2816 = 44 x 64).
+- The decode is not conversion-bound. A second arm (DS4_GEMMA4_VQ_DEC=1)
+  pre-converted the residual book to f16 in shared and added in f16: four
+  conversions per two weights against seven. Result: gate/up 98.33 ->
+  96.11 ms, down 42.92 -> 42.68, inside the run-to-run spread and not
+  worth its complexity; it was reverted. Its frontier logits were
+  byte-identical to the reference arm (relL2 0.0, same eight tokens), which
+  does say the f16 sum is exact on this artifact's codeword pairs.
+- What the numbers fit: the book gather. Each thread issues four random
+  8-byte reads into the matrix's 64 KB codebook per k tile, and the kernel
+  holds 2 blocks x 8 warps x 4 loads = 64 in flight. At about 250 cycles of
+  L2 latency that is 0.26 loads/cycle/SM = 2.1 weights/cycle; the measured
+  rate is 2.7. The 64 KB book cannot be L1-resident today: two blocks of
+  43.2 KB force a 100 KB shared carve-out on a 128 KB L1/shared SM, leaving
+  28 KB.
+- The next lever, with the mechanism named: hold one weight tile at a time
+  (decode gate, compute gate, decode up, compute up), which drops the block
+  to 25.8 KB, and set the preferred shared carve-out to 64 KB so two blocks
+  leave 64 KB of L1 for the book; mark the activation and index streams
+  .cg (L2 only) so they do not evict it. Expected: the gathers hit L1 and
+  the decode moves toward its instruction bound. Verify by re-adding the
+  split knob and profiling, then the usual tokens plus frontier gate.
+- A row-tile experiment is neutral: BM 128 -> 64 (704 = 11 x 64 exactly, no
+  row padding, four blocks per SM by registers) gave 94.26 gate/up and
+  41.41 down against 95.94 and 41.87, inside the spread, and the
+  decode-only arm was worse (down 26.70 against 24.73). More blocks did not
+  create overlap; the serialization is the barrier pair inside a block.
+- Not done: the tensor-core arm. The sibling's cuda/ds41_vq_prefill_mma.cuh
+  is the reference (VQM 128x128 tiles, ldmatrix plus mma.m16n8k16, the
+  token loop breaks at n8 granularity so padding is not paid, the row gain
+  applied at the exit). It would take the compute from 50.6 ms to a few ms
+  and leave the decode as the floor, so the decode's own ceiling with the
+  L1 fix has to be measured first.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1763,6 +1815,9 @@ once on the 121 GB of unified memory.
 
 9. The remaining phases, in order, and the files that carry each
 
+Order change (owner, 2026-11-03): Phase 7 runs before Phase 4. The phase
+numbers and their content are unchanged; only the execution order moves.
+
 Phase 0 is closed (f0c2b92a). The measured speed order after the second
 round (2faef6c3) is: the dense down and the VQ expert GEMM first (65 and
 143 ms of the 305 ms GPU time at ctx 256), then the remaining decode
@@ -1825,13 +1880,15 @@ Phase 2 — fused MoE: the decode gate/up option is in (659a152b, neutral);
   (expf, 139.8 -> 70.2 ms) and the dense down (batch warp8, 138.2 -> 65.1
   ms), and fixed the direct-prefill scatter race. Whole stack against
   none, ctx 256: prefill +37.3 percent, decode +88.7 percent.
-  Next, in order: (1) the dense down is still 2.17 ms per layer at 1.4
-  TFLOP/s because the batch kernel re-reads each weight row once per
-  token; a token-tiled Q8_0 kernel (weight tile in shared, 16-32 tokens
-  per block) is the next unit for that shape; (2) the remaining VQ levers,
-  one weight tile at a time to free L1 and double-buffering the decode
-  against the compute; (3) the GB10 re-run of this round; (4) the exact-
-  prefill gate with the new kernels. Do not change the container format.
+  Next, in order: (1) DONE (14f27345): the dense down is token-tiled
+  (2.17 -> 1.72 ms per layer); (2) the VQ expert GEMM, measured in 4s: the
+  decode is 52-59 percent of it and is latency-bound on the 64 KB
+  codebook, not conversion-bound. The next unit is one weight tile at a
+  time plus a 64 KB shared carve-out (64 KB of L1 for the book) with the
+  activation and index streams marked .cg; the tensor-core arm
+  (cuda/ds41_vq_prefill_mma.cuh is the reference) follows it; (3) the GB10
+  re-run of this round; (4) the exact-prefill gate with the new kernels.
+  Do not change the container format.
 
 Phase 3 — the vocabulary head, RoPE and the router
 
@@ -1842,6 +1899,19 @@ Phase 3 — the vocabulary head, RoPE and the router
   Files: ds4_gemma4_graph.inc, cuda/gemma_vq_decode.cuh (head GEMV),
   cuda/gemma4_primitives.cuh (rope), ds4_gemma4_gpu.cuh (router).
   Gate: byte-identical eight tokens, then bench.
+
+Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
+
+  P8 wrapped-ring re-run, then --serving-check --mtp and the
+  G4_MTP_DRAFTS decision (4 against 6; the llama.cpp note suggests 2 may be
+  the better acceptance point on a 12 GiB card, so test 2 as well).
+  P9: tests/gemma4_serving_http_gate.sh.
+  P10: the HF release directory, the OSV scan, the pushes (owner's word).
+  P11: the served-arm comparison and two-stage support in vq-gguf and the
+  ds4 GVQ reader.
+  Files: tests/gemma4_serving_http_gate.sh, docs/gemma4-vq.md, README.md,
+  the families row, the VQ_tools vq-gguf and the ds4 GVQ reader for the
+  two-stage payload.
 
 Phase 4 — the per-GPU profile consumer (the owner's request)
 
@@ -1883,16 +1953,3 @@ Phase 6 — RAM-resident experts (optional, capacity not speed)
   into phase 5.
   Files: ds4_gemma4_stream.inc (a host-mapping source), ds4.c (option),
   crates/ds4-core (admission and quote).
-
-Phase 7 — the port gates that remain
-
-  P8 wrapped-ring re-run, then --serving-check --mtp and the
-  G4_MTP_DRAFTS decision (4 against 6; the llama.cpp note suggests 2 may be
-  the better acceptance point on a 12 GiB card, so test 2 as well).
-  P9: tests/gemma4_serving_http_gate.sh.
-  P10: the HF release directory, the OSV scan, the pushes (owner's word).
-  P11: the served-arm comparison and two-stage support in vq-gguf and the
-  ds4 GVQ reader.
-  Files: tests/gemma4_serving_http_gate.sh, docs/gemma4-vq.md, README.md,
-  the families row, the VQ_tools vq-gguf and the ds4 GVQ reader for the
-  two-stage payload.
