@@ -1135,6 +1135,14 @@ SSD streaming contract for the Gemma-only module (not built yet):
     family (the DS4_MODEL_FAMILY != GLM53 arm). Adding a Gemma arm there
     and a gemma4_stream member/arm is engine work, not a GLM edit; do not
     change glm53_stream_* or ds4_glm53_cache.h.
+  - The boundary found in reconnaissance: ds4_gpu_set_stream_map
+    (ds4_glm53_map.inc, a GLM file to call, not edit) refuses unless
+    cuda_model_coherent_host_access(device) is true, which is the
+    integrated GB10 shape. On the RTX 4070 SUPER the GLM53-style stream
+    map cannot be set, so a Gemma streaming option must target the GB10
+    and print the same clear refusal on this card. The pread source is
+    ds4_model.fd; the slot/LRU contract to mirror is ds4_glm53_cache.h
+    (layer/expert key, pin-before-miss, LRU victim).
 
 Commands used (no other GPU work; DS4_LOCK_FILE away from /tmp/ds4.lock):
 
