@@ -1873,6 +1873,7 @@ impl ResolvedPlan {
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
+            Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
             _ => None,
         }
     }
