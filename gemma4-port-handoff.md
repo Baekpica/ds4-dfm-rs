@@ -897,6 +897,32 @@ divergent continuation that reaches back past the rows the ring still holds
 and read overwritten slots. It is a real defect, it is not exercised by any
 checklist item, and it is recorded here as the next serial-lane fix.
 
+4i. P9 and P10 progress beside P8 (2026-11-03)
+
+Done and committed while P8 owns the working tree:
+
+  - be901c46: the live tool-tail continuation renders the canonical template
+    instead of refusing. Each result is one <|tool_response> block inside the
+    model turn that emitted the call, the name resolves from the assistant's
+    call id then the message name (chat_template.jinja:286-293), the Anthropic
+    shape reads one part per call, and with thinking off nothing follows the
+    responses because generation continues the same turn (382-389); with
+    thinking on only the thought channel opens. Three unit tests pin the
+    bytes. Stop handling was already correct: Vocab::is_stop covers ids 1
+    (eos), 106 (<turn|>) and 50 (<|tool_response>).
+  - f47d494c: the generated capability table now carries the Gemma row
+    (banks persistent/qualified, partial reuse, disk and snapshot qualified,
+    MTP sidecar/none/none until P8, cap 262144, qualified context unset) and
+    DS4_GEMMA4_PREFILL_CHUNK; the drift test passes.
+  - 4a8d038b: docs/gemma4-vq.md, the families row and the README row.
+  - 50e46a88: docs/gemma4-port-plan.md records P7 closed and the P9 progress.
+  - OSV scan (rule 10) on 2026-11-03: ds4-gemma4 1 manifest, 146 packages,
+    0 vulnerable; VQ_tools 1 manifest, 34 packages, 0 vulnerable.
+
+Still open in P9: the four-part OpenAI gate (GET /v1/models, a chat
+completion, the same request twice byte-identical, and sm_89 CUDA), which
+needs the GPU and the tree, both held by P8 while it works.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
