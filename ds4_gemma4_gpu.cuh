@@ -262,6 +262,35 @@ extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_
     for (uint64_t i = 0; i < pairs; i++) { m->grouped[cursor[m->routes[i]]++] = (uint32_t)i; }
     if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, pairs * sizeof(uint32_t))) { return 0; }
     if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
+    if (rows > 1) {
+        /* A grouped prefill must equal the one-row path bit for bit. An
+         * expert's GEMM takes N rows when two routes group into it, and the
+         * gemm's accumulation order is not invariant in N (the gather and the
+         * scatter are exact copies and a rounded add). Run each route as its
+         * own one-row projection; `grouped` is built expert-ascending, so the
+         * accumulator adds in the same order as the one-row path. */
+        const uint32_t blocks = (uint32_t)((G4_EMBED + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+        for (uint64_t i = 0; i < pairs; i++) {
+            const uint32_t expert = (uint32_t)m->routes[m->grouped[i]];
+            g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+                (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
+                (uint32_t)i, G4_EMBED, G4_EMBED);
+            if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather") ||
+                !ds4_gpu_gvq_linear(m->gvq, m->gate, matrices[expert], m->in, 1, DS4_GVQ_BF16) ||
+                !ds4_gpu_gvq_linear(m->gvq, m->up, matrices[G4_EXPERTS + expert], m->in, 1,
+                    DS4_GVQ_BF16) ||
+                !ds4_gpu_g4_gelu(m->mid, m->gate, m->up, G4_FF) ||
+                !ds4_gpu_gvq_linear(m->gvq, m->out, matrices[2u * G4_EXPERTS + expert], m->mid,
+                    1, DS4_GVQ_BF16)) {
+                return 0;
+            }
+            g4_moe_scatter_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)m->out->ptr, (const float *)weights->ptr,
+                (const uint32_t *)m->order->ptr, (uint32_t)i, G4_EMBED, G4_EMBED);
+            if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter")) { return 0; }
+        }
+        return 1;
+    }
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         const uint32_t n = counts[e];
         if (!n) { continue; }

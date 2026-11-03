@@ -206,8 +206,9 @@ const MIMO_PREFILL_CHUNK_ENV: &str = "DS4_MIMO2_PREFILL_CHUNK";
 const MIMO_NATIVE_DEFAULT: u32 = crate::mimo2::PREFILL_CAP;
 const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_MAX;
 // ds4_gemma4_plan.h: the engine's own prefill bound and its KV layout.
-// G4_PREFILL is 2048 but the session runs one row per forward, which is the
-// shape its exact reuse declaration is measured at (see serving_caps).
+// G4_PREFILL is 2048. The default stays one row because that is the measured
+// path, not because wider chunks differ: the graph repeats the one-row calls,
+// so a grouped prefill is bit-identical (measured across chunks 1..22).
 const GEMMA4_PREFILL_CHUNK_ENV: &str = "DS4_GEMMA4_PREFILL_CHUNK";
 const GEMMA4_NATIVE_DEFAULT: u32 = 1;
 const GEMMA4_NATIVE_MAX: u32 = 8192;
@@ -1372,9 +1373,9 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             AXK2_NATIVE_MAX,
         ),
-        // The session prefills one row per forward (ds4_gemma4_bind.inc's
-        // gemma4_prefill_cap reads the same env), so the scheduler's verified
-        // widths do not apply until the batched sums are row-invariant.
+        // The session prefills one row per forward by default (ds4_gemma4_bind.inc's
+        // gemma4_prefill_cap reads the same env); a wider chunk is exact, since
+        // the graph repeats the one-row calls, but it is not faster.
         ModelFamily::Gemma4Vq => env_u32(
             GEMMA4_PREFILL_CHUNK_ENV,
             GEMMA4_NATIVE_DEFAULT,

@@ -335,6 +335,59 @@ static void gemma4_row_hash(const ds4_gpu_tensor *t, uint32_t il, const char *st
     free(host);
 }
 
+/* Stage hashes are on at layer 0. DS4_GEMMA4_HASH_LAYER=N adds the same
+ * stage set at layer N (localizing a row-count divergence to one block), and
+ * DS4_GEMMA4_HASH_LAYERS=all hashes every layer's block output (finding the
+ * first layer a row count changes). Both are silent without the variable. */
+static uint32_t gemma4_hash_layer(void) {
+    const char *value = getenv("DS4_GEMMA4_HASH_LAYER");
+    if (!value || !*value) { return G4_LAYERS; }
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    return end != value && !*end && parsed < G4_LAYERS ? (uint32_t)parsed : G4_LAYERS;
+}
+
+static bool gemma4_hash_layers(void) {
+    const char *value = getenv("DS4_GEMMA4_HASH_LAYERS");
+    return value && !strcmp(value, "all");
+}
+
+/* Q4_K projections of one input, one row at a time when the prefill is
+ * grouped. ds4_gpu_gvq_linear changes the Q4 kernel from two rows up: q4m's
+ * tile has its own FMA order (cuda/glm_vq_q4m.cuh, header comment), and the
+ * small-shape scalar/stream split is chosen per call (cuda/glm_vq_q4.cuh,
+ * glmvq_q4_select), so neither a grouped call nor ds4_gpu_gvq_q4_decode_rows
+ * (exact only for staged shapes) reproduces the one-row path for every
+ * width. This family's reuse declaration is exactness, so the grouped path
+ * keeps the one-row call per row and is the one-row result by construction.
+ * The precedent is plain_graph_matmul_tensor's raw Q8 fallback in ds4.c,
+ * which keeps one row when the reduction geometry moves with the row count. */
+static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, const uint32_t *widths, uint32_t count,
+        const ds4_gpu_tensor *in, uint32_t rows, uint32_t cols) {
+    if (rows == 1) {
+        return ds4_gpu_gvq_linear_many(g->gvq, outs, weights, count, in, rows, DS4_GVQ_BF16) != 0;
+    }
+    for (uint32_t r = 0; r < rows; r++) {
+        ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(in, (uint64_t)r * cols * sizeof(float),
+            (uint64_t)cols * sizeof(float));
+        if (!in_row) { return false; }
+        for (uint32_t c = 0; c < count; c++) {
+            ds4_gpu_tensor *out_row = ds4_gpu_tensor_view(outs[c],
+                (uint64_t)r * widths[c] * sizeof(float), (uint64_t)widths[c] * sizeof(float));
+            const bool ok = out_row && ds4_gpu_gvq_linear(g->gvq, out_row, weights[c], in_row,
+                1u, DS4_GVQ_BF16) != 0;
+            ds4_gpu_tensor_free(out_row);
+            if (!ok) {
+                ds4_gpu_tensor_free(in_row);
+                return false;
+            }
+        }
+        ds4_gpu_tensor_free(in_row);
+    }
+    return true;
+}
+
 /* One layer, reference order (semantics 3.6). Returns false on the first
  * failed launch, naming the step: the wrappers report the CUDA error, this
  * names which stage of the block produced it. */
@@ -348,6 +401,8 @@ static void gemma4_row_hash(const ds4_gpu_tensor *t, uint32_t il, const char *st
 static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         uint32_t il, uint32_t rows, uint32_t first) {
     const ds4_gemma4_layer *l = &w->gemma4[il];
+    const uint32_t hash_layer = gemma4_hash_layer();
+    const bool hash_stages = il == 0 || il == hash_layer;
     const uint32_t dim = gemma4_head_dim(il);
     const uint32_t kv = gemma4_kv_heads(il);
     const bool full = gemma4_is_full(il);
@@ -362,23 +417,24 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     G4_STEP(ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, l->norm[0]),
         rows, G4_EMBED, G4_RMS_EPS), "input norm");
     gemma4_probe_at(g->norm, il, "norm in");
-    if (il == 0) { gemma4_scan(g->norm, (uint64_t)rows * G4_EMBED, il, "norm in scan"); }
+    if (hash_stages) { gemma4_scan(g->norm, (uint64_t)rows * G4_EMBED, il, "norm in scan"); }
     uint32_t proj[3] = {gemma4_index(m, l->q), gemma4_index(m, l->k),
                         gemma4_index(m, l->v)};
     ds4_gpu_tensor *outs[3] = {g->q, g->k, g->v};
     const uint32_t count = full ? 2u : 3u;
-    if (!ds4_gpu_gvq_linear_many(g->gvq, outs, proj, count, g->norm, rows, DS4_GVQ_BF16)) {
+    const uint32_t widths[3] = {heads_width, kv_width, kv_width};
+    if (!gemma4_projection_rows(g, outs, proj, widths, count, g->norm, rows, G4_EMBED)) {
         fprintf(stderr, "ds4: Gemma-4 q/k/v projection failed at layer %u\n", il);
         return false;
     }
-    if (il == 0) {
+    if (hash_stages) {
         gemma4_scan(g->q, (uint64_t)rows * heads_width, il, "q scan");
         gemma4_scan(g->cur, (uint64_t)rows * G4_EMBED, il, "cur in scan");
     }
     gemma4_probe_at(g->q, il, "q proj");
     gemma4_probe_at(g->k, il, "k proj");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->q, il, "q proj", r, heads_width); } }
-    if (il == 0 && rows > 1) {
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->q, il, "q proj", r, heads_width); } }
+    if (hash_stages && rows > 1) {
         gemma4_probe_row(g->q, il, "q proj", rows - 1u, heads_width);
         gemma4_probe_row(g->k, il, "k proj", rows - 1u, kv_width);
     }
@@ -406,50 +462,72 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     G4_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il], g->positions, rows,
         first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW, ring), "attention");
     gemma4_probe_at(g->attn, il, "attn out");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
-    if (il == 0 && rows > 1) { gemma4_probe_row(g->attn, il, "attn out", rows - 1u, heads_width); }
-    G4_STEP(ds4_gpu_gvq_linear(g->gvq, g->branch, gemma4_index(m, l->o), g->attn,
-        rows, DS4_GVQ_BF16), "o projection");
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->attn, il, "attn out", r, heads_width); } }
+    if (hash_stages && rows > 1) { gemma4_probe_row(g->attn, il, "attn out", rows - 1u, heads_width); }
+    uint32_t o_proj[1] = {gemma4_index(m, l->o)};
+    const uint32_t o_width[1] = {G4_EMBED};
+    G4_STEP(gemma4_projection_rows(g, &g->branch, o_proj, o_width, 1u, g->attn, rows,
+        heads_width), "o projection");
     G4_STEP(ds4_gpu_g4_rms(g->gvq, g->branch, g->branch, gemma4_index(m, l->norm[1]),
         rows, G4_EMBED, G4_RMS_EPS), "post-attention norm");
     G4_STEP(ds4_gpu_add_tensor(g->cur, g->cur, g->branch,
         (uint32_t)((uint64_t)rows * G4_EMBED)), "attention residual");
     G4_STEP(ds4_gpu_gvq_round(g->cur, (uint64_t)rows * G4_EMBED), "attention round");
     gemma4_probe_at(g->cur, il, "cur after attn");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "cur after attn", r, G4_EMBED); } }
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "cur after attn", r, G4_EMBED); } }
 
     /* Dense branch: pre-FFN norm, GELU(product), down (Q8_0 from the map),
      * then post_feedforward_layernorm_1 (list index 5). */
     G4_STEP(ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, l->norm[2]),
         rows, G4_EMBED, G4_RMS_EPS), "pre-FFN norm");
     uint32_t dense[2] = {gemma4_index(m, l->dense_gate), gemma4_index(m, l->dense_up)};
+    const uint32_t dense_width[2] = {G4_DENSE, G4_DENSE};
     ds4_gpu_tensor *dense_out[2] = {g->dense_g, g->dense_u};
-    if (!ds4_gpu_gvq_linear_many(g->gvq, dense_out, dense, 2u, g->norm, rows, DS4_GVQ_BF16) ||
-        !ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE) ||
-        !ds4_gpu_matmul_q8_0_tensor(g->branch, m->map, m->size, l->dense_down->abs_offset,
-            G4_DENSE, G4_EMBED, g->dense_mid, rows) ||
+    bool dense_ok = gemma4_projection_rows(g, dense_out, dense, dense_width, 2u, g->norm, rows, G4_EMBED) &&
+        ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE);
+    if (dense_ok && rows == 1) {
+        dense_ok = ds4_gpu_matmul_q8_0_tensor(g->branch, m->map, m->size,
+            l->dense_down->abs_offset, G4_DENSE, G4_EMBED, g->dense_mid, rows) != 0;
+    } else if (dense_ok) {
+        /* The Q8_0 dense-vec kernel takes the token count as a template
+         * dimension; keep the one-row call per row for the same reason as
+         * the Q4 projections. */
+        for (uint32_t r = 0; r < rows; r++) {
+            ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(g->dense_mid,
+                (uint64_t)r * G4_DENSE * sizeof(float), (uint64_t)G4_DENSE * sizeof(float));
+            ds4_gpu_tensor *out_row = ds4_gpu_tensor_view(g->branch,
+                (uint64_t)r * G4_EMBED * sizeof(float), (uint64_t)G4_EMBED * sizeof(float));
+            dense_ok = in_row && out_row && ds4_gpu_matmul_q8_0_tensor(out_row, m->map, m->size,
+                l->dense_down->abs_offset, G4_DENSE, G4_EMBED, in_row, 1u) != 0;
+            ds4_gpu_tensor_free(in_row);
+            ds4_gpu_tensor_free(out_row);
+            if (!dense_ok) { break; }
+        }
+    }
+    if (!dense_ok ||
         !ds4_gpu_g4_rms(g->gvq, g->branch, g->branch, gemma4_index(m, l->norm[5]), rows, G4_EMBED, G4_RMS_EPS)) {
         fprintf(stderr, "ds4: Gemma-4 dense FFN failed at layer %u\n", il);
         return false;
     }
     gemma4_probe_at(g->dense_mid, il, "dense mid");
     gemma4_probe_at(g->branch, il, "dense down normed");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->branch, il, "dense down normed", r, G4_EMBED); } }
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->branch, il, "dense down normed", r, G4_EMBED); } }
 
     /* Router reads the post-attention residual, not the FFN input. */
+    uint32_t router[1] = {gemma4_index(m, l->router)};
+    const uint32_t router_width[1] = {G4_EXPERTS};
     if (!ds4_gpu_g4_router_input(g->gvq, g->tmp, g->cur, gemma4_index(m, l->router_scale), rows, G4_EMBED, G4_RMS_EPS,
             G4_ROUTER_ROOT) ||
-        !ds4_gpu_gvq_linear(g->gvq, g->router_logits, gemma4_index(m, l->router), g->tmp, rows,
-            DS4_GVQ_BF16) ||
+        !gemma4_projection_rows(g, &g->router_logits, router, router_width, 1u, g->tmp, rows, G4_EMBED) ||
         !ds4_gpu_g4_router(g->gvq, g->selected, g->weights, g->router_logits,
             gemma4_index(m, l->router_per_expert), rows)) {
         fprintf(stderr, "ds4: Gemma-4 router failed at layer %u\n", il);
         return false;
     }
     gemma4_probe_at(g->tmp, il, "router input");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->tmp, il, "router input", r, G4_EMBED); } }
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->tmp, il, "router input", r, G4_EMBED); } }
     gemma4_probe_at(g->router_logits, il, "router logits");
-    if (il == 0 && getenv("DS4_GEMMA4_DEBUG")) {
+    if (hash_stages && getenv("DS4_GEMMA4_DEBUG")) {
         /* The route is discontinuous: a 1-ULP input change can swap an expert,
          * so the selection is printed beside the logits. */
         uint32_t sel[G4_USED] = {0};
@@ -457,7 +535,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         const uint64_t at = (uint64_t)(rows - 1u) * G4_USED * sizeof(uint32_t);
         if (ds4_gpu_tensor_read(g->selected, at, sel, sizeof(sel)) &&
             ds4_gpu_tensor_read(g->weights, at, w, sizeof(w))) {
-            fprintf(stderr, "ds4: G4 L0 route row %u:", rows - 1u);
+            fprintf(stderr, "ds4: G4 L%u route row %u:", il, rows - 1u);
             for (uint32_t i = 0; i < G4_USED; i++) {
                 fprintf(stderr, " %u/%.4g", sel[i], (double)w[i]);
             }
@@ -478,7 +556,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     }
     gemma4_probe_at(g->norm, il, "expert input");
     gemma4_probe_at(g->exp_acc, il, "expert acc normed");
-    if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->exp_acc, il, "expert acc normed", r, G4_EMBED); } }
+    if (hash_stages) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->exp_acc, il, "expert acc normed", r, G4_EMBED); } }
     if (!ds4_gpu_add_tensor(g->branch, g->branch, g->exp_acc,
             (uint32_t)((uint64_t)rows * G4_EMBED)) ||
         !ds4_gpu_g4_rms(g->gvq, g->branch, g->branch, gemma4_index(m, l->norm[3]), rows, G4_EMBED, G4_RMS_EPS) ||
@@ -520,11 +598,13 @@ static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         fprintf(stderr, "ds4: Gemma-4 embedding scale failed at row %u\n", first);
         return false;
     }
+    const bool hash_layers = gemma4_hash_layers();
     for (uint32_t il = 0; il < G4_LAYERS; il++) {
         if (!gemma4_layer(g, m, w, il, rows, first)) { return false; }
         gemma4_probe_at(g->cur, il, "layer out");
     if (il == 0 && rows > 1) { gemma4_probe_row(g->cur, il, "layer out", rows - 1u, G4_EMBED); }
     if (il == 0) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "layer out", r, G4_EMBED); } }
+    if (hash_layers && il) { for (uint32_t r = 0; r < rows; r++) { gemma4_row_hash(g->cur, il, "layer out", r, G4_EMBED); } }
     }
     if (!ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, w->output_norm),
             rows, G4_EMBED, G4_RMS_EPS)) {
