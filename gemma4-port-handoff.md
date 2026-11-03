@@ -2,10 +2,10 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 57b25db0 (the code state; this file's own commit is c6e7f72e)
+last_updated_commit: 19f25d46 (the code state; this file's commit follows it)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T08:07:17+01:00
+handoff_written_at: 2026-11-03T08:56:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -35,28 +35,27 @@ reasoned in the thought channel and answered Stockholm. The HTTP server
 serves the same artifact and returned finish_reason stop with the same answer
 in 55 s, reasoning_content free of control markers. The template is pinned to
 the checkpoint file with ten oracle-rendered vectors (9b6f4a67), and the stop
-set 1/106/50 from generation_config.json is asserted. The branch is pushed:
-origin/feat/gemma4-family at 57b25db0.
+set 1/106/50 from generation_config.json is asserted. P6a is closed
+(19f25d46): a row-grouped prefill now equals the one-row path bit for bit
+(41-token logits byte-identical at chunks 1, 2, 8, 9 and 22), and
+--serving-check reports prefix, rewind and continue exact with
+"result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)". The branch is
+pushed to origin/feat/gemma4-family; the code state is 19f25d46 and this
+file's own commit follows it.
 
 What is still open, in order:
 
-  1. P6a  make the Q4_K projections row-count invariant for this family so a
-          row-grouped prefill equals the one-row path bit for bit, then
-          re-measure the chunk spread and re-run --serving-check (its
-          continue item is WRONG only because of it). Until then the family
-          declares a one-row prefill in serving_host and
-          DS4_GEMMA4_PREFILL_CHUNK > 1 is unqualified.
-  2. P6b  the reference logits gate on the GB10 against the 48.07 GiB
+  1. P6b  the reference logits gate on the GB10 against the 48.07 GiB
           checkpoint. Unrun here; the paged run on this host is untested.
           Nothing above claims quality beyond these two answers and the API
           run.
-  3. P7   banks, payload save/restore, snapshots, disk KV; remove the
+  2. P7   banks, payload save/restore, snapshots, disk KV; remove the
           ds4_engine_supports_batching refusal (2dca7709) when the lane lands.
-  4. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
-  5. P9   the serving remainder: the four-part OpenAI gate, the live
+  3. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
+  4. P9   the serving remainder: the four-part OpenAI gate, the live
           tool-tail continuation (it refuses this family and fails rather than
           mis-render), and the serving-host limits in docs.
-  6. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
+  5. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
           OSV scan, pushes (owner's word required).
 
 Operational facts this host needs:
@@ -105,6 +104,11 @@ Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
             the session has
   9b6f4a67  feat(gemma4-vq): the official chat template, pinned and served
   57b25db0  docs(handoff): the chat template is pinned and served
+  c6e7f72e  docs(handoff): state at 57b25db0, with the exact resume point
+  e6a40976  docs(handoff): name this file's own commit beside the code state
+  19f25d46  P6a: make a grouped prefill repeat the one-row calls
+            (Q4_K projections, Q8_0 dense down, router and expert routes;
+            logits byte-identical at chunks 1..22; serving check passes)
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -144,10 +148,11 @@ below is the same sequence; the plan file carries the detail.
      OpenAI gate.
   4. The drafter (W5) and the docs (W7).
 
-  Status at 57b25db0: item 1 landed for the serial session (engine load,
-  graph, context memory, prefill cap); item 2's checks ran (determinism and
-  finiteness pass, the chunk spread is open); item 3's family arm, chat
-  rendering and stops landed, the OpenAI gate did not; item 4 is untouched.
+  Status at 19f25d46: item 1 landed for the serial session (engine load,
+  graph, context memory, prefill cap); item 2's checks ran (determinism,
+  finiteness and the prefill spread all pass; only the reference logits gate
+  P6b is unrun); item 3's family arm, chat rendering and stops landed and the
+  serving checklist passes its reuse items; item 4 is untouched.
 
 Known gaps in the graph to close with the session work: decode currently
 recomputes the full row per token (no fused decode kernels), the KV ring
@@ -397,10 +402,10 @@ Gate state, in the plan's order:
                          multi-sequence graph" (P7; 2dca7709)
    mtp/context/prompt/media: no check yet
 
-The open item: prefill row-grouping moves the logits
+The closed item: prefill row-grouping used to move the logits (P6a)
 
-  Measured with the same prompt, same tokens, same positions, only the prefill
-  chunk size differing (--dump-logits, 262144 values each):
+  Before 19f25d46, measured with the same prompt, same tokens, same positions,
+  only the prefill chunk size differing (--dump-logits, 262144 values each):
 
     chunk 2    vs chunk 1   max |delta| 2.375   at index 14067
     chunk 8    vs chunk 1   max |delta| 2.625   at index 101
@@ -430,33 +435,61 @@ The open item: prefill row-grouping moves the logits
     expert acc normed  f31e0919 != 8cfdb122
     layer out          f5b9cd17 != f3d6ea31
 
-  So the first stage that moves is the o projection: attention matches, and the
-  residual after o_proj does not. o_proj is Q4_K with cols 4096 (16 blocks)
-  and q_proj is Q4_K with cols 2816 (11 blocks); both are computed by q4m at
-  two rows and by the SIMT dot at one row, and only the 16-block one lands on
-  a different sum order. That is ULP-level, not a wrong result - the layer-0
-  block output differs by 2 bf16 ULPs - which fits the measured nats-scale
-  spread only as amplification through the top-8 router.
+  So the first stage that moved was the o projection: attention matched, and
+  the residual after o_proj did not. o_proj is Q4_K with cols 4096 (16 blocks)
+  and q_proj is Q4_K with cols 2816 (11 blocks); both were computed by q4m at
+  two rows and by the SIMT dot at one row, and only the 16-block one landed on
+  a different sum order. That was ULP-level, not a wrong result - the layer-0
+  block output differs by 2 bf16 ULPs - amplified through the top-8 router.
 
-  Decision for the next unit: make the Q4_K projections row-count invariant
-  for this family first (the GVQ runtime already documents
-  ds4_gpu_gvq_q4_decode_many as bit-identical to its one-token call at the
-  same split, which is exactly the property the spread needs), then re-measure.
-  If a spread survives in the VQ expert sums, record it as a family property
-  with the measurement rather than claiming exactness.
+  What closed it (19f25d46). Three paths order their sums by the row count, and
+  each now repeats the one-row call per row when the chunk is wider:
+
+    - the Q4_K projections: q4m has its own FMA order from two rows up, and
+      glmvq_q4_select picks the scalar or stream kernel per call, so
+      ds4_gpu_gvq_q4_decode_rows is exact only for the staged shapes its
+      comment names;
+    - the Q8_0 dense down: K=2112 skips the multiple-of-256 and
+      multiple-of-128 tiers, so n_tok=1 runs matmul_q8_0_preq_warp8_kernel
+      while n_tok>1 runs cuBLAS or matmul_q8_0_preq_kernel (ds4_cuda.cu);
+    - the routed experts (N grows when two routes group into one expert) and
+      the BF16 router (it leaves its one-token kernel above four rows).
+
+  The shape is the one plain_graph_matmul_tensor already uses in ds4.c when a
+  kernel's reduction geometry moves with the row count. The probe was extended
+  for the hunt: DS4_GEMMA4_HASH_LAYER=N adds the stage set at layer N, and
+  DS4_GEMMA4_HASH_LAYERS=all hashes every layer's block output.
+
+  Evidence after the fix:
+    - six tokens (2,818,7488,563,6641,684), chunks 1 vs 2, all 30 layers,
+      positions 0..5: zero differing hashes (before: position 0 first
+      diverged at layer 11, position 5 at layer 7; the layer-11 stage probe
+      named the dense down, and the same per-row fix closed both);
+    - a 41-token prompt's logits are byte-identical at chunks 1, 2, 8, 9 and
+      22 (sha256 aad4d287777ed9761aef280f005fb759baa63cf0cf223d8f74a54d0f156b84cf,
+      argmax 100 in every run); the chunk-1 dump repeated after the fix has
+      the same sha256;
+    - --serving-check now reports:
+
+        reuse     prefix    qualified  works  kept 21, top-1 17/17, exact
+        reuse     rewind    qualified  works  kept 21, top-1 17/17, exact
+        reuse     continue  qualified  works  kept 38, top-1 17/17
+                                             (prefill 17, decode-fed 17), exact
+        result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)
+      disk/snapshot/banks/mtp/context/prompt/media keep their P7/P9 status.
+
+  The family still declares a one-row prefill: a wider chunk is now exact but
+  repeats the same launches, so one row remains the measured default. The
+  declare-at-one comment in serving_host.rs says so.
 
 Next step, in order:
 
-  a. Add a full-row hash probe at layer 0 (q proj, k proj, attn out,
-     o proj residual, dense down, router input, expert acc, block out) and
-     run chunk 2 against chunk 1 for the same 3-token id list; the first
-     stage whose hash differs names the kernel.
-  b. If it is q4m or the VQ prefill path, prefer the bit-identical decode
-     kernel for Gemma-4's projections (correctness before speed, as the graph
-     comment already states) and re-measure the chunk spread; expect it to
-     collapse to 0 and the checklist's continue item to pass.
-  c. Then the logits gate against the reference checkpoint (section 6: the
-     48.07 GiB source, GB10 is the safe host) and P7.
+  a. P6b: the reference logits gate against the 48.07 GiB checkpoint on the
+     GB10 (section 6, risk 1). Unrun on this host; the paged run here is
+     untested. Nothing above claims quality beyond the answers and the API
+     run already recorded.
+  b. Then P7 (banks, payloads, snapshots, disk KV), P8 (the drafter), the P9
+     remainder and P10, in the order of the open list at the top.
 
 Commands this host needs:
 

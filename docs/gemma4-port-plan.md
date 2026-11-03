@@ -41,20 +41,22 @@ no extra memory).
 - P5 device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the 30-layer graph
   (ds4_gemma4_graph.inc); both units compile, no session reaches them yet.
 
-## P6: the serial session (numbers run; two items open)
+## P6: the serial session (numerics run; the reference gate is open)
 
-State at 2026-11-03: the engine binds the plan, the session allocates the
-graph (KV 0.62 GiB at ctx 2048), runs all 30 layers and returns 262,144 of
-262,144 finite logits; two identical runs are byte-identical; with single-row
-forwards the serving checklist's prefix, rewind and continue items are exact.
-The nan of the previous state was three primitives reading the artifact's BF16
-weights as float32 (7dd5b2d8). Open: (a) a row-grouped prefill moves the
-logits by 2.4-4.8 nats against the one-row path, which flips a near-tie in the
-checklist's continue item, and (b) the logits gate against the reference
-checkpoint. Section 4b of gemma4-port-handoff.md holds the measurements and
-the bisect that is next. Gate items 1 (graph line) and 2 (determinism) PASS;
-3 is PASS for finiteness and shape sanity with the spread above recorded; 4
-(serving check) runs and reports the gap list.
+State at 2026-11-03, commit 19f25d46: the engine binds the plan, the session
+allocates the graph (KV 0.23 GiB at ctx 2048 with one-row forwards), runs all
+30 layers and returns 262,144 of 262,144 finite logits; two identical runs are
+byte-identical. The nan of the previous state was three primitives reading the
+artifact's BF16 weights as float32 (7dd5b2d8). The prefill spread is closed:
+three paths ordered their sums by the row count (Q4_K projections, the Q8_0
+dense down, the expert route group and the router); each now repeats the
+one-row call per row, and a 41-token prompt's logits are byte-identical at
+chunks 1, 2, 8, 9 and 22. The serving checklist's prefix, rewind and continue
+items are exact, "result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)".
+Section 4b of gemma4-port-handoff.md holds the measurements and the bisect.
+Open: (b) the logits gate against the reference checkpoint. Gate items 1
+(graph line), 2 (determinism), 3 (numerics, spread removed) and 4 (serving
+check) PASS; item 5 is open.
 
 Goal: one prompt in, one token out, deterministically, through the C engine.
 
