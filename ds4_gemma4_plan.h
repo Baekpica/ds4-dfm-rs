@@ -26,8 +26,13 @@ enum {
     G4_GLOBAL_HEAD_DIM = 512,
     G4_KV_HEADS = 8,
     G4_GLOBAL_KV_HEADS = 2,
-    G4_ROT = 64,
-    G4_GLOBAL_ROT = 128,
+    /* Rotary pairs (half of the rotated dims). Sliding layers use rope_type
+     * "default", so every pair rotates: head_dim/2 = 128. Full layers use
+     * "proportional" with partial_rotary_factor 0.25, so rope_angles =
+     * int(0.25 * 512 // 2) = 64 pairs of the 256 (modeling_rope_utils.py:
+     * 193-265; the reference buffers measure 128 and 64 nonzero). */
+    G4_ROT = G4_HEAD_DIM / 2,
+    G4_GLOBAL_ROT = 64,
     G4_WINDOW = 1024,
     G4_DENSE = 2112,
     G4_EXPERTS = 128,
@@ -88,13 +93,15 @@ static inline uint64_t gemma4_activation_bytes(unsigned cap) {
         (uint64_t)G4_VOCAB * sizeof(float);
 }
 
-/* A sliding layer keeps window-1 + prefill_cap rows; a full layer keeps the
- * whole context. K and V are counted separately here until the engine's
- * k=v sharing is measured; the plan stays the conservative bound. */
+/* A sliding layer keeps window + prefill_cap rows (a ring, the same rule as
+ * ds4_gemma4_kv_rows; window - 1 + cap is the minimum, window + cap leaves the
+ * same margin the engine allocates); a full layer keeps the whole context. K
+ * and V are counted separately here until the engine's k=v sharing is
+ * measured; the plan stays the conservative bound. */
 static inline unsigned gemma4_kv_capacity(unsigned layer, unsigned ctx,
                                           unsigned cap) {
     if (gemma4_is_full(layer)) { return ctx; }
-    const unsigned needed = G4_WINDOW - 1u + cap;
+    const unsigned needed = G4_WINDOW + cap;
     return ctx < needed ? ctx : needed;
 }
 

@@ -7,6 +7,7 @@
 #include <cmath>
 #include "../cuda/gemma4_primitives.cuh"
 #include "../cuda/gemma4_attn.cuh"
+#include "../ds4_gemma4_plan.h"
 
 #define CUDA_OK(call) do { cudaError_t e_=(call); if(e_!=cudaSuccess){ \
     std::fprintf(stderr,"%s: %s\n",#call,cudaGetErrorString(e_)); std::exit(2); } } while(0)
@@ -250,43 +251,67 @@ static void router_test() {
 }
 
 /* One attention configuration: build bf16 KV rows, run the warp kernel and
- * the double reference, and report the worst absolute difference. */
+ * the double reference, and report the worst absolute difference. `ring` is
+ * the cache's row count (slot = position % ring); 0 indexes by absolute
+ * position. A ring case fills every slot the visible window reads, which is
+ * what a wrapped cache holds. */
 static void attn_case(const char *name,unsigned rows,unsigned first,unsigned heads,
-        unsigned kv_heads,unsigned dim,unsigned window) {
-    const unsigned capacity=first+rows;
+        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring) {
+    const unsigned capacity=ring?ring:first+rows;
     const uint64_t stride=(uint64_t)kv_heads*dim;
     std::vector<float> keys((uint64_t)capacity*stride),values((uint64_t)capacity*stride);
     std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
     std::vector<__nv_bfloat16> key16(keys.size()),value16(values.size());
-    for(uint64_t i=0;i<keys.size();i++) {
-        keys[i]=g4_ref_bf16(value((unsigned)(i%65536))*1.1f);
-        values[i]=g4_ref_bf16(value((unsigned)((i+7)%65536))*0.9f);
-        key16[i]=__float2bfloat16_rn(keys[i]);
-        value16[i]=__float2bfloat16_rn(values[i]);
+    const unsigned oldest=(ring&&first+rows>ring)?first+rows-ring:0u;
+    for(unsigned p=oldest;p<first+rows;p++) {
+        const uint64_t slot=ring?p%capacity:p;
+        for(uint64_t j=0;j<stride;j++) {
+            const uint64_t k=(uint64_t)p*stride+j;
+            keys[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
+            values[slot*stride+j]=g4_ref_bf16(value((unsigned)((k+7)%65536))*0.9f);
+            key16[slot*stride+j]=__float2bfloat16_rn(keys[slot*stride+j]);
+            value16[slot*stride+j]=__float2bfloat16_rn(values[slot*stride+j]);
+        }
     }
     for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
-    g4_ref_attn(expected.data(),query.data(),keys.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity);
+    g4_ref_attn(expected.data(),query.data(),keys.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity,ring);
     float *dq=device(query),*out;
     __nv_bfloat16 *dk=device(key16),*dv=device(value16);
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     const unsigned warps=4;
     const unsigned jobs=rows*heads;
-    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,0u,stride);
+    g4_attn_kernel<<<(jobs+warps-1)/warps,warps*32>>>(out,dq,dk,dv,rows,first,heads,kv_heads,dim,window,ring,stride);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,3e-5f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
 }
 
 static void attn_test() {
-    attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW);
-    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW);
-    attn_case("attn_full_decode",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
-    attn_case("attn_full_prefill",4,100,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_case("attn_full_decode",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0);
+    attn_case("attn_full_prefill",4,100,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0);
+    /* Wrapped ring: a decode at 4096 in a window+cap cache reads slots
+     * 3073 % 1025 .. 4096 % 1025, i.e. across the wrap. */
+    attn_case("attn_sliding_ring_wrap",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,
+        G4_REF_WINDOW,G4_REF_WINDOW+1u);
+    /* A prefill chunk of 5 rows past the window in a window+5 cache: the
+     * clobbered slots are older than every visible key. */
+    attn_case("attn_sliding_ring_prefill",5,1025,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,
+        G4_REF_WINDOW,G4_REF_WINDOW+5u);
 }
 
 int main(int argc,char **argv) {
     const int ordinal=argc>1?std::atoi(argv[1]):0;
     CUDA_OK(cudaSetDevice(ordinal));
+    /* The graph builds its rope tables from G4_ROT/G4_GLOBAL_ROT; keep them
+     * equal to what g4_ref_rope_inv (and the reference buffers) use: every
+     * pair of a sliding head, 64 of 256 pairs on a full head. */
+    if (gemma4_rot(0) != G4_REF_HEAD_DIM / 2u || gemma4_rot(5) != G4_REF_ROT_PAIRS) {
+        std::fprintf(stderr, "gemma4_rot: sliding %u full %u, expected %u/%u\n",
+            gemma4_rot(0), gemma4_rot(5), G4_REF_HEAD_DIM / 2u, G4_REF_ROT_PAIRS);
+        failures++;
+    }
     rms_test(); router_input_test(); rope_test(); gelu_test(); embed_test();
     softcap_test(); layer_scale_test(); router_test(); attn_test();
     CUDA_OK(cudaDeviceSynchronize());
