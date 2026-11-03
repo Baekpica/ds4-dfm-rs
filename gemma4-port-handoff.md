@@ -2,10 +2,10 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 9b6f4a67 (pushed to origin/feat/gemma4-family)
+last_updated_commit: 57b25db0 (pushed to origin/feat/gemma4-family)
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev
-handoff_written_at: 2026-11-03T08:04:30+01:00
+handoff_written_at: 2026-11-03T08:07:17+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -25,31 +25,52 @@ the same contract every other family has:
                                  CPU execution lane for a VQ payload
   ds4 --serving-check            runs every declared lane on the artifact
 
-State at this handoff: the graph runs and the numbers are good. The serial
-session binds the plan, allocates the graph (KV 0.62 GiB at ctx 2048),
-executes all 30 layers, and returns 262,144 of 262,144 finite logits; two
-identical runs are byte-identical, and with single-row forwards the serving
-checklist's prefix, rewind and continue items are exact. The nan of the
-previous state was three primitives reading BF16 weights as float32 (fixed in
-7dd5b2d8). What is still open is the prefill/decode numeric spread (section
-4b): a row-grouped prefill moves this model's logits by a few nats against the
-one-row path, which flips a near-tie in the checklist's continue item. The five
-banks items and the disk items are P7. The commits below are unpushed.
+State at this handoff: the family answers through both doors.
 
-Work queue, in order (details in section 4b and docs/gemma4-port-plan.md):
+The serial session binds the plan, allocates the graph (KV 0.23 GiB at ctx
+2048 with one-row prefill), runs all 30 layers, returns 262,144 of 262,144
+finite logits, and two identical runs are byte-identical. The CLI one-shot
+renders the artifact's own chat template: asked for Sweden's biggest city it
+reasoned in the thought channel and answered Stockholm. The HTTP server
+serves the same artifact and returned finish_reason stop with the same answer
+in 55 s, reasoning_content free of control markers. The template is pinned to
+the checkpoint file with ten oracle-rendered vectors (9b6f4a67), and the stop
+set 1/106/50 from generation_config.json is asserted. The branch is pushed:
+origin/feat/gemma4-family at 57b25db0.
 
-  1. P6a  make the Q4_K projections row-count invariant for this family so
-          prefill and decode agree bit for bit, then re-measure the chunk
-          spread and re-run --serving-check (continue must stop being WRONG).
+What is still open, in order:
+
+  1. P6a  make the Q4_K projections row-count invariant for this family so a
+          row-grouped prefill equals the one-row path bit for bit, then
+          re-measure the chunk spread and re-run --serving-check (its
+          continue item is WRONG only because of it). Until then the family
+          declares a one-row prefill in serving_host and
+          DS4_GEMMA4_PREFILL_CHUNK > 1 is unqualified.
   2. P6b  the reference logits gate on the GB10 against the 48.07 GiB
-          checkpoint (unrun here; the paged run on this host is untested).
+          checkpoint. Unrun here; the paged run on this host is untested.
+          Nothing above claims quality beyond these two answers and the API
+          run.
   3. P7   banks, payload save/restore, snapshots, disk KV; remove the
           ds4_engine_supports_batching refusal (2dca7709) when the lane lands.
   4. P8   the drafter (ds4_gemma4_mtp.inc) and --mtp-draft.
-  5. P9   serving: ds4-sys FFI, the ds4-server family arm, chat rendering,
-          stops 1/106/50, serving_host limits, the four-part OpenAI gate.
+  5. P9   the serving remainder: the four-part OpenAI gate, the live
+          tool-tail continuation (it refuses this family and fails rather than
+          mis-render), and the serving-host limits in docs.
   6. P10  docs/gemma4-vq.md, the families row, README, HF release directory,
           OSV scan, pushes (owner's word required).
+
+Operational facts this host needs:
+
+  - ds4-server needs --mem-floor-gb 2 here: 6.71 GiB of weights plus the
+    default 4 GiB floor leaves no room for the context quote, and the first
+    launch was rejected with quote_overflow.
+  - DS4_LOCK_FILE must point away from /tmp/ds4.lock, which the
+    EmbeddingGemma server on 8098 holds; the gate used
+    /tmp/ds4-gemma4-gate.lock.
+  - Build: make cuda CUDA_ARCH=sm_89, then make ds4-server CUDA_ARCH=sm_89.
+  - Serve: DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock ./ds4-server \
+        -m /data/vq-artifacts/gguf-family-it --cuda -c 2048 \
+        --host 127.0.0.1 --port 8099 --mem-floor-gb 2
 
   25eeaf9d  tokenizer + chat template, 15 reference cases + 3 conversations
   c6419b0f  native shape, dispatch, pointer bind, bind gate (12177 tensors)
@@ -63,6 +84,8 @@ Work queue, in order (details in section 4b and docs/gemma4-port-plan.md):
   081bcbba  the device engine (ds4_gemma4_gpu.cuh, ds4_gemma4.h) and the
             30-layer graph (ds4_gemma4_graph.inc); both units compile
   3530614f  handoff: engine state and the remaining sequence
+Commits on this branch, oldest first (all pushed to origin/feat/gemma4-family):
+
   15a6d9d0  docs: the phase plan P6..P10
   1daaab87  fix(cuda): build for sm_89 again, guarding the Blackwell-only
             instructions (e2m1x2, try_wait.parity, bulk prefetch)
@@ -74,6 +97,14 @@ Work queue, in order (details in section 4b and docs/gemma4-port-plan.md):
             printed (U+2581 -> space, ByteFallback), both engines
   2dca7709  fix(gemma4-vq): refuse the multi-sequence graph instead of
             segfaulting (the serving check no longer core-dumps)
+  aa0c5829  docs(gemma4): P6 state - the nan is fixed, the prefill spread is
+            the open item
+  33e30d05  feat(gemma4-vq): a full-row hash probe, and the stage it names
+  911fe68f  docs(handoff): the ordered work queue from P6a to P10
+  a576baf6  fix(gemma4-vq): serial prefill by default, and declare the reuse
+            the session has
+  9b6f4a67  feat(gemma4-vq): the official chat template, pinned and served
+  57b25db0  docs(handoff): the chat template is pinned and served
 
 Build note: this host has CUDA 13.3 and no recorded arch, and the default
 nvcc target emits sm_121-only instructions. .ds4-cuda-config.mk records
@@ -112,6 +143,11 @@ below is the same sequence; the plan file carries the detail.
      arm (model id, admission, chat rendering, stop handling), and the
      OpenAI gate.
   4. The drafter (W5) and the docs (W7).
+
+  Status at 57b25db0: item 1 landed for the serial session (engine load,
+  graph, context memory, prefill cap); item 2's checks ran (determinism and
+  finiteness pass, the chunk spread is open); item 3's family arm, chat
+  rendering and stops landed, the OpenAI gate did not; item 4 is untouched.
 
 Known gaps in the graph to close with the session work: decode currently
 recomputes the full row per token (no fused decode kernels), the KV ring
@@ -224,11 +260,14 @@ W5 — the drafter.
   at full length when drafting is on.
   Gate: drafts never change the greedy output; verify rows equal the trunk.
 
-W6 — serving wiring.
-  ds4-sys FFI, ds4-server family arm (Gemma channel/thinking/tool_call
-  output parsing, model id, request admission), serving_host limits,
-  ds4-cli gate example. Declared caps get qualified or removed by
-  --serving-check.
+W6 — serving wiring. Chat rendering, the family arm, the model id and the
+  stops are DONE (9b6f4a67): ModelSyntax::Gemma4 (variant 23) covers the chat
+  format, tool markers, streaming thought close, generated-output parsing,
+  the retry policy and the canonical fallback renderer; the template path
+  renders the artifact's own Jinja; think_start strips the thought-channel
+  opener. ds4-sys needed no new FFI: engine open already binds this family,
+  proven by the server run. Remaining: the four-part OpenAI gate, the live
+  tool-tail continuation, and the serving-host limits in docs.
   Gate: the four-part OpenAI gate in section 1.
 
 W7 — docs and release.
@@ -335,6 +374,8 @@ Gate state, in the plan's order:
 
 1. graph line with KV bytes — PASS.
    ds4: Gemma-4 graph ctx=2048 chunk=2048 KV=0.62 GiB activation=132.0 MiB
+   (that run predates the serial default; at chunk=1 the same line now reads
+   KV=0.23 GiB, and serving_host prices exactly that number)
 2. first-token determinism — PASS.
    Two identical prompt runs with --dump-logits: byte-identical files.
 3. numeric bring-up — PASS for finiteness and shape sanity.
@@ -563,9 +604,11 @@ Host: x86_64, i7-14700F, 28 threads, 31 GB RAM, RTX 4070 SUPER 12 GiB
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
+    git status --short          # expect empty at 57b25db0
+    git ls-remote origin feat/gemma4-family   # expect 57b25db0
     cd /data/VQ_tools && git log --oneline 434e8b5..HEAD
-    # the P6 state, from the working tree
-    grep -n "4b. P6" gemma4-port-handoff.md
+    # the state blocks, from the working tree
+    sed -n '1,60p' gemma4-port-handoff.md
     # the gate, one command
     make cuda CUDA_ARCH=sm_89 && \
       DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock DS4_GEMMA4_DEBUG=1 \
