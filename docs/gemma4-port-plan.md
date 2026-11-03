@@ -150,6 +150,41 @@ identical ids and text, and sm_89 CUDA runs it.
 directory upload, an OSV scan of both repos, and only then pushes (owner's
 word required; never upstream to Baekpica).
 
+## P11: artifact quality comparison (R13+8 vs 8x4096x2)
+
+Today the port serves the R13+8 artifact (9.95 GiB, 23.3772 percent mean
+expert relL2, 7.01 GiB of payload). The second option on the table is the
+two-stage 8x4096x2 build, which measures 18.7685 percent at 3.0340 bits per
+weight on this checkpoint: about 8.66 GB of expert payload against the
+R13+8 7.01 GiB, so roughly 1.6 GiB more for a 4.6-point weight-error gain.
+That trade has to be decided on served quality, not on relL2, after the
+serving phases land.
+
+Two arms:
+
+a. Weight-space, now, no code: re-run `vq-quality` on an experts-only
+   8x4096x2 build so the 60 stacks are compared with the 60 stacks of
+   R13+8. The existing /data/vq-artifacts/gemma-4-26b-a4b-8x4096 build
+   encodes all 296 matrices (18.7685 percent, layer 0 experts.down
+   18.7963), which is the wrong selection for a like-for-like number.
+
+b. Served-space, after P9: the reference-gate probes already used for P6b
+   (A 28 tokens, B 1243, C 1024, D 1025; section 4f of the handoff) plus a
+   greedy-text comparison through the OpenAI path, run on both artifacts.
+   This is the arm that decides.
+
+Prerequisite for (b), and the reason this is a phase and not a build: neither
+side can carry a two-stage payload today. `vq-gguf` refuses a container with
+more than one stage ("a GVQ1 matrix is one stage and one group"), and the
+ds4 GVQ reader decodes one index stream plus an optional 8-bit, 256-word
+residual (cuda/glm_vq.cuh:26-33). Serving 8x4096x2 needs either a residual
+link generalized to (bits, words) with its own plane, or a two-stream GVQ
+container type, implemented in both the emitter and the consumer.
+
+Decision rule: keep R13+8 as the default unless the served numbers in (b)
+beat it by more than the gate's own run-to-run spread; if the gain is inside
+that spread, keep the smaller artifact.
+
 ## Phase discipline
 
 Every phase ends with: the gate command and its output pasted into the
@@ -158,6 +193,7 @@ citation, and the handoff's "state at this handoff" block rewritten. A phase
 with an open gate is recorded as open, never as done.
 
 Risk carried throughout: this family's correctness ultimately rests on the
-logits gate, and this host cannot run the 48 GiB reference checkpoint. Until
-that gate runs on a host that can, every quality claim stays unverified, and
-the engine's evidence is the primitive gates plus structural checks.
+logits gate. It has run (P6b, on the GB10 against the 48.07 GiB checkpoint)
+and the two artifacts are compared against it in section 4f of the handoff;
+every quality statement in this repository stays inside those numbers, and no
+perplexity or benchmark claim is made.
