@@ -2,22 +2,21 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: d4f6d4f9 (feat(gemma4-vq): the Gemma-only direct VQ
-  decode GEMV), plus this handoff commit. d4f6d4f9 adds
-  cuda/gemma_vq_decode.cuh and routes the n == 1 expert projection through
-  it; the measured decode is 13.42 tok/s against 10.86 before it (4o). This
-  handoff adds 4o (the decode GEMV and the VQ_tools profile unit) and
-  section 9 (the remaining phases with the files each one owns), and
-  updates the open list. No GLM file is modified. Sibling VQ_tools:
-  branch feature/gvq1-gemv-profile at be8c7e6 (42974fc the GVQ1 tuner
-  kernel, the gres directive, --gguf/--fingerprint-from and the tests;
-  be8c7e6 corrects a doc claim that a profile was committed when it was
-  not). VQ_tools dev stays 65ef74d; the owner edits that tree from other
-  sessions, so leave its uncommitted files alone.
+last_updated_commit: bf6b3989 (feat(gemma4): optional grouped-KV fast
+  decode attention), plus this handoff commit. The four commits on top of
+  d6ad9774 are f0c2b92a (serving-check prefix reference), 19f5b75b (the
+  Gemma VQ header split), 659a152b (optional FP8 full-layer KV and fused
+  expert gate/up) and bf6b3989 (optional fast decode attention). This
+  handoff adds 4p (the 2026-11-03 optimization session) and updates
+  sections 8 and 9. No GLM file is modified. Sibling VQ_tools: branch
+  feature/gvq1-gemv-profile at be8c7e6; dev stays 65ef74d; the owner edits
+  that tree from other sessions, so leave its uncommitted files alone.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 and
+  ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-03T16:57:08+01:00
+handoff_written_at: 2026-11-03T18:52:23+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1421,6 +1420,83 @@ Two boundaries to keep visible:
     whose release.json carries no VQ FNV. Phase 4 in section 9 is the
     unit that closes both.
 
+4p. The 2026-11-03 optimization session: the prefix gate closed, four optional paths
+
+Four commits landed on feat/gemma4-family on top of d6ad9774. No GLM file
+was touched; the only untracked file is review_agy.md (the external review,
+not part of the tree).
+
+f0c2b92a fix(serving-check): compare an off-grid kept prefix without reuse.
+  The decisive run was DS4_GEMMA4_EXACT_PREFILL=1 on the 406-token prompt:
+  every item passed (prefix and rewind exact, banks 16/16) in 28 minutes
+  against 5 batched. That confirmed the batched prefill's chunk-width
+  arithmetic, not prefix bookkeeping, caused the row-16 flip. The prefix
+  item now gets a reuse-free reference at the same split (T[..k] cold, then
+  T[k..] one token at a time) when the kept split is off the prefill grid;
+  rewind keeps the two-sync reference. On the synthetic 406 prompt the
+  batched run now has prefix and rewind work (prefix top-1 15/17, near-tie
+  2 <= 2.750); the banks still report 10/16 because they expose only token
+  streams and have no noise floor, while the exact run proves the bank path
+  is correct. The original 406 prompt used for the first report is not on
+  disk; /tmp/g4-bench-256.txt is the reconstruction that reproduces the
+  structure (prompt 406, split 203, grid 512) and is more sensitive in the
+  banks.
+
+19f5b75b refactor(gemma4): give the VQ device runtime its own header.
+  ds4_gemma4_vq.h now owns the Gemma VQ entry points; ds4_gemma4.h keeps
+  the plan geometry and KV row helpers and no longer includes ds4_glmvq.h
+  (the shared model-agnostic GVQ runtime header). This is the owner's
+  "its own file" requirement; every sibling family includes the shared
+  header from its own family header.
+
+659a152b feat(gemma4): optional FP8 full-layer KV and fused expert gate/up.
+  - DS4_GEMMA4_FULL_KV=fp8: the five full layers store E4M3 K, E4M3 V and
+    one f16 scale per KV head (2,056 B a row against 4,096 bf16), following
+    the Solar FP8 rows Beam and MiMo ship (ds4_cuda.cu:44407-44480,
+    ds4_beam_gpu.cuh:795-880). At ctx 262144 the full layers fall from
+    5.37 GiB to 2.69 GiB; the sliding rings stay bf16. Payload h[6] records
+    the format, the host quote prices the same rows, and the option refuses
+    --mtp (the drafter reads the full layer's bf16 KV). A three-token smoke
+    run matched bf16 exactly; the long-context gate is still open.
+  - DS4_GEMMA4_MOE_FUSED=1: one GEMV over an expert's gate and up, GELU in
+    the epilogue (llama.cpp commit c49edf096's fused gate/up write-back,
+    adapted to GVQ1). The arithmetic reuses g4_vq_dot_vector and g4_gelu;
+    an eight-token probe matched the separate path exactly. On the 4070 it
+    is neutral: prefill 336.53 -> 370.69, decode 13.29 -> 13.24 tok/s
+    (ctx 256, copy resident). Decode is bandwidth-bound on the VQ bytes, so
+    the saved launches do not move it. Keep the option for the GB10.
+  - Makefile deps cover ds4_gemma4_vq.h, cuda/gemma4_attn_fp8.cuh and
+    cuda/gemma4_moe_fused.cuh.
+
+bf6b3989 feat(gemma4): optional grouped-KV fast decode attention.
+  cuda/gemma4_attn_fast.cuh: one CTA per KV head, the group's query heads
+  (2 sliding, 8 full) sharing one shared-memory K/V tile. The per-lane dot
+  order, warp reduction, online softmax and float32 accumulators are the
+  oracle's; only the K/V load path changes. Used only when rows == 1 and
+  keys == 0; prefill and the MTP drafter keep cuda/gemma4_attn.cuh.
+  DS4_GEMMA4_ATTN_FAST=1, default off. Verified, 8 greedy tokens identical
+  off/on on each machine:
+  - 4070 ctx 256 copy: decode 11.33 -> 18.09 tok/s (1.60x), first token
+    0.0863 -> 0.0522 s.
+  - 4070 ctx 2048 zero-copy: decode 1.59 -> 2.42 tok/s (1.52x), first
+    token 0.6445 -> 0.4114 s.
+  - GB10 ctx 256: decode 12.46 -> 13.73 tok/s (1.10x), first token
+    0.0817 -> 0.0743 s.
+  The two machines produce different token sequences from each other; the
+  within-machine parity is the gate.
+
+The Spark (GB10) now carries the work: host leandro@192.168.1.91, worktree
+~/ds4-gemma4 (a git worktree of ~/ds4-dfm-rs, branch feat/gemma4-family at
+d6ad9774 with the four commits' file content rsynced), artifact at
+~/models/gguf-family-it-r8 (10 GB, copied 2026-11-03), and the VQ_tools
+tree at ~/VQ_tools (dev at 65ef74d plus the uncommitted owner files; .git
+carries feature/gvq1-gemv-profile at be8c7e6). Build with
+  export PATH=$HOME/.cargo/bin:$PATH && cd ~/ds4-gemma4 && make cuda-spark
+(cargo is not on PATH in a non-interactive ssh shell; the C/CUDA objects
+compile for sm_121a and the first build failed only at the cargo step for
+that reason). The 406 checklist, the FP8 long-context gate and the
+fast-attention bench at ctx 2048 are the open Spark runs.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -1507,11 +1583,17 @@ once on the 121 GB of unified memory.
 8. Staleness check
 
     cd /data/ds4-gemma4 && git log --oneline 8c2068b5..HEAD
-    git status --short          # expect clean at d4f6d4f9 plus the handoff
-                                # commit. If ds4_gemma4_mtp.inc or the speed
-                                # files are untracked again, read 4k and 4l.
-    git ls-remote origin feat/gemma4-family   # expect 4ba1523c or later; the
-                                # local branch is ahead until pushed
+    git status --short          # expect only review_agy.md untracked at
+                                # bf6b3989 plus the handoff commit. If
+                                # ds4_gemma4_mtp.inc or the speed files are
+                                # untracked again, read 4k and 4l.
+    git ls-remote origin feat/gemma4-family   # expect d6ad9774; the four
+                                # commits f0c2b92a..bf6b3989 are local until
+                                # the owner asks for a push
+    ssh leandro@192.168.1.91 'cd ~/ds4-gemma4 && git log --oneline -1 && \
+      ls ~/models/gguf-family-it-r8/release.json'
+                                # expect d6ad9774 plus the rsynced files;
+                                # the artifact release.json must exist
     cd /data/VQ_tools && git log --oneline -2    # expect 65ef74d, b47dae6 on
                                                  # dev; the profile unit is on
                                                  # feature/gvq1-gemv-profile
@@ -1533,54 +1615,62 @@ once on the 121 GB of unified memory.
 
 9. The remaining phases, in order, and the files that carry each
 
-Phase 0 is correctness and blocks every speed claim. Phases 1-3 are the
-measured speed order. Phase 4 is the owner's per-GPU profile request.
-Phases 5-6 are the residency options. Phase 7 closes the port.
+Phase 0 is closed (f0c2b92a). The measured speed order is now: the prefill
+side first (the restore + cuBLAS path for the VQ experts, which the decode
+options do not touch), then the remaining decode primitives (the 704 block
+variant, the vocabulary head, RoPE, the router), then the per-GPU profile
+consumer. Phases 5-6 are the residency options. Phase 7 closes the port.
+R13+8v2 is dropped: the next prefill kernel works on the existing R13+8
+records and must not introduce a new container version.
 
-Phase 0 — P8 prefix reuse at a 203/406 split (blocking)
+Phase 0 — CLOSED: the 406-token prefix gate (f0c2b92a)
 
-  The serving checklist on a 406-token prompt reports reuse prefix WRONG:
-  kept 203, top-1 16/17, max_abs 1.525e1, row 16: 623 +0.250 over prefill
-  107 +0.500. It reproduces without --mtp, so the drafter is not the cause.
-  The first test is DS4_GEMMA4_EXACT_PREFILL=1 on the same prompt: if it
-  passes, the batched prefill's row indexing is the cause; if it fails, the
-  prefix-reuse bookkeeping is. Do not start phase 1 until this passes.
-  Files: ds4_gemma4_bind.inc (prefill cap and chunking),
-  ds4_gemma4_graph.inc (KV row writes, gemma4_sync_keep),
-  ds4_gemma4_session.inc and ds4.c (session prefill and prefix state).
-  Gate: the same 406-token serving checklist passes with and without
-  --mtp; then re-run the wrapped-ring gate from 4k.
+  DS4_GEMMA4_EXACT_PREFILL=1 passed every checklist item (prefix and rewind
+  exact, banks 16/16, 28 minutes against 5 batched). The batched prefill's
+  chunk-width arithmetic, not prefix bookkeeping, caused the row-16 flip.
+  The prefix item now has a reuse-free reference at the same split; rewind
+  keeps the two-sync reference. The synthetic prompt's banks still report
+  10/16 because they expose only token streams; the exact run proves the
+  bank path. The original 406 prompt is lost; /tmp/g4-bench-256.txt is the
+  reconstruction (prompt 406, split 203, grid 512). The remaining Phase 0
+  work is only the wrapped-ring gate from 4k, which is now Phase 7's P8.
 
-Phase 1 — decode attention: 53.1 percent of GPU time
+Phase 1 — decode attention: DONE as an option (bf6b3989); prefill remains
 
-  cuda/gemma4_attn.cuh is correctness-first: one warp per (row, head), so
-  decode launches 16 warps per layer and leaves most of the 56 SMs idle.
-  Write cuda/gemma4_attn_fast.cuh as a block-per-query-head kernel with
-  the key window split across blocks and a combine pass. Read the sibling
-  flash kernels first, they are the pattern this tree already trusts:
-  cuda/glm_vq_flash.cuh, cuda/l31_flash.cuh, cuda/axk2_flash.cuh and
-  cuda/ds41_attn_mma.cuh. Keep cuda/gemma4_attn.cuh as the oracle.
-  Constraints to carry: 25 sliding layers (16 q, 8 KV, head_dim 256,
-  window 1024), 5 full layers (16 q, 2 KV, head_dim 512), partial rotary
-  40/128 pairs, softcap 30, per-block layer scalar.
-  Files: cuda/gemma4_attn_fast.cuh (new), cuda/gemma4_attn.cuh (oracle),
-  ds4_gemma4_graph.inc (call site), Makefile (dependency line).
-  Gate: eight greedy tokens byte-identical to the current kernel at ctx
-  256 and 2048, then bench; report the decode delta against 13.42 tok/s.
+  cuda/gemma4_attn_fast.cuh is a CTA-per-KV-head kernel: the group's query
+  heads (2 sliding, 8 full) share one shared-memory K/V tile, with the
+  oracle's arithmetic. It is decode-only (rows == 1, keys == 0) and
+  DS4_GEMMA4_ATTN_FAST=1, default off. Measured: 4070 ctx 256 copy 11.33 ->
+  18.09 tok/s (1.60x), 4070 ctx 2048 zero-copy 1.59 -> 2.42 (1.52x), GB10
+  ctx 256 12.46 -> 13.73 (1.10x); 8 greedy tokens identical off/on on each
+  machine. The remaining attention work is the prefill side (rows > 1),
+  where the oracle still runs; a block-per-query-head kernel with the key
+  window split and combine pass is the next step, using the sibling flash
+  kernels (cuda/glm_vq_flash.cuh, cuda/l31_flash.cuh, cuda/axk2_flash.cuh,
+  cuda/ds41_attn_mma.cuh) and llama.cpp's 256/512 MMA paths
+  (ggml/src/ggml-cuda/fattn.cu:333-355). Keep cuda/gemma4_attn.cuh as the
+  oracle. Gate: tokens or logits within the measured noise at ctx 256 and
+  2048, then bench; report against the 18.09 / 2.42 baselines. The
+  default-off decision for DS4_GEMMA4_ATTN_FAST is revisited after the
+  prefill kernel and a ctx 8192 bench on both cards.
 
-Phase 2 — fused MoE decode: the 704 block variant, gate/up, gelu, scatter
+Phase 2 — fused MoE: the decode gate/up option is in (659a152b, neutral);
+  the 704 block variant and the prefill direct VQ kernel remain
 
-  The direct GEMV is 10.8 percent and still scalar per vector. Variant 2
-  only takes 2816-column rows; 704 needs two whole 256-index blocks plus a
-  192 tail, which this header can express because it owns its loader.
-  Then fuse gate and up into one launch, fold g4_gelu into the up epilogue,
-  and fuse the scatter/reduce. Read cuda/glm_vq_ops.cuh (glmvq_decode_gu,
-  glmvq_decode_down) and cuda/glm_vq_decode.cuh:83-190 for the block
-  pattern; do not edit either.
-  Files: cuda/gemma_vq_decode.cuh, ds4_gemma4_gpu.cuh (g4_moe_run_routes,
-  the gather and scatter kernels), cuda/gemma4_primitives.cuh (g4_gelu).
-  Gate: byte-identical eight tokens, then bench. After this the profile
-  in phase 4 has variants worth choosing.
+  The fused decode gate/up + GELU is bit-identical but neutral on the 4070
+  (decode 13.29 -> 13.24 tok/s): the decode is bandwidth-bound on the VQ
+  bytes, so the saved launches do not move it. The 704 block variant (two
+  256-index blocks plus a 192 tail) and the fused scatter are still open.
+  The real Phase 2 lever is prefill: the grouped expert path restores each
+  VQ matrix to bf16 and calls cuBLAS (cuda/glm_vq_linear.cuh:80-110), a
+  roughly six-times expansion from the 2.625 bpw R13+8 stream. A direct VQ
+  gate/up prefill kernel (tile loader decoding both GVQ1 records, one
+  GEMM, GELU in the write-back, on the existing records) is the unit that
+  can move prefill; llama.cpp's fused gate/up MMQ (commit c49edf096) is the
+  reference, and the gate is prefill tok/s against 336-374 plus tokens
+  within noise. Files: cuda/gemma_vq_prefill.cuh (new), ds4_gemma4_gpu.cuh
+  (g4_moe_run_routes), cuda/gemma_vq_decode.cuh (704 variant), Makefile.
+  Do not change the container format.
 
 Phase 3 — the vocabulary head, RoPE and the router
 
@@ -1597,7 +1687,9 @@ Phase 4 — the per-GPU profile consumer (the owner's request)
   VQ_tools half: run the sweep and commit profiles/gemma-4-26b-a4b-it-r8/
   with the profile and a README holding the command and the measured
   rates. The command is in docs/profile-optimizer.md on
-  feature/gvq1-gemv-profile. Then a GB10 sweep for the second profile.
+  feature/gvq1-gemv-profile. Then a GB10 sweep for the second profile; the
+  Spark already has the VQ_tools tree at ~/VQ_tools, the Gemma worktree at
+  ~/ds4-gemma4 and the artifact at ~/models/gguf-family-it-r8.
   ds4 half: new cuda/gemma_vq_profile.h (the VQPROF 1 parser including
   gres), a loader fed by DS4_VQ_PROFILE or a --vq-profile flag, the
   fingerprint bridge (load against the VQ payload directory, or embed the
@@ -1633,8 +1725,10 @@ Phase 6 — RAM-resident experts (optional, capacity not speed)
 
 Phase 7 — the port gates that remain
 
-  P8 wrapped-ring re-run after phase 0, then --serving-check --mtp and the
-  G4_MTP_DRAFTS 4 against 6 decision. P9: tests/gemma4_serving_http_gate.sh.
+  P8 wrapped-ring re-run, then --serving-check --mtp and the
+  G4_MTP_DRAFTS decision (4 against 6; the llama.cpp note suggests 2 may be
+  the better acceptance point on a 12 GiB card, so test 2 as well).
+  P9: tests/gemma4_serving_http_gate.sh.
   P10: the HF release directory, the OSV scan, the pushes (owner's word).
   P11: the served-arm comparison and two-stage support in vq-gguf and the
   ds4 GVQ reader.
