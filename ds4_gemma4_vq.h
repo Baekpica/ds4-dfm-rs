@@ -35,6 +35,12 @@ int ds4_gpu_g4_moe_run(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tenso
 int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *weights, const uint32_t *matrices,
     const int32_t *routes, uint32_t rows);
+/* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): one expert's down output
+ * computed on the host, and the ordered add of that contribution. */
+int ds4_gpu_g4_cpu_moe_expert(ds4_gvq_ctx *ctx, const uint32_t *matrices,
+    uint32_t expert, const float *x, float *out);
+int ds4_gpu_g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d,
+    float weight, uint32_t count);
 /* One-token persistent layer-book decode (cuda/gemma4_moe_persist.cuh): the
  * gate/up and down passes each stage the layer's book in shared memory and
  * run every routed expert in one launch, and the route order is sorted from

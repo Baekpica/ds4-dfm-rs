@@ -832,6 +832,38 @@ __global__ static void g4_moe_scatter_kernel(float *dst, const float *src, const
     dst[target] = g4_round(dst[target] + src[i] * weights[pair]);
 }
 
+/* One host-computed expert's contribution to one token: the same rounding
+ * the ordered scatter applies (g4_moe_scatter_kernel:821-832). The graph
+ * uses it for the cache-miss fallback, after the GPU chunk of the layer. */
+__global__ static void g4_moe_add_one_kernel(float *out, const float *d, float w,
+        uint32_t count) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    out[i] = g4_round(out[i] + d[i] * w);
+}
+
+static int g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d, float w,
+        uint32_t count) {
+    if (!out || !d || !count) { return 0; }
+    const uint32_t blocks = (count + GLMVQ_THREADS - 1) / GLMVQ_THREADS;
+    g4_moe_add_one_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)d->ptr, w, count);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 expert add");
+}
+
+/* Bridge for the graph's cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): the
+ * host pipeline for one expert, and the ordered add of its contribution. */
+extern "C" int ds4_gpu_g4_cpu_moe_expert(ds4_gvq_ctx *ctx, const uint32_t *matrices,
+        uint32_t expert, const float *x, float *out) {
+    if (!ctx || !ctx->model || !g_model_host_base) { return 0; }
+    return g4_cpu_moe_expert(g_model_host_base, ctx->model, matrices, expert, x, out);
+}
+
+extern "C" int ds4_gpu_g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d,
+        float weight, uint32_t count) {
+    return g4_moe_add_one(out, d, weight, count);
+}
+
 /* The same accumulation over every expert of one layer in ONE launch, with
  * one thread per output element. The racy form above is only correct when a
  * launch carries a single expert's rows (each target is then touched once);

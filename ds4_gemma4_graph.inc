@@ -726,6 +726,82 @@ static bool g4_moe_persist(void) {
     } \
 } while (0)
 
+/* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): a route whose expert is
+ * absent while the slot pool is full is computed on the host instead of
+ * evicting a resident one. The GPU chunk sees a zero-weight stand-in for it
+ * (a no-op in the ordered scatter), and the host contribution is added with
+ * the same rounding right after the chunk. */
+static bool gemma4_moe_miss_cpu(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_MISS");
+        on = v && strcmp(v, "cpu") == 0;
+    }
+    return on != 0;
+}
+
+static bool gemma4_moe_run_mix(ds4_gemma4_graph *g, const ds4_model *m,
+        const ds4_weights *w, uint32_t il, const uint32_t *experts) {
+    static ds4_gpu_tensor *mix_ids, *mix_w, *mix_d;
+    static float hx[G4_EMBED], hd[G4_EMBED];
+    int32_t ids[G4_USED], gids[G4_USED];
+    float ws[G4_USED], gws[G4_USED];
+    uint32_t cpu[G4_USED], ncpu = 0;
+    if (!g->stream ||
+        !ds4_gpu_tensor_read(g->selected, 0, ids, sizeof(ids)) ||
+        !ds4_gpu_tensor_read(g->weights, 0, ws, sizeof(ws))) {
+        return false;
+    }
+    int32_t stand_in = -1;
+    for (uint32_t i = 0; i < G4_USED; i++) {
+        if (ids[i] < 0 || (uint32_t)ids[i] >= G4_EXPERTS) { return false; }
+        if (gemma4_stream_slot_of(g->stream, il, (uint32_t)ids[i]) >= 0 ||
+            gemma4_stream_has_free(g->stream)) {
+            gids[i] = ids[i];
+            gws[i] = ws[i];
+            continue;
+        }
+        if (stand_in < 0) { stand_in = gemma4_stream_any_resident(g->stream, il); }
+        if (stand_in < 0) {
+            gids[i] = ids[i];
+            gws[i] = ws[i];
+            continue;
+        }
+        gids[i] = stand_in;
+        gws[i] = 0.0f;
+        cpu[ncpu++] = i;
+    }
+    if (!mix_ids) {
+        mix_ids = ds4_gpu_tensor_alloc((uint64_t)G4_USED * sizeof(int32_t));
+        mix_w = ds4_gpu_tensor_alloc((uint64_t)G4_USED * sizeof(float));
+        mix_d = ds4_gpu_tensor_alloc((uint64_t)G4_EMBED * sizeof(float));
+        if (!mix_ids || !mix_w || !mix_d) { return false; }
+    }
+    if (!ds4_gpu_tensor_write(mix_ids, 0, gids, sizeof(gids)) ||
+        !ds4_gpu_tensor_write(mix_w, 0, gws, sizeof(gws))) {
+        return false;
+    }
+    const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il, mix_ids, 0, 1);
+    if (!chunk ||
+        !ds4_gpu_g4_moe_run_ids(g->moe, g->exp_acc, g->norm, mix_w, experts,
+                                g->stream->ids, chunk)) {
+        return false;
+    }
+    if (!ncpu) { return true; }
+    if (!ds4_gpu_tensor_read(g->norm, 0, hx, (uint64_t)G4_EMBED * sizeof(float))) {
+        return false;
+    }
+    for (uint32_t k = 0; k < ncpu; k++) {
+        const uint32_t i = cpu[k];
+        if (!ds4_gpu_g4_cpu_moe_expert(g->gvq, experts, (uint32_t)ids[i], hx, hd) ||
+            !ds4_gpu_tensor_write(mix_d, 0, hd, (uint64_t)G4_EMBED * sizeof(float)) ||
+            !ds4_gpu_g4_moe_add_one(g->exp_acc, mix_d, ws[i], G4_EMBED)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* The MoE over one layer's routes. Without the stream this is the single
  * grouped call. With it, the stage admits the largest row prefix whose
  * expert union fits the cache and the same grouped kernel runs over that
@@ -740,6 +816,9 @@ static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
         }
         return ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected,
             g->weights, experts, rows) != 0;
+    }
+    if (rows == 1u && gemma4_moe_miss_cpu()) {
+        return gemma4_moe_run_mix(g, m, w, il, experts);
     }
     for (uint32_t done = 0; done < rows;) {
         const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il,

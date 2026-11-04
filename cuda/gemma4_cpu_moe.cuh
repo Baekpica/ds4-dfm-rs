@@ -407,6 +407,37 @@ static int g4_cpu_moe_layer(const void *map, const ds4_gvq_model *model,
     return 1;
 }
 
+/* One expert, one row: the down output of the host pipeline, for the
+ * cache-miss fallback (the graph adds it with the ordered scatter). */
+static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
+                             const uint32_t *matrices, uint32_t expert,
+                             const float *x, float *out) {
+    struct g4_cpu_mat gate, up, down;
+    struct g4_cpu_job jobs[2], dj;
+    if (!map || !model || !matrices || !x || !out || expert >= G4_EXPERTS) { return 0; }
+    if (!g4_cpu_pool_init()) { return 0; }
+    if (!g4_cpu_mat_parse(&gate, map, model, matrices[expert]) ||
+        !g4_cpu_mat_parse(&up, map, model, matrices[G4_EXPERTS + expert]) ||
+        !g4_cpu_mat_parse(&down, map, model, matrices[2u * G4_EXPERTS + expert])) {
+        return 0;
+    }
+    if (gate.rows != G4_FF || gate.cols != G4_EMBED ||
+        up.rows != G4_FF || up.cols != G4_EMBED ||
+        down.rows != G4_EMBED || down.cols != G4_FF) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < G4_EMBED; i++) { g4_cpu_xr[i] = g4_cpu_bf16(x[i]); }
+    jobs[0] = {&gate, g4_cpu_xr, g4_cpu_g[0]};
+    jobs[1] = {&up, g4_cpu_xr, g4_cpu_u[0]};
+    g4_cpu_sweep(0, jobs, 2u, (G4_FF + G4_CPU_CHUNK - 1u) / G4_CPU_CHUNK, NULL, NULL, NULL);
+    g4_cpu_sweep(1, NULL, 1u, (G4_FF + G4_CPU_GELU_CHUNK - 1u) / G4_CPU_GELU_CHUNK,
+                 g4_cpu_g[0], g4_cpu_u[0], g4_cpu_mid[0]);
+    dj = {&down, g4_cpu_mid[0], g4_cpu_d[0]};
+    g4_cpu_sweep(0, &dj, 1u, (G4_EMBED + G4_CPU_CHUNK - 1u) / G4_CPU_CHUNK, NULL, NULL, NULL);
+    memcpy(out, g4_cpu_d[0], (size_t)G4_EMBED * sizeof(float));
+    return 1;
+}
+
 /* Decode entry: rows tokens of G4_USED routes each, all through the host. */
 static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
                                   ds4_gpu_tensor *out, const ds4_gpu_tensor *input,

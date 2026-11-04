@@ -51,6 +51,28 @@ the bytes changes.
 
 All three answer the same question and produce the same content.
 
+## The miss path (DS4_GEMMA4_MOE_MISS=cpu)
+
+`llama.cpp --n-cpu-moe` shape: a route whose expert is absent while the slot
+pool is full is computed on the host instead of evicting a resident expert.
+The GPU chunk sees a zero-weight stand-in for that route, which the ordered
+scatter turns into a no-op, and the host contribution is added right after
+the chunk with the same rounding (`g4_moe_add_one_kernel`). The host kernel
+is `g4_cpu_moe_expert` in cuda/gemma4_cpu_moe.cuh: one expert, one row, the
+same arithmetic as the decode path.
+
+Measured with a deliberately small cache (128 experts, so both lanes miss
+constantly), same request, decode tok/s cold/warm:
+
+| 128-expert cache | cold | warm |
+|---|---|---|
+| evict + copy from host pages | 10.8 | 13.0 |
+| miss -> CPU compute | 10.5 | 12.6 |
+
+The miss policy is neutral here; the cache size is what matters (4 GB gives
+25.8 cold / 37.8 warm). With 128 slots the per-token working set cannot fit,
+so every lane pays either a refill or a host compute for almost every route.
+
 ## What it means
 
 The active sixteen experts per token must be in VRAM for GPU compute; the

@@ -130,6 +130,34 @@ static int gemma4_stream_victim(const ds4_gemma4_stream_slot *slots,
     return victim;
 }
 
+/* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): is the expert resident in
+ * this layer, does the pool still have a free slot, and which expert of the
+ * layer is resident (the zero-weight stand-in a host-computed route is
+ * mapped to in the GPU chunk)? */
+static int gemma4_stream_slot_of(const ds4_gemma4_stream *s, uint32_t layer,
+        uint32_t expert) {
+    if (!s) { return -1; }
+    return gemma4_stream_find(s->slots, s->count, layer, expert);
+}
+
+static bool gemma4_stream_has_free(const ds4_gemma4_stream *s) {
+    if (!s) { return false; }
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (!s->slots[i].used) { return true; }
+    }
+    return false;
+}
+
+static int32_t gemma4_stream_any_resident(const ds4_gemma4_stream *s, uint32_t layer) {
+    if (!s) { return -1; }
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (s->slots[i].used && s->slots[i].layer == layer) {
+            return (int32_t)s->slots[i].expert;
+        }
+    }
+    return -1;
+}
+
 static void gemma4_stream_report(const ds4_gemma4_stream *s) {
     if (!s || (!s->stats.hits && !s->stats.misses)) { return; }
     fprintf(stderr,
