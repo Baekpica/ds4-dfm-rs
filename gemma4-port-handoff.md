@@ -3,8 +3,11 @@ project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
 last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
-  attention by default), plus this handoff update. 4aa records the
-  long-context attribution (the drafter's oracle attention was the O(ctx)
+  attention by default), plus this decode-profile handoff update. 4ad
+  records the fast-path decode profile (ctx 256 and 13,447), the
+  split-vs-fast A/B (split neutral at 256, +39 percent at 1,024) and
+  agy's decode review (agy_review_decode_20261104.md, three ranks). 4aa
+  records the long-context attribution (the drafter's oracle attention was the O(ctx)
   cost; the guard now lets the fast kernel take keys=start; the launcher
   sets all eight measured fast options; the 13.4K prefill profile put 72
   percent of GPU time in the attention tile kernel). 4ab records the
@@ -42,7 +45,8 @@ last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
   long-context sources rsynced and built (ds4, ds4-bench, ds4-server
   14:24; the MMA build at 13:44 and the probe build at 13:59). It serves
-  0.0.0.0:8889 (pid 116965, ctx 262144, bf16 KV, prefill chunk 2,048, the
+  0.0.0.0:8889 (pid 126239 after the decode-profile restart, ctx 262144,
+  bf16 KV, prefill chunk 2,048, the
   eight fast options, the MMA prefill and the split-K decode by default,
   no MTP). End-to-end 13,557 tokens: 837.4 prefill / 17.98 decode,
   TTFT 16.19 s; 20,186: 831.7 / 17.20, 24.27 s. The script defaults
@@ -51,16 +55,17 @@ last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T16:17:08+01:00
+handoff_written_at: 2026-11-04T17:06:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-0. Session state after the long-context round (2026-11-04)
+0. Session state after the decode-profile round (2026-11-04, evening)
 
-The long-context work is landed, measured and served. A fresh session can
-start from this block.
+The decode round is measured and agy-reviewed; no code changed yet. A
+fresh session starts from this block.
 
 Commits on feat/gemma4-family (newest first):
+  (this handoff)  docs: the decode profile and agy's decode review
   41c54efc  the launcher serves the tensor-core prefill by default
   5d8d2a20  cuda/gemma4_attn_split.cuh, the split-K decode
   7ae1a0f6  cuda/gemma4_attn_mma.cuh, the tensor-core prefill
@@ -68,59 +73,86 @@ Commits on feat/gemma4-family (newest first):
   5dc1f63f  the drafter's fast attention with keys=start; all eight fast
             options in the launcher (bit-identical gate)
 
-Server: Spark 192.168.1.91:8889, pid 116965 at this handoff, the committed
+Server: Spark 192.168.1.91:8889, pid 126239 at this handoff, the committed
 build: bf16 KV, ctx 262144, prefill chunk 2048, the eight fast options,
-the MMA prefill (DS4_GEMMA4_MMA default 1), the split-K decode
-(DS4_GEMMA4_SPLIT default 1), no MTP. The open-grok entry
-[model."gemma4-vq-spark"] needs no change (it points at the same
-endpoint, no reasoning_effort, so the Gemma no-think default applies).
+the MMA prefill, the split-K decode, no MTP. The server had been stopped
+for the profile and was restarted this session; a "ready" smoke answered
+with TTFT 334.6 ms. The open-grok entry [model."gemma4-vq-spark"] needs
+no change. The launcher defaults HOST 127.0.0.1, PORT 8099, CTX 16384,
+KV fp8; the Spark invocation is
+  DS4_GEMMA4_CTX=262144 DS4_GEMMA4_KV=bf16 DS4_GEMMA4_HOST=0.0.0.0 \
+  DS4_GEMMA4_PORT=8889 ./run-gemma4.sh serve start
+The serve status line prints base_url 127.0.0.1:8099 (a display bug); the
+listen address is 0.0.0.0:8889 and /v1/models answers there.
 
-End-to-end server, 2026-11-04, old numbers in parentheses:
+End-to-end server, unchanged from the long-context round, old numbers in
+parentheses:
   1,696   911.8 prefill / 26.23 decode, TTFT 1.86 s
   6,459   944.3 / 19.28, 6.84 s
   11,668  856.7 / 19.05, 13.62 s
   13,557  837.4 (287.6) / 17.98 (4.55), 16.19 s (47.17)
   20,186  831.7 (232.7) / 17.20 (3.31), 24.27 s (86.57)
 
-Fallbacks and caveats:
-- DS4_GEMMA4_MMA=0 restores the exact tile prefill; DS4_GEMMA4_SPLIT=0
-  restores the single-CTA decode; the MTP verify widths always use the
-  tile kernel.
-- The MMA parity is measured, not bit identity: the pinned 256-token gate
-  returns the design's exact eight greedy tokens and KL 8.6e-5; the
-  repo-docs prompt diverges after the first sentence on a near-tie and
-  the logits relL2 is 0.101 against the 6e-2 design gate. The per-layer
-  attention is relL2 4.0e-4 (4ab).
-- MTP is a long-context loss: draft 6 with the split is 6.40 gen tok/s
-  against 18.96 for plain split decode at 13,447 tokens; the seven-row
-  verify is the cost. MTP remains a short-context tool.
+Decode profile (4ad; nsys, gen 8 minus gen 0, the exact server options),
+ms per step at ctx 256 / 13,447:
+  split-K attention            9.291 / 19.275
+  expert gate/up (block<256>)  8.587 / 8.710
+  head (g4_head_gemv)          6.077 / 6.049
+  expert down (warp<8>)        4.119 / 4.195
+  Q4_K small + stream          5.155 / 5.219
+  rms                          1.650 / 1.876
+  dense down Q8                0.935 / 0.941
+  gelu                         0.874 / 0.928
+  everything else              ~1.7 / ~1.7
+  total                       38.59 / 51.21 (25.9 / 19.5 tok/s)
+The head is at the 240 GB/s floor (1.476 GB in 6.05 ms). The per-token
+weight traffic is about 2.3 GB, a 9.7 ms floor (103 tok/s); decode is 4x
+above it and latency-bound. At 13,447 the scalar-FMA attention floor is
+16.5 ms (242M FMA), close to the measured 19.3.
 
-Next units, in the order agreed with agy_review_1_20261104.md:
-1. Test the interactive open-grok session at 9.7K (the server is up; the
-   expected wait is about 14 s for the first token, then 18-19 tok/s).
-2. agy 2.2/2.3: fuse the drafter's RMSNorm+RoPE and gate/up
-   (ds4_gpu_g4_rms_rope and ds4_gpu_gvq_linear_many in gemma4_mtp_step),
-   then add a small-row (BN=4 or a 1..4-token GEMV loop) verify path and
-   re-measure MTP draft 6 at 9-13K.
-3. agy 3.2/3.3: the prefill MoE single-buffer weight staging plus the L1
-   carveout, and the device-side route sort. The expert GEMM is about 15
-   percent of the prefill now, so this is smaller than before.
-4. agy Priority 4: the HTTP 503 cancellation leak, the SWA ring-resume
-   guard in gemma4_sync_keep, and the --ssd-streaming plumbing.
-5. The C default-on flip for the eight fast envs (the launcher sets them;
-   the C defaults are still off, and the launcher is the supported door).
-agy cuts Phase 13 (CPU-MoE), Phase 12.2 (SLRU) and defers Phase 4
-(--vq-profile); those are not next.
+Split-vs-fast A/B (same binary, gen 32, Spark):
+  ctx 256    split 23.79 tok/s, fast 23.95 (neutral)
+  ctx 1,024  split 20.51, fast 14.72 (split +39%)
+  combine kernel 0.053 ms/step at 256 and 0.091 at 13,447.
+The split kernel's problem is CTA count, not the combine: 8 CTAs at ctx
+256, 16 for the sliding window (2 splits), 54 for the full layers at
+13.4K. More splits, not fewer, is the measured lever.
 
-Reproduce the gates:
-- tests/test_gemma4_primitives: synthetic MMA (1.4e-3) and split (6.6e-7)
-  cases; sm_89 locally, sm_121 on the Spark.
-- DS4_GEMMA4_ATTN_CMP=1 with the bench prints the one-layer attention
-  relL2 for layer 0 and layer 5.
-- The pinned gate is /tmp/g4-bench-256.txt with --gen-tokens 8 and
-  --dump-frontier-logits-dir; tokens-256.json is the eight ids.
-- The A/B scripts are /tmp/g4mma.sh and /tmp/g4split.sh on the Spark
-  (/tmp/g4big.txt is the 13.4K docs prompt).
+agy's decode review is agy_review_decode_20261104.md (215 lines, committed
+with this handoff). Its three ranks:
+1. Persistent layer-book MoE decode plus device route sort, with
+   cuda/minimax_decode.cuh and cuda/glm_vq_decode.cuh as the references:
+   the MoE bucket 14.35-14.55 -> 2.5-2.9 ms, about -12 ms/step.
+2. Attention: 128-key splits and an m16n8k16 full-layer kernel packing
+   the 8 query heads of a KV head into rows 0-7 (50% M use); it estimates
+   19.28 -> 2.8-3.5 ms at 13.4K. Correction: its claim that bypassing
+   split+combine on the sliding layers costs about 8 ms is contradicted
+   by the A/B above; keep the split and split finer.
+3. Bypass the 4 MiB glmvq_q4_small fallback with a Gemma-owned
+   cuda/gemma4_q4_decode.cuh (115 of 145 matrices per token are under
+   4 MiB): 5.2 -> 1.8-2.0 ms.
+Its combined estimate is 63.7 tok/s at ctx 256 and 50.8 at 13,447.
+Sibling verdict: minimax_decode.cuh plus glm_vq_decode.cuh are the
+primary reference for rank 1; ds41_vq_decode.cuh only for the device
+route sort (v41_vq_order_kernel); glm_vq_q4.cuh for rank 3;
+cuda/gemma4_attn_mma.cuh for the full-layer MMA; skip iquest_decode.cuh;
+defer VQ_tools.
+
+Next units, in the agreed order:
+1. Rank 1, the persistent MoE decode (the biggest single win, ~12 ms).
+2. Rank 3, the Q4_K bypass (the cheapest, ~3.7 ms, under 150 lines).
+3. Rank 2, corrected: finer splits first (measure 128- and 256-key
+   spans), then the full-layer MMA; keep the split path.
+4. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving; the
+   device route sort is folded into rank 1.
+
+Reproduce:
+- The profile script is /tmp/g4decprof2.sh on the Spark (four nsys runs:
+  ctx 256 and 13,447 at gen 0 and 8); /tmp/g4decsum2.py reduces the
+  gen8-minus-gen0 deltas.
+- The A/B is /tmp/g4splitab2.sh; the 13.4K prompt is /tmp/g4-prof-14k.txt.
+- The pinned gate, the synthetic tests and the fallbacks are unchanged
+  (4ab, 4ac).
 
 ---
 
@@ -2177,6 +2209,39 @@ fast-attention bench at ctx 2048 are the open Spark runs.
 - run-gemma4.sh enables the split by default (DS4_GEMMA4_SPLIT=0 keeps
   the single-CTA fast kernel). The server is restarted without MTP so the
   interactive lane gets the split decode.
+
+4ad. The decode profile and agy's decode review (2026-11-04, evening)
+
+- The fast-path profile. nsys on the Spark with the exact server options,
+  gen 8 minus gen 0, so prefill cancels. The per-step table is in section
+  0. The total is 38.59 ms at ctx 256 (25.9 tok/s) and 51.21 ms at
+  13,447 (19.5 tok/s), matching the served 26.23 and 17.98.
+- What the numbers say. The head is at the 240 GB/s floor. The expert
+  gate/up plus down is 12.7 ms, the Q4_K projections 5.2 ms, and the
+  attention 9.3 ms at ctx 256 and 19.3 ms at 13,447. The scalar-FMA
+  attention floor at 13.4K is 16.5 ms (242M FMA at 48 SMs x 128
+  FMA/cycle x 2.4 GHz), so the long-context attention is near its
+  arithmetic floor, not its 2.0 ms bandwidth floor.
+- The split-vs-fast A/B. At ctx 256 the split and the fast kernel are
+  equal (23.79 against 23.95 tok/s); at 1,024 the split wins by 39%
+  (20.51 against 14.72). The split kernel has 8 CTAs at 256 and 16 for
+  the 1,024-key sliding window; the fast kernel has 8. The combine is
+  0.05-0.09 ms/step. The lever is CTA count (finer splits), not
+  bypassing the split.
+- agy's review is agy_review_decode_20261104.md. Its rank 1 is a
+  persistent layer-book MoE decode: 48 CTAs of 16 warps, the 64 KiB book
+  plus the residual books plus the BF16 input row in shared, gate/up
+  fused with GELU, a down pass and a reduce, and a device route sort to
+  remove the 30 D2H syncs. It estimates 14.35-14.55 -> 2.5-2.9 ms. Its
+  rank 3 is the Q4_K bypass (115 of 145 matrices hit the 4 MiB scalar
+  fallback), estimated 5.2 -> 1.8-2.0 ms. Its rank 2 is the full-layer
+  MMA plus finer splits; the sliding "bypass the split" part is
+  contradicted by the A/B and is not adopted as written.
+- The sibling map: cuda/minimax_decode.cuh (mm_decode_gu, mm_down_dot)
+  and cuda/glm_vq_decode.cuh (glmvq_decode_book, the word8/res unpacker,
+  glmvq_decode_reduce) for the persistent MoE; cuda/ds41_vq_decode.cuh
+  for the route sort only; cuda/glm_vq_q4.cuh for the Q4_K path;
+  cuda/gemma4_attn_mma.cuh for the full-layer MMA. VQ_tools is deferred.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
