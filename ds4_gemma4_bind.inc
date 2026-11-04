@@ -290,7 +290,7 @@ static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap) {
     m.raw_bytes = ds4_gemma4_kv_bytes(ctx, cap);
     m.scratch_bytes = gemma4_activation_bytes(cap) +
         ds4_gpu_gvq_workspace_linear(gemma4_token_rows(cap)) +
-        ds4_gpu_g4_moe_bytes(gemma4_token_rows(cap) < 512u ? gemma4_token_rows(cap) : 512u);
+        ds4_gpu_g4_moe_bytes(gemma4_token_rows(cap));
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }

@@ -72,7 +72,12 @@ DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
-PREFILL="${DS4_GEMMA4_PREFILL:-512}"
+# The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
+# at 512, the native bind's own default. A wider chunk needs the MoE
+# workspace to follow it (ds4_gemma4_graph.inc); 8,192 still fails in the
+# router GEMM, and 2,048 is the measured Spark point.
+if [ "$(uname -m)" = "aarch64" ]; then PREFILL_DEFAULT=2048; else PREFILL_DEFAULT=512; fi
+PREFILL="${DS4_GEMMA4_PREFILL:-$PREFILL_DEFAULT}"
 GROK_NAME="${DS4_GEMMA4_GROK_NAME:-gemma4-vq-4070}"
 SCRATCH="$ROOT/misc/scratch"
 mkdir -p "$SCRATCH"

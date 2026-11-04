@@ -34,10 +34,10 @@ last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
   the head test and the long gate pass there); the serving quote fix and
   the CPU test are not on it. It serves the MTP lane on 0.0.0.0:8889
   (ctx 262144, bf16 KV, run-gemma4.sh) with the fixed launcher: prefill
-  chunk 512 and the four fast paths, 8,092 tokens in 22.16 s on the first
-  request after a fresh boot. The source default (serving_host.rs 512) is
-  not in its binary yet; the script's DS4_GEMMA4_PREFILL_CHUNK covers it
-  until the next make cuda-spark. Model at ~/models/gguf-family-it-r8.
+  chunk 2,048 and the four fast paths; a diverse 13,515-token prompt
+  prefills in 47.8 s (9.66K open-grok prompt ~35 s). The MoE workspace fix
+  is built there (ds4-server 11:19:44); the script defaults 2,048 on
+  aarch64 and 512 on x86_64. Model at ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
@@ -1911,10 +1911,22 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   sentence." with reasoning_effort none answered "Hello!" in 0.22 s;
   a 32-token greedy request returned finish=length with empty content,
   which is the thought channel consuming the whole budget, not a fault.
-- Follow-up: the Spark binary is at 341481b2 and still defaults to 1;
-  the script's env covers it. Rebuild with make cuda-spark to bake the
-  new default. The 4070 quote was not re-measured: its own Gemma server
-  (pid 3118283) held 10.4 GiB of the card during this check.
+- The 512 cap was also the MoE workspace cap, not only the default: the
+  graph created the expert workspace with min(rows, 512)
+  (ds4_gemma4_graph.inc:405) and the session memory priced the same
+  (ds4_gemma4_bind.inc:293). A 2,048-row chunk therefore failed in the
+  experts (items_cap overflow) and 8,192 failed earlier in the router
+  (cuBLAS status 7). The workspace now follows the session chunk in all
+  three places; the Spark rebuild (native objects + ds4-server at
+  11:19:44) makes 2,048 work. Measured on the Spark, chunk 2,048:
+  13,515 diverse tokens 47.8 s (vs over 4 minutes at 512); the first SSE
+  role chunk arrives in 4.8 s. 4,096 is untested; 8,192 still fails in
+  the router. The launcher defaults 2,048 on aarch64 and 512 on x86_64.
+- Follow-up: the Spark binary is now built from the fixed sources but its
+  git HEAD is still 341481b2; the source changes (serving_host.rs 512,
+  the MoE workspace) are uncommitted on that worktree. The 4070 quote was
+  not re-measured: its own Gemma server (pid 3118283) held 10.4 GiB of
+  the card during this check.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
