@@ -1,11 +1,11 @@
 ---
 project: ds4-gemma4 (Gemma-4 26B A4B dense-VQ R13+8 port into ds4)
 plan_start_commit: 9dd5137e
-last_updated_commit: 99775f2c
+last_updated_commit: b99aeb12
 branch: feat/gemma4-family
 remote: https://github.com/JLFN/ds4-dfm-rs.git (public fork; upstream untouched)
 handoff_written_at_context_usage: 21%
-handoff_written_at: 2026-11-04T20:42:00+01:00
+handoff_written_at: 2026-11-04T22:40:36+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -43,65 +43,115 @@ The auto-compact threshold is the failsafe, not the trigger.
 
 2. Current state (2026-11-04 — COMPLETE, verified)
 
-- Newest unit 99775f2c: host experts (CPU_MOE=1), host-sourced slots
-  (MOE_HOST=1), and the cache-miss fallback (MOE_MISS=cpu) with the
-  ordered add. At ctx 131072 on the 4070, decode tok/s cold/warm: CPU
-  13.6; 4 GB slots from disk 25.8/37.8; from host pages 21.8/34.8; a
-  128-expert cache 10.8/13.0 (evict) vs 10.5/12.6 (miss->CPU). Cache
-  size, not the miss policy, is the lever. One-token decode is
-  bit-identical to the GPU; longer contexts differ by 1-2 bf16 ULPs
-  (route flips, the GPU's own prefill band).
-  docs/gemma4-cpu-moe-runtime-2026-11-04.md.
-- Prior: 788cd338 the same unit's first half; b6ca88c2 fair CPU ceiling
-  (15.31 ms cold vs 9.37 ms floor); 5bda5aac split-K tensor cores.
-- 4070 endpoint UP: 127.0.0.1:8099 pid 3325649, ctx 131072, 4 GB
-  host-sourced slots. Spark 192.168.1.91:8889 runs the old rsync tree;
-  ~/ds4-gemma4-git builds from git at 6affa69f.
-- Metal: no Gemma-4 support (0 VQ refs); the host path is x86 AVX2 plus
-  CUDA copies, not portable as written.
-- Bench rule: Spark only; 4070 serving/manual. feat/gemma4-family;
-  origin 6affa69f; local commits unpushed (owner's word + OSV scan).
+- Newest unit b99aeb12: typed Gemma-4 option surface. All 25 arithmetic
+  knobs parse in Rust (strict booleans/enums, ranges reject not clamp),
+  reach ds4_engine_options.gemma4; --check-config echoes all 25. Legacy
+  getenv survives only for the C hosts. docs/gemma4-typed-knobs-2026-11-04.md.
+- Gates: a typo exits 2 naming the knob; env-driven and typed runs gave
+  identical tokens [506,41348,39844,236751], cycles and 2.28 MB frontier
+  logits at ctx 64 (default span and 64). Not a benchmark.
+- Prior: 99775f2c miss->CPU (10.5/12.6 vs 10.8/13.0); 788cd338 host
+  experts; b6ca88c2 CPU ceiling; 5bda5aac split-K tensor cores.
+- 4070 UP: 127.0.0.1:8099 pid 3335152, ctx 131072, 4 GB host slots + FP8.
+  Spark 192.168.1.91:8889 old tree; ~/ds4-gemma4-git 6affa69f (pre-b99aeb12).
+- Pre-existing failures: tokenizer target missing Gemma4Vq arms;
+  gemma4_declares_the_serial_chunk expects 1 not 512; one minimax render
+  and two ds4-perf artifact tests fail.
+- Metal: no Gemma-4 support. Bench rule: Spark only. origin 6affa69f;
+  local commits unpushed (owner's word + OSV scan).
 
-3. Next unit plan — typed option surface for the Gemma knobs (2026-11-04)
+3. Next unit plan — span 64/32/16 at ctx 13,447 (2026-11-04)
 
-Status: not started. Owner priority: every knob added this session is a
-hand-written getenv string read in C.
+Status: not started. This closes the last unmeasured point of rank 2 and
+decides whether the split-span default moves below 128. The plan was
+preserved at 74c44b3e; it is restated here because b99aeb12 changed how
+the knob is read (the commands below still work: the Spark clone at
+6affa69f predates the typed surface, and on a b99aeb12 tree the same
+values can be passed as --gemma4-attn-split-span etc.).
 
-The problem (owner, this session): DS4_GEMMA4_ATTN_SPLIT_SPAN,
-DS4_GEMMA4_ATTN_SPLIT_MMA, DS4_GEMMA4_CPU_MOE, DS4_GEMMA4_MOE_HOST,
-DS4_GEMMA4_MOE_MISS and DS4_GEMMA4_CPU_MOE_THREADS are read by hand in the
-Gemma C/CUDA headers. None is validated, none is listed by --check-config,
-and a typo reads as zero or false instead of failing. Rust already has a
-typed option surface with proper errors and a plan JSON; these belong there.
+Ground truth (re-verified in b99aeb12):
+- g4_split_span() (ds4_gemma4_gpu.cuh) asks
+  ds4_gemma4_knob_split_span(): the typed field when a Rust host supplied
+  one, else DS4_GEMMA4_ATTN_SPLIT_SPAN parsed with the old clamp
+  [16, 4096]. Default 128 in both paths; the Rust host rejects, not
+  clamps, a value outside the range.
+- The host computes splits = ceil(visible / span); the split kernel and
+  the split-MMA kernel re-derive span = (last - begin + splits) / splits
+  and mask [k0, k1]. The span changes only the split count and the
+  combine; the arithmetic is the per-split kernel's.
+- 4ag measured the scalar split path on the GB10, 64 gen tokens, gen
+  tok/s by span:
+    ctx 256    512 29.14  256 33.72  128 35.81  64 37.32  32 38.67  16 39.37
+    ctx 1024   512 24.73  256 30.39  128 34.16  64 36.42
+    ctx 13447  512 22.95  256 28.20  128 30.66
+  The 13,447 points for 64/32/16 are the gap. With the 4ai MMA path the
+  baseline is 26.38 tok/s at span 128 (24.09 scalar).
+- At 13,447 the full layers ask for splits = ceil(13448 / span) per KV
+  head, 2 KV heads: span 128 -> 212 CTAs, 64 -> 422, 32 -> 842,
+  16 -> 1,682. The MMA kernel is bandwidth-bound and each CTA stages Q
+  once, so the optimum may move up or down; measure, do not assume.
 
-Scope: those six, plus the older knobs in the same style that the inventory
-finds (ATTN_FAST, ATTN_PREFILL, ATTN_MMA, MOE_PERSIST, ROUTER_PAR,
-ROUTER_DOT, HEAD_GEMV, Q8_BATCH, VQ_PREFILL, EXACT_PREFILL, FUSE_ROPE,
-PREFILL_CHUNK). Leave genuine diagnostics (DEBUG, VERIFY, DUMP, HASH_*)
-as env vars.
+Phase A — prep the Spark (bench window)
+1. The git clone ~/ds4-gemma4-git is at 6affa69f with a full build
+   (ds4, ds4-server, ds4-bench, ds4-eval, 0 errors, split-MMA kernel
+   present). Use ~/ds4-gemma4-git/ds4-bench for the sweep; do not rsync
+   and do not rebuild. Rebuild from b99aeb12 only if the typed flags are
+   wanted on the Spark.
+2. Stop the server (it holds /tmp/ds4-gemma4-gate.lock):
+     cd ~/ds4-gemma4 && ./run-gemma4.sh serve stop
+   Verify pgrep -f ds4-server is empty and port 8889 is closed.
+3. Keep the exact restart command for the end:
+     DS4_GEMMA4_CTX=262144 DS4_GEMMA4_KV=bf16 DS4_GEMMA4_HOST=0.0.0.0 \
+       DS4_GEMMA4_PORT=8889 ./run-gemma4.sh serve start
 
-Work:
-1. Inventory: grep -rn "DS4_GEMMA4_" over the C/CUDA tree; one line per
-   knob with file:line, default, accepted range and what it changes.
-2. Rust: add typed fields to the serving and bench request
-   (crates/ds4-core) and the native bridge. Validation: span 16..4096
-   (reject rather than clamp), threads 1..64, modes as enums
-   (split_mma off/on, miss evict|cpu, host_slots off|on), booleans parsed
-   strictly ("1"/"0"/"true"/"false"; anything else is an error that names
-   the knob).
-3. Engine: the C side reads the validated request fields instead of
-   getenv; the getenv helpers stay only for the diagnostics.
-4. Plan JSON and --check-config: echo every knob with its effective value
-   and list it in the config check, so the quote shows what will run.
-5. Gate: a typo in any knob makes --check-config fail with a named error;
-   the plan JSON shows the effective values; a bench run driven by the
-   typed surface is byte-identical (tokens and frontier logits) to the
-   env-driven run it replaces.
+Phase B — the sweep
+- Prompt /tmp/g4-prof-14k.txt (13,447 tokens) and the model at
+  $HOME/models/gguf-family-it-r8.
+- One arm per span, the eight fast options plus the persistent MoE, the
+  split-MMA path on, 32 gen tokens:
+    DS4_GEMMA4_ATTN_FAST=1 DS4_GEMMA4_ATTN_PREFILL=1 \
+    DS4_GEMMA4_VQ_PREFILL=1 DS4_GEMMA4_Q8_BATCH=1 \
+    DS4_GEMMA4_FUSE_ROPE=1 DS4_GEMMA4_ROUTER_PAR=1 \
+    DS4_GEMMA4_HEAD_GEMV=1 DS4_GEMMA4_ROUTER_DOT=1 \
+    DS4_GEMMA4_ATTN_MMA=1 DS4_GEMMA4_ATTN_SPLIT=1 \
+    DS4_GEMMA4_ATTN_SPLIT_MMA=1 DS4_GEMMA4_ATTN_SPLIT_SPAN=$span \
+    DS4_CUDA_COPY_MODEL=1 DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock \
+    ./ds4-bench -m $HOME/models/gguf-family-it-r8 --cuda \
+      --prompt-file /tmp/g4-prof-14k.txt --ctx-start 13447 \
+      --ctx-max 13447 --gen-tokens 32
+  for span in 128 64 32 16. On b99aeb12 the same arm is
+  --gemma4-attn-split-span $span (and --gemma4-attn-fast on, ...).
+- Record the ctx,prefill,gen line of each arm. Repeat the winner once to
+  bound noise; the AGENTS.md adoption rule wants a repeated gain.
+- If the winner is not 128, also run the scalar arm
+  (DS4_GEMMA4_ATTN_SPLIT_MMA=0) at the winner and at 128 for the pair.
 
-Then (unchanged plan, after this unit): the span 64/32/16 sweep at ctx
-13,447 on the Spark, using the 6affa69f build, decides whether the span
-128 default moves. The measured table, the decision rule and the Phase A
-commands are in git at 74c44b3e (previous section 3).
+Phase C — acceptance and decision
+- Expected: the finer spans add CTAs and Q staging per CTA. Pick the
+  highest gen tok/s at 13,447 that does not regress the 256 and 1,024
+  points; re-run 64/32/16 at 256 and 1,024 only if the 13,447 winner
+  differs from 128 (the 4ag table is the scalar baseline there).
+- If 64 (or 32/16) wins at 13,447 and holds 256/1,024, change the
+  default in g4_split_span's typed default (SPLIT_SPAN_DEFAULT in
+  crates/ds4-core/src/gemma4_knobs.rs) and the launcher/doc text. If 128
+  remains best, keep 128 and record that the question is closed.
+- If the default moves, extend the synthetic gate with the winning span
+  (attn_split_mma_case already takes a span; add 64/32/16 at 8,192 keys)
+  and run make test-gemma4-primitives on sm_89 and sm_121.
+- Commit the measured table and the decision:
+    perf(gemma4-vq): span <N> default, the 13,447 points
+  with the raw ctx,prefill,gen lines in the body. Update the table in
+  docs/gemma4-vq.md and this handoff's section 3 replacement.
+- Restart the Spark server with the Phase A command and verify
+  /v1/models plus one greedy completion.
+
+Phase D — following units (not this one)
+1. agy 2.2/2.3 (the MTP drafter) and Priority 4 serving.
+2. Re-profile the decode after 4ag/4ai: gen8 minus gen0 nsys at ctx 256
+   and 13,447; split what is left between the MoE and the rest.
+3. The pre-existing test failures in section 2 (tokenizer arms, the
+   serial-chunk expectation) are small cleanups; take them when a unit
+   touches those files.
 
 4. Project facts a fresh session cannot re-derive
 
@@ -160,10 +210,11 @@ commands are in git at 74c44b3e (previous section 3).
   structural checks; Conventional Commits; OSV scan before a push.
 - Benchmarks run on the Spark only; the 4070 is the serving lane.
 - Leave the five untracked owner files and /data/VQ_tools untouched.
-- Open: the span 64/32/16 points at 13,447 (this unit); agy 2.2/2.3 and
-  Priority 4 serving; the decode re-profile; SSD lane qualification.
-- Open: the push of 5bda5aac and the handoff reset needs the owner's
-  word and a fresh OSV scan (origin is at 3c89d43c).
+- Open: the span 64/32/16 points at 13,447 (next unit, section 3); agy
+  2.2/2.3 and Priority 4 serving; the decode re-profile; SSD lane
+  qualification.
+- Open: the push of 788cd338, 74c44b3e, 99775f2c, e7cae8a2 and b99aeb12
+  needs the owner's word and a fresh OSV scan (origin is at 6affa69f).
 - The 4070's FP8 full-layer KV lane never calls the split function, so
   4ai is inert there; the Spark's bf16 lane is the one that uses it.
 
