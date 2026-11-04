@@ -607,6 +607,35 @@ extern "C" int ds4_gpu_g4_attn_mma(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
     return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention");
 }
 
+/* Key span per split CTA (DS4_GEMMA4_ATTN_SPLIT_SPAN, default 128). The
+ * split count is ceil(visible keys / span); 512 was the pre-knob value.
+ * Measured on the GB10 (2026-11-04): 128 beats 512 at ctx 256 (35.8 vs
+ * 29.1 tok/s), 1,024 (34.2 vs 24.7) and 13,447 (30.7 vs 23.0); 64, 32 and
+ * 16 measured still better at 256 and 1,024 but are unmeasured at 13,447,
+ * so 128 is the default until that point is taken. Clamped to [16, 4096]. */
+static uint32_t g4_split_span(void) {
+    static int span = -1;
+    if (span < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT_SPAN");
+        span = v ? atoi(v) : 0;
+        if (span <= 0) { span = 128; }
+        if (span < 16) { span = 16; }
+        if (span > 4096) { span = 4096; }
+    }
+    return (uint32_t)span;
+}
+
+/* The combine kernel's weight array is dynamic shared memory; above the
+ * 48 KiB default the launch needs the larger limit granted once. */
+static bool g4_split_combine_ready(void) {
+    static int ready = -1;
+    if (ready < 0) {
+        ready = cudaFuncSetAttribute(g4_attn_split_combine_kernel,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, 64u * 1024u) == cudaSuccess;
+    }
+    return ready != 0;
+}
+
 /* Split-K decode attention (cuda/gemma4_attn_split.cuh): the fast kernel's
  * per-key arithmetic over `splits` key ranges, joined by a combine kernel.
  * One row only; the drafter's keys=start case is included. The scratch is
@@ -631,9 +660,11 @@ extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *
     const uint32_t begin = window && first + 1u > window ? first + 1u - window : 0u;
     const uint32_t last = keys && keys <= first ? keys - 1u : first;
     if (begin > last) { return 0; }
-    uint32_t splits = (last - begin + 512u) / 512u;
+    const uint32_t span = g4_split_span();
+    uint32_t splits = (last - begin + span) / span;
     if (splits < 1u) { splits = 1u; }
-    if (splits > G4_SPLIT_MAX) { splits = G4_SPLIT_MAX; }
+    const uint32_t combine_shared = splits * (uint32_t)sizeof(float);
+    if (combine_shared > 48u * 1024u && !g4_split_combine_ready()) { return 0; }
     const uint64_t partial_count = (uint64_t)splits * heads * dim;
     const uint64_t stats_count = (uint64_t)splits * heads * 2u;
     static float *scratch = nullptr;
@@ -654,7 +685,7 @@ extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *
         (const __nv_bfloat16 *)key->ptr, (const __nv_bfloat16 *)value->ptr,
         first, heads, kv_heads, dim, window, ring, keys, kv_stride, splits);
     if (!cuda_ok(cudaGetLastError(), "Gemma-4 split attention")) { return 0; }
-    g4_attn_split_combine_kernel<<<heads, 256u, 0u, ds4_current_stream()>>>(
+    g4_attn_split_combine_kernel<<<heads, 256u, combine_shared, ds4_current_stream()>>>(
         (float *)out->ptr, partial, stats, heads, dim, splits);
     return cuda_ok(cudaGetLastError(), "Gemma-4 split attention combine");
 }

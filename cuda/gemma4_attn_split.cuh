@@ -23,9 +23,15 @@
  * order differs, so this is a parity path (the split boundaries change the
  * floating-point summation) rather than a bit-identical one. The combine is
  * exact when a single split covers the range, and the gate compares against
- * the fast kernel on the model. */
+ * the fast kernel on the model.
+ *
+ * The key span per CTA is a host knob (DS4_GEMMA4_ATTN_SPLIT_SPAN, default
+ * 128): the host divides the visible range by it and passes the resulting
+ * `splits`. There is no fixed ceiling on that count: the combine kernel's
+ * weight array is dynamic shared memory sized by the launch, and the host
+ * asks for the larger dynamic-shared limit when the count needs it. */
 
-enum { G4_SPLIT_TILE = 16u, G4_SPLIT_MAX = 32u };
+enum { G4_SPLIT_TILE = 16u };
 
 __device__ __forceinline__ float g4_split_warp_sum(float value) {
     #pragma unroll
@@ -123,18 +129,20 @@ __global__ static void g4_attn_split_kernel(float *partial, float *stats,
     }
 }
 
-/* Join the splits: one CTA per head, one thread per output column. */
+/* Join the splits: one CTA per head, one thread per output column. The
+ * per-split softmax weight lives in dynamic shared memory, one float per
+ * split; the host sizes the launch. */
 __global__ static void g4_attn_split_combine_kernel(float *out, const float *partial,
         const float *stats, uint32_t heads, uint32_t dim, uint32_t splits) {
-    __shared__ float weight[G4_SPLIT_MAX];
+    extern __shared__ float weight[];
     const uint32_t head = blockIdx.x;
     float m = -INFINITY;
     for (uint32_t s = 0; s < splits; s++) {
         m = fmaxf(m, stats[((uint64_t)s * heads + head) * 2u + 0u]);
     }
     const float ref = m == -INFINITY ? 0.0f : m;
-    if (threadIdx.x < splits) {
-        weight[threadIdx.x] = expf(stats[((uint64_t)threadIdx.x * heads + head) * 2u + 0u] - ref);
+    for (uint32_t s = threadIdx.x; s < splits; s += blockDim.x) {
+        weight[s] = expf(stats[((uint64_t)s * heads + head) * 2u + 0u] - ref);
     }
     __syncthreads();
     float l = 0.0f;

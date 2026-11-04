@@ -389,9 +389,12 @@ static void attn_mma_full_case(const char *name,unsigned rows,unsigned first,uns
 
 /* Split-K decode attention: the fast kernel's per-key arithmetic over
  * `splits` key ranges plus the combine. Same reference as attn_case; the
- * gate is a tolerance because the softmax combine order differs. */
+ * gate is a tolerance because the softmax combine order differs. The split
+ * count is the host's: ceil(visible keys / span), capped at G4_SPLIT_MAX
+ * (ds4_gemma4_gpu.cuh, g4_split_span). */
 static void attn_split_case(const char *name,unsigned first,unsigned heads,
-        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring,unsigned keys=0u) {
+        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring,unsigned keys=0u,
+        unsigned span=512u) {
     const unsigned rows=1;
     const unsigned capacity=ring?ring:first+rows;
     const uint64_t stride=(uint64_t)kv_heads*dim;
@@ -422,7 +425,12 @@ static void attn_split_case(const char *name,unsigned first,unsigned heads,
     float *dq=device(query),*out;
     __nv_bfloat16 *dk=device(key16),*dv=device(value16);
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
-    const unsigned splits=8;
+    /* The host's count (g4_split_span + ds4_gpu_g4_attn_split): the same
+     * begin/last the kernel derives, then ceil(visible / span). */
+    const unsigned begin=window&&first+1u>window?first+1u-window:0u;
+    const unsigned last=keys&&keys<=first?keys-1u:first;
+    unsigned splits=begin<=last?(last-begin+span)/span:1u;
+    if(splits<1u) { splits=1u; }
     float *dpartial,*dstats;
     CUDA_OK(cudaMalloc(&dpartial,(size_t)splits*heads*dim*sizeof(float)));
     CUDA_OK(cudaMalloc(&dstats,(size_t)splits*heads*2*sizeof(float)));
@@ -431,7 +439,7 @@ static void attn_split_case(const char *name,unsigned first,unsigned heads,
     g4_attn_split_kernel<G4_SPLIT_TILE><<<dim3(kv_heads,splits),group*32u,shared>>>(
         dpartial,dstats,dq,dk,dv,first,heads,kv_heads,dim,window,ring,keys,stride,splits);
     CUDA_OK(cudaGetLastError());
-    g4_attn_split_combine_kernel<<<heads,256>>>(out,dpartial,dstats,heads,dim,splits);
+    g4_attn_split_combine_kernel<<<heads,256,splits*sizeof(float)>>>(out,dpartial,dstats,heads,dim,splits);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,1.0e-4f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
@@ -486,6 +494,29 @@ static void attn_test() {
         G4_REF_GLOBAL_HEAD_DIM,0,0);
     attn_split_case("attn_split_shared_prefix",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
         G4_REF_HEAD_DIM,G4_REF_WINDOW,0,4096);
+    /* Finer spans (DS4_GEMMA4_ATTN_SPLIT_SPAN): the sliding window gives 8
+     * and 4 splits, the 8192-key full range 64 and 32. */
+    attn_split_case("attn_split_sliding_span128",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,0u,128u);
+    attn_split_case("attn_split_sliding_span256",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,0u,256u);
+    attn_split_case("attn_split_full_span128",8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,0u,128u);
+    attn_split_case("attn_split_full_span256",8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,0u,256u);
+    attn_split_case("attn_split_shared_prefix_span128",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,4096,128u);
+    /* Uncapped: the combine's weights are dynamic shared memory, so the
+     * count is only ceil(visible / span). 128, 256 and 512 splits exercise
+     * the stride-256 weight fill and the larger shared launches. */
+    attn_split_case("attn_split_full_span64",8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,0u,64u);
+    attn_split_case("attn_split_full_span32",8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,0u,32u);
+    attn_split_case("attn_split_full_span16",8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,0,0u,16u);
+    attn_split_case("attn_split_sliding_span16",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,0u,16u);
 }
 
 int main(int argc,char **argv) {
