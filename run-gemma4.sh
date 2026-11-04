@@ -22,17 +22,24 @@
 # DS4_GEMMA4_RESIDENT=0 to fall back to the host-mapped path (2.7 tok/s
 # against the device copy's 21 tok/s on the same prompt).
 #
-# MTP is deliberately absent: DS4_GEMMA4_FULL_KV=fp8 refuses the drafter by
-# design ("the drafter reads the full layer's bf16 KV", ds4.c:74110-74117),
-# and the owner's 4070 MTP line waits for the CPU-expert phase.
+# MTP is off unless DS4_GEMMA4_MTP names the drafter GGUF. It then requires
+# bf16 full-layer KV (the drafter reads the full layer's bf16 KV,
+# ds4.c:74110-74117) and the script refuses the fp8 combination. On the
+# Spark the drafter and the full 262144 context fit; on the 12 GiB 4070
+# they do not.
 #
 # Env overrides:
-#   DS4_GEMMA4_MODEL      release directory (default /data/vq-artifacts/gguf-family-it-r8)
+#   DS4_GEMMA4_MODEL      release directory (default /data/vq-artifacts/gguf-family-it-r8,
+#                         else $HOME/models/gguf-family-it-r8)
 #   DS4_GEMMA4_SERVER_BIN server binary (default <root>/ds4-server)
+#   DS4_GEMMA4_HOST       listen address (default 127.0.0.1; 0.0.0.0 for the LAN)
 #   DS4_GEMMA4_PORT       port (default 8099)
-#   DS4_GEMMA4_CTX        context (default 16384)
+#   DS4_GEMMA4_CTX        context (default 16384; the Spark takes 262144)
 #   DS4_GEMMA4_MEM_FLOOR  memory floor in GiB (default 1)
-#   DS4_GEMMA4_KV         fp8 (default) or bf16
+#   DS4_GEMMA4_KV         fp8 (default) or bf16; fp8 refuses MTP by design
+#   DS4_GEMMA4_MTP        drafter GGUF path (default empty = no MTP)
+#   DS4_GEMMA4_MTP_DRAFT  drafts per round when MTP is on (default 6)
+#   DS4_GEMMA4_MTP_MODE   off|auto|on (default on; auto leaves Gemma off)
 #   DS4_GEMMA4_RESIDENT   1 (default, weights on the GPU) or 0 (host-mapped)
 #   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; DS4_GEMMA4_ATTN_FAST
 #   DS4_GEMMA4_LOG        server capture (default misc/scratch/gemma4-serve.log)
@@ -45,13 +52,24 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN="${DS4_GEMMA4_SERVER_BIN:-$ROOT/ds4-server}"
-MODEL="${DS4_GEMMA4_MODEL:-/data/vq-artifacts/gguf-family-it-r8}"
+if [ -n "${DS4_GEMMA4_MODEL:-}" ]; then
+  MODEL="$DS4_GEMMA4_MODEL"
+elif [ -d /data/vq-artifacts/gguf-family-it-r8 ]; then
+  MODEL=/data/vq-artifacts/gguf-family-it-r8
+else
+  MODEL="$HOME/models/gguf-family-it-r8"
+fi
+HOST="${DS4_GEMMA4_HOST:-127.0.0.1}"
 PORT="${DS4_GEMMA4_PORT:-8099}"
 CTX="${DS4_GEMMA4_CTX:-16384}"
 FLOOR="${DS4_GEMMA4_MEM_FLOOR:-1}"
 KV="${DS4_GEMMA4_KV:-fp8}"
+MTP="${DS4_GEMMA4_MTP:-}"
+DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
+MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
+GROK_NAME="${DS4_GEMMA4_GROK_NAME:-gemma4-vq-4070}"
 SCRATCH="$ROOT/misc/scratch"
 mkdir -p "$SCRATCH"
 LOG="${DS4_GEMMA4_LOG:-$SCRATCH/gemma4-serve.log}"
@@ -78,12 +96,24 @@ check_env() {
   [ -d "$MODEL" ] || die "release directory not found: $MODEL"
   command -v curl >/dev/null || die "curl is required"
   command -v jq >/dev/null || die "jq is required"
+  if [ -n "$MTP" ]; then
+    [ -f "$MTP" ] || die "drafter not found: $MTP"
+    [ "$KV" = "fp8" ] && die "MTP needs bf16 KV (DS4_GEMMA4_KV=bf16): the drafter reads the full layer's bf16 KV"
+  fi
 }
 
 # The plan the server will actually boot, printed as JSON by --check-config.
 plan_json() {
-  env DS4_LOCK_FILE="$LOCK" "$(kv_env)" "$(fast_env)" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
-      --mem-floor-gb "$FLOOR" --max-seqs 1 --check-config 2>/dev/null
+  local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)" "$(fast_env)" )
+  # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
+  # picks the partial/bank lane here, so the drafter pins exact reuse and
+  # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
+  if [ -n "$MTP" ]; then
+    extra=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
+    envs+=( "DS4_SERVER_CONTINUOUS=0" )
+  fi
+  env "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
+      --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" --check-config 2>/dev/null
 }
 
 plan_mode() {
@@ -97,7 +127,7 @@ plan_mode() {
 preflight() {
   local json code
   json="$(plan_json)" || die "the plan did not print (server error)"
-  code="$(printf '%s' "$json" | jq -r '[.issues[].code] | join(",")')"
+  code="$(printf '%s' "$json" | jq -r '[.issues[] | select(.level == "error") | .code] | join(",")')"
   if [ -n "$code" ]; then
     printf '%s' "$json" | jq '{quote, issues}'
     die "the serving quote refuses this configuration ($code); lower DS4_GEMMA4_CTX or free host RAM"
@@ -127,18 +157,26 @@ serve_start() {
   fi
   echo "model:   $MODEL"
   if [ "$RESIDENT" = "1" ]; then
-    echo "backend: cuda (weights on the GPU), ctx $CTX, floor ${FLOOR}G, max-seqs 1"
+    echo "backend: cuda (weights on the GPU), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
   else
-    echo "backend: cuda (host-mapped weights), ctx $CTX, floor ${FLOOR}G, max-seqs 1"
+    echo "backend: cuda (host-mapped weights), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
   fi
-  echo "kv:      $KV full layers; fast attention $FAST"
+  echo "kv:      $KV full layers; fast attention $FAST; mtp ${MTP:-off}"
   preflight
   rm -f "$LOG"
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)" "$(fast_env)" )
   [ "$RESIDENT" = "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  local -a extra=()
+  # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
+  # picks the partial/bank lane here, so the drafter pins exact reuse and
+  # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
+  if [ -n "$MTP" ]; then
+    extra=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
+    envs+=( "DS4_SERVER_CONTINUOUS=0" )
+  fi
   setsid env "${envs[@]}" \
-      "$BIN" -m "$MODEL" --cuda --host 127.0.0.1 --port "$PORT" \
-      -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 \
+      "$BIN" -m "$MODEL" --cuda --host "$HOST" --port "$PORT" \
+      -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" \
       > "$LOG" 2>&1 < /dev/null &
   pid=$!
   echo "$pid" > "$PIDFILE"
@@ -160,17 +198,20 @@ serve_start() {
     rm -f "$PIDFILE"
     return 1
   fi
+  local base_host="$HOST"
+  [ "$HOST" = "0.0.0.0" ] && base_host=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -n "$base_host" ] || base_host=127.0.0.1
   echo "server:  up (pid $pid)"
   grep -o 'listening on.*' "$LOG" | tail -1 | sed 's/^/         /'
-  echo "base_url: http://127.0.0.1:$PORT/v1"
+  echo "base_url: http://$base_host:$PORT/v1"
   echo "model id: $(curl -s -m 10 "http://127.0.0.1:$PORT/v1/models" | jq -r '.data[0].id // "unknown"')"
   echo "log:     $LOG"
   echo "note:    one ds4 model at a time; this server holds the slot until stopped"
   echo
-  echo "open-grok config block (already added as [model.gemma4-vq-4070]):"
-  echo "  [model.gemma4-vq-4070]"
+  echo "open-grok config block ([model.$GROK_NAME]):"
+  echo "  [model.\"$GROK_NAME\"]"
   echo "  model = \"$(curl -s -m 10 "http://127.0.0.1:$PORT/v1/models" | jq -r '.data[0].id // "gguf-family-it-r8"')\""
-  echo "  base_url = \"http://127.0.0.1:$PORT/v1\""
+  echo "  base_url = \"http://$base_host:$PORT/v1\""
   echo "  context_window = $CTX"
   echo "  api_key = \"local\""
   echo "  supports_images = false"

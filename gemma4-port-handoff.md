@@ -1832,6 +1832,17 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   path's ~94 ms, and 1.70 GB/s means it is compute-bound. The measurement
   does not clear the bar; do not port the host decoder unless the owner
   overrides. The active-expert VRAM cache remains the 4070 mechanism.
+- Spark serving lane (2026-11-04): run-gemma4.sh now takes DS4_GEMMA4_MTP,
+  DS4_GEMMA4_MTP_DRAFT (6), DS4_GEMMA4_MTP_MODE (on) and DS4_GEMMA4_HOST,
+  and when MTP is set it also sets DS4_SERVER_CONTINUOUS=0. That last one
+  is required: the plan refuses Gemma MTP on the continuous lane
+  ("gemma4_vq MTP runs only on the serial lane", serving.rs:2559-2567),
+  and DS4_SERVER_CONTINUOUS=0 is the switch that forces the serial driver
+  (serving.rs:581-587). The Spark runs 0.0.0.0:8889, ctx 262144, bf16
+  full-layer KV, weights=true, mtp=on draft=6, no SSD streaming; the
+  effective plan is reuse=exact mtp=on. A short chat with reasoning_effort
+  none answered in 1.00 s. The open-grok entry is [model."gemma4-vq-spark"]
+  at http://192.168.1.91:8889/v1 with context_window 262144.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
