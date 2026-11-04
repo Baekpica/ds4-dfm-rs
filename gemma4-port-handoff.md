@@ -2,12 +2,11 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: cdbdf200 (docs(handoff): the P8 gate, the offload
-  matrix and the discrete SSD path), plus this handoff update. 4v records
-  the P8 trial gate, the offload matrix, the discrete SSD path and the
-  Phase 8 verify-head review; the phase plan carries the next unit (the
-  verify head) and the owner's last phase (--cpu-moe). The twelve commits
-  on top of d6ad9774 are
+last_updated_commit: b09744a6 (perf(gemma4): fuse the MTP verify head over
+  the tied table), plus this handoff update. 4v records the P8 trial gate,
+  the offload matrix and the discrete SSD path; 4w records the fused
+  verify head, the PLE verdict and the owner's reordering. The commits on
+  top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
@@ -15,19 +14,19 @@ last_updated_commit: cdbdf200 (docs(handoff): the P8 gate, the offload
   2faef6c3 (the attention and dense-down round), 14f27345 (the token-tiled
   dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
-  followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322
-  and cdbdf200.
+  followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
+  cdbdf200, 767720d7, 341481b2 and b09744a6.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 767720d7 (synced; the last
-  build was 1bd4afe5, make cuda-spark, 469-482 s, 0 errors) and
-  ~/models/gguf-family-it-r8.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at b09744a6 (synced and built,
+  make cuda-spark, 475 s, 0 errors; the head test and the long gate pass
+  there) and ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T08:00:00+01:00
+handoff_written_at: 2026-11-04T08:30:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1737,6 +1736,65 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   tests/gemma4_serving_http_gate.sh, phase8_att_agy.md and
   offload_review.md. Nothing is committed or pushed.
 
+4w. The fused verify head, the PLE verdict and the owner's reordering (2026-11-04)
+
+- Verify head (b09744a6). g4_head_gemv_rows_kernel in cuda/gemma4_head.cuh
+  stages 1..8 input rows as bf16 in shared (8 * 2816 * 2 = 45,056 B, under
+  the 48 KiB static limit) and accumulates every row in the one-row
+  kernel's exact eight-FMA sequence and XOR reduction, so the 1.48 GB tied
+  table is read once per verify block instead of once per row.
+  ds4_gpu_g4_head_rows dispatches 1..8 rows; the verify keeps the per-row
+  shared linear as the fallback. The ids come from
+  ds4_gpu_argmax_rows_tensor (n int32, 28 B) and the commit reads only the
+  kept frontier row instead of the 7.34 MB block.
+- The byte-identity check is a test, not a claim: tests/gemma4_head_rows
+  compares the fused output against the one-row kernel on the same weights
+  and inputs for every row count 1..8; 4,096 of 4,096 values are exact on
+  sm_89 and on sm_121 (make test-gemma4-head-rows).
+- Measured, GB10, ctx 1024, draft 6, device-resident (DS4_CUDA_COPY_MODEL=1):
+  18.38 -> 20.21 gen tok/s (+10.0%), prefill 419.98 -> 419.66 (unchanged),
+  first token 0.3725 -> 0.3374 s. Plain decode unchanged: 6.76 -> 6.76
+  with DS4_GEMMA4_HEAD_GEMV on vs off (the single-row head is not a decode
+  lever). The long default gate passes on both machines with the same
+  stream and acceptance as before (4.80 tokens/call, [1,2,7,7,7]).
+  agy's roofline estimate was +12.5-15% (20.8-21.2); the measured +10.0%
+  is below it and is the number to quote.
+- The exact-path byte gate (DS4_GEMMA4_EXACT_PREFILL=1) fails, but it fails
+  identically on the Spark baseline at 341481b2, which does not contain the
+  verify head. The exact switch covers the projections and the dense path,
+  not every batched piece of the verify forward, so the block KV or norm
+  still drifts. Known limitation, not a regression; closing it means
+  extending the exact coverage to the verify forward, or gating on the
+  frontier logits instead of the whole payload.
+- PLE verdict (checked, not applicable). Gemma-4 26B A4B has
+  hidden_size_per_layer_input = 0 (config.json:33 of both checkpoints) and
+  no PLE tensors (the safetensors index has zero per_layer/ple entries;
+  docs/gemma4-reference-semantics.md:63, 75-79). Qwen3.8's PLE is a
+  different feature: a 320,001,446-row n-gram hash sidecar, 16 rows of 320
+  B per token = 5,120 B BF16 (ds4_ple.h:15-21, ds4_ple.c:200-224,
+  1019-1023; 95.37 GiB BF16 / 47.7 GiB FP8), read through a 4 KiB-page
+  cache. Gemma's routed experts are about 450 MiB per token
+  (8 x 1,965,568 x 30), so the PLE model reads about 92,000 times less per
+  token; that is the architecture, not the loader. On the GB10 SSD costs
+  only 1.8-3.5% of decode against resident, so PLE cannot be the missing
+  speed. The only PLE-like headroom found is overlapping the six serial
+  preads and uploads per expert and the per-layer id readback
+  (ds4_gemma4_stream.inc:410-459, 478-480, 500-517); unmeasured, and not
+  PLE. The Qwen model directory lives on the Spark at
+  ~/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF, not on
+  this host.
+- Owner's reordering (2026-11-04): no more MTP trials on the 4070 until
+  the llama.cpp-style --cpu-moe CPU-expert path is implemented. The order
+  is therefore: close P8 (done except the serving-default speed number and
+  the exact-path limitation), P9 (run tests/gemma4_serving_http_gate.sh),
+  then the CPU-expert phase with its deciding standalone CPU GEMV over one
+  408 KB expert record, then Phase 8 (the tensor-core attention kernel,
+  MIN_ROWS=16, a prefill lever with no draft-6 value).
+- Working tree at handoff: b09744a6 is committed and not pushed. Untracked:
+  review_agy.md and the built tests/gemma4_mtp_gate and
+  tests/gemma4_head_rows binaries. The Spark is synced to b09744a6, built
+  (475 s, 0 errors), and both the head test and the long gate pass there.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
@@ -2096,16 +2154,23 @@ Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
   1024; six drafts is the ceiling now, 7e67cf1b), and the real MTP trial
   gate (d77cbc97; 24 tokens, 4.80 tokens/call, prefix/snapshot/stop/
   sampling equal, default-path state drift 1.297).
-  Next unit (from phase8_att_agy.md): the Gemma-owned verify head plus
-  device argmax. Extend cuda/gemma4_head.cuh to 1..8 rows with the fused
-  softcap and bf16 staging, expose ds4_gpu_g4_head_rows, replace the
-  per-row ds4_gpu_gvq_linear loop in gemma4_mtp_verify with one call,
-  replace the 7.34 MB readback and host argmax with
-  ds4_gpu_argmax_rows_tensor over r->verify (28 B), and read only the kept
-  row (keep-1) from r->verify into s->logits in the commit. Measure
-  DS4_GEMMA4_HEAD_GEMV alone first (the 18.42 baseline ran it off); the
-  +12.5-15% roofline estimate is not measured. The exact-path byte gate
-  (DS4_GEMMA4_EXACT_PREFILL=1) and the serving-default speed number remain.
+  DONE (b09744a6, 4w): the Gemma-owned verify head plus device argmax.
+  cuda/gemma4_head.cuh takes 1..8 rows with the fused softcap and bf16
+  staging, ds4_gpu_g4_head_rows dispatches them, gemma4_mtp_verify makes
+  one fused call (per-row shared linear kept as the fallback), the ids come
+  from ds4_gpu_argmax_rows_tensor over r->verify (28 B), and the commit
+  reads only the kept row. tests/gemma4_head_rows pins 0 ULP for 1..8 rows
+  on sm_89 and sm_121. Measured GB10 draft 6: 18.38 -> 20.21 tok/s
+  (+10.0%); plain decode unchanged. The DS4_GEMMA4_HEAD_GEMV arm alone is
+  6.76 -> 6.76 (no decode lever).
+  Remaining P8: the serving-default speed number (the bench above runs
+  DS4_CUDA_COPY_MODEL=1), and the exact-path byte gate
+  (DS4_GEMMA4_EXACT_PREFILL=1), which fails identically on the Spark
+  baseline at 341481b2: the exact switch does not cover every batched
+  piece of the verify forward, so the block KV or norm still drifts. That
+  is a known limitation; close it by extending the exact coverage to the
+  verify forward or by gating on the frontier logits instead of the whole
+  payload.
   P9: tests/gemma4_serving_http_gate.sh (reworked 951f6322; needs a run).
   P10: the HF release directory, the OSV scan (clean 2026-11-04: 1
   manifest, 146 packages, 0 vulnerable), the pushes (owner's word).
@@ -2177,7 +2242,13 @@ Last phase — the llama.cpp-style --cpu-moe CPU-expert path (owner, 2026-11-04)
   over one 408 KB expert record, to see whether 1.43 G weights per token
   (240 experts x 3 matrices x 1.98 M) lands under the device path's ~94 ms.
   The active-expert VRAM cache (Phase 5) is the mechanism already measured
-  on the 4070; --cpu-moe is the last phase, not the next unit.
+  on the 4070.
+  REORDERED by the owner on 2026-11-04: no more MTP trials on the 4070
+  until this path is implemented, so this phase moves ahead of Phase 8.
+  Order now: P9 (the serving HTTP gate run), then the deciding CPU GEMV
+  measurement above, then the host decoder port if it passes, then Phase 8
+  (the tensor-core attention kernel, MIN_ROWS=16, a prefill lever with no
+  draft-6 value).
 
 Phase 6 — RAM-resident experts (optional, capacity not speed)
 
