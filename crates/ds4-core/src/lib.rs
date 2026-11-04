@@ -16,6 +16,7 @@ mod bind;
 pub mod chat_template;
 mod dots3_mtp;
 mod engram;
+mod gemma4_knobs;
 // Identity, layout, part verification and binding are live; the open path and
 // the forward land in the next units, so some entry points have no caller yet.
 #[allow(dead_code)]
@@ -102,6 +103,7 @@ pub use layout::{
 };
 pub use ling31_vq::Feature as Ling31Feature;
 
+pub use gemma4_knobs::{FullKv, Gemma4Options, KnobInfo, MissPolicy, Toggle, VqVariant, KNOBS};
 pub use gemma4_vq::Gemma4VqFeature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
@@ -258,6 +260,9 @@ pub enum ModelOpenOption {
     /// `--mem-budget-mb`: the L1 load gate refuses a planned resident above
     /// 85% of it.
     MemBudgetMb(u64),
+    /// The host-validated Gemma-4 tuning surface. The engine reads these
+    /// fields instead of parsing the legacy `DS4_GEMMA4_*` strings.
+    Gemma4(Gemma4Options),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -304,6 +309,7 @@ struct OpenTuning {
     vision_path: Option<String>,
     mem_floor_gb: Option<u64>,
     mem_budget_mb: Option<u64>,
+    gemma4: Gemma4Options,
 }
 
 impl Default for OpenTuning {
@@ -326,6 +332,7 @@ impl Default for OpenTuning {
             vision_path: None,
             mem_floor_gb: None,
             mem_budget_mb: None,
+            gemma4: Gemma4Options::default(),
         }
     }
 }
@@ -531,6 +538,7 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
                     message: "vision path must not be empty".into(),
                 });
             }
+            ModelOpenOption::Gemma4(options) => tuning.gemma4 = options.clone(),
         }
     }
 
@@ -1765,6 +1773,9 @@ impl Model {
                     .into(),
             });
         }
+        if identified.shape.family != ModelFamily::Gemma4Vq && tuning.gemma4.explicit {
+            eprintln!("ds4: Gemma-4 tuning knobs are set but the model is not gemma4_vq; ignored");
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -2177,6 +2188,12 @@ impl Model {
             ssd_streaming_cold: i32::from(tuning.ssd_streaming_cold),
             ssd_streaming_cache_experts: tuning.ssd_streaming_cache_experts,
             ssd_streaming_cache_bytes: tuning.ssd_streaming_cache_bytes,
+            gemma4: if identified.shape.family == ModelFamily::Gemma4Vq {
+                tuning.gemma4.to_ffi()
+            } else {
+                // No typed surface: the engine keeps the legacy getenv path.
+                ds4_sys::ds4_gemma4_options::default()
+            },
             plan: ffi_plan.as_c(),
             tensors: ffi_dir.as_c(),
             shape: &ffi_shape,

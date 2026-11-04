@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "ds4_gemma4_knobs.h"
 #include "ds4_mem_census.h"
 #include "ds4_model_catalog.h"
 #include "ds4_mem_gov.h"     /* memgov D0b: shadow governor core (leaf) */
@@ -268,6 +269,9 @@ typedef struct {
        itself and trims its own heap after open. */
     bool host_policy;
     const char *audio_path;    /* MiMo VQ audio part; NULL derives it */
+    /* The Rust host's validated Gemma-4 tuning surface.  `gemma4.present`
+     * clear keeps the legacy DS4_GEMMA4_* getenv path for the C hosts. */
+    ds4_gemma4_options gemma4;
     ds4_distributed_options distributed;
 } ds4_engine_options;
 

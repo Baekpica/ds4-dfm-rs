@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "ds4_gemma4_plan.h"
+#include "ds4_gemma4_knobs.h"
 #include "ds4_gemma4_vq.h"
 /* ds4_gvq_model / ds4_gvq_record: the SSD stream plan the bind builds. The
  * header is guarded and includes nothing back here, so this stays a leaf. */
@@ -14,8 +15,10 @@
 /* Host routed-expert path (DS4_GEMMA4_CPU_MOE=1): the expert records stay
  * host-cold in the model mmap and their projections run on the CPU, so a
  * discrete card does not need the SSD slot pool. Read by the engine (map
- * install), the binder (cold records) and the MoE dispatch. */
+ * install), the binder (cold records) and the MoE dispatch. The value is the
+ * host-validated typed field when the Rust host supplied one. */
 static inline int gemma4_cpu_moe_on(void) {
+    if (ds4_gemma4_knobs()->present) { return ds4_gemma4_knobs()->cpu_moe != 0; }
     const char *v = getenv("DS4_GEMMA4_CPU_MOE");
     return v && v[0] == '1' && !v[1];
 }
@@ -48,14 +51,10 @@ static inline uint32_t ds4_gemma4_kv_rows(unsigned layer, unsigned ctx, unsigned
  * mechanism is the one Beam and MiMo already ship: E4M3 K and V with one f16
  * scale per KV head, full layers only (ds4_beam_bind.inc:56-67 and
  * ds4_mimo2_plan.h:38-58). Off by default; DS4_GEMMA4_FULL_KV=fp8 turns it
- * on. The 25 sliding layers keep bf16 rows, which the ring already bounds. */
+ * on. The 25 sliding layers keep bf16 rows, which the ring already bounds.
+ * The Rust host validates the format and carries it typed. */
 static inline bool gemma4_full_kv_fp8(void) {
-    static int fp8 = -1;
-    if (fp8 < 0) {
-        const char *value = getenv("DS4_GEMMA4_FULL_KV");
-        fp8 = value && !strcmp(value, "fp8");
-    }
-    return fp8 != 0;
+    return ds4_gemma4_knob_full_kv_fp8() != 0;
 }
 
 /* One K or V row of a bf16 layer. */

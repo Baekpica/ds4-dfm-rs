@@ -272,8 +272,8 @@ extern "C" int ds4_gpu_g4_rms_rope(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
 static bool g4_router_par(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ROUTER_PAR");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->router_par,
+            "DS4_GEMMA4_ROUTER_PAR");
     }
     return on != 0;
 }
@@ -616,15 +616,9 @@ extern "C" int ds4_gpu_g4_attn_mma(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
  * 16 measured still better at 256 and 1,024 but are unmeasured at 13,447,
  * so 128 is the default until that point is taken. Clamped to [16, 4096]. */
 static uint32_t g4_split_span(void) {
-    static int span = -1;
-    if (span < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT_SPAN");
-        span = v ? atoi(v) : 0;
-        if (span <= 0) { span = 128; }
-        if (span < 16) { span = 16; }
-        if (span > 4096) { span = 4096; }
-    }
-    return (uint32_t)span;
+    static uint32_t span;
+    if (span == 0u) { span = ds4_gemma4_knob_split_span(); }
+    return span;
 }
 
 /* The combine kernel's weight array is dynamic shared memory; above the
@@ -645,8 +639,8 @@ static bool g4_split_combine_ready(void) {
 static bool g4_split_mma(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT_MMA");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_split_mma,
+            "DS4_GEMMA4_ATTN_SPLIT_MMA");
     }
     return on != 0;
 }
@@ -898,23 +892,58 @@ __global__ static void g4_moe_scatter_ordered_kernel(float *dst, const float *sr
 /* Gemma-4 decode projection: one row reads the GVQ1 bytes directly
  * (cuda/gemma_vq_decode.cuh) instead of restoring the matrix to bf16 and
  * calling cuBLAS. The restore stays the fallback for every geometry the
- * kernel does not take, and DS4_GEMMA4_VQ_GEMV=0 disables the direct path.
- * Variant and width are the knobs a per-GPU profile will set; today they are
- * environment variables (variant 0 auto, 1 warp, 2 block; width 128/256/512). */
+ * kernel does not take. Variant and width are the per-GPU profile knobs
+ * (variant 0 auto, 1 warp, 2 block; width 32..512 in steps of 32); the Rust
+ * host validates them and carries them typed, and the legacy getenv path is
+ * unchanged for the C hosts. */
+static bool g4_vq_gemv_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        if (ds4_gemma4_knobs()->present) {
+            on = ds4_gemma4_knobs()->vq_gemv != 0;
+        } else {
+            /* Legacy: the direct path is on unless the switch is exactly 0. */
+            const char *v = getenv("DS4_GEMMA4_VQ_GEMV");
+            on = !(v && v[0] == '0' && !v[1]);
+        }
+    }
+    return on != 0;
+}
+
+static int g4_vq_gemv_variant(void) {
+    static int variant = -1;
+    if (variant < 0) {
+        if (ds4_gemma4_knobs()->present) {
+            variant = (int)ds4_gemma4_knobs()->vq_gemv_variant;
+        } else {
+            const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
+            variant = v && *v ? atoi(v) : G4_VQ_AUTO;
+        }
+    }
+    return variant;
+}
+
+static int g4_vq_gemv_threads(void) {
+    static int threads = -1;
+    if (threads < 0) {
+        if (ds4_gemma4_knobs()->present) {
+            threads = (int)ds4_gemma4_knobs()->vq_gemv_threads;
+        } else {
+            const char *v = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
+            threads = v && *v ? atoi(v) : 256;
+        }
+    }
+    return threads;
+}
+
 static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index,
         const ds4_gpu_tensor *input) {
     if (!m || !m->gvq || !out || !input || index >= m->gvq->model->source.size()) { return false; }
-    const char *off = getenv("DS4_GEMMA4_VQ_GEMV");
-    if (off && off[0] == '0' && !off[1]) { return false; }
+    if (!g4_vq_gemv_on()) { return false; }
     const glmvq_source &s = m->gvq->model->source[index];
     if (s.storage != GLMVQ_WEIGHT_VQ || !s.vq.main || !s.vq.book || !s.vq.gain) { return false; }
-    int variant = G4_VQ_AUTO, threads = 256;
-    const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
-    if (v && *v) { variant = atoi(v); }
-    const char *t = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
-    if (t && *t) { threads = atoi(t); }
     return g4_vq_gemv(s.vq, (const float *)input->ptr, (float *)out->ptr,
-        variant, threads, ds4_current_stream()) != 0;
+        g4_vq_gemv_variant(), g4_vq_gemv_threads(), ds4_current_stream()) != 0;
 }
 
 /* Fused gate/up + GELU for one route. Off by default; DS4_GEMMA4_MOE_FUSED=1
@@ -922,8 +951,8 @@ static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index
 static bool g4_moe_fused(void) {
     static int fused = -1;
     if (fused < 0) {
-        const char *v = getenv("DS4_GEMMA4_MOE_FUSED");
-        fused = v && v[0] == '1' && !v[1];
+        fused = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_fused,
+            "DS4_GEMMA4_MOE_FUSED");
     }
     return fused != 0;
 }
@@ -941,13 +970,8 @@ static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t g
         !us.vq.main || !us.vq.book || !us.vq.gain) {
         return false;
     }
-    int variant = G4_VQ_AUTO, threads = 256;
-    const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
-    if (v && *v) { variant = atoi(v); }
-    const char *t = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
-    if (t && *t) { threads = atoi(t); }
     return g4_vq_gemv_glu(gs.vq, us.vq, (const float *)input->ptr, (float *)out->ptr,
-        variant, threads, ds4_current_stream()) != 0;
+        g4_vq_gemv_variant(), g4_vq_gemv_threads(), ds4_current_stream()) != 0;
 }
 
 /* Direct VQ prefill GEMM for the grouped expert path (tokens > 1). Off by
@@ -957,8 +981,24 @@ static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t g
 static bool g4_vq_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_VQ_PREFILL");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->vq_prefill,
+            "DS4_GEMMA4_VQ_PREFILL");
+    }
+    return on != 0;
+}
+
+/* One-row calls for every route of a chunk, the chunk-size exactness gate.
+ * The legacy switch is presence-only (even DS4_GEMMA4_EXACT_PREFILL=0 meant
+ * on, because the old helper tested getenv() != NULL); the typed path is a
+ * strict boolean. */
+static bool g4_exact_prefill(void) {
+    static int on = -1;
+    if (on < 0) {
+        if (ds4_gemma4_knobs()->present) {
+            on = ds4_gemma4_knobs()->exact_prefill != 0;
+        } else {
+            on = getenv("DS4_GEMMA4_EXACT_PREFILL") != NULL;
+        }
     }
     return on != 0;
 }
@@ -1137,7 +1177,7 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
         }
     }
     if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
-    if (rows > 1 && getenv("DS4_GEMMA4_EXACT_PREFILL")) {
+    if (rows > 1 && g4_exact_prefill()) {
         /* P6a's chunk-size exactness gate: run each route as its own one-row
          * projection, so the grouped prefill equals the one-row path bit for
          * bit. This is the fallback for the gate, not the default: it

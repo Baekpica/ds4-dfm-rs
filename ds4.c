@@ -96,6 +96,18 @@ typedef enum {
 #define M_PI 3.14159265358979323846
 #endif
 
+/* The process-wide Gemma-4 tuning surface.  A Rust host fills
+ * ds4_engine_options.gemma4 with values it has already validated; the engine
+ * installs them here at open and every Gemma helper reads them instead of
+ * parsing getenv.  A C host leaves `present` clear and keeps the legacy
+ * environment path.  A second open in the same process replaces the surface,
+ * which is what a family switch needs. */
+static ds4_gemma4_options g_ds4_gemma4_knobs;
+
+ds4_gemma4_options *ds4_gemma4_knobs(void) {
+    return &g_ds4_gemma4_knobs;
+}
+
 #define DS4_NEG_INF (-1.0e30f)
 #define DS4_POS_INF ( 1.0e30f)
 #define DS4_DEFAULT_RMS_EPS ( 1.0e-6f)
@@ -73610,6 +73622,10 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
 }
 
 int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
+    /* The Gemma-4 helpers read the typed surface from the first model_open
+     * call on (the map install already asks gemma4_cpu_moe_on), so it has to
+     * be installed before anything else runs. */
+    *ds4_gemma4_knobs() = opt->gemma4;
     /* memgov D2-1: parse the governance mode table before the first
      * decision or publication site can run (they all live behind an open
      * engine).  Idempotent; the unit suite re-invokes it directly. */

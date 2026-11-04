@@ -1,6 +1,69 @@
+/// The Gemma-4 arithmetic surface. The host validates every value strictly
+/// at parse time, so an experiment only has to confirm the knob belongs to
+/// this family; the range checks here mirror the host so a sweep fails before
+/// it spends a model load.
+fn validate_gemma4(key: &str, value: &str) -> Option<Result<(), String>> {
+    let bad = || {
+        Some(Err(format!(
+            "unsupported experiment control/value for gemma4_vq: {key}={value}"
+        )))
+    };
+    let number = |min: u32, max: u32| -> Option<Result<(), String>> {
+        Some(match value.parse::<u32>() {
+            Ok(n) if (min..=max).contains(&n) => Ok(()),
+            _ => Err(format!("{key}: expected {min}..{max}, got {value}")),
+        })
+    };
+    match key {
+        "DS4_GEMMA4_ATTN_SPLIT_SPAN" => number(16, 4096),
+        "DS4_GEMMA4_CPU_MOE_THREADS" => number(1, 64),
+        "DS4_GEMMA4_PREFILL_CHUNK" => number(1, 8192),
+        "DS4_GEMMA4_VQ_GEMV_VARIANT" => number(0, 2),
+        "DS4_GEMMA4_VQ_GEMV_THREADS" => Some(match value.parse::<u32>() {
+            Ok(n) if (32..=512).contains(&n) && n % 32 == 0 => Ok(()),
+            _ => Err(format!(
+                "{key}: expected 32..512 in steps of 32, got {value}"
+            )),
+        }),
+        "DS4_GEMMA4_MOE_MISS" => match value {
+            "evict" | "cpu" => Some(Ok(())),
+            _ => bad(),
+        },
+        "DS4_GEMMA4_FULL_KV" => match value {
+            "bf16" | "fp8" => Some(Ok(())),
+            _ => bad(),
+        },
+        "DS4_GEMMA4_ATTN_SPLIT_MMA"
+        | "DS4_GEMMA4_ATTN_SPLIT"
+        | "DS4_GEMMA4_ATTN_FAST"
+        | "DS4_GEMMA4_ATTN_PREFILL"
+        | "DS4_GEMMA4_ATTN_MMA"
+        | "DS4_GEMMA4_FUSE_ROPE"
+        | "DS4_GEMMA4_HEAD_GEMV"
+        | "DS4_GEMMA4_ROUTER_DOT"
+        | "DS4_GEMMA4_ROUTER_PAR"
+        | "DS4_GEMMA4_Q8_BATCH"
+        | "DS4_GEMMA4_MOE_PERSIST"
+        | "DS4_GEMMA4_MOE_FUSED"
+        | "DS4_GEMMA4_VQ_PREFILL"
+        | "DS4_GEMMA4_EXACT_PREFILL"
+        | "DS4_GEMMA4_Q4_DECODE"
+        | "DS4_GEMMA4_CPU_MOE"
+        | "DS4_GEMMA4_MOE_HOST"
+        | "DS4_GEMMA4_VQ_GEMV" => match value {
+            "0" | "1" | "true" | "false" | "on" | "off" => Some(Ok(())),
+            _ => bad(),
+        },
+        _ => None,
+    }
+}
+
 // Only controls whose values are consumed by the native execution path may
 // vary inside a matched experiment. Memory/residency identity stays fixed.
 pub fn tunable(key: &str) -> bool {
+    if key.starts_with("DS4_GEMMA4_") {
+        return validate_gemma4(key, "1").is_some();
+    }
     matches!(
         key,
         "DS4_QWEN_PREFILL_CHUNK"
@@ -80,6 +143,15 @@ pub fn tunable(key: &str) -> bool {
 }
 
 pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
+    if key.starts_with("DS4_GEMMA4_") {
+        if family.to_ascii_lowercase() != "gemma4_vq" {
+            return Err(format!(
+                "unsupported experiment control/value for {family}: {key}={value}"
+            ));
+        }
+        return validate_gemma4(key, value)
+            .unwrap_or_else(|| Err(format!("unknown Gemma-4 control {key}")));
+    }
     let n = value
         .parse::<u32>()
         .map_err(|_| format!("{key}: expected a positive integer"))?;
@@ -184,6 +256,35 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemma4_surface_is_sweepable_with_the_host_bounds() {
+        for key in [
+            "DS4_GEMMA4_ATTN_SPLIT_SPAN",
+            "DS4_GEMMA4_ATTN_SPLIT_MMA",
+            "DS4_GEMMA4_CPU_MOE",
+            "DS4_GEMMA4_CPU_MOE_THREADS",
+            "DS4_GEMMA4_MOE_HOST",
+            "DS4_GEMMA4_MOE_MISS",
+            "DS4_GEMMA4_PREFILL_CHUNK",
+            "DS4_GEMMA4_FULL_KV",
+            "DS4_GEMMA4_VQ_GEMV_THREADS",
+        ] {
+            assert!(super::tunable(key), "{key}");
+        }
+        assert!(!super::tunable("DS4_GEMMA4_DEBUG"));
+        assert!(super::validate("DS4_GEMMA4_ATTN_SPLIT_SPAN", "64", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_ATTN_SPLIT_SPAN", "8", "gemma4_vq").is_err());
+        assert!(super::validate("DS4_GEMMA4_ATTN_SPLIT_SPAN", "64", "glm5_next").is_err());
+        assert!(super::validate("DS4_GEMMA4_MOE_MISS", "cpu", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_MOE_MISS", "cpux", "gemma4_vq").is_err());
+        assert!(super::validate("DS4_GEMMA4_FULL_KV", "fp8", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_FULL_KV", "fp8x", "gemma4_vq").is_err());
+        assert!(super::validate("DS4_GEMMA4_VQ_GEMV_THREADS", "384", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_VQ_GEMV_THREADS", "33", "gemma4_vq").is_err());
+        assert!(super::validate("DS4_GEMMA4_CPU_MOE", "on", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_CPU_MOE", "yes", "gemma4_vq").is_err());
+    }
+
     #[test]
     fn iquest_chunk_is_scoped_and_bounded() {
         assert!(super::tunable("DS4_IQUEST_PREFILL_CHUNK"));

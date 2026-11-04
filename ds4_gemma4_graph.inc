@@ -565,6 +565,10 @@ static bool gemma4_hash_layers(void) {
  * which is the price of the batch. DS4_GEMMA4_EXACT_PREFILL=1 restores the
  * one-row calls for the chunk-size exactness gate. */
 static bool gemma4_exact_prefill(void) {
+    if (ds4_gemma4_knobs()->present) {
+        return ds4_gemma4_knobs()->exact_prefill != 0;
+    }
+    /* Legacy: presence-only, so DS4_GEMMA4_EXACT_PREFILL=0 still meant on. */
     return getenv("DS4_GEMMA4_EXACT_PREFILL") != NULL;
 }
 
@@ -574,8 +578,8 @@ static bool gemma4_exact_prefill(void) {
 static bool g4_q4_decode(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_Q4_DECODE");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->q4_decode,
+            "DS4_GEMMA4_Q4_DECODE");
     }
     return on != 0;
 }
@@ -618,8 +622,8 @@ static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *o
 static bool g4_attn_fast(void) {
     static int fast = -1;
     if (fast < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_FAST");
-        fast = v && v[0] == '1' && !v[1];
+        fast = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_fast,
+            "DS4_GEMMA4_ATTN_FAST");
     }
     return fast != 0;
 }
@@ -630,8 +634,8 @@ static bool g4_attn_fast(void) {
 static bool g4_attn_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_PREFILL");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_prefill,
+            "DS4_GEMMA4_ATTN_PREFILL");
     }
     return on != 0;
 }
@@ -642,8 +646,8 @@ static bool g4_attn_prefill(void) {
 static bool g4_attn_mma(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_MMA");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_mma,
+            "DS4_GEMMA4_ATTN_MMA");
     }
     return on != 0;
 }
@@ -654,8 +658,8 @@ static bool g4_attn_mma(void) {
 static bool g4_attn_split(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_split,
+            "DS4_GEMMA4_ATTN_SPLIT");
     }
     return on != 0;
 }
@@ -665,8 +669,8 @@ static bool g4_attn_split(void) {
 static bool g4_fuse_rope(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_FUSE_ROPE");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->fuse_rope,
+            "DS4_GEMMA4_FUSE_ROPE");
     }
     return on != 0;
 }
@@ -676,8 +680,8 @@ static bool g4_fuse_rope(void) {
 static bool g4_head_gemv(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_HEAD_GEMV");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->head_gemv,
+            "DS4_GEMMA4_HEAD_GEMV");
     }
     return on != 0;
 }
@@ -687,8 +691,8 @@ static bool g4_head_gemv(void) {
 static bool g4_router_dot(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_ROUTER_DOT");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->router_dot,
+            "DS4_GEMMA4_ROUTER_DOT");
     }
     return on != 0;
 }
@@ -698,8 +702,8 @@ static bool g4_router_dot(void) {
 static bool gemma4_q8_batch(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_Q8_BATCH");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->q8_batch,
+            "DS4_GEMMA4_Q8_BATCH");
     }
     return on != 0;
 }
@@ -710,8 +714,8 @@ static bool gemma4_q8_batch(void) {
 static bool g4_moe_persist(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_MOE_PERSIST");
-        on = v && v[0] == '1' && !v[1];
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_persist,
+            "DS4_GEMMA4_MOE_PERSIST");
     }
     return on != 0;
 }
@@ -733,10 +737,7 @@ static bool g4_moe_persist(void) {
  * the same rounding right after the chunk. */
 static bool gemma4_moe_miss_cpu(void) {
     static int on = -1;
-    if (on < 0) {
-        const char *v = getenv("DS4_GEMMA4_MOE_MISS");
-        on = v && strcmp(v, "cpu") == 0;
-    }
+    if (on < 0) { on = ds4_gemma4_knob_miss_cpu(); }
     return on != 0;
 }
 

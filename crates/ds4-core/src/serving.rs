@@ -3,6 +3,7 @@
 //! Names are shared. Implementation cost and verification stay per family.
 //! Forced options that a family cannot run become errors, not silent fallback.
 
+use crate::gemma4_knobs::Gemma4Options;
 use crate::identify::Identified;
 use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_QWEN38_FLASH_NEXT};
 use crate::Backend;
@@ -214,6 +215,8 @@ pub struct ServingRequest {
     pub chunk_fence: ChunkFence,
     pub distribution: Distribution,
     pub lane: LaneMode,
+    /// Gemma-4 arithmetic knobs, validated here and carried into the open.
+    pub gemma4: Gemma4Options,
 }
 
 /// Facts known only after identify or engine open.
@@ -364,6 +367,8 @@ pub struct ResolvedPlan {
     pub effective: EffectiveView,
     pub qualified: QualifiedView,
     pub quote: Option<ServingQuote>,
+    /// The Gemma-4 arithmetic surface the open will carry, defaults included.
+    pub gemma4: Gemma4Options,
     pub issues: Vec<PlanIssue>,
 }
 
@@ -471,6 +476,7 @@ impl Default for ServingRequest {
             chunk_fence: ChunkFence::On,
             distribution: Distribution::Single,
             lane: LaneMode::Auto,
+            gemma4: Gemma4Options::default(),
         }
     }
 }
@@ -571,7 +577,10 @@ impl ServingRequest {
     /// Compatible aliases: `DS4_SERVER_COALESCE_MAX`, `DS4_SERVER_CONTINUOUS`,
     /// `DS4_MEM_FLOOR_GB`, `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL`,
     /// `DS4_SERVER_PERSIST_MIN_TOKENS`, chunk env vars.
-    pub fn from_env() -> Self {
+    ///
+    /// The Gemma-4 knobs are strict: a value the surface cannot take is an
+    /// error naming the variable, never a silent zero.
+    pub fn from_env() -> Result<Self, String> {
         let mut req = Self::default();
         if let Ok(raw) = std::env::var("DS4_SERVER_COALESCE_MAX") {
             if let Ok(parsed) = MaxSeqs::parse_coalesce(&raw) {
@@ -622,7 +631,8 @@ impl ServingRequest {
                 req.native_chunk = Some(n);
             }
         }
-        req
+        req.gemma4 = Gemma4Options::from_env()?;
+        Ok(req)
     }
 }
 
@@ -1273,6 +1283,7 @@ pub fn resolve_plan(
                 )
             }],
             quote: None,
+            gemma4: req.gemma4.clone().with_native_chunk(req.native_chunk),
         };
     };
     // The native open refuses Beam banks beside the DFlash2 drafter, so the
@@ -1633,6 +1644,24 @@ pub fn resolve_plan(
         },
     };
 
+    // The Gemma surface the open will carry. `--native-chunk` is the generic
+    // spelling of the family's own DS4_GEMMA4_PREFILL_CHUNK, so an operator
+    // chunk wins; a host-quote default does not overwrite the family knob.
+    let gemma4 = req.gemma4.clone().with_native_chunk(req.native_chunk);
+    if caps.family == ModelFamily::Gemma4Vq {
+        for name in Gemma4Options::unknown_env() {
+            issues.push(warn(
+                "gemma4_env_unknown",
+                format!("{name} is not a knob the engine reads"),
+            ));
+        }
+    } else if gemma4.explicit {
+        issues.push(warn(
+            "gemma4_family",
+            "Gemma-4 tuning knobs are set but the model is not gemma4_vq; ignored",
+        ));
+    }
+
     ResolvedPlan {
         family: Some(caps.family),
         variant: Some(caps.variant),
@@ -1662,6 +1691,7 @@ pub fn resolve_plan(
         },
         qualified,
         quote,
+        gemma4,
         issues,
     }
 }
@@ -2005,6 +2035,9 @@ impl ResolvedPlan {
                 "disk_min_tokens": self.effective.disk_min_tokens,
                 "disk_is_offload": false
             },
+            // The surface the engine will run, defaults included. This is
+            // the block that makes --check-config answer "what will run".
+            "gemma4": self.gemma4.to_json(),
             "quote": self.quote.map(|q| json!({
                 "shared_weights": q.shared_weights,
                 "expert_cache": q.expert_cache,
@@ -2106,6 +2139,9 @@ impl ResolvedPlan {
             self.qualified.ctx,
             self.qualified.prompt
         );
+        if self.family == Some(ModelFamily::Gemma4Vq) || self.gemma4.explicit {
+            let _ = writeln!(s, "gemma4: {}", self.gemma4.rows().join(" "));
+        }
         if !self.qualified.note.is_empty() {
             let _ = writeln!(s, "note: {}", self.qualified.note);
         }
@@ -2907,6 +2943,40 @@ mod tests {
         };
         let p = resolve_plan(&req, None, &EngineFacts::default());
         assert!(p.has_errors());
+    }
+
+    #[test]
+    fn gemma4_surface_is_echoed_in_the_plan() {
+        let mut req = ServingRequest::default();
+        req.gemma4.attn_split_span = 64;
+        req.gemma4.moe_miss = crate::MissPolicy::Cpu;
+        req.gemma4.explicit = true;
+        let p = plan(req, ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(p.gemma4.attn_split_span, 64);
+        let json = p.to_json();
+        assert_eq!(json["gemma4"]["attn_split_span"], 64);
+        assert_eq!(json["gemma4"]["moe_miss"], "cpu");
+        assert_eq!(json["gemma4"]["cpu_moe_threads"], 20);
+        assert!(p.report().contains("DS4_GEMMA4_ATTN_SPLIT_SPAN=64"));
+    }
+
+    #[test]
+    fn native_chunk_is_the_gemma_prefill_chunk() {
+        let req = ServingRequest {
+            native_chunk: Some(1024),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(p.gemma4.prefill_chunk, 1024);
+    }
+
+    #[test]
+    fn gemma4_knobs_on_another_family_warn() {
+        let mut req = ServingRequest::default();
+        req.gemma4.explicit = true;
+        let p = plan(req, ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        assert!(!p.has_errors());
+        assert!(p.issues.iter().any(|issue| issue.code == "gemma4_family"));
     }
 
     #[test]

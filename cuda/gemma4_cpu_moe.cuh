@@ -302,11 +302,7 @@ static void *g4_cpu_thread(void *arg) {
 
 static int g4_cpu_pool_init(void) {
     if (g4_cpu_pool.started) { return 1; }
-    int t = 20;
-    const char *v = getenv("DS4_GEMMA4_CPU_MOE_THREADS");
-    if (v && atoi(v) > 0) { t = atoi(v); }
-    if (t < 1) { t = 1; }
-    if (t > 64) { t = 64; }
+    const int t = (int)ds4_gemma4_knob_cpu_threads();
     g4_cpu_pool.threads = t;
     g4_cpu_pool.arrived.store(0);
     g4_cpu_pool.gen.store(0);

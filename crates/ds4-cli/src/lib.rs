@@ -105,6 +105,7 @@ pub struct ShadowArgs {
     pub layout: bool,
     pub layout_variant: Option<String>,
     ssd_options: Vec<ds4_core::ModelOpenOption>,
+    pub gemma4: ds4_core::Gemma4Options,
     pub dist: ds4_dist::Options,
     pub help: bool,
 }
@@ -175,6 +176,7 @@ impl Default for ShadowArgs {
             layout: false,
             layout_variant: None,
             ssd_options: Vec::new(),
+            gemma4: ds4_core::Gemma4Options::default(),
             dist: ds4_dist::Options::default(),
             help: false,
         }
@@ -183,6 +185,7 @@ impl Default for ShadowArgs {
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, String> {
     let mut parsed = ShadowArgs::default();
+    parsed.gemma4 = ds4_core::Gemma4Options::from_env()?;
     let mut iter = args.into_iter().peekable();
     let _argv0 = iter.next();
 
@@ -397,6 +400,16 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
                 parsed.layout = true;
                 parsed.layout_variant = Some(require_value(&arg, iter.next())?);
             }
+            other if other.starts_with("--gemma4-") => {
+                let value = require_value(other, iter.next())?;
+                if !parsed
+                    .gemma4
+                    .set_flag(other, &value)
+                    .map_err(|error| format!("Gemma-4 knob: {error}"))?
+                {
+                    return Err(format!("unknown argument: {other}"));
+                }
+            }
             other => match ds4_dist::parse_cli_arg(other, &mut iter, &mut parsed.dist)? {
                 ds4_dist::CliResult::Matched => {}
                 ds4_dist::CliResult::NotMatched => {
@@ -514,6 +527,7 @@ fn mtp_open_options(
         options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
         options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
     }
+    options.push(ModelOpenOption::Gemma4(args.gemma4.clone()));
     Ok(options)
 }
 

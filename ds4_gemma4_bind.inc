@@ -266,13 +266,9 @@ static void gemma4_mtp_bind(ds4_gemma4_mtp *w, const ds4_model *m) {
  * which selects the one-row calls and is byte-identical at chunks 1..22. */
 static uint32_t gemma4_prefill_cap(uint32_t ctx) {
     uint32_t cap = ctx < 512u ? ctx : 512u;
-    const char *value = getenv("DS4_GEMMA4_PREFILL_CHUNK");
-    if (value && *value) {
-        char *end = NULL;
-        const unsigned long parsed = strtoul(value, &end, 10);
-        if (end != value && !*end && parsed > 0u && parsed <= G4_PREFILL_MAX) {
-            cap = (uint32_t)parsed;
-        }
+    const uint32_t requested = ds4_gemma4_knob_prefill_chunk();
+    if (requested > 0u && requested <= G4_PREFILL_MAX) {
+        cap = requested;
     }
     return cap < ctx ? cap : ctx;
 }

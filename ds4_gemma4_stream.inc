@@ -394,8 +394,8 @@ static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,
      * unchanged. */
     static int host_source = -1;
     if (host_source < 0) {
-        const char *v = getenv("DS4_GEMMA4_MOE_HOST");
-        host_source = v && v[0] == '1' && !v[1];
+        host_source = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_host,
+            "DS4_GEMMA4_MOE_HOST");
     }
     if (host_source && s->model->map) {
         const uint8_t *src = (const uint8_t *)s->model->map + t->abs_offset;

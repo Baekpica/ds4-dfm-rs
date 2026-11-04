@@ -240,8 +240,9 @@ kernel is one CTA per KV head: two CTAs on the five full layers and eight
 64-thread CTAs on the sliding ones, so most of the machine is idle while the
 key loop runs. The split kernel divides each KV head's visible key range
 across `splits = ceil(visible / span)` CTAs, where the span is
-`DS4_GEMMA4_ATTN_SPLIT_SPAN` (default 128, clamped to [16, 4096], no fixed
-ceiling), each running the fast kernel's own per-key dot and online softmax
+`DS4_GEMMA4_ATTN_SPLIT_SPAN` (default 128, 16..4096; the Rust host rejects a
+value outside that range and the legacy C hosts still clamp), each running the
+fast kernel's own per-key dot and online softmax
 over its range and writing the unnormalized O plus (m, l). A combine kernel
 joins the partials with `m = max m_s`, `l = sum l_s * exp(m_s - m)` and
 `o = sum o_s * exp(m_s - m) / l`. The per-key arithmetic is unchanged; only
@@ -283,6 +284,14 @@ and stays on the tile kernel. The long-context serving setting is therefore
 no MTP plus the split path; MTP remains a short-context tool. The launcher
 enables the split by default (`DS4_GEMMA4_SPLIT=0` keeps the single-CTA
 kernel).
+
+## Typed knobs
+
+Every arithmetic knob above is also a typed option: the `--gemma4-*` flags and
+the `DS4_GEMMA4_*` variables funnel through `Gemma4Options` (strict ranges,
+named errors), reach the engine as `ds4_engine_options.gemma4`, and are echoed
+in the plan JSON and by `--check-config`. The surface, the compatibility
+notes and the parity gates are in `docs/gemma4-typed-knobs-2026-11-04.md`.
 
 ## Lanes
 
