@@ -2,11 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: b09744a6 (perf(gemma4): fuse the MTP verify head over
-  the tied table), plus this handoff update. 4v records the P8 trial gate,
-  the offload matrix and the discrete SSD path; 4w records the fused
-  verify head, the PLE verdict and the owner's reordering. The commits on
-  top of d6ad9774 are
+last_updated_commit: 993ddd08 (test(gemma4): measure the CPU expert GEMV
+  before porting the host decoder), plus this handoff update. 4v records
+  the P8 trial gate, the offload matrix and the discrete SSD path; 4w
+  records the fused verify head, the PLE verdict and the owner's
+  reordering; 4x records the 4070 serving lane and the CPU-expert verdict.
+  The commits on top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
@@ -15,7 +16,8 @@ last_updated_commit: b09744a6 (perf(gemma4): fuse the MTP verify head over
   dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
-  cdbdf200, 767720d7, 341481b2 and b09744a6.
+  cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61
+  and 993ddd08.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
@@ -1790,10 +1792,46 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   then the CPU-expert phase with its deciding standalone CPU GEMV over one
   408 KB expert record, then Phase 8 (the tensor-core attention kernel,
   MIN_ROWS=16, a prefill lever with no draft-6 value).
-- Working tree at handoff: b09744a6 is committed and not pushed. Untracked:
-  review_agy.md and the built tests/gemma4_mtp_gate and
-  tests/gemma4_head_rows binaries. The Spark is synced to b09744a6, built
-  (475 s, 0 errors), and both the head test and the long gate pass there.
+- Working tree at handoff: 993ddd08 is committed and not pushed (the
+  verify head b09744a6, the handoffs 92ad0679/23af6003, the serving quote
+  e5b96d61 and the CPU measurement 993ddd08). Untracked: review_agy.md and
+  the built tests/gemma4_mtp_gate, tests/gemma4_head_rows and
+  tests/gemma4_cpu_expert_gemv binaries. The Spark is synced to b09744a6,
+  built (475 s, 0 errors), and both the head test and the long gate pass
+  there; it does not yet have the serving quote fix or the CPU test.
+
+4x. The 4070 serving lane and the CPU-expert verdict (2026-11-04)
+
+- The 4070 serving quote now prices only what a no-MTP boot maps: the
+  Gemma branch in gguf_span_bytes subtracts the release's embedded MTP
+  part (622 MB), the rule Ling-3.1 already uses (e5b96d61). The card boots
+  device-resident at ctx 16384 with DS4_GEMMA4_FULL_KV=fp8: 9.37 GiB
+  copied in 2.8 s, 10.16 GiB of 12 GiB used, 20.95 tok/s on a short chat
+  against 2.66 tok/s host-mapped. The banked lane is refused at that size
+  (free=1.45 GiB after the copy), so the server is serial, reuse=exact.
+  The quote admits ctx 32768 with about 0.2 GiB of margin.
+- run-gemma4.sh (repo root) is the launcher: serve start/stop/status/logs,
+  chat, plan, bench; defaults to the GPU copy, FP8 full-layer KV and fast
+  attention; DS4_GEMMA4_RESIDENT=0 is the host-mapped fallback. It uses
+  /tmp/ds4-gemma4-gate.lock because the default /tmp/ds4.lock belongs to
+  the embeddinggemma server on port 8098 on this host. The open-grok entry
+  is [model."gemma4-vq-4070"], base_url http://127.0.0.1:8099/v1,
+  context_window 16384, api_key "local" (added to ~/.opengrok/config.toml;
+  the backup is config.toml.bak-*).
+- Known serving issue: a request killed mid-flight (the open-grok headless
+  run) left the serial session graph allocated, and later requests got
+  HTTP 503 "no session graph fits beside the batch banks" until the
+  server was restarted. Not fixed; the restart is the workaround.
+- open-grok's headless prompt did not return an answer in 339 s (killed):
+  the server log showed prefill_cap=1, so its long system prompt was still
+  prefilling. The direct chat through the same server answered at 20.95
+  tok/s, so the model and wire work; the open-grok prefill path is the
+  open item (a wider --prefill-chunk is the lever, unmeasured here).
+- CPU-expert verdict (993ddd08): the deciding GEMV over the real 408 KB
+  record measures 278.4 ms per token at 28 threads against the device
+  path's ~94 ms, and 1.70 GB/s means it is compute-bound. The measurement
+  does not clear the bar; do not port the host decoder unless the owner
+  overrides. The active-expert VRAM cache remains the 4070 mechanism.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
