@@ -1834,6 +1834,17 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   path's ~94 ms, and 1.70 GB/s means it is compute-bound. The measurement
   does not clear the bar; do not port the host decoder unless the owner
   overrides. The active-expert VRAM cache remains the 4070 mechanism.
+  agy's review (cpu_moe_agy.md, 2026-11-04) agrees with STOP and corrects
+  the baseline: the ~94 ms is the uncached PCIe streaming number, while
+  the active-expert VRAM cache runs all 240 experts in 9.29 ms/token
+  (6.243 ms block + 3.050 ms warp, docs/gemma4-phase3-2026-11-03.md:26-30),
+  so even its corrected AVX2 estimate (38-55 ms/token after fixing the
+  benchmark's thread-spawn tax, per-weight bf16 and serial FMA) is 4-6x
+  slower than the GPU. It also finds CPU experts cannot overlap with GPU
+  attention (layer l MoE feeds layer l+1 attention) and that MTP verify at
+  7 rows routes 45-56 unique experts per layer, 2.65-3.30 GiB per step.
+  llama.cpp itself now ships the same pattern as ds4's slot cache:
+  --moe-cache-mib, an SLRU active-expert VRAM cache (src/llama-moe-cache.cpp).
 - Spark serving lane (2026-11-04): run-gemma4.sh now takes DS4_GEMMA4_MTP,
   DS4_GEMMA4_MTP_DRAFT (6), DS4_GEMMA4_MTP_MODE (on) and DS4_GEMMA4_HOST,
   and when MTP is set it also sets DS4_SERVER_CONTINUOUS=0. That last one
