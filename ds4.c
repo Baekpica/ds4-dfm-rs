@@ -74361,7 +74361,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #endif
         int model_map_ok = 0;
         bool budget_ok = true; /* --mem-budget-mb L1 gate */
-        if (opt->ssd_streaming) {
+        /* Host routed experts (DS4_GEMMA4_CPU_MOE=1) need the same host-cold
+         * map as the SSD arm, but no slot pool: the CPU reads the records
+         * from the mmap. Gemma-only; every other family is untouched. */
+        const bool gemma_host_experts =
+            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 && gemma4_cpu_moe_on();
+        if (opt->ssd_streaming || gemma_host_experts) {
             ds4_model_map_span_vec spans;
             const bool gemma = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4;
             if (gemma) {
@@ -74398,7 +74403,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             free(sizes);
             free(spans.v);
             if (model_map_ok) {
-                if (gemma) {
+                if (gemma && gemma_host_experts) {
+                    /* Host experts: the map is all this lane needs. The slot
+                     * pool would stream records the CPU already reads from
+                     * the mmap, and e->gemma4_stream stays NULL on purpose. */
+                } else if (gemma) {
                     /* The option is opt-in: this allocation exists only after
                      * --ssd-streaming and the family gate above. */
                     e->gemma4_stream = xcalloc(1, sizeof(*e->gemma4_stream));

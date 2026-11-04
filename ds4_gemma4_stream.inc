@@ -359,6 +359,24 @@ static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,
         t->bytes > s->staging_bytes || t->bytes < G4_STREAM_HEADER) {
         return false;
     }
+    /* Host-source slots (DS4_GEMMA4_MOE_HOST=1): the expert records are read
+     * from the model's own mapping instead of the shard fds. The mmap pages
+     * are the page cache, so a warm record is a RAM copy, not an O_DIRECT
+     * disk read; the VRAM slot cache and the GPU expert kernels are
+     * unchanged. */
+    static int host_source = -1;
+    if (host_source < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_HOST");
+        host_source = v && v[0] == '1' && !v[1];
+    }
+    if (host_source && s->model->map) {
+        const uint8_t *src = (const uint8_t *)s->model->map + t->abs_offset;
+        if (header) { memcpy(header, src, G4_STREAM_HEADER); }
+        const uint64_t upload_start = gemma4_stream_ns();
+        if (!ds4_gpu_tensor_write(dst, offset, src, t->bytes)) { return false; }
+        s->stats.upload_ns += gemma4_stream_ns() - upload_start;
+        return true;
+    }
     /* The slot was sized as stride >= t->bytes at allocation, and `offset` is
      * slot * stride, so the upload cannot leave the tensor. */
     uint32_t shard = s->shard_count;

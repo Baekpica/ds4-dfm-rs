@@ -110,6 +110,7 @@ DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 SSD="${DS4_GEMMA4_SSD:-0}"
+CPU_MOE="${DS4_GEMMA4_CPU_MOE:-0}"
 SSD_CACHE="${DS4_GEMMA4_SSD_CACHE:-4GB}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
@@ -249,7 +250,7 @@ serve_start() {
   fast_envs
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
       "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
-  [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && [ "$CPU_MOE" != "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   local -a extra=()
   # SSD streaming (ds4_gemma4_map.inc, the discrete arm): resident spans are
   # promoted to the device and the routed experts stream from the artifact

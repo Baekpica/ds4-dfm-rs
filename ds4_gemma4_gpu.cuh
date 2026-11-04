@@ -26,6 +26,7 @@
 #include "cuda/gemma4_moe_fused.cuh"
 #include "cuda/gemma4_moe_persist.cuh"
 #include "cuda/gemma4_q4_decode.cuh"
+#include "cuda/gemma4_cpu_moe.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
@@ -1058,6 +1059,21 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
         uint32_t rows) {
     if (!m || !out || !input || !weights || !matrices || !routes || !rows ||
         rows > m->chunk) { return 0; }
+    if (gemma4_cpu_moe_on()) {
+        /* Host experts: the records stay in the model mmap and never reach
+         * the device, so the GPU grouping and every expert launch are
+         * skipped (cuda/gemma4_cpu_moe.cuh). */
+        if (!m->gvq || !m->gvq->model || !g_model_host_base) {
+            fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
+            return 0;
+        }
+        if (!g4_cpu_moe_run_tensors(g_model_host_base, m->gvq->model, out, input,
+                                    weights, matrices, routes, rows)) {
+            fprintf(stderr, "ds4: Gemma-4 CPU MoE layer failed\n");
+            return 0;
+        }
+        return 1;
+    }
     const uint64_t pairs = (uint64_t)rows * G4_USED;
     if (routes != m->routes) {
         memcpy(m->routes, routes, (size_t)pairs * sizeof(int32_t));

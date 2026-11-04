@@ -128,8 +128,8 @@ static bool gemma4_gpu_bind(ds4_weights *w, const ds4_model *m) {
      * put back right after the bind. ds4_gpu_g4_stream_rebind re-validates
      * each of them from the pread staging before its first routed read, so
      * nothing is lost: the same rows/cols/book/res checks run there. */
-    const bool discrete_stream = w->gemma4_stream != NULL &&
-                                 ds4_gpu_g4_stream_discrete_plan() != 0;
+    const bool discrete_stream = ds4_gpu_g4_stream_discrete_plan() != 0 &&
+                                 (w->gemma4_stream != NULL || gemma4_cpu_moe_on());
     ds4_gvq_record *truth = NULL;
     uint32_t *cold = NULL;
     uint32_t cold_n = 0;
@@ -1006,8 +1006,27 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         experts[2u * G4_EXPERTS + e] = gemma4_index(m, l->down[e]);
     }
     if (!ds4_gpu_g4_rms(g->gvq, g->norm, g->cur, gemma4_index(m, l->norm[4]), rows, G4_EMBED, G4_RMS_EPS) ||
-        !gemma4_moe_run(g, m, w, il, experts, rows) ||
-        !ds4_gpu_g4_rms(g->gvq, g->exp_acc, g->exp_acc, gemma4_index(m, l->norm[6]), rows, G4_EMBED, G4_RMS_EPS)) {
+        !gemma4_moe_run(g, m, w, il, experts, rows)) {
+        fprintf(stderr, "ds4: Gemma-4 experts failed at layer %u\n", il);
+        return false;
+    }
+    gemma4_probe_at(g->exp_acc, il, "expert acc raw");
+    if (getenv("DS4_GEMMA4_GPU_MOE_DUMP") && il == 0) {
+        static int dumped;
+        if (!dumped) {
+            dumped = 1;
+            float *h = (float *)malloc((size_t)G4_EMBED * sizeof(float));
+            if (h && ds4_gpu_tensor_read(g->exp_acc, 0, h, (size_t)G4_EMBED * sizeof(float))) {
+                FILE *fp = fopen("/tmp/g4-gpu-out.bin", "wb");
+                if (fp) {
+                    fwrite(h, sizeof(float), G4_EMBED, fp);
+                    fclose(fp);
+                }
+            }
+            free(h);
+        }
+    }
+    if (!ds4_gpu_g4_rms(g->gvq, g->exp_acc, g->exp_acc, gemma4_index(m, l->norm[6]), rows, G4_EMBED, G4_RMS_EPS)) {
         fprintf(stderr, "ds4: Gemma-4 experts failed at layer %u\n", il);
         return false;
     }

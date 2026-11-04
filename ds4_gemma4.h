@@ -11,6 +11,15 @@
  * header is guarded and includes nothing back here, so this stays a leaf. */
 #include "ds4_glmvq.h"
 
+/* Host routed-expert path (DS4_GEMMA4_CPU_MOE=1): the expert records stay
+ * host-cold in the model mmap and their projections run on the CPU, so a
+ * discrete card does not need the SSD slot pool. Read by the engine (map
+ * install), the binder (cold records) and the MoE dispatch. */
+static inline int gemma4_cpu_moe_on(void) {
+    const char *v = getenv("DS4_GEMMA4_CPU_MOE");
+    return v && v[0] == '1' && !v[1];
+}
+
 #ifdef __cplusplus
 extern "C" {
 #endif
