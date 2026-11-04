@@ -1,7 +1,7 @@
 ---
 project: ds4-gemma4 (Gemma-4 26B A4B dense-VQ R13+8 port into ds4)
 plan_start_commit: 9dd5137e
-last_updated_commit: b6ca88c2
+last_updated_commit: 788cd338
 branch: feat/gemma4-family
 remote: https://github.com/JLFN/ds4-dfm-rs.git (public fork; upstream untouched)
 handoff_written_at_context_usage: 21%
@@ -43,20 +43,21 @@ The auto-compact threshold is the failsafe, not the trigger.
 
 2. Current state (2026-11-04 — COMPLETE, verified)
 
-- Newest unit b6ca88c2: fair CPU-expert ceiling (review 5.A). 15.31 ms/
-  token cold at 20t vs a 9.37 ms streaming floor (1.63x); scalar cold
-  117.3 ms; max |diff| 4.8e-7. agy's 8-wide lever regressed 4.8%, 2-row
-  blocking was noise; STOP stands, corrected (CPU experts 1.65x the
-  GPU's 9.29 ms, not 4-6x). docs/gemma4-cpu-moe-2026-11-04.md.
-- Prior unit 4ai (5bda5aac): split-K on tensor cores, gates 4.8e-6,
-  32 tokens identical at 256/1,024/13,447, span-128 A/B up to 1.095x.
-- Spark builds from git at 6affa69f (~/ds4-gemma4-git, all four
-  binaries, 0 errors, split-MMA kernel present); the live server still
-  runs the old rsync tree ~/ds4-gemma4. 192.168.1.91:8889 live; local
-  4070 127.0.0.1:8099 DOWN (no listener).
-- Bench rule: Spark only; 4070 is the serving/manual lane. Branch
-  feat/gemma4-family; origin 6affa69f; b6ca88c2 local, unpushed; owner
-  files untouched.
+- Newest unit 788cd338: host routed experts (CPU_MOE=1) and host-sourced
+  slots (MOE_HOST=1). At ctx 131072 on the 4070, decode tok/s cold/warm:
+  CPU 13.6; disk slots 25.8/37.8; host slots 21.8/34.8. One-token decode
+  is bit-identical to the GPU; longer contexts differ by 1-2 bf16 ULPs
+  (route flips, the GPU's own prefill band). Slot cache is the serving
+  shape. docs/gemma4-cpu-moe-runtime-2026-11-04.md.
+- Prior: b6ca88c2 fair CPU ceiling (15.31 ms cold vs 9.37 ms floor);
+  5bda5aac split-K tensor cores (gates 4.8e-6, 1.095x at 13,447).
+- 4070 endpoint UP: 127.0.0.1:8099 pid 3321718, ctx 131072, SSD slots
+  4 GB disk-sourced. Spark 192.168.1.91:8889 runs the old rsync tree;
+  ~/ds4-gemma4-git builds from git at 6affa69f.
+- Metal: no Gemma-4 support (0 VQ refs); the host path is x86 AVX2 plus
+  CUDA copies, so it is not portable as written.
+- Bench rule: Spark only; 4070 serving/manual. feat/gemma4-family;
+  origin 6affa69f; 788cd338 local, unpushed; owner files untouched.
 
 3. Next unit plan — span 64/32/16 at ctx 13,447 (2026-11-04)
 
