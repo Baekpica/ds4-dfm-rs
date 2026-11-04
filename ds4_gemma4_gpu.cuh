@@ -362,6 +362,64 @@ extern "C" int ds4_gpu_g4_head(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_
     return cuda_ok(cudaGetLastError(), "Gemma-4 vocabulary head");
 }
 
+/* The verify head: up to G4_HEAD_ROWS final-norm rows against the tied BF16
+ * table in one pass (cuda/gemma4_head.cuh). Row t writes
+ * logits[t * vocab + row], the layout of the drafter's verify tensor. Returns
+ * 0 for any shape the fused kernel cannot take, so the caller keeps the
+ * per-row shared linear. */
+extern "C" int ds4_gpu_g4_head_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits,
+        uint32_t index, const ds4_gpu_tensor *input, uint32_t rows, float cap) {
+    if (!ctx || !logits || !input || !rows || rows > (uint32_t)G4_HEAD_ROWS ||
+        index >= ctx->model->source.size()) {
+        return 0;
+    }
+    const glmvq_source &s = ctx->model->source[index];
+    if (ctx->model->records[index].type != GVQ_TYPE_BF16 || s.storage != GLMVQ_WEIGHT_BF16 ||
+        !s.data || s.cols != G4_EMBED || !s.rows) {
+        return 0;
+    }
+    if (input->bytes < (uint64_t)rows * s.cols * sizeof(float) ||
+        logits->bytes < (uint64_t)rows * s.rows * sizeof(float)) {
+        return 0;
+    }
+    static int sms = 0;
+    if (sms <= 0) {
+        int n = 0;
+        if (cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess || n <= 0) {
+            return 0;
+        }
+        sms = n;
+    }
+    /* The block stages every input row once; the grid cap follows the shared
+     * memory it needs, so the one-row shape keeps the four blocks per SM of
+     * the single-row head and the eight-row shape gets two. */
+    uint32_t per_sm = 98304u / (rows * (uint32_t)G4_EMBED * 2u);
+    if (per_sm > 4u) { per_sm = 4u; }
+    if (!per_sm) { per_sm = 1u; }
+    uint32_t blocks = (uint32_t)((s.rows + 7u) / 8u);
+    const uint32_t cap_blocks = (uint32_t)sms * per_sm;
+    if (blocks > cap_blocks) { blocks = cap_blocks; }
+#define G4_HEAD_ROWS_CASE(N) \
+    case N: \
+        g4_head_gemv_rows_kernel<G4_EMBED, N, true><<<blocks, 256, 0, ds4_current_stream()>>>( \
+            (const __nv_bfloat16 *)s.data, (const float *)input->ptr, (float *)logits->ptr, \
+            (uint32_t)s.rows, cap); \
+        break
+    switch (rows) {
+    G4_HEAD_ROWS_CASE(1);
+    G4_HEAD_ROWS_CASE(2);
+    G4_HEAD_ROWS_CASE(3);
+    G4_HEAD_ROWS_CASE(4);
+    G4_HEAD_ROWS_CASE(5);
+    G4_HEAD_ROWS_CASE(6);
+    G4_HEAD_ROWS_CASE(7);
+    G4_HEAD_ROWS_CASE(8);
+    default: return 0;
+    }
+#undef G4_HEAD_ROWS_CASE
+    return cuda_ok(cudaGetLastError(), "Gemma-4 verify head");
+}
+
 extern "C" int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar) {
     if (!x || !count || x->bytes < count * sizeof(float)) { return 0; }
     const uint32_t blocks = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);

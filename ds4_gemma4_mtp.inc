@@ -326,33 +326,45 @@ static bool gemma4_mtp_verify(ds4_gemma4_mtp_runtime *r, ds4_model *m, ds4_weigh
         fprintf(stderr, "ds4: Gemma-4 drafter verify forward failed\n");
         return false;
     }
-    for (uint32_t row = 0; row < n; row++) {
-        ds4_gpu_tensor *in = ds4_gpu_tensor_view(g->norm,
-            (uint64_t)row * G4_EMBED * sizeof(float), (uint64_t)G4_EMBED * sizeof(float));
-        ds4_gpu_tensor *out = ds4_gpu_tensor_view(r->verify,
-            (uint64_t)row * G4_VOCAB * sizeof(float), (uint64_t)G4_VOCAB * sizeof(float));
-        /* The target's own head: the trunk's tied table and the trunk's
-         * tanh-30 vocabulary cap, exactly as gemma4_forward's last row. The
-         * drafter's 1024-wide table is never the target's head. */
-        const bool ok = in && out &&
-            ds4_gpu_gvq_linear(g->gvq, out, gemma4_index(m, w->token_embd), in, 1u,
-                DS4_GVQ_BF16) &&
-            ds4_gpu_g4_softcap(out, G4_VOCAB);
-        ds4_gpu_tensor_free(in);
-        ds4_gpu_tensor_free(out);
-        if (!ok) {
-            fprintf(stderr, "ds4: Gemma-4 verify head failed at row %u\n", row);
-            return false;
+    /* One fused pass over the tied table for every verify row: the weight is
+     * read once, not once per row, and each row keeps the one-row head's
+     * exact FMA chain and reduction. The per-row shared linear stays the
+     * fallback for a record the fused head cannot take. */
+    if (!ds4_gpu_g4_head_rows(g->gvq, r->verify, gemma4_index(m, w->token_embd),
+            g->norm, n, G4_SOFTCAP)) {
+        for (uint32_t row = 0; row < n; row++) {
+            ds4_gpu_tensor *in = ds4_gpu_tensor_view(g->norm,
+                (uint64_t)row * G4_EMBED * sizeof(float), (uint64_t)G4_EMBED * sizeof(float));
+            ds4_gpu_tensor *out = ds4_gpu_tensor_view(r->verify,
+                (uint64_t)row * G4_VOCAB * sizeof(float), (uint64_t)G4_VOCAB * sizeof(float));
+            /* The target's own head: the trunk's tied table and the trunk's
+             * tanh-30 vocabulary cap, exactly as gemma4_forward's last row.
+             * The drafter's 1024-wide table is never the target's head. */
+            const bool ok = in && out &&
+                ds4_gpu_gvq_linear(g->gvq, out, gemma4_index(m, w->token_embd), in, 1u,
+                    DS4_GVQ_BF16) &&
+                ds4_gpu_g4_softcap(out, G4_VOCAB);
+            ds4_gpu_tensor_free(in);
+            ds4_gpu_tensor_free(out);
+            if (!ok) {
+                fprintf(stderr, "ds4: Gemma-4 verify head failed at row %u\n", row);
+                return false;
+            }
         }
     }
-    if (!ds4_gpu_tensor_read(r->verify, 0, r->host,
-            (uint64_t)n * G4_VOCAB * sizeof(float))) {
-        fprintf(stderr, "ds4: Gemma-4 verify logits readback failed\n");
+    /* The ids come back from the device (n int32); the logits are read only
+     * when the sampler needs them, and the commit reads the one row it
+     * keeps. */
+    if (!ds4_gpu_argmax_rows_tensor(r->next, r->verify, G4_VOCAB, n) ||
+        !ds4_gpu_tensor_read(r->next, 0, target, (uint64_t)n * sizeof(int32_t))) {
+        fprintf(stderr, "ds4: Gemma-4 verify argmax failed\n");
         return false;
     }
     for (uint32_t i = 0; i < n; i++) {
-        target[i] = sample_argmax(r->host + (uint64_t)i * G4_VOCAB, G4_VOCAB);
-        if (target[i] < 0) { return false; }
+        if (target[i] < 0 || (uint32_t)target[i] >= G4_VOCAB) {
+            fprintf(stderr, "ds4: Gemma-4 verify argmax out of range\n");
+            return false;
+        }
     }
     if (getenv("DS4_MTP_SPEC_LOG")) {
         fprintf(stderr, "ds4: Gemma-4 verify pos=%u draft=", pos);
@@ -422,6 +434,13 @@ int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
      * verify read back are the plain decode's own, so the draw at row i is the
      * draw plain sampling would make there. */
     if (spec_sampling(&s->spec)) {
+        /* The sampler draws from the verify rows themselves, so only a
+         * sampling request brings them to the host. */
+        if (!ds4_gpu_tensor_read(r->verify, 0, r->host,
+                (uint64_t)n * G4_VOCAB * sizeof(float))) {
+            gemma4_session_fail(s, err, errlen);
+            return -1;
+        }
         spec_sample_rows(&s->spec, r->host, G4_VOCAB, G4_VOCAB, tokens, n, target);
     }
     g->position = start + n;
@@ -453,8 +472,13 @@ int ds4_session_gemma4_commit(ds4_session *s, int keep, char *err, size_t errlen
     if (!gemma4_mtp_publish(g, (uint32_t)keep - 1u)) {
         return gemma4_session_fail(s, err, errlen);
     }
-    memcpy(s->logits, r->host + (size_t)(keep - 1) * G4_VOCAB,
-        (size_t)G4_VOCAB * sizeof(float));
+    /* Only the kept frontier row leaves the device; the rows past `keep` are
+     * never read. */
+    if (!ds4_gpu_tensor_read(r->verify,
+            (uint64_t)(keep - 1) * G4_VOCAB * sizeof(float), s->logits,
+            (uint64_t)G4_VOCAB * sizeof(float))) {
+        return gemma4_session_fail(s, err, errlen);
+    }
     for (int i = 0; i < keep; i++) { token_vec_push(&s->checkpoint, r->trial[i]); }
     if (keep > 1) { ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint64_t)keep - 1u); }
     r->trial_n = 0u;

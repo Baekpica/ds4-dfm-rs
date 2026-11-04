@@ -68,7 +68,12 @@ enum {
      * one token per forward at the fixed position; the checkpoint's
      * num_assistant_tokens is 6 (gemma-4-26B-A4B-it-assistant/config.json),
      * so the ceiling is six draft steps over the artifact's four layers. */
-    G4_MTP_DRAFTS = 6
+    G4_MTP_DRAFTS = 6,
+    /* Rows the fused verify head takes in one pass (cuda/gemma4_head.cuh).
+     * A draft round verifies at most G4_MTP_DRAFTS + 1 = 7 rows; 8 is the
+     * ceiling that keeps the bf16 staging at 8 * 2816 * 2 = 45,056 B, under
+     * the 48 KiB static shared-memory limit. */
+    G4_HEAD_ROWS = 8
 };
 
 /* Logit softcap (3.9), the checkpoint's final_logit_softcapping = 30

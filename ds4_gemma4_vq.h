@@ -114,6 +114,11 @@ int ds4_gpu_g4_softcap(ds4_gpu_tensor *logits, uint64_t count);
  * 0 when the record is not a BF16 table of the expected width. */
 int ds4_gpu_g4_head(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
     const ds4_gpu_tensor *input, float cap);
+/* The verify head: rows (1..G4_HEAD_ROWS) final-norm rows against the tied
+ * BF16 table in one pass, row t at logits[t * vocab + row], softcap fused;
+ * 0 when the record is not a BF16 table of the expected width. */
+int ds4_gpu_g4_head_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t index,
+    const ds4_gpu_tensor *input, uint32_t rows, float cap);
 int ds4_gpu_g4_layer_scale(ds4_gpu_tensor *x, uint64_t count, float scalar);
 int ds4_gpu_g4_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query, const ds4_gpu_tensor *key,
     const ds4_gpu_tensor *value, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,

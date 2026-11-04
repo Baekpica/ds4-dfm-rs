@@ -475,6 +475,16 @@ tests/test_gemma4_primitives: tests/test_gemma4_primitives.cu cuda/gemma4_primit
 test-gemma4-primitives: tests/test_gemma4_primitives
 	./tests/test_gemma4_primitives
 
+# The fused verify head against the one-row head, byte for byte. Production
+# flags on purpose: the claim is about the production arithmetic, so no
+# --fmad=false here.
+tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemma4_primitives.cuh ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-gemma4-head-rows
+test-gemma4-head-rows: tests/gemma4_head_rows
+	./tests/gemma4_head_rows
+
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
 

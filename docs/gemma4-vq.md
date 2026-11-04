@@ -107,6 +107,23 @@ in VRAM instead of read over PCIe. The frontier logits are bit-identical
 between the two. A pool sized to all 3,840 experts (7.01 GiB) does not fit
 the 4070's graph budget at ctx 1024; the 4 GiB pool is the operating point.
 
+## The verify head
+
+The drafter's verify block runs the target's own head over up to seven rows.
+The family's own kernel (`cuda/gemma4_head.cuh`,
+`g4_head_gemv_rows_kernel`) reads the 1.48 GB tied BF16 table once and
+accumulates every input row in the same eight-FMA sequence and XOR reduction
+as the one-row kernel, so each row is bit-identical to the per-row call it
+replaces; `tests/gemma4_head_rows` checks every output byte for 1 through 8
+rows (4,096 of 4,096 exact on both sm_89 and sm_121). The ids come from
+`ds4_gpu_argmax_rows_tensor` on the device (n int32), and the commit reads
+only the kept frontier row instead of the whole 7.34 MB block. Measured on
+the GB10, ctx 1024, draft 6, device-resident: 18.38 -> 20.21 gen tok/s
+(+10.0%); plain decode is unchanged (6.76 -> 6.76). The exact-path byte gate
+still fails, identically with and without this kernel (the exact switch does
+not cover every batched piece of the verify forward), so it is a known
+limitation, not a property of the head.
+
 The forward is the reference's order, layer by layer, with every rounding it
 makes: seven RMS norms per block, q/k norm and RoPE per head, the routed
 experts with float32 router weights and one bf16 rounding per expert, the
@@ -192,7 +209,12 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
 - The default prefill chunk is one row. Wider chunks repeat the same launches
   and are byte-identical, but they are not the measured path.
 - The drafter part is in the artifact and validated by the inventory; the
-  draft path (`--mtp-draft`) is P8 and is not declared yet.
+  draft path (`--mtp-draft`) is declared and gated by
+  `tests/gemma4_mtp_gate` (greedy off/on, prefix reuse, snapshot restore, a
+  stop inside an accepted block, and sample-and-match at temp 0.8). Its
+  exact-path byte gate fails identically with and without the fused verify
+  head, because the exact switch does not cover every batched piece of the
+  verify forward.
 - The live tool-tail continuation refuses this family rather than
   mis-rendering; it is P9.
 - `ds4-server` needs `--mem-floor-gb 2` on a 12 GiB card: 6.71 GiB of weights
