@@ -78,6 +78,11 @@ Commits on feat/gemma4-family (newest first):
   5dc1f63f  the drafter's fast attention with keys=start; all eight fast
             options in the launcher (bit-identical gate)
 
+Push: origin feat/gemma4-family is pushed to JLFN/ds4-dfm-rs on 2026-11-04
+after the OSV scan (1 manifest, 146 packages, 0 vulnerable); upstream is
+untouched. The Spark worktree carries the same files by rsync and its git
+HEAD is still 341481b2.
+
 Server: Spark 192.168.1.91:8889, pid 132308 at this handoff, the committed
 build: bf16 KV, ctx 262144, prefill chunk 2048, the eight fast options,
 the MMA prefill, the split-K decode, the persistent MoE decode, no MTP.
