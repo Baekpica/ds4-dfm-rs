@@ -234,6 +234,36 @@ bf16 KV, ctx 262144), old prefill/decode in parentheses:
 | 13,557 | 837.4 (287.6) | 17.98 (4.55) | 16.19 s (47.17) |
 | 20,186 | 831.7 (232.7) | 17.20 (3.31) | 24.27 s (86.57) |
 
+## The request path
+
+A 2K-64K sweep on the Spark showed a TTFT that grew with the context but
+not with the prefill: at 59,392 tokens the server prefilled 2,130 new
+tokens at 852 tok/s and reported 35.0 s to the first token. The engine's
+own prefill timing accounted for 2.5 s of it. A repeat request with the
+prefix fully cached (one token prefilled) still cost 34.5 s, which put the
+cost outside the engine: the host tokenizer merged one rank per full scan
+of the symbol list, so a prompt's cost grew with the square of its length.
+
+`crates/ds4-core/src/tok/gemma4.rs` now finds the lowest pair with a
+min-heap keyed on `(rank, left, right, stamp_left, stamp_right)`. The
+merge order is unchanged (one rank group per round, leftmost first, and a
+pair a round creates waits for the next round), and the gate is a
+byte-identical token stream against the old scan on a 60 KB slice of
+`speed-bench/promessi_sposi.txt` (17,141 symbols) plus the tokenizer parity
+test against the C oracles.
+
+Measured on the GB10, one server, one route, the same 215 KB prompt:
+
+| request | before | after |
+|---|---:|---:|
+| 61,872 tokens, cold | 98.20 s TTFT (62.9 s prefill) | 62.92 s TTFT (62.8 s prefill) |
+| 61,871 tokens, fully cached | 34.46 s TTFT | 0.12 s TTFT |
+| 60 KB tokenize, 4070 host | 7.43 s | 0.27 s |
+
+After the change a request's TTFT is its prefill: 62,921 ms against 62,841
+ms of prefill at 984.6 tok/s, and 120 ms for a request that only has to
+restore a 61,871-token checkpoint.
+
 ## Split-K decode attention
 
 `cuda/gemma4_attn_split.cuh` is the long-context decode fix. The fast decode

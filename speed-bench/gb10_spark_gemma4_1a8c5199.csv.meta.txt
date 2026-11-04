@@ -1,0 +1,18 @@
+gemma4 speed sweep (speed-bench standard)
+started 2026-11-05T00:49:51+01:00
+mode boot
+server ./ds4-server sha256 1a8c519934584a6c252456811b8400e61bb0a5c78d8e280cdb51b9c91cab14ee
+ctx 2048 4096 6144 8192 10240 12288 14336 16384 18432 20480 22528 24576 26624 28672 30720 32768 34816 36864 38912 40960 43008 45056 47104 49152 51200 53248 55296 57344 59392 61440 63488 65536 ; gen 128; prefill chunk 2048; port extra args: <none>
+corpus /home/leandro/ds4-gemma4/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+model /home/leandro/models/gguf-family-it-r8
+part gemma4-vq8-embedding.gguf bytes 1476395648 sha256 2043b3362749e781ca47b567d24af70f5282db1c2b93904867f54980b1789636
+part gemma4-vq8-mtp.gguf bytes 621995136 sha256 f85b05b4b16204aff464c35ffce7b18d054748f7eecaffa5463e9cd3d1d3bb57
+part gemma4-vq8-trunk.gguf bytes 8588461824 sha256 0b25b7cb284be1fb59c1bed759e775b589bcae178a9faf18903657a7244d936e
+csv /home/leandro/ds4-gemma4/speed-bench/gb10_spark_gemma4_1a8c5199.csv (31 rows)
+clock median over all samples 2437 MHz
+boot_s 46.1
+reuse: route default (on unless the boot line passed --no-kv-reuse);
+       prefill_cached_tokens per row shows what the checkpoint restored
+       (0 = full prefill -- single-turn renders do not extend the
+       previous prompt, so this sweep reads full-context prefill_tokens)
+finished 2026-11-05T00:54:00+01:00
