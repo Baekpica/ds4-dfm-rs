@@ -2,27 +2,28 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 7e67cf1b (feat(gemma4): raise the MTP draft ceiling
-  to six), plus this handoff update. 4u records the Phase 7 P8 work in
-  flight; a7922215 is the first 4u handoff and this update adds the
-  next-unit plan. The twelve commits on top of d6ad9774 are
+last_updated_commit: 1bd4afe5 (docs(handoff): the P8 trial-gate next unit
+  and the reproduce paths), plus the uncommitted 4v work. 4v records the
+  P8 trial gate, the offload matrix, the discrete SSD path and the Phase 8
+  verify-head review. The twelve commits on top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
   plan), 9e23197f (the direct VQ prefill round, pushed to the fork),
   2faef6c3 (the attention and dense-down round), 14f27345 (the token-tiled
   dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
-  b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling).
+  b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
+  followed by a7922215, 1bd4afe5 and the P8/SSD commits.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 7e67cf1b (make cuda-spark,
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 1bd4afe5 (make cuda-spark,
   469-482 s, 0 errors) and ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T00:50:00+01:00
+handoff_written_at: 2026-11-04T07:30:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1675,6 +1676,62 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   (draft matrix). The four logits JSONs are /tmp/g4-l-*.json on this host;
   the Spark has the scripts under /tmp and the artifact at
   ~/models/gguf-family-it-r8.
+
+4v. P8 trial gate, the offload matrix and the discrete SSD path (2026-11-04)
+
+- P8 trial gate: built in crates/ds4-core/src/serving_check.rs
+  (gemma4_mtp_gate, MtpReport/MtpBlock) and the thin example
+  crates/ds4-cli/examples/gemma4_mtp_gate.rs; the Makefile target is
+  tests/gemma4_mtp_gate. It runs greedy off/on, the state after the first
+  multi-token block against a one-row replay, prefix reuse on the prefill
+  grid, snapshot restore, a stop inside an accepted block, and
+  sample-and-match at temp 0.8. ds4_gemma4_mtp.inc now calls
+  spec_sample_rows when the host sampler is armed (the temp>0 fix).
+  Measured on the 4070, long prompt, ctx 1280: PASS, 24 tokens, 4.80
+  tokens/call, accepted [1,2,7,7,7], prefix/snapshot/stop/sampling equal.
+  The default batched verify state is not bit-identical to one-row decode:
+  block max_abs 1.297, relL2 2.467e-2, payload_equal false; the stop round
+  max_abs 1.188, relL2 6.47e-2. The exact-path byte check remains to run
+  on the Spark (DS4_GEMMA4_EXACT_PREFILL=1).
+- Offload matrix (Spark GB10, ctx 1024/8192, draft 6): resident 424.08 /
+  18.53 at 1024 and 289.90 / 8.53 at 8192; SSD streaming 182.65 / 17.88
+  and 247.55 / 8.38. SSD costs 57% and 14.6% of prefill and 3.5% / 1.8%
+  of decode; it is a capacity lever, not a speed one. FP8 full-layer KV
+  cannot pair with --mtp at all ("the drafter reads the full layer's bf16
+  KV", ds4.c:74110-74117).
+- 4070 envelope: the resident path is host-pinned zero-copy (9.37 GiB
+  registered, device 0.00); a full DS4_CUDA_COPY_MODEL=1 copy succeeds
+  (9.95 GiB) but the session graph fails at ctx 1057 and at ctx 545 with
+  chunk 64, so the 3.81-4.34 tok/s baseline is PCIe, not device compute.
+- Discrete SSD streaming: ds4_gemma4_map.inc (new, Gemma-owned; the shared
+  ds4_glm53_map.inc is untouched) promotes the 2.35 GiB resident spans
+  through the unit materializer, publishes one 128-byte device range per
+  cold expert record for the bind-time header gather, and restores the
+  truthful record before the first routed read. Measured on the 4070, ctx
+  1024, 4 GiB pool, draft 6: resident 74.75 prefill / 4.34 gen / 1.543 s
+  first token; streamed 51.47 / 13.11 / 0.527; with
+  DS4_WEIGHT_RESIDENCY_MTP=eager 51.54 / 13.28 / 0.515. The frontier
+  logits and greedy ids are bit-identical between the two modes. Cache over
+  the run: 250,746 hits, 2,694 misses, 4.92 GiB read, 0.60 GiB reread,
+  17.5 s I/O. A 3,840-slot pool (7.01 GiB) fails the graph budget at ctx
+  1024 even with the drafter host-pinned; 4 GiB is the operating point.
+- The llama.cpp-style CPU-expert path is not available: there is no CPU
+  GVQ decoder (every expert GEMV is CUDA), and the Rust vq3 oracle is a
+  different container and not wired. The active-expert VRAM cache is the
+  applicable mechanism, and it is now measured on the 4070.
+- Phase 8 / verify-head review: phase8_att_agy.md (agy, 19,131 bytes).
+  Advice: the multi-row verify head + device argmax before Phase 8
+  (roofline estimate +12.5-15% on GB10 draft-6); Phase 8 MIN_ROWS=16 gives
+  0% to the 7-row verify; the six Phase 3 kernels are default-off; ds41's
+  verify head uses argmax_rows; gvq_linear rows>4 takes the cuBLAS GEMM.
+  Verified points and corrections are in the session; the estimate is not
+  measured.
+- Working tree at handoff: the SSD unit (ds4_gemma4_map.inc, ds4.c,
+  ds4_cuda.cu, ds4_gemma4.h, ds4_gemma4_graph.inc, ds4_gemma4_stream.inc,
+  ds4_gpu.h, Makefile, docs/gemma4-vq.md), the P8 gate (serving_check.rs,
+  lib.rs, the example, ds4_gemma4_mtp.inc, Makefile), the reworked
+  tests/gemma4_serving_http_gate.sh, phase8_att_agy.md and
+  offload_review.md. Nothing is committed or pushed.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
