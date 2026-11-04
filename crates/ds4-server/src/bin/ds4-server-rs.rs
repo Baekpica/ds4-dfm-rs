@@ -488,8 +488,32 @@ fn main() {
             .unwrap_or_else(|| cli_error("SSD streaming model is not identified"));
         let inventory = ds4_core::TensorInventory::open(Path::new(model_path.as_deref().unwrap()))
             .unwrap_or_else(|error| cli_error(&format!("SSD inventory: {error}")));
-        ds4_core::probe_ssd_quote(&mut facts, &serve_req, identified.shape, &inventory)
-            .unwrap_or_else(|error| cli_error(&error.message));
+        if identified.shape.family == ds4_core::ModelFamily::Gemma4Vq {
+            // The Gemma-4 stream map keeps every tensor except the routed
+            // expert matrices and their residual planes
+            // (ds4_gemma4_stream.inc:281-315). Expert tensor names carry a
+            // numeric index right after ".experts."; books and dense tensors
+            // do not. The native open validates the cache itself, so the GLM
+            // shard quote is not applied; this is the resident charge the
+            // host quote needs.
+            let streamed = |name: &str| {
+                let mut parts = name.split(".experts.");
+                parts.next();
+                parts
+                    .next()
+                    .and_then(|rest| rest.split('.').next())
+                    .is_some_and(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+            };
+            let bytes = inventory
+                .tensors
+                .iter()
+                .filter(|tensor| !streamed(&tensor.name))
+                .fold(0u64, |total, tensor| total.saturating_add(tensor.bytes));
+            facts.ssd_mandatory_bytes = Some(bytes);
+        } else {
+            ds4_core::probe_ssd_quote(&mut facts, &serve_req, identified.shape, &inventory)
+                .unwrap_or_else(|error| cli_error(&error.message));
+        }
     }
     let dist_probe = distributed_config(&dist.opt);
     if let Some(path) = vision_path.as_deref() {

@@ -1287,7 +1287,9 @@ pub fn resolve_plan(
         caps
     };
 
-    let ssd_supported = caps.family == ModelFamily::Glm53
+    // Gemma-4's discrete stream is opt-in and its cache is native-owned
+    // (ssd.rs resolve_budget returns early); GLM-5.3 keeps the full quote.
+    let ssd_supported = matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq)
         && req.backend == Backend::Cuda
         && req.distribution == Distribution::Single;
     let unqualified_artifact =
@@ -1313,7 +1315,7 @@ pub fn resolve_plan(
         if !ssd_supported {
             issues.push(error(
                 "ssd_unsupported",
-                "SSD streaming requires one full GLM-5.3 CUDA model",
+                "SSD streaming requires one CUDA model of a supported family (GLM-5.3 or Gemma-4)",
             ));
         }
         if facts.ssd_cache_experts.is_none() {

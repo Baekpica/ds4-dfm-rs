@@ -41,6 +41,13 @@
 #   DS4_GEMMA4_MTP_DRAFT  drafts per round when MTP is on (default 6)
 #   DS4_GEMMA4_MTP_MODE   off|auto|on (default on; auto leaves Gemma off)
 #   DS4_GEMMA4_RESIDENT   1 (default, weights on the GPU) or 0 (host-mapped)
+#   DS4_GEMMA4_SSD        1 runs the discrete SSD stream (--ssd-streaming,
+#                         ds4_gemma4_map.inc); 0 (default) keeps the
+#                         resident/host-mapped path. With 1 the weights stay
+#                         host-mapped (RESIDENT is ignored) and the routed
+#                         experts stream from the artifact.
+#   DS4_GEMMA4_SSD_CACHE  expert cache for the stream (default 4GB, the 4v
+#                         measured 4070 point; auto or a count also work)
 #   DS4_GEMMA4_PREFILL    prefill rows per forward (default 512, the native
 #                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
 #   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the eight measured fast options
@@ -79,6 +86,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN="${DS4_GEMMA4_SERVER_BIN:-$ROOT/ds4-server}"
 if [ -n "${DS4_GEMMA4_MODEL:-}" ]; then
   MODEL="$DS4_GEMMA4_MODEL"
+elif [ -d "$HOME/models/gguf-family-it-r8" ]; then
+  # The streamed experts live here: the fast disk is the SSD lane's point.
+  MODEL="$HOME/models/gguf-family-it-r8"
 elif [ -d /data/vq-artifacts/gguf-family-it-r8 ]; then
   MODEL=/data/vq-artifacts/gguf-family-it-r8
 else
@@ -93,6 +103,8 @@ MTP="${DS4_GEMMA4_MTP:-}"
 DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
+SSD="${DS4_GEMMA4_SSD:-0}"
+SSD_CACHE="${DS4_GEMMA4_SSD_CACHE:-4GB}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
 SPLIT="${DS4_GEMMA4_SPLIT:-1}"
@@ -161,11 +173,14 @@ plan_json() {
   fast_envs
   local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
       "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
+  if [ "$SSD" = "1" ]; then
+    extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
+  fi
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
   # picks the partial/bank lane here, so the drafter pins exact reuse and
   # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
   if [ -n "$MTP" ]; then
-    extra=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
+    extra+=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
   env "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
@@ -212,7 +227,9 @@ serve_start() {
     die "port $PORT already answers /v1/models; stop that server or set DS4_GEMMA4_PORT"
   fi
   echo "model:   $MODEL"
-  if [ "$RESIDENT" = "1" ]; then
+  if [ "$SSD" = "1" ]; then
+    echo "backend: cuda (weights streamed from SSD, cache $SSD_CACHE), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
+  elif [ "$RESIDENT" = "1" ]; then
     echo "backend: cuda (weights on the GPU), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
   else
     echo "backend: cuda (host-mapped weights), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
@@ -223,13 +240,20 @@ serve_start() {
   fast_envs
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
       "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
-  [ "$RESIDENT" = "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   local -a extra=()
+  # SSD streaming (ds4_gemma4_map.inc, the discrete arm): resident spans are
+  # promoted to the device and the routed experts stream from the artifact
+  # with the given cache. The weights stay host-mapped, so RESIDENT=1 would
+  # copy the whole model and defeat the lane; it is ignored here.
+  if [ "$SSD" = "1" ]; then
+    extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
+  fi
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
   # picks the partial/bank lane here, so the drafter pins exact reuse and
   # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
   if [ -n "$MTP" ]; then
-    extra=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
+    extra+=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
   setsid env "${envs[@]}" \
