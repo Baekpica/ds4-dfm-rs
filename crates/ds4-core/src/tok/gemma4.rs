@@ -100,40 +100,159 @@ fn symbols(vocab: &Vocab, text: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
+/// A heap entry: merge rank, left index, right index, and the stamp of each
+/// end at the time the pair was ranked.
+type PairEntry = (i32, u32, u32, u32, u32);
+
+/// Whether the pair `(i, next[i])` still names two adjacent live symbols
+/// with the bytes the heap entry was ranked on.
+#[allow(clippy::too_many_arguments)]
+fn pair_holds(
+    live: &[bool],
+    next: &[u32],
+    stamp: &[u32],
+    n: u32,
+    i: u32,
+    j: u32,
+    si: u32,
+    sj: u32,
+) -> bool {
+    live[i as usize]
+        && j < n
+        && live[j as usize]
+        && next[i as usize] == j
+        && stamp[i as usize] == si
+        && stamp[j as usize] == sj
+}
+
 /// BPE over the symbol list: the lowest merge rank first, leftmost when
 /// ranks tie, repeated until no adjacent pair has a rule.
+///
+/// The mechanism is the reference's (SentencePiece BPE: merge the adjacent
+/// pair with the lowest rank, leftmost when ranks tie, until no pair has a
+/// rule). What changed is how the lowest pair is found. The scan-and-merge
+/// pass this replaces rescanned every adjacent pair once per rank it merged,
+/// which is quadratic in the symbol count; the host tokenizer paid 34.5 s of
+/// a 35.0 s request TTFT at 61 871 cached tokens on the GB10 (2026-11-05),
+/// and 7.43 s for a 60 KB prompt. `bpe_rank` is a merge-table lookup, so the
+/// pass count was the whole cost.
+///
+/// The order is unchanged, and the differential gate is byte-identical token
+/// streams against the scan on the recorded corpus:
+///
+/// - a min-heap holds `(rank, left, right, stamp_left, stamp_right)` for
+///   every adjacent pair;
+/// - one round merges exactly one rank group, in position order, so a pair
+///   the round creates is not merged until the round ends, which is what one
+///   scan does;
+/// - an entry is stale unless both ends are live, `next[left]` is still the
+///   `right` it was built from, and both stamps still match. The stamps are
+///   what the adjacency test cannot see: a symbol keeps its index when it
+///   absorbs its right neighbour, so the pair on either side of it is a
+///   different pair under the same two indices.
 fn merge(vocab: &Vocab, sym: &mut Vec<Vec<u8>>) {
-    loop {
-        let mut best = i32::MAX;
-        for i in 0..sym.len().saturating_sub(1) {
-            let rank = super::bpe_rank(vocab, &sym[i], &sym[i + 1]);
-            if rank >= 0 && rank < best {
-                best = rank;
-            }
-        }
-        if best == i32::MAX {
-            return;
-        }
-        let mut write = 0usize;
-        let mut read = 0usize;
-        while read < sym.len() {
-            if read + 1 < sym.len() && super::bpe_rank(vocab, &sym[read], &sym[read + 1]) == best {
-                let mut merged = Vec::with_capacity(sym[read].len() + sym[read + 1].len());
-                merged.extend_from_slice(&sym[read]);
-                merged.extend_from_slice(&sym[read + 1]);
-                sym[write] = merged;
-                write += 1;
-                read += 2;
-            } else {
-                if write != read {
-                    sym[write] = std::mem::take(&mut sym[read]);
-                }
-                write += 1;
-                read += 1;
-            }
-        }
-        sym.truncate(write);
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n = sym.len();
+    if n < 2 {
+        return;
     }
+    let n32 = n as u32;
+    let mut next: Vec<u32> = (1..=n32).collect();
+    let mut prev: Vec<u32> = (0..n32).map(|i| i.wrapping_sub(1)).collect();
+    let mut live = vec![true; n];
+    // A symbol's bytes change when it absorbs its right neighbour, and a pair
+    // keeps the same two indices through that, so adjacency alone cannot tell
+    // an entry from the pair it was ranked on: the stamps do.
+    let mut stamp = vec![0u32; n];
+    let mut heap: BinaryHeap<Reverse<PairEntry>> = BinaryHeap::with_capacity(n);
+    for i in 0..n - 1 {
+        let rank = super::bpe_rank(vocab, &sym[i], &sym[i + 1]);
+        if rank >= 0 {
+            heap.push(Reverse((
+                rank,
+                i as u32,
+                i as u32 + 1,
+                stamp[i],
+                stamp[i + 1],
+            )));
+        }
+    }
+
+    let mut group: Vec<u32> = Vec::new();
+    let mut fresh: Vec<PairEntry> = Vec::new();
+    loop {
+        group.clear();
+        let mut rank = -1i32;
+        while let Some(Reverse((r, i, j, si, sj))) = heap.pop() {
+            if !pair_holds(&live, &next, &stamp, n32, i, j, si, sj) {
+                continue;
+            }
+            rank = r;
+            group.push(i);
+            break;
+        }
+        if rank < 0 {
+            break;
+        }
+        while let Some(&Reverse((r, i, j, si, sj))) = heap.peek() {
+            if r != rank {
+                break;
+            }
+            heap.pop();
+            if pair_holds(&live, &next, &stamp, n32, i, j, si, sj) {
+                group.push(i);
+            }
+        }
+        fresh.clear();
+        for &i in &group {
+            let a = i as usize;
+            let b = next[a] as usize;
+            if b >= n || !live[a] || !live[b] {
+                continue;
+            }
+            let mut merged = Vec::with_capacity(sym[a].len() + sym[b].len());
+            merged.extend_from_slice(&sym[a]);
+            merged.extend_from_slice(&sym[b]);
+            sym[a] = merged;
+            stamp[a] = stamp[a].wrapping_add(1);
+            live[b] = false;
+            let after = next[b];
+            next[a] = after;
+            if (after as usize) < n {
+                prev[after as usize] = i;
+            }
+            let before = prev[a];
+            if (before as usize) < n {
+                let r = super::bpe_rank(vocab, &sym[before as usize], &sym[a]);
+                if r >= 0 {
+                    fresh.push((r, before, i, stamp[before as usize], stamp[a]));
+                }
+            }
+            if (after as usize) < n {
+                let r = super::bpe_rank(vocab, &sym[a], &sym[after as usize]);
+                if r >= 0 {
+                    fresh.push((r, i, after, stamp[a], stamp[after as usize]));
+                }
+            }
+        }
+        for entry in fresh.drain(..) {
+            heap.push(Reverse(entry));
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    let mut i = 0usize;
+    loop {
+        out.push(std::mem::take(&mut sym[i]));
+        let j = next[i] as usize;
+        if j >= n {
+            break;
+        }
+        i = j;
+    }
+    *sym = out;
 }
 
 pub(super) fn encode(v: &Vocab, text: &[u8], out: &mut Vec<i32>) {
