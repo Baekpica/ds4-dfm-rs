@@ -3179,7 +3179,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && env.default_effort != ThinkMode::None;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3396,7 +3396,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && env.default_effort != ThinkMode::None;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3555,7 +3555,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && env.default_effort != ThinkMode::None;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3752,7 +3752,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && env.default_effort != ThinkMode::None;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -4012,5 +4012,34 @@ mod eos_policy_tests {
             EosPolicy::Global.excluded(EOS, acc.thinking_inside()),
             Some(EOS)
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma_default_tests {
+    use super::{parse_chat_request, ParseEnv};
+    use crate::route::ThinkMode;
+
+    // Gemma-4's template opens the thought channel only for an explicit
+    // thinking request. A request that names no level gets none; an explicit
+    // level is still honored.
+    #[test]
+    fn gemma4_default_none_disables_thinking() {
+        let env = ParseEnv {
+            default_effort: ThinkMode::None,
+            ..ParseEnv::default()
+        };
+        let parsed = parse_chat_request(
+            &env,
+            r#"{"messages":[{"role":"user","content":"1+2"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.think_mode, ThinkMode::None);
+        let parsed = parse_chat_request(
+            &env,
+            r#"{"messages":[{"role":"user","content":"1+2"}],"reasoning_effort":"low"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.think_mode, ThinkMode::Low);
     }
 }

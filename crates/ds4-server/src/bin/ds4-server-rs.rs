@@ -712,6 +712,13 @@ fn main() {
                         ds4_server::syntax_for_model_id(m.model_id()),
                         ds4_server::ModelSyntax::Glm53 | ds4_server::ModelSyntax::BeamVq
                     );
+                    // Gemma-4's canonical template opens the thought channel
+                    // only for an explicit thinking request; an absent level
+                    // means no thinking, not the port's low.
+                    cfg.no_think_default = matches!(
+                        ds4_server::syntax_for_model_id(m.model_id()),
+                        ds4_server::ModelSyntax::Gemma4
+                    );
                     cfg.have_engine = true;
                     Some(m)
                 }

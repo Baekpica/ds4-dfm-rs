@@ -1924,9 +1924,41 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   the router. The launcher defaults 2,048 on aarch64 and 512 on x86_64.
 - Follow-up: the Spark binary is now built from the fixed sources but its
   git HEAD is still 341481b2; the source changes (serving_host.rs 512,
-  the MoE workspace) are uncommitted on that worktree. The 4070 quote was
-  not re-measured: its own Gemma server (pid 3118283) held 10.4 GiB of
-  the card during this check.
+  the MoE workspace, the no-think default) are uncommitted on that
+  worktree. The 4070 quote was not re-measured: its own Gemma server
+  (pid 3118283) held 10.4 GiB of the card during this check.
+
+4z. The thought channel was a server default, not the Gemma standard
+(2026-11-04)
+
+- The server defaulted every non-DeepSeek family to thinking on with the
+  port's low effort (`parse.rs`: `thinking_enabled = !env.engine_defaults`,
+  `default_effort = Low`). Gemma-4's canonical template opens
+  `<|channel>thought` only for an explicit thinking request, so an omitted
+  `reasoning_effort` should mean no thought channel. At open-grok's high
+  effort a "1+2" turn spent minutes in the thought block before any
+  visible content.
+- Fix: `ServerConfig.no_think_default` (serve.rs), set by the bin for
+  `ModelSyntax::Gemma4`; `default_effort` returns `None` for it; the four
+  parse surfaces now compute
+  `thinking_enabled = !engine_defaults && default_effort != None`. An
+  explicit `reasoning_effort` still sets thinking and its level, which is
+  the OpenAI parameter contract: omitted means the provider's default,
+  named means honored. Siblings keep their own defaults.
+- Verified on the Spark (ds4-server 11:49:53): a request with no
+  `reasoning_effort` returned `{"content":"3","reasoning":null,
+  "finish":"stop"}` in 0.66 s at a 16-token prompt. The open-grok entry
+  no longer carries `supports_reasoning_effort`/`reasoning_effort`, so its
+  requests omit the parameter; the config backup is
+  config.toml.bak-gemma4-reason-20261104-113843.
+- The remaining open-grok latency is not the thought channel: its system
+  prompt is 9.66K, the chunk-2048 prefill takes about 65 s, and the
+  long-context decode is slow. That is the prefill/decode performance
+  work, not the reasoning default.
+- The docs bullet claiming the live tool tail refuses this family was
+  stale: be901c46 (2026-11-03) renders the canonical Gemma tool
+  responses inside the model turn; only a non-tool suffix is refused.
+  docs/gemma4-vq.md is corrected.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

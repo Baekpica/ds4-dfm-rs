@@ -221,8 +221,15 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   exact-path byte gate fails identically with and without the fused verify
   head, because the exact switch does not cover every batched piece of the
   verify forward.
-- The live tool-tail continuation refuses this family rather than
-  mis-rendering; it is P9.
+- The live tool-tail renders the canonical Gemma tool responses inside the
+  model turn that emitted the calls (render.rs, commit be901c46); a suffix
+  that is not a tool result is refused rather than mis-rendered.
+- An omitted `reasoning_effort` gets no thought channel: the Gemma-4
+  template opens `<|channel>thought` only for an explicit thinking request
+  (chat_template.jinja), so the server's Gemma default is `none`
+  (`ServerConfig::no_think_default`, set from `ModelSyntax::Gemma4`). An
+  explicit `none`/`low`/`medium`/`high` is still honored. The sibling VQ
+  families keep their own defaults.
 - `ds4-server` passes its HTTP gate on the GB10 (P9, 2026-11-04: boot,
   /v1/models, non-stream, determinism, SSE stream, the max_tokens refusal).
   On the 12 GiB 4070 the serving quote used to price the whole release
