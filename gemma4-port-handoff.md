@@ -2,12 +2,16 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
-  this handoff update. 4aa records the long-context attribution: the MTP
-  drafter's oracle attention was the O(ctx) cost, the guard now lets the
-  fast kernel take keys=start (bit-identical), the launcher sets all eight
-  measured fast options, and the 13.4K prefill profile puts 72 percent of
-  GPU time in the attention tile kernel. 4y records the Spark serving
+last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
+  attention by default), plus this handoff update. 4aa records the
+  long-context attribution (the drafter's oracle attention was the O(ctx)
+  cost; the guard now lets the fast kernel take keys=start; the launcher
+  sets all eight measured fast options; the 13.4K prefill profile put 72
+  percent of GPU time in the attention tile kernel). 4ab records the
+  tensor-core prefill (3.43x at 13.4K, pinned gate exact, parity caveat).
+  4ac records the split-K decode (3.94x at 13.4K, 6.6e-7 synthetic). The
+  server now runs both by default with no MTP; section 0 carries the
+  end-to-end table and the next units. 4y records the Spark serving
   stall: the serving default prefill chunk was 1, so an 8.5K open-grok
   prompt was 8,500 serial forwards and produced no chunk inside the
   client's 600 s idle timeout. The default is now 512 (the native bind's
@@ -16,8 +20,9 @@ last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
   trial gate, the offload matrix and the discrete SSD path; 4w records the
   fused verify head, the PLE verdict and the owner's reordering; 4x
   records the 4070 serving lane and the CPU-expert verdict. The phase plan
-  now carries Phase 12 (--moe-cache-mib, the SLRU expert cache, next) and
-  Phase 13 (--n-cpu-moe, gated by the AVX2 microbenchmark). The commits on
+  now carries Phase 12 (--moe-cache-mib, the SLRU expert cache) and
+  Phase 13 (--n-cpu-moe, gated by the AVX2 microbenchmark); agy's
+  2026-11-04 review cuts 13, 12.2 and Phase 4 (section 0). The commits on
   top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
@@ -28,26 +33,95 @@ last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
   cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61,
-  993ddd08, 78e96e02, 882bf8f8, 85af4cb6, 5905f7e7 and baca41b1.
+  993ddd08, 78e96e02, 882bf8f8, 85af4cb6, 5905f7e7, baca41b1, 5dc1f63f,
+  f7deefb8, 7ae1a0f6, 5d8d2a20 and 41c54efc.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
-  verify-head files rsynced and built (make cuda-spark, 475 s, 0 errors;
-  the head test and the long gate pass there); the serving quote fix and
-  the CPU test are not on it. It serves the MTP lane on 0.0.0.0:8889
-  (ctx 262144, bf16 KV, run-gemma4.sh) with the fixed launcher: prefill
-  chunk 2,048 and the eight fast options; a diverse 13,515-token prompt
-  prefills in 47.8 s (9.66K open-grok prompt ~35 s). The MoE workspace fix
-  and the drafter fast-attention fix are built there (ds4, ds4-bench and
-  ds4-server 12:43:34-36); the script defaults 2,048 on aarch64 and 512 on
-  x86_64. Model at ~/models/gguf-family-it-r8.
+  long-context sources rsynced and built (ds4, ds4-bench, ds4-server
+  14:24; the MMA build at 13:44 and the probe build at 13:59). It serves
+  0.0.0.0:8889 (pid 116965, ctx 262144, bf16 KV, prefill chunk 2,048, the
+  eight fast options, the MMA prefill and the split-K decode by default,
+  no MTP). End-to-end 13,557 tokens: 837.4 prefill / 17.98 decode,
+  TTFT 16.19 s; 20,186: 831.7 / 17.20, 24.27 s. The script defaults
+  2,048 on aarch64 and 512 on x86_64. Model at
+  ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T13:02:18+01:00
+handoff_written_at: 2026-11-04T16:17:08+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
+---
+
+0. Session state after the long-context round (2026-11-04)
+
+The long-context work is landed, measured and served. A fresh session can
+start from this block.
+
+Commits on feat/gemma4-family (newest first):
+  41c54efc  the launcher serves the tensor-core prefill by default
+  5d8d2a20  cuda/gemma4_attn_split.cuh, the split-K decode
+  7ae1a0f6  cuda/gemma4_attn_mma.cuh, the tensor-core prefill
+  f7deefb8  the rejected row-tile attention experiment (recorded)
+  5dc1f63f  the drafter's fast attention with keys=start; all eight fast
+            options in the launcher (bit-identical gate)
+
+Server: Spark 192.168.1.91:8889, pid 116965 at this handoff, the committed
+build: bf16 KV, ctx 262144, prefill chunk 2048, the eight fast options,
+the MMA prefill (DS4_GEMMA4_MMA default 1), the split-K decode
+(DS4_GEMMA4_SPLIT default 1), no MTP. The open-grok entry
+[model."gemma4-vq-spark"] needs no change (it points at the same
+endpoint, no reasoning_effort, so the Gemma no-think default applies).
+
+End-to-end server, 2026-11-04, old numbers in parentheses:
+  1,696   911.8 prefill / 26.23 decode, TTFT 1.86 s
+  6,459   944.3 / 19.28, 6.84 s
+  11,668  856.7 / 19.05, 13.62 s
+  13,557  837.4 (287.6) / 17.98 (4.55), 16.19 s (47.17)
+  20,186  831.7 (232.7) / 17.20 (3.31), 24.27 s (86.57)
+
+Fallbacks and caveats:
+- DS4_GEMMA4_MMA=0 restores the exact tile prefill; DS4_GEMMA4_SPLIT=0
+  restores the single-CTA decode; the MTP verify widths always use the
+  tile kernel.
+- The MMA parity is measured, not bit identity: the pinned 256-token gate
+  returns the design's exact eight greedy tokens and KL 8.6e-5; the
+  repo-docs prompt diverges after the first sentence on a near-tie and
+  the logits relL2 is 0.101 against the 6e-2 design gate. The per-layer
+  attention is relL2 4.0e-4 (4ab).
+- MTP is a long-context loss: draft 6 with the split is 6.40 gen tok/s
+  against 18.96 for plain split decode at 13,447 tokens; the seven-row
+  verify is the cost. MTP remains a short-context tool.
+
+Next units, in the order agreed with agy_review_1_20261104.md:
+1. Test the interactive open-grok session at 9.7K (the server is up; the
+   expected wait is about 14 s for the first token, then 18-19 tok/s).
+2. agy 2.2/2.3: fuse the drafter's RMSNorm+RoPE and gate/up
+   (ds4_gpu_g4_rms_rope and ds4_gpu_gvq_linear_many in gemma4_mtp_step),
+   then add a small-row (BN=4 or a 1..4-token GEMV loop) verify path and
+   re-measure MTP draft 6 at 9-13K.
+3. agy 3.2/3.3: the prefill MoE single-buffer weight staging plus the L1
+   carveout, and the device-side route sort. The expert GEMM is about 15
+   percent of the prefill now, so this is smaller than before.
+4. agy Priority 4: the HTTP 503 cancellation leak, the SWA ring-resume
+   guard in gemma4_sync_keep, and the --ssd-streaming plumbing.
+5. The C default-on flip for the eight fast envs (the launcher sets them;
+   the C defaults are still off, and the launcher is the supported door).
+agy cuts Phase 13 (CPU-MoE), Phase 12.2 (SLRU) and defers Phase 4
+(--vq-profile); those are not next.
+
+Reproduce the gates:
+- tests/test_gemma4_primitives: synthetic MMA (1.4e-3) and split (6.6e-7)
+  cases; sm_89 locally, sm_121 on the Spark.
+- DS4_GEMMA4_ATTN_CMP=1 with the bench prints the one-layer attention
+  relL2 for layer 0 and layer 5.
+- The pinned gate is /tmp/g4-bench-256.txt with --gen-tokens 8 and
+  --dump-frontier-logits-dir; tokens-256.json is the eight ids.
+- The A/B scripts are /tmp/g4mma.sh and /tmp/g4split.sh on the Spark
+  (/tmp/g4big.txt is the 13.4K docs prompt).
+
 ---
 
 Gemma-4 26B A4B VQ — complete family port, in the tree's own layout (2026-11-03)
@@ -2541,7 +2615,7 @@ Phase 5 — SSD streaming: measured on both cards (4v)
   ds4_gemma4_graph.inc, ds4_gpu.h, crates/ds4-core/src/ssd.rs and
   serving_host.rs.
 
-Phase 12 — --moe-cache-mib, the SLRU active-expert VRAM cache (next, owner 2026-11-04)
+Phase 12 — --moe-cache-mib, the SLRU active-expert VRAM cache (deferred by agy's 2026-11-04 review; only 12.1 and 12.3 are worth doing)
 
   The owner's instruction: add llama.cpp's --moe-cache-mib as a phase.
   What exists already: the Gemma SSD map has a bounded device slot pool,
@@ -2617,13 +2691,17 @@ Phase 13 background — the --cpu-moe feasibility and measurement (2026-11-04)
   Order after the measurement: P9 is done (GB10 green; the 4070 lane now
   boots after the quote fix, 16k FP8 device-resident, 20.95 tok/s), and
   the CPU GEMV measurement above fails its bar, so the host decoder port
-  is not the next unit. The next phase is Phase 8 (the tensor-core
-  attention kernel, MIN_ROWS=16, a prefill lever with no draft-6 value).
+  is not the next unit. The next phase was Phase 8 (the tensor-core
+  attention kernel, MIN_ROWS=16, a prefill lever with no draft-6 value);
+  it is DONE on 2026-11-04 (4ab: 3.43x at 13.4K), together with the
+  split-K decode (4ac: 3.94x at 13.4K). The next units are section 0's
+  list: agy 2.2/2.3 (drafter/verify), then 3.2/3.3 (MoE prefill) and
+  Priority 4 (serving).
   The owner's "no 4070 MTP until CPU-MoE" rule has no implementation to
   wait for; the active-expert VRAM cache is the measured 4070 mechanism,
   and MTP on the 4070 can be revisited on its own terms.
 
-Phase 13 — --n-cpu-moe, static CPU placement for the first N layers (after 12)
+Phase 13 — --n-cpu-moe, static CPU placement for the first N layers (CUT by agy's 2026-11-04 review; do not start the AVX2 port)
 
   llama.cpp's --n-cpu-moe N keeps the first N layers' MoE weights in the
   CPU and computes them there (common/arg.cpp:2778-2786,
