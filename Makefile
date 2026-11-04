@@ -485,6 +485,17 @@ tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemm
 test-gemma4-head-rows: tests/gemma4_head_rows
 	./tests/gemma4_head_rows
 
+# The persistent layer-book MoE decode against the per-expert kernels it
+# replaces, on one synthetic R13+8 layer at the artifact's geometry. The
+# gate/up pass is expected near-exact (the row sum's FP32 order changes);
+# the down pass is expected bit-identical.
+tests/gemma4_moe_persist: tests/gemma4_moe_persist.cu cuda/gemma4_moe_persist.cuh cuda/gemma_vq_decode.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_primitives.cuh ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-gemma4-moe-persist
+test-gemma4-moe-persist: tests/gemma4_moe_persist
+	./tests/gemma4_moe_persist
+
 # The CPU-expert deciding measurement. Build only: it needs a real R13+8
 # trunk and the record offsets are tied to that release, so the run line
 # names the path at the call site (tests/gemma4_cpu_expert_gemv.c).

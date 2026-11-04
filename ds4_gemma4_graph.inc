@@ -686,6 +686,18 @@ static bool gemma4_q8_batch(void) {
     return on != 0;
 }
 
+/* Persistent layer-book MoE decode (cuda/gemma4_moe_persist.cuh), off by
+ * default (DS4_GEMMA4_MOE_PERSIST=1). One token only; the per-expert loop
+ * stays the reference and the fallback. */
+static bool g4_moe_persist(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_PERSIST");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* One layer, reference order (semantics 3.6). Returns false on the first
  * failed launch, naming the step: the wrappers report the CUDA error, this
  * names which stage of the block produced it. */
@@ -703,6 +715,11 @@ static bool gemma4_q8_batch(void) {
 static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
         const ds4_weights *w, uint32_t il, const uint32_t *experts, uint32_t rows) {
     if (!g->stream) {
+        if (rows == 1u && g4_moe_persist() &&
+            ds4_gpu_g4_moe_run_persist(g->moe, g->exp_acc, g->norm, g->selected,
+                g->weights, experts, il) != 0) {
+            return true;
+        }
         return ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected,
             g->weights, experts, rows) != 0;
     }

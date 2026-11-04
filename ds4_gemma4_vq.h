@@ -35,6 +35,16 @@ int ds4_gpu_g4_moe_run(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tenso
 int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *weights, const uint32_t *matrices,
     const int32_t *routes, uint32_t rows);
+/* One-token persistent layer-book decode (cuda/gemma4_moe_persist.cuh): the
+ * gate/up and down passes each stage the layer's book in shared memory and
+ * run every routed expert in one launch, and the route order is sorted from
+ * the device's `selected` row, so no route is read back per layer.
+ * `matrices` is the layer's gate[128], up[128], down[128] table and `layer`
+ * selects its cached device copy. Returns 0 for a geometry or a layer the
+ * table cannot describe; the caller keeps the per-expert loop. */
+int ds4_gpu_g4_moe_run_persist(ds4_g4_moe *moe, ds4_gpu_tensor *out,
+    const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+    const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t layer);
 
 /* Gemma-only SSD rebind: point the plan's host source entry for `index` at a
  * device slot holding a byte copy of the VQ1 record. `header` is the first

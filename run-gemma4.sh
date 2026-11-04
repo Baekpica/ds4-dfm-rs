@@ -58,6 +58,15 @@
 #                         kernel's, the softmax combine order differs; the
 #                         synthetic gate is 6.6e-7 and 23 of 24 greedy
 #                         tokens match, so the launcher enables it.
+#   DS4_GEMMA4_PERSIST    1 (default) adds the persistent layer-book MoE
+#                         decode (DS4_GEMMA4_MOE_PERSIST=1); 0 keeps the
+#                         per-expert loop. One launch per pass, the layer
+#                         book in shared memory, the route sort on the
+#                         device: +23.7 percent decode at ctx 256, +20.1 at
+#                         1,024 and +19.8 at 13,447. Near-exact, not bit
+#                         identical: 26 of 30 layers match the per-expert
+#                         loop exactly and the other four differ by at most
+#                         9.8e-4 (about one bf16 ULP).
 #   DS4_GEMMA4_LOG        server capture (default misc/scratch/gemma4-serve.log)
 #
 # The FP8 full-layer KV was verified on a short smoke against bf16; its
@@ -87,6 +96,7 @@ RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
 SPLIT="${DS4_GEMMA4_SPLIT:-1}"
+PERSIST="${DS4_GEMMA4_PERSIST:-1}"
 # The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
 # at 512, the native bind's own default. A wider chunk needs the MoE
 # workspace to follow it (ds4_gemma4_graph.inc); 8,192 still fails in the
@@ -132,6 +142,7 @@ fast_envs() {
   fi
   if [ "$MMA" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_MMA=1" ); fi
   if [ "$SPLIT" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_SPLIT=1" ); fi
+  if [ "$PERSIST" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_MOE_PERSIST=1" ); fi
 }
 
 check_env() {

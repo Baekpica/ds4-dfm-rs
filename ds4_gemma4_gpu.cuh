@@ -23,6 +23,7 @@
 #include "cuda/gemma4_attn_mma.cuh"
 #include "cuda/gemma4_attn_split.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
+#include "cuda/gemma4_moe_persist.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
@@ -43,6 +44,15 @@ struct ds4_g4_moe {
     g4_vqp_item *hitems;        /* host staging for the same list */
     glmvq_matrix *hqmat;        /* host staging for the matrix table */
     uint32_t items_cap;
+    /* Persistent decode (cuda/gemma4_moe_persist.cuh): the gate/up output in
+     * BF16, the per-layer matrix table uploaded on its first decode call,
+     * and the host copy of each layer's indices that decides when to upload
+     * again. The table is static while the experts stay resident; an SSD
+     * rebind changes the descriptors and the copy check re-uploads. */
+    ds4_gpu_tensor *pmid;       /* G4_USED x G4_FF BF16 */
+    ds4_gpu_tensor *ptab;       /* G4_LAYERS x 3 x G4_EXPERTS glmvq_matrix */
+    uint32_t *hbind;            /* G4_LAYERS x 3 x G4_EXPERTS indices */
+    uint8_t hbind_ok[G4_LAYERS];
 };
 
 /* ---------------------------------------------------------------- KV store */
@@ -655,7 +665,9 @@ uint64_t ds4_gpu_g4_moe_bytes(uint32_t chunk) {
     const uint64_t pairs = (uint64_t)chunk * G4_USED;
     return pairs * G4_EMBED * sizeof(float) * 2u + pairs * G4_FF * sizeof(float) * 3u +
         pairs * sizeof(uint32_t) + pairs * G4_USED * sizeof(uint32_t) +
-        pairs * sizeof(int32_t) + pairs * sizeof(float);
+        pairs * sizeof(int32_t) + pairs * sizeof(float) +
+        (uint64_t)G4_LAYERS * 3u * G4_EXPERTS * sizeof(glmvq_matrix) +
+        (uint64_t)G4_USED * G4_FF * sizeof(__nv_bfloat16);
 }
 
 ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
@@ -685,9 +697,13 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->qmat = ds4_gpu_tensor_alloc(3u * G4_EXPERTS * sizeof(glmvq_matrix));
     m->hitems = (g4_vqp_item *)calloc(m->items_cap, sizeof(g4_vqp_item));
     m->hqmat = (glmvq_matrix *)calloc(3u * G4_EXPERTS, sizeof(glmvq_matrix));
+    m->pmid = ds4_gpu_tensor_alloc((uint64_t)G4_USED * G4_FF * sizeof(__nv_bfloat16));
+    m->ptab = ds4_gpu_tensor_alloc((uint64_t)G4_LAYERS * 3u * G4_EXPERTS *
+        sizeof(glmvq_matrix));
+    m->hbind = (uint32_t *)calloc((size_t)G4_LAYERS * 3u * G4_EXPERTS, sizeof(uint32_t));
     if (!m->in || !m->out || !m->gate || !m->up || !m->mid || !m->order ||
         !m->routes || !m->grouped || !m->tokpair || !m->htokpair || !m->items || !m->qmat ||
-        !m->hitems || !m->hqmat) {
+        !m->hitems || !m->hqmat || !m->pmid || !m->ptab || !m->hbind) {
         ds4_gpu_g4_moe_free(m);
         return nullptr;
     }
@@ -705,11 +721,14 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *m) {
     ds4_gpu_tensor_free(m->tokpair);
     ds4_gpu_tensor_free(m->items);
     ds4_gpu_tensor_free(m->qmat);
+    ds4_gpu_tensor_free(m->pmid);
+    ds4_gpu_tensor_free(m->ptab);
     free(m->routes);
     free(m->grouped);
     free(m->htokpair);
     free(m->hitems);
     free(m->hqmat);
+    free(m->hbind);
     free(m);
 }
 
@@ -1125,6 +1144,163 @@ extern "C" int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *m, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
         const uint32_t *matrices, const int32_t *routes, uint32_t rows) {
     return g4_moe_run_routes(m, out, input, weights, matrices, routes, rows);
+}
+
+/* ------------------------------------------------ persistent decode (4ae) */
+
+/* Debug: DS4_GEMMA4_MOE_PERSIST_VERIFY=1 runs the per-expert loop beside the
+ * persistent pass and prints the per-layer distance. Off by default; the
+ * readback is a synchronization and belongs to the gate, not the server. */
+static bool g4_moe_persist_verify(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_PERSIST_VERIFY");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* One CTA per SM: the staged book leaves room for exactly one. */
+static uint32_t g4_moe_persist_ctas(void) {
+    static uint32_t cached = 0;
+    static int device = -1;
+    int current = 0;
+    if (cudaGetDevice(&current) != cudaSuccess) { return 48u; }
+    if (device != current || !cached) {
+        int sms = 0;
+        if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, current) !=
+                cudaSuccess || sms <= 0) {
+            sms = 48;
+        }
+        cached = (uint32_t)sms;
+        device = current;
+    }
+    return cached;
+}
+
+static int g4_moe_persist_shared(void) {
+    static int ready = -1;
+    if (ready < 0) {
+        ready = cudaFuncSetAttribute(g4_moe_gu_kernel<G4_MOE_WARPS>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, G4_MOE_GU_STAGE) ==
+                cudaSuccess &&
+            cudaFuncSetAttribute(g4_moe_down_kernel<G4_MOE_WARPS>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, G4_MOE_DOWN_STAGE) ==
+                cudaSuccess;
+    }
+    return ready;
+}
+
+/* Resolve one layer's 384 GVQ indices into the device table the persistent
+ * kernels read, once per layer. The kernels stage one main book and one
+ * residual book, so the layer must have exactly the artifact's layout: every
+ * gate/up expert on the layer's gate/up book, every down expert on its down
+ * book. Anything else returns 0 and the caller keeps the per-expert loop. */
+static int g4_moe_persist_bind(ds4_g4_moe *m, const uint32_t *matrices, uint32_t layer) {
+    if (!m || !m->gvq || !m->ptab || !m->hbind || !matrices || layer >= G4_LAYERS) { return 0; }
+    const uint32_t count = 3u * G4_EXPERTS;
+    uint32_t *bound = m->hbind + (size_t)layer * count;
+    if (m->hbind_ok[layer] && !memcmp(bound, matrices, count * sizeof(uint32_t))) { return 1; }
+    glmvq_matrix *table = m->hqmat;
+    for (uint32_t p = 0; p < 3u; p++) {
+        for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+            const uint32_t index = matrices[p * G4_EXPERTS + e];
+            if (index >= m->gvq->model->source.size()) { return 0; }
+            const glmvq_source &s = m->gvq->model->source[index];
+            const glmvq_matrix &q = s.vq;
+            if (s.storage != GLMVQ_WEIGHT_VQ || !q.main || !q.plane || !q.book || !q.gain ||
+                !q.res || !q.res_book || q.precision != GLMVQ_E4M3) { return 0; }
+            if (p < 2u) {
+                if (q.rows != G4_FF || q.cols != G4_EMBED) { return 0; }
+            } else if (q.rows != G4_EMBED || q.cols != G4_FF) {
+                return 0;
+            }
+            table[p * G4_EXPERTS + e] = q;
+        }
+    }
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const glmvq_matrix &g = table[e], &u = table[G4_EXPERTS + e];
+        const glmvq_matrix &d = table[2u * G4_EXPERTS + e];
+        if (g.book != table[0].book || g.res_book != table[0].res_book ||
+            u.book != table[0].book || u.res_book != table[0].res_book ||
+            d.book != table[2u * G4_EXPERTS].book ||
+            d.res_book != table[2u * G4_EXPERTS].res_book) {
+            return 0;
+        }
+    }
+    if (!ds4_gpu_tensor_write(m->ptab, (uint64_t)layer * count * sizeof(glmvq_matrix),
+            table, (uint64_t)count * sizeof(glmvq_matrix))) {
+        return 0;
+    }
+    memcpy(bound, matrices, count * sizeof(uint32_t));
+    m->hbind_ok[layer] = 1;
+    return 1;
+}
+
+/* The two launches of one layer. Returns 0 without launching anything the
+ * caller cannot undo: both kernels write only their own outputs. */
+static int g4_moe_persist_launch(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t layer) {
+    if (!m || !out || !input || !selected || !weights || !matrices || layer >= G4_LAYERS) {
+        return 0;
+    }
+    if (out->bytes < (uint64_t)G4_EMBED * sizeof(float) ||
+        input->bytes < (uint64_t)G4_EMBED * sizeof(float) ||
+        selected->bytes < (uint64_t)G4_USED * sizeof(uint32_t) ||
+        weights->bytes < (uint64_t)G4_USED * sizeof(float) ||
+        !m->pmid || !g4_moe_persist_shared() || !g4_moe_persist_bind(m, matrices, layer)) {
+        return 0;
+    }
+    const uint32_t ctas = g4_moe_persist_ctas();
+    const glmvq_matrix *tab = (const glmvq_matrix *)m->ptab->ptr;
+    const uint32_t *sel = (const uint32_t *)selected->ptr;
+    g4_moe_gu_kernel<G4_MOE_WARPS><<<ctas, G4_MOE_THREADS, G4_MOE_GU_STAGE,
+        ds4_current_stream()>>>(tab, layer, sel, (const float *)input->ptr,
+        (__nv_bfloat16 *)m->pmid->ptr);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 persistent MoE gate/up")) { return 0; }
+    g4_moe_down_kernel<G4_MOE_WARPS><<<ctas, G4_MOE_THREADS, G4_MOE_DOWN_STAGE,
+        ds4_current_stream()>>>(tab, layer, sel, (const __nv_bfloat16 *)m->pmid->ptr,
+        (const float *)weights->ptr, (float *)out->ptr);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 persistent MoE down") ? 1 : 0;
+}
+
+extern "C" int ds4_gpu_g4_moe_run_persist(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t layer) {
+    if (!g4_moe_persist_verify()) {
+        return g4_moe_persist_launch(m, out, input, selected, weights, matrices, layer);
+    }
+    static ds4_gpu_tensor *ref = nullptr;
+    static float *a = nullptr, *b = nullptr;
+    if (!ref) {
+        ref = ds4_gpu_tensor_alloc((uint64_t)G4_EMBED * sizeof(float));
+        a = (float *)malloc((size_t)G4_EMBED * sizeof(float));
+        b = (float *)malloc((size_t)G4_EMBED * sizeof(float));
+    }
+    if (!ref || !a || !b ||
+        !ds4_gpu_g4_moe_run(m, ref, input, selected, weights, matrices, 1u) ||
+        !g4_moe_persist_launch(m, out, input, selected, weights, matrices, layer) ||
+        !ds4_gpu_tensor_read(ref, 0, a, (uint64_t)G4_EMBED * sizeof(float)) ||
+        !ds4_gpu_tensor_read(out, 0, b, (uint64_t)G4_EMBED * sizeof(float))) {
+        return 0;
+    }
+    static uint32_t reports = 0;
+    if (reports < G4_LAYERS) {
+        double num = 0.0, den = 0.0, mx = 0.0;
+        uint32_t same = 0;
+        for (uint32_t i = 0; i < G4_EMBED; i++) {
+            const double d = (double)b[i] - (double)a[i];
+            num += d * d;
+            den += (double)a[i] * a[i];
+            if (fabs(d) > mx) { mx = fabs(d); }
+            same += a[i] == b[i];
+        }
+        reports++;
+        fprintf(stderr, "ds4: G4 MoE persist L%u relL2 %.3e max %.3e exact %u/%u\n",
+            layer, sqrt(num / (den > 0.0 ? den : 1.0)), mx, same, G4_EMBED);
+    }
+    return 1;
 }
 
 /* Rebase a streamed VQ1 record. This mirrors gvq_link's VQ branch (and
