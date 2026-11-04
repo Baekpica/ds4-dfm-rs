@@ -219,12 +219,18 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   mis-rendering; it is P9.
 - `ds4-server` passes its HTTP gate on the GB10 (P9, 2026-11-04: boot,
   /v1/models, non-stream, determinism, SSE stream, the max_tokens refusal).
-  On the 12 GiB 4070 the serving quote refuses the R13+8 artifact with
-  `quote_overflow` at ctx 2048 and 1024 with `--mem-floor-gb` 2 and 1, and
-  `--ssd-streaming` takes the shared GLM-5.3 branch ("requires one GLM-5.3
-  GGUF shard") rather than the Gemma discrete map. The discrete serving
-  lane is therefore open: the quote accounting for the host-mapped 9.37 GiB
-  weights, or wiring the Gemma SSD map into the server flag.
+  On the 12 GiB 4070 the serving quote used to price the whole release
+  directory, including the 622 MB MTP part a no-MTP boot never maps; the
+  Gemma release span now excludes that part (the rule Ling-3.1 applies to
+  its embedded MTP), and the card boots device-resident at ctx 16384 with
+  the FP8 full-layer KV: 9.37 GiB copied in 2.8 s, 10.16 GiB of the 12 GiB
+  used, 20.95 tok/s against 2.66 tok/s host-mapped. The banked lane is
+  refused at that size (serial only, reuse=exact); the quote admits ctx
+  32768 with about 0.2 GiB of margin. `run-gemma4.sh` starts it (serve
+  start/stop/status/logs, chat, plan, bench), and the open-grok model entry
+  is `gemma4-vq-4070` on port 8099. `--ssd-streaming` still takes the
+  shared GLM-5.3 branch ("requires one GLM-5.3 GGUF shard") rather than the
+  Gemma discrete map; that remains open.
 - The serial session has no ring-resume guard yet: a divergent continuation
   that reaches back past the rows the ring still holds can read overwritten
   slots. The banked lane is exact and the checklist does not exercise it.

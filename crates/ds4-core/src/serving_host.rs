@@ -1131,6 +1131,18 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     // A GVQ1 release directory maps its named parts; an unreadable listing
     // prices 0 here and fails validation when the model opens.
     if path.is_dir() {
+        // Gemma-4's release keeps the MTP sidecar as a part, but the base
+        // open maps only the trunk and the embedding; the drafter is a
+        // separate --mtp file, priced through artifact_span_bytes. Charging
+        // the 622 MB part here rejects a no-MTP boot that fits (the same
+        // rule Ling-3.1 applies to its embedded MTP part).
+        if crate::gemma4_vq::is_release(path) {
+            let all = crate::glm_vq::part_bytes(path).unwrap_or(0);
+            let part = |feature| crate::gemma4_vq::resident_bytes(path, feature).unwrap_or(0);
+            let embedded_mtp = part(crate::Gemma4VqFeature::Mtp)
+                .saturating_sub(part(crate::Gemma4VqFeature::Trunk));
+            return all.saturating_sub(embedded_mtp);
+        }
         // Beam's embedding part stays on SSD: only the trunk is resident.
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
