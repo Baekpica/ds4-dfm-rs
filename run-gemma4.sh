@@ -43,8 +43,8 @@
 #   DS4_GEMMA4_RESIDENT   1 (default, weights on the GPU) or 0 (host-mapped)
 #   DS4_GEMMA4_PREFILL    prefill rows per forward (default 512, the native
 #                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
-#   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the four measured fast options
-#                         (ATTN_FAST, ATTN_PREFILL, VQ_PREFILL, Q8_BATCH)
+#   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the eight measured fast options
+#                         (the attention round's four and Phase 3's four)
 #   DS4_GEMMA4_LOG        server capture (default misc/scratch/gemma4-serve.log)
 #
 # The FP8 full-layer KV was verified on a short smoke against bf16; its
@@ -96,17 +96,24 @@ kv_env() {
   [ "$KV" = "fp8" ] && printf 'DS4_GEMMA4_FULL_KV=fp8' || printf 'DS4_GEMMA4_FULL_KV=bf16'
 }
 
-# The four options of the measured fast round (docs/gemma4-attention-round-
-# 2026-11-03.md) are one arm: decode attention, prefill attention, the direct
-# VQ prefill GEMM and the batched dense-down Q8. FAST=0 restores the oracle
-# path for an A/B.
+# The eight measured fast options are one arm: the attention round's four
+# (decode attention, prefill attention, the direct VQ prefill GEMM and the
+# batched dense-down Q8) and Phase 3's four (fused RMSNorm+RoPE, parallel
+# router top-k, the family's vocabulary head and the family's router dot).
+# All eight are bit-identical to the oracle path on their gates
+# (docs/gemma4-attention-round-2026-11-03.md, docs/gemma4-phase3-2026-11-03.md);
+# FAST=0 restores the oracle path for an A/B.
 fast_envs() {
   if [ "$FAST" = "1" ]; then
     FAST_ENVS=( "DS4_GEMMA4_ATTN_FAST=1" "DS4_GEMMA4_ATTN_PREFILL=1"
-                "DS4_GEMMA4_VQ_PREFILL=1" "DS4_GEMMA4_Q8_BATCH=1" )
+                "DS4_GEMMA4_VQ_PREFILL=1" "DS4_GEMMA4_Q8_BATCH=1"
+                "DS4_GEMMA4_FUSE_ROPE=1" "DS4_GEMMA4_ROUTER_PAR=1"
+                "DS4_GEMMA4_HEAD_GEMV=1" "DS4_GEMMA4_ROUTER_DOT=1" )
   else
     FAST_ENVS=( "DS4_GEMMA4_ATTN_FAST=0" "DS4_GEMMA4_ATTN_PREFILL=0"
-                "DS4_GEMMA4_VQ_PREFILL=0" "DS4_GEMMA4_Q8_BATCH=0" )
+                "DS4_GEMMA4_VQ_PREFILL=0" "DS4_GEMMA4_Q8_BATCH=0"
+                "DS4_GEMMA4_FUSE_ROPE=0" "DS4_GEMMA4_ROUTER_PAR=0"
+                "DS4_GEMMA4_HEAD_GEMV=0" "DS4_GEMMA4_ROUTER_DOT=0" )
   fi
 }
 

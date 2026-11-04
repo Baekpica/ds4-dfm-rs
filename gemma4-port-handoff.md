@@ -3,12 +3,16 @@ project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
 last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
-  this handoff update. 4y records the Spark serving stall: the serving
-  default prefill chunk was 1, so an 8.5K open-grok prompt was 8,500
-  serial forwards and produced no chunk inside the client's 600 s idle
-  timeout. The default is now 512 (the native bind's own), the launcher
-  sets the four measured fast paths, and the same prompt prefills in
-  22 s. 4v records the P8
+  this handoff update. 4aa records the long-context attribution: the MTP
+  drafter's oracle attention was the O(ctx) cost, the guard now lets the
+  fast kernel take keys=start (bit-identical), the launcher sets all eight
+  measured fast options, and the 13.4K prefill profile puts 72 percent of
+  GPU time in the attention tile kernel. 4y records the Spark serving
+  stall: the serving default prefill chunk was 1, so an 8.5K open-grok
+  prompt was 8,500 serial forwards and produced no chunk inside the
+  client's 600 s idle timeout. The default is now 512 (the native bind's
+  own), the launcher sets the measured fast paths, and the same prompt
+  prefills in 22 s. 4v records the P8
   trial gate, the offload matrix and the discrete SSD path; 4w records the
   fused verify head, the PLE verdict and the owner's reordering; 4x
   records the 4070 serving lane and the CPU-expert verdict. The phase plan
@@ -34,14 +38,15 @@ last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
   the head test and the long gate pass there); the serving quote fix and
   the CPU test are not on it. It serves the MTP lane on 0.0.0.0:8889
   (ctx 262144, bf16 KV, run-gemma4.sh) with the fixed launcher: prefill
-  chunk 2,048 and the four fast paths; a diverse 13,515-token prompt
+  chunk 2,048 and the eight fast options; a diverse 13,515-token prompt
   prefills in 47.8 s (9.66K open-grok prompt ~35 s). The MoE workspace fix
-  is built there (ds4-server 11:19:44); the script defaults 2,048 on
-  aarch64 and 512 on x86_64. Model at ~/models/gguf-family-it-r8.
+  and the drafter fast-attention fix are built there (ds4, ds4-bench and
+  ds4-server 12:43:34-36); the script defaults 2,048 on aarch64 and 512 on
+  x86_64. Model at ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T10:29:21+01:00
+handoff_written_at: 2026-11-04T13:02:18+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1959,6 +1964,56 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   stale: be901c46 (2026-11-03) renders the canonical Gemma tool
   responses inside the model turn; only a non-tool suffix is refused.
   docs/gemma4-vq.md is corrected.
+
+4aa. Long-context attribution and the drafter's fast attention (2026-11-04)
+
+- Controlled bench matrix on the Spark, 13,447-token prompt from the repo
+  docs, ds4-bench, one run per arm, 17 greedy tokens, bf16 KV, chunk 2,048:
+    arm                                              prefill   gen   TTFT
+    no MTP, four fast options                         312.0    4.55  0.23
+    no MTP, eight fast options                        315.5    4.83  0.21
+    MTP draft 6, four fast options, before fix        314.1    2.36  0.76
+    MTP draft 6, four fast options, after fix         312.1    3.69  0.47
+    MTP draft 6, eight fast options, after fix        316.2    3.84  0.45
+    MTP draft 2, eight fast options, after fix        314.7    4.83  0.28
+  The pre-fix arms also measured: MTP draft 2 312.9/3.52, draft 4
+  313.1/2.85, draft 6 with ATTN_FAST=0 309.0/2.27, draft 6 with
+  ATTN_PREFILL=0 (the oracle verify) 288.4/1.69. The no-MTP decode with
+  the direct VQ GEMV off is 3.93 (the direct path is +16 percent); with
+  VQ_PREFILL off the prefill is 310.5 (neutral on the Spark, unlike the
+  4070); chunks 1,024/2,048/4,096 measure 298.3/312.0/311.7 prefill.
+- The drafter's attention was the O(ctx) cost: gemma4_mtp_step called
+  ds4_gpu_g4_attn (one warp per query head, its own global K/V reads) for
+  six sequential drafts, while ds4_gpu_g4_attn_fast (one CTA per KV head,
+  one shared 16-key tile, the same per-key arithmetic) refused keys != 0.
+  The drafter passes keys=start. The guard now allows keys with the
+  oracle's bound, and the step takes the fast kernel under
+  DS4_GEMMA4_ATTN_FAST. The 1,081-token gate (MTP draft 6, 24 greedy
+  tokens, eight fast options) is byte-identical: 115 bytes, cmp clean.
+- The launcher now sets all eight measured fast options, not four. The
+  four Phase-3 options (FUSE_ROPE, ROUTER_PAR, HEAD_GEMV, ROUTER_DOT) were
+  missing from fast_envs; they are bit-identical on their Phase-3 gates.
+  The no-MTP arm moves 4.55 -> 4.83 gen tok/s and 312.0 -> 315.5 prefill.
+- MTP is still a net loss at 13.4K even after the fix. The speculative log
+  keeps 1-2 tokens per round there (keep=1,2,1,1,2,2,2,4,1 over nine
+  rounds), so six draft steps cost more than they save; draft 2 matches
+  plain decode. At 2,048 tokens the same prompt keeps
+  7/1/1/1/2/3/1/4/3 and reaches 15.06 gen tok/s. The acceptance is
+  prompt- and context-dependent; do not quote the 4070 gate's
+  [1,2,7,7,7] as a long-context number.
+- nsys kernel summary of the 13,447-token prefill (chunk 2,048, eight fast
+  options): g4_attn_tile_kernel<8> (full layers) 22.95 s, 53.1 percent;
+  g4_attn_tile_kernel<16> (sliding) 8.25 s, 19.1 percent; the two
+  g4_vq_gemm_items kernels 4.26 + 2.11 s, 14.7 percent; the batched dense
+  Q8 down 3.04 s, 7.0 percent; everything else under 4 percent. The
+  full-layer tile averages 656 ms per chunk at this length (about
+  171 G MAC/s); the sliding tile 47 ms. Attention, not the expert GEMM,
+  is the next prefill lever: row-tile the scalar kernel first, then the
+  tensor-core kernel.
+- The Spark binaries are rebuilt from these sources (ds4, ds4-bench and
+  ds4-server at 12:43:34-36) and the worktree carries the same two header
+  edits; its git HEAD is still 341481b2. The server is stopped while the
+  benches run and is restarted with the eight-option launcher after them.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

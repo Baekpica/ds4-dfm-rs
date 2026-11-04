@@ -261,10 +261,23 @@ static bool gemma4_mtp_step(ds4_gemma4_mtp_runtime *r, const ds4_model *m,
         G4M_STEP(ds4_gpu_g4_rope(r->q, r->positions, full ? g->inv_full : g->inv_sliding,
             1u, G4_MTP_HEADS, dim, gemma4_mtp_rot(il)), "query rope");
         /* `keys = start`: the trunk holds rows 0..start-1 (candidate_generator
-         * .py:1316-1319), the window is relative to the query at `start`. */
-        G4M_STEP(ds4_gpu_g4_attn(r->attn, r->q, gemma4_shared_k(g, full),
-            gemma4_shared_v(g, full), g->positions, 1u, start, G4_MTP_HEADS, kv_heads,
-            dim, full ? 0u : G4_WINDOW, ring, start), "shared attention");
+         * .py:1316-1319), the window is relative to the query at `start`.
+         * The fast kernel stages one K/V tile per KV head and shares it
+         * across the group's query heads; the oracle gives every head its
+         * own global reads. Both walk the same keys in the same order with
+         * the same arithmetic, so the fast arm is the oracle's bit pattern.
+         * Six draft steps per round made this the O(ctx) cost at long
+         * context (Spark, ctx 13,447: draft 6 2.36 tok/s against 4.55 with
+         * the drafter off). */
+        if (g4_attn_fast()) {
+            G4M_STEP(ds4_gpu_g4_attn_fast(r->attn, r->q, gemma4_shared_k(g, full),
+                gemma4_shared_v(g, full), g->positions, 1u, start, G4_MTP_HEADS, kv_heads,
+                dim, full ? 0u : G4_WINDOW, ring, start), "shared attention");
+        } else {
+            G4M_STEP(ds4_gpu_g4_attn(r->attn, r->q, gemma4_shared_k(g, full),
+                gemma4_shared_v(g, full), g->positions, 1u, start, G4_MTP_HEADS, kv_heads,
+                dim, full ? 0u : G4_WINDOW, ring, start), "shared attention");
+        }
         G4M_STEP(ds4_gpu_gvq_linear(r->gvq, r->o, ix->o, r->attn, 1u, DS4_GVQ_BF16),
             "o projection");
         G4M_STEP(ds4_gpu_g4_rms(r->gvq, r->o, r->o, ix->norm[1], 1u, G4_MTP_EMBED,

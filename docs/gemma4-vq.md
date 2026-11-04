@@ -131,6 +131,51 @@ dense FFN with tanh-GELU, the block layer scalar and the tanh-30 vocabulary
 cap. The reference semantics, with file and line citations, are in
 [gemma4-reference-semantics.md](gemma4-reference-semantics.md).
 
+## Long-context decode and the drafter
+
+The drafter runs four layers, one row per step, six steps per round. Each
+step's attention used the oracle kernel: one warp per query head, every warp
+reading its own K/V row from global memory. The full drafter layer has 16
+query heads over the trunk's two KV heads, so eight warps read the same key
+row eight times, six times per round. `ds4_gpu_g4_attn_fast` already had the
+same arithmetic (one CTA per KV head, one shared 16-key tile) but refused
+`keys != 0`; the drafter passes `keys = start` because the trunk holds only
+the rows before the query. The guard now allows `keys` with the oracle's
+bound, and `gemma4_mtp_step` takes the fast kernel when
+`DS4_GEMMA4_ATTN_FAST=1`. Both kernels walk the same keys in the same order
+with the same per-lane dot, warp reduction and float32 softmax, so the fast
+arm is the oracle's bit pattern: the 1,081-token gate (MTP draft 6, 24 greedy
+tokens, all eight fast options on) is byte-identical (115 bytes, `cmp`
+clean).
+
+Measured on the Spark, 13,447-token prompt, `ds4-bench`, 17 greedy tokens:
+
+| arm | prefill tok/s | gen tok/s | TTFT s |
+|---|---:|---:|---:|
+| no MTP, four fast options | 312.0 | 4.55 | 0.23 |
+| no MTP, eight fast options | 315.5 | 4.83 | 0.21 |
+| MTP draft 6, four fast options, before the guard fix | 314.1 | 2.36 | 0.76 |
+| MTP draft 6, four fast options, after | 312.1 | 3.69 | 0.47 |
+| MTP draft 6, eight fast options, after | 316.2 | 3.84 | 0.45 |
+| MTP draft 2, eight fast options, after | 314.7 | 4.83 | 0.28 |
+
+The guard fix is worth 56 percent of the MTP decode rate at this length
+(2.36 to 3.69 with the same four options) and the Phase-3 four add another
+4 percent. The drafter is still a net loss at 13.4K: the speculative log
+keeps 1-2 tokens per round, so six draft steps cost more than they save;
+draft 2 matches plain decode. At 2,048 tokens the same prompt keeps
+7/1/1/1/2/3/1/4/3 and reaches 15.06 gen tok/s. The remaining per-round cost
+is the seven-row verify and the drafter's own per-step weights.
+
+An nsys kernel summary of the 13,447-token prefill (chunk 2,048, eight fast
+options) is the prefill picture: the attention tile kernel is 72.2 percent
+of GPU time (53.1 percent the full-layer geometry, 19.1 percent the sliding
+one), the two direct VQ expert GEMMs 14.7 percent, the batched dense Q8 down
+7.0 percent, and everything else under 4 percent. The full-layer tile runs
+656 ms per chunk on average at this length, at about 171 G MAC/s; the
+sliding tile 47 ms. The attention kernel, not the expert GEMM, is the next
+prefill lever.
+
 ## Lanes
 
 The family serves two lanes from the same binary.

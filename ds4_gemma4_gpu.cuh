@@ -484,7 +484,13 @@ extern "C" int ds4_gpu_g4_attn_fast(ds4_gpu_tensor *out, const ds4_gpu_tensor *q
         const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
         uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
         uint32_t ring, uint32_t keys) {
-    if (!out || !query || !key || !value || !positions || rows != 1u || keys ||
+    /* `keys` is allowed here for the same reason the oracle allows it: the
+     * MTP drafter queries position `start` while the trunk holds rows
+     * 0..start-1, so the kernel must stop at keys-1. The kernel's own
+     * `last = keys && keys <= position ? keys - 1 : position` already does
+     * that; the old guard refused the drafter and forced it onto the oracle. */
+    if (!out || !query || !key || !value || !positions || rows != 1u ||
+        (keys && keys > first + rows) ||
         !heads || !kv_heads || !dim || dim > 512u || (heads % kv_heads)) { return 0; }
     const uint32_t group = heads / kv_heads;
     if (group == 0u || group > 16u || group * 32u > 512u) { return 0; }
