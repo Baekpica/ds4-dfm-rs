@@ -2,8 +2,15 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: e51b564d (feat(gemma4): Gemma-owned Q4_K decode
-  with a fused dense GLU), plus this Q4_K handoff update. 4af records
+last_updated_commit: 6cebfe4f (feat(gemma4-vq): SSD expert stream on the
+  server, full 262144 context on the 4070), plus this handoff update.
+  4ag records the uncapped split-K span (default 128: 35.81 vs 29.14 at
+  ctx 256, 34.16 vs 24.73 at 1,024, 30.66 vs 22.95 at 13,447; the 32
+  split cap is gone and the combine uses dynamic shared memory; 64-token
+  greedy dumps identical at 1,024). 4ah records the server SSD lane (the
+  two Gemma gates in the Rust plan, the 2.35 GiB resident charge, the
+  launcher knobs, the /home artifact and the live 262144 run on the
+  4070). 4af records
   the Q4_K decode (+1.0 percent at ctx 256 over three repeated pairs;
   5.19 -> 4.71 ms per token on the Q4_K kernels; 175 matrices per token,
   worst relL2 1.05e-4; 64-token greedy dumps identical at 256 and
@@ -53,12 +60,11 @@ last_updated_commit: e51b564d (feat(gemma4): Gemma-owned Q4_K decode
   uncommitted files alone.
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
   long-context sources rsynced and built (ds4, ds4-bench, ds4-server
-  18:51 on 2026-11-04). It serves
-  0.0.0.0:8889 (pid 144255, started 18:53:43, ctx 262144,
+  19:35 on 2026-11-04). It serves
+  0.0.0.0:8889 (pid 154108, started 19:35:25, ctx 262144,
   bf16 KV, prefill chunk 2,048, the
-  eight fast options, the MMA prefill and the split-K decode by default,
-  no MTP, no Q4_K decode; the process predates the synced launcher, so
-  it runs without the persistent MoE until the next start). End-to-end
+  eight fast options, the MMA prefill, the split-K decode at span 128 and
+  the persistent MoE by default, no MTP, no Q4_K decode). End-to-end
   13,557 tokens: 837.4 prefill / 17.98 decode,
   TTFT 16.19 s; 20,186: 831.7 / 17.20, 24.27 s. The script defaults
   2,048 on aarch64 and 512 on x86_64. Model at
@@ -66,18 +72,25 @@ last_updated_commit: e51b564d (feat(gemma4): Gemma-owned Q4_K decode
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T18:57:00+01:00
+handoff_written_at: 2026-11-04T20:05:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-0. Session state after the Q4_K decode round (2026-11-04, night)
+0. Session state after the span and SSD round (2026-11-04, late night)
 
-Ranks 1 and 3 of agy's decode review are landed and measured: the
-persistent layer-book MoE decode (4ae, f1db7f61) and the Gemma-owned
-Q4_K decode (4af, e51b564d). A fresh session starts from this block.
+The decode review's ranks 1 and 3 are landed and measured: the persistent
+layer-book MoE decode (4ae, f1db7f61) and the Gemma-owned Q4_K decode
+(4af, e51b564d). Rank 2's first half landed as 4ag (415b6919): the split
+span is a knob with no cap and the default is 128. 4ah (6cebfe4f) makes
+the native discrete SSD stream usable through the server and runs the
+4070 at the full 262144 context from /home/leandro/models. A fresh
+session starts from this block.
 
 Commits on feat/gemma4-family (newest first):
-  (this handoff)  docs: the Q4_K decode round and its numbers
+  (this handoff)  docs: the span and SSD rounds
+  6cebfe4f  the server's Gemma SSD lane (launcher, two family gates, the
+            resident charge)
+  415b6919  cuda/gemma4_attn_split.cuh, the uncapped span (default 128)
   e51b564d  cuda/gemma4_q4_decode.cuh, the Gemma Q4_K decode
   65b76e5c  docs: the push and the OSV scan
   15e774be  docs: the persistent MoE round and its numbers
@@ -91,24 +104,38 @@ Commits on feat/gemma4-family (newest first):
 
 Push: origin feat/gemma4-family is pushed to JLFN/ds4-dfm-rs on 2026-11-04
 at e51b564d after the OSV scan (1 manifest, 146 packages, 0 vulnerable);
-upstream is untouched. The frozen remote copy backup/gemma4-family-2026-11-04
+upstream is untouched. 415b6919, 6cebfe4f and this handoff are local only;
+a push needs the owner's word and a fresh OSV scan. The frozen remote copy
+backup/gemma4-family-2026-11-04
 points at 65b76e5c, and /data/backups/ds4-gemma4-pre-q4-2026-11-04.bundle
 holds the full history at that point. The Spark worktree carries the same
 files by rsync and its git HEAD is still 341481b2.
 
-Server: Spark 192.168.1.91:8889, pid 144255 started 18:53:43 on the final
-build (ds4, ds4-bench, ds4-server 18:51): bf16 KV, ctx 262144, prefill
-chunk 2048, the eight fast options, the MMA prefill, the split-K decode,
-no MTP, no Q4_K decode. It answers /v1/models (200). The process started
-from the Spark's then-stale launcher, so it does not carry the persistent
-MoE; run-gemma4.sh was synced after the start, so the next start picks it
-up. The open-grok entry [model."gemma4-vq-spark"] needs
-no change. The launcher defaults HOST 127.0.0.1, PORT 8099, CTX 16384,
-KV fp8; the Spark invocation is
+Server: Spark 192.168.1.91:8889, pid 154108 started 19:35:25 on the 19:35
+build (ds4, ds4-bench, ds4-server): bf16 KV, ctx 262144, prefill chunk
+2048, the eight fast options, the MMA prefill, the split-K decode at span
+128, the persistent MoE, no MTP, no Q4_K decode. It answers /v1/models
+(200). The open-grok entry [model."gemma4-vq-spark"] needs no change. The
+launcher defaults HOST 127.0.0.1, PORT 8099, CTX 16384, KV fp8; the Spark
+invocation is
   DS4_GEMMA4_CTX=262144 DS4_GEMMA4_KV=bf16 DS4_GEMMA4_HOST=0.0.0.0 \
   DS4_GEMMA4_PORT=8889 ./run-gemma4.sh serve start
 The serve status line prints base_url 127.0.0.1:8099 (a display bug); the
 listen address is 0.0.0.0:8889 and /v1/models answers there.
+
+Server: this machine's 4070 SUPER, 127.0.0.1:8099, pid 3281708 started
+19:53:19 with the SSD lane: model /home/leandro/models/gguf-family-it-r8
+(the fast-disk copy), ctx 262144, E4M3 full-layer KV, span 128, the eight
+fast options, the persistent MoE, --ssd-streaming with a 4GB expert cache.
+The quote is 10.90 GiB of 11.89 available; the log reports 2.35 GiB
+mandatory resident spans and 23,040 cold expert headers (2.81 MiB
+device). /v1/models answers 200 and a greedy completion returns "stream
+ok". Start it with
+  DS4_GEMMA4_CTX=262144 DS4_GEMMA4_SSD=1 ./run-gemma4.sh serve start
+The open-grok entry [model."gemma4-vq-4070"] now carries context_window
+262144 and the SSD start command. The streamed artifact also still exists
+at /data/vq-artifacts/gguf-family-it-r8; the launcher prefers
+$HOME/models/gguf-family-it-r8 when both exist.
 
 End-to-end server before 4ae (the long-context round, no MTP); the decode
 column predates the persistent MoE, whose measured shift is the bench A/B
@@ -187,12 +214,16 @@ cuda/gemma4_attn_mma.cuh for the full-layer MMA; skip iquest_decode.cuh;
 defer VQ_tools.
 
 Next units, in the agreed order:
-1. Rank 2, corrected: finer splits first (measure 128- and 256-key
-   spans), then the full-layer MMA; keep the split path.
+1. Rank 2's second half: the full-layer MMA packing the 8 q heads of a KV
+   head into rows 0-7 of m16n8k16, keeping the split path. The span half
+   landed as 4ag; 64, 32 and 16 still need their 13,447 points (they beat
+   128 at 256 and 1,024, so the default may move once measured).
 2. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving.
-3. Re-profile the decode after 4af: the step is 33.9 ms at ctx 256, and
-   the head, the attention and the MoE launches are the remaining
-   buckets.
+3. Re-profile the decode after 4ag: the span change moved the attention
+   bucket, so the ctx-256 step and the 13,447 split need a fresh profile.
+4. The SSD lane is live on the 4070 but unqualified (the plan says so):
+   no sustained or long-context decode measurement yet; the 4v numbers
+   are ctx 1,024.
 Rank 3 landed as 4af (e51b564d): the measured saving is 0.48 ms/step,
 not the review's 3.4, because these matrices are bandwidth-bound at
 about 4 ms/token and the scalar fallback was already at 77 percent of
@@ -2418,6 +2449,66 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   measured two identical paths for exactly that reason, and the entry
   check also caught an output-size test that squared the row count and
   refused every matrix).
+
+4ag. Uncapped split-K span: 128 is the default, +23 to +38 percent (2026-11-04, late night)
+
+- What landed (415b6919). The split count was ceil(visible/512), capped at
+  32 by the combine's static weight array. Now the span is
+  DS4_GEMMA4_ATTN_SPLIT_SPAN (default 128, clamped to [16, 4096]), the
+  host divides the visible range by it with no cap, and the combine's
+  weight array is dynamic shared memory sized by the launch (a stride-256
+  fill, so counts above 256 are covered; a launch above 48 KiB asks for
+  the larger dynamic-shared limit once).
+- Measured on the GB10, ds4-bench, 64 gen tokens, the server's fast
+  options plus the persistent MoE, gen tok/s by span:
+    ctx 256    512 29.14  256 33.72  128 35.81  64 37.32  32 38.67  16 39.37
+    ctx 1024   512 24.73  256 30.39  128 34.16  64 36.42
+    ctx 13447  512 22.95  256 28.20  128 30.66
+- Default 128: the best measured span at every context. 64, 32 and 16
+  measured still better at 256 and 1,024 (+4.2, +8.0 and +9.9 percent over
+  128 at 256; 64 is +6.6 at 1,024), but their 13,447 points are
+  unmeasured, so 128 stays the default and the knob is there for the next
+  profile.
+- Gates. Synthetic (tests/test_gemma4_primitives.cu): 128, 256 and 512
+  splits at the artifact's geometry, zero failures on sm_89 and sm_121.
+  Model: 64 greedy tokens at ctx 1,024, span 512 against 128, frontier
+  logits and token ids dumped; diff -rq clean.
+- The cap note: at ctx 262144 with span 128 the full layers ask for 2,048
+  splits (8 KiB shared, 64 MiB scratch), so the uncapped path is what the
+  Spark endpoint now runs.
+
+4ah. The server SSD lane on the 4070, full 262144 context (2026-11-04, late night)
+
+- What blocked it. The native discrete arm (ds4_gemma4_map.inc, 4v)
+  already ran, but the server refused Gemma twice: probe_ssd_quote is the
+  GLM-5.3 one-shard quote and rejects every other family
+  (ssd_quote.rs:132-140), and resolve_plan's ssd_supported admitted only
+  Glm53 (serving.rs:1290-1292). Both now admit Gemma4Vq on one CUDA
+  device. The check no longer calls the GLM quote for Gemma; the host
+  quote gets the resident charge from the trunk inventory (every tensor
+  except the routed expert matrices and their residual planes,
+  ds4_gemma4_stream.inc:281-315), 2,518,251,580 B = 2.35 GiB, the same
+  number the C open prints.
+- Launcher (run-gemma4.sh): DS4_GEMMA4_SSD=1 adds --ssd-streaming and
+  DS4_GEMMA4_SSD_CACHE (default 4GB); both go to the preflight and the
+  boot; the lane keeps the weights host-mapped (RESIDENT is ignored), and
+  the model path prefers $HOME/models/gguf-family-it-r8.
+- The artifact moved to /home/leandro/models/gguf-family-it-r8 (10.69 GB,
+  rsync 39 s, about 260 MB/s from /data). /data is the 91-percent-full
+  /dev/sda1 and /home is the root LV; the streamed experts are read on
+  every decode step, so this is the fast disk.
+- Live: 4070 SUPER, ctx 262144, E4M3 full-layer KV, 4GB expert cache
+  (2,195 slots), span 128, pid 3281708. The quote is 10.90 GiB of 11.89
+  available (weights 2.52 GB, cache 4.29, bank 3.01, floor 1.07); the log
+  reports 2.35 GiB mandatory spans and 23,040 cold headers (2.81 MiB
+  device); /v1/models answers 200 and a greedy completion returns
+  "stream ok" (19 prompt + 2 completion tokens).
+- open-grok: [model."gemma4-vq-4070"] now carries context_window 262144
+  and the SSD start command in its description.
+- Open: the plan warns ssd_unqualified; there is no sustained or
+  long-context decode measurement of this lane yet (4v is ctx 1,024:
+  51.47 prefill / 13.11 gen). The 4GB cache is the 4v operating point,
+  not re-tuned here.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
