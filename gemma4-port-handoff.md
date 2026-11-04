@@ -21,8 +21,9 @@ last_updated_commit: cdbdf200 (docs(handoff): the P8 gate, the offload
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 1bd4afe5 (make cuda-spark,
-  469-482 s, 0 errors) and ~/models/gguf-family-it-r8.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at 767720d7 (synced; the last
+  build was 1bd4afe5, make cuda-spark, 469-482 s, 0 errors) and
+  ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
