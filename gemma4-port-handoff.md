@@ -2,8 +2,13 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 5905f7e7 (docs(gemma4): agy's CPU-MoE review and the
-  corrected device baseline), plus this handoff update. 4v records the P8
+last_updated_commit: baca41b1 (docs(handoff): Phase 12 and Phase 13), plus
+  this handoff update. 4y records the Spark serving stall: the serving
+  default prefill chunk was 1, so an 8.5K open-grok prompt was 8,500
+  serial forwards and produced no chunk inside the client's 600 s idle
+  timeout. The default is now 512 (the native bind's own), the launcher
+  sets the four measured fast paths, and the same prompt prefills in
+  22 s. 4v records the P8
   trial gate, the offload matrix and the discrete SSD path; 4w records the
   fused verify head, the PLE verdict and the owner's reordering; 4x
   records the 4070 serving lane and the CPU-expert verdict. The phase plan
@@ -19,7 +24,7 @@ last_updated_commit: 5905f7e7 (docs(gemma4): agy's CPU-MoE review and the
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
   cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61,
-  993ddd08, 78e96e02, 882bf8f8, 85af4cb6 and 5905f7e7.
+  993ddd08, 78e96e02, 882bf8f8, 85af4cb6, 5905f7e7 and baca41b1.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
@@ -28,11 +33,15 @@ last_updated_commit: 5905f7e7 (docs(gemma4): agy's CPU-MoE review and the
   verify-head files rsynced and built (make cuda-spark, 475 s, 0 errors;
   the head test and the long gate pass there); the serving quote fix and
   the CPU test are not on it. It serves the MTP lane on 0.0.0.0:8889
-  (ctx 262144, bf16 KV, run-gemma4.sh). Model at ~/models/gguf-family-it-r8.
+  (ctx 262144, bf16 KV, run-gemma4.sh) with the fixed launcher: prefill
+  chunk 512 and the four fast paths, 8,092 tokens in 22.16 s on the first
+  request after a fresh boot. The source default (serving_host.rs 512) is
+  not in its binary yet; the script's DS4_GEMMA4_PREFILL_CHUNK covers it
+  until the next make cuda-spark. Model at ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T09:58:00+01:00
+handoff_written_at: 2026-11-04T10:29:21+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -1831,8 +1840,7 @@ fast-attention bench at ctx 2048 are the open Spark runs.
 - open-grok's headless prompt did not return an answer in 339 s (killed):
   the server log showed prefill_cap=1, so its long system prompt was still
   prefilling. The direct chat through the same server answered at 20.95
-  tok/s, so the model and wire work; the open-grok prefill path is the
-  open item (a wider --prefill-chunk is the lever, unmeasured here).
+  tok/s, so the model and wire work. 4y is the measurement and the fix.
 - CPU-expert verdict (993ddd08): the deciding GEMV over the real 408 KB
   record measures 278.4 ms per token at 28 threads against the device
   path's ~94 ms, and 1.70 GB/s means it is compute-bound. The measurement
@@ -1860,6 +1868,53 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   effective plan is reuse=exact mtp=on. A short chat with reasoning_effort
   none answered in 1.00 s. The open-grok entry is [model."gemma4-vq-spark"]
   at http://192.168.1.91:8889/v1 with context_window 262144.
+
+4y. The Spark serving stall: the prefill chunk was one row (2026-11-04)
+
+- Symptom: open-grok on tmux 14 (model gemma4-vq-spark) waited 10m13s and
+  failed with "inference idle timeout after 600s with no chunks". The
+  server was up, /v1/models answered, the GPU sat at 94-96%: it was
+  prefilling, not deadlocked.
+- Root cause: serving_host.rs passed GEMMA4_NATIVE_DEFAULT = 1 as the
+  session's prefill cap (introduced with 9b6f4a67). The native bind's own
+  default is min(ctx, 512) (gemma4_prefill_cap, ds4_gemma4_bind.inc:267),
+  and the sibling VQ families serve 2,048-4,096-row chunks (GLMVQ 4096,
+  Ling-3.1 4096, Beam 2048, MiniMax 4096, A.X-K2 2048). At cap 1 the
+  graph's grouped projections and expert routes never see more than one
+  row: an 8.5K prompt became 8,500 serial forwards.
+- Measured on the Spark, same binary, same flags (MTP on, serial lane,
+  bf16 KV, ctx 262144, device-resident):
+    295 tokens, chunk 1      13.03 s   22.6 tok/s
+    295 tokens, chunk 512     0.447 s 660 tok/s
+    2,115 tokens, chunk 512   3.57 s  592 tok/s
+    8,092 tokens, chunk 512  21.97 s  368 tok/s
+  The 8,092-token run repeated on a fresh boot as the first request:
+  22.16 s, cached_tokens 0. The earlier 6-minute 8.4K request was a
+  one-off; it did not reproduce.
+- The launcher also enabled only one of the four measured fast paths
+  (ATTN_FAST). The attention round's "on" arm is all four (VQ_PREFILL,
+  ATTN_PREFILL, ATTN_FAST, Q8_BATCH; docs/gemma4-attention-round-2026-
+  11-03.md), so run-gemma4.sh now sets all four and passes
+  DS4_GEMMA4_PREFILL_CHUNK=512 (DS4_GEMMA4_PREFILL overrides).
+- Code and docs: GEMMA4_NATIVE_DEFAULT is 512 in serving_host.rs (the
+  stale comment that called the one-row path "the measured path" is
+  replaced); docs/gemma4-vq.md's KV example (ctx 2,048, chunk 512:
+  356,515,840 bytes) and its limits bullet are corrected. The launcher's
+  fast_envs sets the four envs together; FAST=0 restores the oracle path.
+- open-grok: [model."gemma4-vq-spark"] already had the right endpoint,
+  model id, 262144 context and api_key; it now carries
+  inference_idle_timeout_secs = 1800 and a description that names the
+  512-row prefill. [models] default is gemma4-vq-spark (the owner's
+  change; not reverted). The config backup is
+  config.toml.bak-gemma4-spark-20261104-102642.
+- Verification on the running Spark server: "Say hello in one short
+  sentence." with reasoning_effort none answered "Hello!" in 0.22 s;
+  a 32-token greedy request returned finish=length with empty content,
+  which is the thought channel consuming the whole budget, not a fault.
+- Follow-up: the Spark binary is at 341481b2 and still defaults to 1;
+  the script's env covers it. Rebuild with make cuda-spark to bake the
+  new default. The 4070 quote was not re-measured: its own Gemma server
+  (pid 3118283) held 10.4 GiB of the card during this check.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 

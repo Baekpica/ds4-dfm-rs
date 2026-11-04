@@ -212,11 +212,14 @@ const MIMO_PREFILL_CHUNK_ENV: &str = "DS4_MIMO2_PREFILL_CHUNK";
 const MIMO_NATIVE_DEFAULT: u32 = crate::mimo2::PREFILL_CAP;
 const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_MAX;
 // ds4_gemma4_plan.h: the engine's own prefill bound and its KV layout.
-// G4_PREFILL is 2048. The default stays one row because that is the measured
-// path, not because wider chunks differ: the graph repeats the one-row calls,
-// so a grouped prefill is bit-identical (measured across chunks 1..22).
+// The default is the native bind's own (gemma4_prefill_cap: min(ctx, 512)),
+// the same shape the sibling VQ families serve: one chunk per forward, the
+// grouped projections and expert routes over all its rows. A one-row default
+// here made an 8.5K-token prompt 8,500 serial forwards and no chunk reached
+// the client inside the 600 s idle timeout (Spark, 2026-11-04: chunk 1,
+// 295 tokens 13.03 s; chunk 512, 295 tokens 0.447 s, 2,115 tokens 3.57 s).
 const GEMMA4_PREFILL_CHUNK_ENV: &str = "DS4_GEMMA4_PREFILL_CHUNK";
-const GEMMA4_NATIVE_DEFAULT: u32 = 1;
+const GEMMA4_NATIVE_DEFAULT: u32 = 512;
 const GEMMA4_NATIVE_MAX: u32 = 8192;
 const GEMMA4_LAYERS: u32 = 30;
 const GEMMA4_WINDOW: u64 = 1024;
@@ -1435,9 +1438,10 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             AXK2_NATIVE_MAX,
         ),
-        // The session prefills one row per forward by default (ds4_gemma4_bind.inc's
-        // gemma4_prefill_cap reads the same env); a wider chunk is exact, since
-        // the graph repeats the one-row calls, but it is not faster.
+        // Same env as ds4_gemma4_bind.inc's gemma4_prefill_cap, which defaults
+        // to min(ctx, 512). The graph groups the Q4 projections and the expert
+        // routes over the chunk; DS4_GEMMA4_EXACT_PREFILL=1 restores the
+        // one-row-per-route path for the byte-exactness gate.
         ModelFamily::Gemma4Vq => env_u32(
             GEMMA4_PREFILL_CHUNK_ENV,
             GEMMA4_NATIVE_DEFAULT,

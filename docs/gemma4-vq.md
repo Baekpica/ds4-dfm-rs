@@ -61,8 +61,8 @@ layer and 2,048 for a full one.
 The ring is window plus one prefill chunk, not the window alone: a chunk
 writes rows ahead of the rows it reads, and a ring of exactly the window would
 let a later row of the same chunk overwrite a slot an earlier row still needs.
-The default chunk is one row (see the limits below), so at ctx 2,048 the
-caches total 251,863,040 bytes (0.23 GiB).
+The default chunk is 512 rows (see the limits below), so at ctx 2,048 the
+caches total 356,515,840 bytes (0.33 GiB).
 
 ## Execution on a 12 GiB card
 
@@ -206,8 +206,14 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
 - The qualified context is not recorded yet: `ctx_max` is 262,144 but
   `qualified_ctx` is unset, so the serving plan reports the family as
   qualified at the tested size only.
-- The default prefill chunk is one row. Wider chunks repeat the same launches
-  and are byte-identical, but they are not the measured path.
+- The default prefill chunk is 512 rows, the native bind's `min(ctx, 512)`
+  (`gemma4_prefill_cap`, ds4_gemma4_bind.inc) and the shape the bench measures
+  in the VQ-prefill and attention rounds. The graph groups the Q4 projections
+  and the expert routes over the chunk; `DS4_GEMMA4_EXACT_PREFILL=1` restores
+  the one-row-per-route path for the byte-exactness gate (chunks 1..22). A
+  one-row serving default stalled the Spark lane on 2026-11-04: 295 prompt
+  tokens took 13.03 s at chunk 1 against 0.447 s at chunk 512, and an 8.5K
+  prompt produced no chunk inside the client's 600 s idle timeout.
 - The drafter part is in the artifact and validated by the inventory; the
   draft path (`--mtp-draft`) is declared and gated by
   `tests/gemma4_mtp_gate` (greedy off/on, prefix reuse, snapshot restore, a

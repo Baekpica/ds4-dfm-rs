@@ -41,7 +41,10 @@
 #   DS4_GEMMA4_MTP_DRAFT  drafts per round when MTP is on (default 6)
 #   DS4_GEMMA4_MTP_MODE   off|auto|on (default on; auto leaves Gemma off)
 #   DS4_GEMMA4_RESIDENT   1 (default, weights on the GPU) or 0 (host-mapped)
-#   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; DS4_GEMMA4_ATTN_FAST
+#   DS4_GEMMA4_PREFILL    prefill rows per forward (default 512, the native
+#                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
+#   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the four measured fast options
+#                         (ATTN_FAST, ATTN_PREFILL, VQ_PREFILL, Q8_BATCH)
 #   DS4_GEMMA4_LOG        server capture (default misc/scratch/gemma4-serve.log)
 #
 # The FP8 full-layer KV was verified on a short smoke against bf16; its
@@ -69,6 +72,7 @@ DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
+PREFILL="${DS4_GEMMA4_PREFILL:-512}"
 GROK_NAME="${DS4_GEMMA4_GROK_NAME:-gemma4-vq-4070}"
 SCRATCH="$ROOT/misc/scratch"
 mkdir -p "$SCRATCH"
@@ -87,8 +91,18 @@ kv_env() {
   [ "$KV" = "fp8" ] && printf 'DS4_GEMMA4_FULL_KV=fp8' || printf 'DS4_GEMMA4_FULL_KV=bf16'
 }
 
-fast_env() {
-  [ "$FAST" = "1" ] && printf 'DS4_GEMMA4_ATTN_FAST=1' || printf 'DS4_GEMMA4_ATTN_FAST=0'
+# The four options of the measured fast round (docs/gemma4-attention-round-
+# 2026-11-03.md) are one arm: decode attention, prefill attention, the direct
+# VQ prefill GEMM and the batched dense-down Q8. FAST=0 restores the oracle
+# path for an A/B.
+fast_envs() {
+  if [ "$FAST" = "1" ]; then
+    FAST_ENVS=( "DS4_GEMMA4_ATTN_FAST=1" "DS4_GEMMA4_ATTN_PREFILL=1"
+                "DS4_GEMMA4_VQ_PREFILL=1" "DS4_GEMMA4_Q8_BATCH=1" )
+  else
+    FAST_ENVS=( "DS4_GEMMA4_ATTN_FAST=0" "DS4_GEMMA4_ATTN_PREFILL=0"
+                "DS4_GEMMA4_VQ_PREFILL=0" "DS4_GEMMA4_Q8_BATCH=0" )
+  fi
 }
 
 check_env() {
@@ -104,7 +118,9 @@ check_env() {
 
 # The plan the server will actually boot, printed as JSON by --check-config.
 plan_json() {
-  local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)" "$(fast_env)" )
+  fast_envs
+  local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
   # picks the partial/bank lane here, so the drafter pins exact reuse and
   # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
@@ -164,7 +180,9 @@ serve_start() {
   echo "kv:      $KV full layers; fast attention $FAST; mtp ${MTP:-off}"
   preflight
   rm -f "$LOG"
-  local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)" "$(fast_env)" )
+  fast_envs
+  local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
   [ "$RESIDENT" = "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   local -a extra=()
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
@@ -290,7 +308,9 @@ bench_mode() {
   else
     echo "backend: cuda (host-mapped weights), ctx $CTX, gen $tokens, kv $KV"
   fi
-  local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)" "$(fast_env)" )
+  fast_envs
+  local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
   [ "$RESIDENT" = "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   env "${envs[@]}" "$ROOT/ds4-bench" -m "$MODEL" --cuda \
       --prompt-file "$PROMPT_FILE" --ctx-start "$CTX" --ctx-max "$CTX" \
