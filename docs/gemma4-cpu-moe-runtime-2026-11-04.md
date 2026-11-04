@@ -87,6 +87,16 @@ The CPU path stays as the fallback it was built to be: the lane for a card
 whose VRAM cannot hold the working set at the requested context, and the
 measurement that prices what host compute would cost.
 
+## Architecture
+
+The kernel is x86 by construction: AVX2, FMA and F16C intrinsics, measured on
+the i7-14700F host. `cuda/gemma4_cpu_moe.cuh` is included by the CUDA
+translation unit on every target, so it compiles the implementation only on
+x86-64 and defines explicit stubs elsewhere. A graph that asks for the host
+experts on aarch64 (the Spark) prints one line and fails; it never falls back
+to another path silently. The GPU expert path on the Spark needs none of this:
+the 120 GB device memory holds the records.
+
 ## Metal
 
 The Metal backend (`ds4_metal.m`, `metal/*.metal`) has no Gemma-4 support

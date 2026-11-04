@@ -23,13 +23,26 @@
  * This is a measurement path, not a serving default: it exists so Gemma can
  * run on the 4070 at 128K without the SSD slot pool. */
 
-#include <immintrin.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <atomic>
+
+/* The routed-expert kernels below are AVX2 + F16C intrinsics: the 4070's
+ * host lane, where the expert records stay in the model mmap. The CUDA
+ * translation unit includes this header on every target (the Spark is
+ * aarch64), so the implementation is compiled only on x86 and the other
+ * architectures get the explicit stubs at the end of the file. */
+#if defined(__x86_64__) || defined(__i386__)
+#define G4_CPU_MOE_AVX2 1
+#include <immintrin.h>
+#else
+#define G4_CPU_MOE_AVX2 0
+#endif
+
+#if G4_CPU_MOE_AVX2
 
 #define G4_CPU_CHUNK 32u
 #define G4_CPU_GELU_CHUNK 64u
@@ -505,5 +518,37 @@ static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
     }
     return cudaStreamSynchronize(s) == cudaSuccess;
 }
+
+#else /* !G4_CPU_MOE_AVX2 */
+
+/* Explicit unavailable path: a graph that asks for the host experts fails
+ * loudly instead of silently computing them somewhere else. */
+static int g4_cpu_moe_unavailable(void) {
+    static int reported;
+    if (!reported) {
+        reported = 1;
+        fprintf(stderr, "ds4: Gemma-4 CPU MoE is an x86 AVX2 path; this build "
+            "is not x86, so DS4_GEMMA4_CPU_MOE is unavailable here\n");
+    }
+    return 0;
+}
+
+static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
+                             const uint32_t *matrices, uint32_t expert,
+                             const float *x, float *out) {
+    (void)map; (void)model; (void)matrices; (void)expert; (void)x; (void)out;
+    return g4_cpu_moe_unavailable();
+}
+
+static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
+                                  ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+                                  const ds4_gpu_tensor *weights, const uint32_t *matrices,
+                                  const int32_t *routes, uint32_t rows) {
+    (void)map; (void)model; (void)out; (void)input; (void)weights;
+    (void)matrices; (void)routes; (void)rows;
+    return g4_cpu_moe_unavailable();
+}
+
+#endif /* G4_CPU_MOE_AVX2 */
 
 #endif
