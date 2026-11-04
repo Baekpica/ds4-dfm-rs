@@ -651,7 +651,10 @@ mod tests {
         assert!(err.contains("16..4096"), "{err}");
         let err = o.set_env("DS4_GEMMA4_ATTN_SPLIT_SPAN", "4097").unwrap_err();
         assert!(err.contains("16..4096"), "{err}");
-        assert_eq!(o.attn_split_span, SPLIT_SPAN_DEFAULT, "a rejected value must not stick");
+        assert_eq!(
+            o.attn_split_span, SPLIT_SPAN_DEFAULT,
+            "a rejected value must not stick"
+        );
     }
 
     #[test]

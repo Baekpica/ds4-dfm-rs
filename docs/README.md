@@ -62,6 +62,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [A.X-K2 optimization campaign](axk2-optimization-2026-10-29.md) | Three prefill and three decode adoptions, paired evidence, costs, fallbacks and the October 29 publication sweep |
 | [MiMo RL](mimo2-serving-2026-09-25.md) | Recorded mixed serving, bank reuse and memory limits |
 | [MiMo-V2.6-Flash VQ](mimo2-vq.md) | GVQ1 release directory (RL and UNCENSORED), FP8 full-layer KV, Q8_0 vision/audio parts, embedded MTP or DFlash, native 1M on the serial lane, 2K–64K sweep |
+| [Gemma-4 26B A4B VQ](gemma4-vq.md) | GVQ1 release directory (R13+8), the two attention geometries, BF16 KV in both layouts, optional SSD expert streaming, serial session and banks, 2K–64K sweep |
 | [MiMo MOPD](ds4-dfm-model-families.md#mimo-mopd) | Separate artifact, text performance and DFlash boundaries |
 | [Naive](naive-n05-flash.md) | MQ87, banks, disk KV, long-context gates and drafter limits |
 | [IQuest-Q1](iquest-q1.md) | Canonical mixed weights, hybrid Q8 KV, embedded MTP and pending Spark gates |

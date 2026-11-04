@@ -2626,9 +2626,7 @@ pub fn render_live_tool_tail(
                         continue;
                     }
                 }
-                return Err(RenderError(
-                    "Gemma-4 live tool suffix is not a tool result",
-                ));
+                return Err(RenderError("Gemma-4 live tool suffix is not a tool result"));
             }
             if think {
                 put(&mut out, G4_THOUGHT_OPEN);

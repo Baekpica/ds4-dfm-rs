@@ -4029,11 +4029,8 @@ mod gemma_default_tests {
             default_effort: ThinkMode::None,
             ..ParseEnv::default()
         };
-        let parsed = parse_chat_request(
-            &env,
-            r#"{"messages":[{"role":"user","content":"1+2"}]}"#,
-        )
-        .unwrap();
+        let parsed =
+            parse_chat_request(&env, r#"{"messages":[{"role":"user","content":"1+2"}]}"#).unwrap();
         assert_eq!(parsed.think_mode, ThinkMode::None);
         let parsed = parse_chat_request(
             &env,

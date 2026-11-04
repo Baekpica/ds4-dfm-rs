@@ -128,8 +128,9 @@ The forward is the reference's order, layer by layer, with every rounding it
 makes: seven RMS norms per block, q/k norm and RoPE per head, the routed
 experts with float32 router weights and one bf16 rounding per expert, the
 dense FFN with tanh-GELU, the block layer scalar and the tanh-30 vocabulary
-cap. The reference semantics, with file and line citations, are in
-[gemma4-reference-semantics.md](gemma4-reference-semantics.md).
+cap. The reference formulas the gates compile against are pinned in
+`ds4_gemma4_ref.h`, and the synthetic cases live in
+`tests/test_gemma4_primitives.cu`.
 
 ## Long-context decode and the drafter
 
@@ -289,9 +290,8 @@ for 128 / 64 / 32 / 16, and 1,005.7 prefill tok/s; 64 is ahead there too.
 
 The greedy 32-token sequences are identical at all three contexts, and at
 13,447 the frontier logits dump is byte-identical between the two paths. The
-historical landing numbers (fast kernel 4.81 against split 18.96 at 13,447,
-before the span knob and the persistent MoE) are in
-`docs/gemma4-attention-round-2026-11-03.md`.
+earlier landing numbers were the fast kernel's 4.81 against split 18.96 at
+13,447, before the span knob and the persistent MoE.
 
 MTP draft 6 at 13,447 moves 3.87 -> 6.40 tok/s with the split, but plain
 split decode still beats it: the seven-row verify is the remaining MTP cost
@@ -305,8 +305,10 @@ kernel).
 Every arithmetic knob above is also a typed option: the `--gemma4-*` flags and
 the `DS4_GEMMA4_*` variables funnel through `Gemma4Options` (strict ranges,
 named errors), reach the engine as `ds4_engine_options.gemma4`, and are echoed
-in the plan JSON and by `--check-config`. The surface, the compatibility
-notes and the parity gates are in `docs/gemma4-typed-knobs-2026-11-04.md`.
+in the plan JSON and by `--check-config`. The surface is
+`crates/ds4-core/src/gemma4_knobs.rs`; the C side reads it through
+`ds4_gemma4_knobs.h`, and the legacy environment path remains only for the C
+hosts.
 
 ## Lanes
 
@@ -428,12 +430,12 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
 ## Reproduce
 
 ```
-# build (this host: CUDA 13.3, sm_89)
+# build (the GPU arch: sm_89 on the 12 GiB card, sm_121 on the Spark)
 make cuda CUDA_ARCH=sm_89
 
 # the checklist on the R13+8 artifact
 DS4_LOCK_FILE=/tmp/ds4-gemma4-gate.lock \
-  ./ds4 -m /data/vq-artifacts/gguf-family-it-r8 --cuda -c 2048 \
+  ./ds4 -m <release-dir> --cuda -c 2048 \
   --serving-check -p "Hello"
 ```
 

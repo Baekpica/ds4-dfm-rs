@@ -324,18 +324,17 @@ pub fn fill_quote_facts(
             let per_expert = 3u64.saturating_mul(record.saturating_add(residual));
             if req.ssd_streaming_cache_experts.is_none() {
                 facts.ssd_cache_experts = Some(
-                    (bytes / per_expert.max(1)).min(
-                        u64::from(s.n_layer).saturating_mul(u64::from(s.n_expert)),
-                    ) as u32,
+                    (bytes / per_expert.max(1))
+                        .min(u64::from(s.n_layer).saturating_mul(u64::from(s.n_expert)))
+                        as u32,
                 );
             } else {
                 facts.ssd_cache_experts = req.ssd_streaming_cache_experts;
                 if req.ssd_streaming_cache_bytes.is_none() {
-                    facts.ssd_cache_bytes = Some(
-                        per_expert.saturating_mul(u64::from(
+                    facts.ssd_cache_bytes =
+                        Some(per_expert.saturating_mul(u64::from(
                             req.ssd_streaming_cache_experts.unwrap_or(0),
-                        )),
-                    );
+                        )));
                 }
             }
         } else if req.ssd_streaming_cache_experts.is_some() {
@@ -1005,9 +1004,7 @@ pub fn attach_host_quote(
         0
     } else {
         let avail = host_available_bytes(req.backend);
-        if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq)
-            && req.ssd_streaming
-        {
+        if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq) && req.ssd_streaming {
             ssd_available(avail)
         } else {
             avail
@@ -3247,8 +3244,7 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         // DS4_GEMMA4_FULL_KV=fp8; the sliding rings stay bf16.
         let fp8 = std::env::var("DS4_GEMMA4_FULL_KV").ok().as_deref() == Some("fp8");
         let full_row = if fp8 {
-            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2
-                + GEMMA4_FULL_KV_HEADS * 2 * 2
+            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 + GEMMA4_FULL_KV_HEADS * 2 * 2
         } else {
             GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2
         };
@@ -7683,17 +7679,18 @@ exit 1
         assert_eq!(facts.ssd_cache_bytes, None);
     }
 
-    /// The session runs one row per forward, so the scheduler's verified
-    /// widths (2, 4, 8, ...) must not fence its native cap.
+    /// The graph groups its Q4 projections and expert routes over a prefill
+    /// chunk, so the native cap is the family chunk (512), not one row; the
+    /// scheduler's verified widths must not fence it.
     #[test]
     fn gemma4_declares_the_serial_chunk() {
         let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
-        assert_eq!(family_native_chunk(caps, 2048), 1);
+        assert_eq!(family_native_chunk(caps, 2048), GEMMA4_NATIVE_DEFAULT);
         let req = ServingRequest {
             ctx: 2048,
             max_seqs: MaxSeqs::Auto,
             mem_floor_gb: 2,
-            native_chunk: Some(1),
+            native_chunk: Some(GEMMA4_NATIVE_DEFAULT),
             ..ServingRequest::default()
         };
         let mut facts = EngineFacts::default();

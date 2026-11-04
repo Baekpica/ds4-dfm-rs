@@ -527,7 +527,12 @@ fn mtp_open_options(
         options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
         options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
     }
-    options.push(ModelOpenOption::Gemma4(args.gemma4.clone()));
+    // The typed Gemma surface rides only when the family is Gemma-4 VQ or a
+    // knob was named; an unconditional option would sit after ServingBudget
+    // and change the option order every other family sees.
+    if matches!(family, Some(ds4_core::ModelFamily::Gemma4Vq)) || args.gemma4.explicit {
+        options.push(ModelOpenOption::Gemma4(args.gemma4.clone()));
+    }
     Ok(options)
 }
 
