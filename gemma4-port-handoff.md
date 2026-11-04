@@ -2,10 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 1bd4afe5 (docs(handoff): the P8 trial-gate next unit
-  and the reproduce paths), plus the uncommitted 4v work. 4v records the
-  P8 trial gate, the offload matrix, the discrete SSD path and the Phase 8
-  verify-head review. The twelve commits on top of d6ad9774 are
+last_updated_commit: cdbdf200 (docs(handoff): the P8 gate, the offload
+  matrix and the discrete SSD path), plus this handoff update. 4v records
+  the P8 trial gate, the offload matrix, the discrete SSD path and the
+  Phase 8 verify-head review; the phase plan carries the next unit (the
+  verify head) and the owner's last phase (--cpu-moe). The twelve commits
+  on top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
@@ -13,7 +15,8 @@ last_updated_commit: 1bd4afe5 (docs(handoff): the P8 trial-gate next unit
   2faef6c3 (the attention and dense-down round), 14f27345 (the token-tiled
   dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
-  followed by a7922215, 1bd4afe5 and the P8/SSD commits.
+  followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322
+  and cdbdf200.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
@@ -23,7 +26,7 @@ last_updated_commit: 1bd4afe5 (docs(handoff): the P8 trial-gate next unit
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T07:30:00+01:00
+handoff_written_at: 2026-11-04T08:00:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -2084,17 +2087,27 @@ Phase 3 — CLOSED (4t): the vocabulary head, RoPE and the router
 
 Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
 
-  P8 IN FLIGHT (4u). Closed: the exact wrapped-ring gate on the Spark
+  P8 IN FLIGHT (4u, 4v). Closed: the exact wrapped-ring gate on the Spark
   (1081 tokens, ring 1029, off/on identical), the default chunk-16 pair
   (self-consistent; the chunk dependence is the known grouped-prefill
-  trade), the serving checklist (pass, works 10), and the draft matrix
+  trade), the serving checklist (pass, works 10), the draft matrix
   (no MTP 6.75, draft 2 12.87, draft 4 15.99, draft 6 18.42 tok/s at ctx
-  1024; six drafts is the ceiling now, 7e67cf1b). Open: a real MTP trial
-  gate (the checklist's mtp row is still "no check yet"), the Gemma-owned
-  verify path (the verify still uses the shared Q4_K/GVQ linear), and the
-  serving-default speed number.
-  P9: tests/gemma4_serving_http_gate.sh.
-  P10: the HF release directory, the OSV scan, the pushes (owner's word).
+  1024; six drafts is the ceiling now, 7e67cf1b), and the real MTP trial
+  gate (d77cbc97; 24 tokens, 4.80 tokens/call, prefix/snapshot/stop/
+  sampling equal, default-path state drift 1.297).
+  Next unit (from phase8_att_agy.md): the Gemma-owned verify head plus
+  device argmax. Extend cuda/gemma4_head.cuh to 1..8 rows with the fused
+  softcap and bf16 staging, expose ds4_gpu_g4_head_rows, replace the
+  per-row ds4_gpu_gvq_linear loop in gemma4_mtp_verify with one call,
+  replace the 7.34 MB readback and host argmax with
+  ds4_gpu_argmax_rows_tensor over r->verify (28 B), and read only the kept
+  row (keep-1) from r->verify into s->logits in the commit. Measure
+  DS4_GEMMA4_HEAD_GEMV alone first (the 18.42 baseline ran it off); the
+  +12.5-15% roofline estimate is not measured. The exact-path byte gate
+  (DS4_GEMMA4_EXACT_PREFILL=1) and the serving-default speed number remain.
+  P9: tests/gemma4_serving_http_gate.sh (reworked 951f6322; needs a run).
+  P10: the HF release directory, the OSV scan (clean 2026-11-04: 1
+  manifest, 146 packages, 0 vulnerable), the pushes (owner's word).
   P11: the served-arm comparison and two-stage support in vq-gguf and the
   ds4 GVQ reader.
   Files: tests/gemma4_serving_http_gate.sh, docs/gemma4-vq.md, README.md,
@@ -2121,17 +2134,49 @@ Phase 4 — the per-GPU profile consumer (the owner's request)
   Gate: the 4070 profile selects the sweep's variant, the bench matches
   the sweep's ordering, and the wrong-GPU profile is refused by name.
 
-Phase 5 — SSD streaming on the GB10
+Phase 5 — SSD streaming: measured on both cards (4v)
 
-  The module is built and opt-in (4m). The unmeasured questions are the
-  slot hit rate, whether the 4 GiB default covers the working set (the
-  expert set is about 5.9 GiB), and the decode gain.
-  Files: ds4_gemma4_stream.inc, ds4.c (streaming arm),
-  crates/ds4-core/src/ssd.rs and serving_host.rs (admission and quote).
-  Gate: a GB10 run with the stream on and off at the same ctx, reporting
-  hit rate, bytes read and decode tok/s. The 4070 discrete-card stream map
-  is a separate unit: it needs a resident-span design, not coherent page
-  tables.
+  GB10, draft 6, 4 GiB pool: resident 424.08 prefill / 18.53 decode at ctx
+  1024 and 289.90 / 8.53 at ctx 8192; streamed 182.65 / 17.88 and 247.55 /
+  8.38. Streaming costs 57% and 14.6% of prefill and 3.5% / 1.8% of
+  decode, so it is a capacity lever, not a speed lever. The expert set is
+  7.03 GiB (the old 5.9 GiB comment is stale).
+  The 4070 discrete-card map is DONE (27221680, ds4_gemma4_map.inc):
+  resident spans device-resident, experts host-cold, one 128-byte device
+  range per cold record for the bind. Measured at ctx 1024, 4 GiB pool,
+  draft 6: resident 74.75 / 4.34 / 1.543 s; streamed 51.47 / 13.11 /
+  0.527; with DS4_WEIGHT_RESIDENCY_MTP=eager 51.54 / 13.28 / 0.515; the
+  frontier logits and greedy ids are bit-identical. A 3,840-slot pool
+  (7.01 GiB) fails the graph budget at ctx 1024 even with the drafter
+  host-pinned; 4 GiB is the operating point. The open follow-ups are in
+  offload_review.md: pinned staging, the mmap fast path, the 48-slot
+  verify-width pool, admission accounting, and the --ssd-streaming plus
+  --mtp map clobber.
+  Files: ds4_gemma4_stream.inc, ds4_gemma4_map.inc, ds4.c, ds4_cuda.cu,
+  ds4_gemma4_graph.inc, ds4_gpu.h, crates/ds4-core/src/ssd.rs and
+  serving_host.rs.
+
+Last phase — the llama.cpp-style --cpu-moe CPU-expert path (owner, 2026-11-04)
+
+  The owner's last-phase instruction: do what llama.cpp does with
+  --cpu-moe, i.e. keep the always-active parts on the GPU and compute the
+  routed experts on the CPU. The feasibility check (2026-11-04) found no
+  CPU GVQ decoder in this tree: every expert GEMV is CUDA
+  (cuda/gemma_vq_decode.cuh:74-93, cuda/gemma4_moe_fused.cuh:26-77), the
+  router is CUDA, and the family declares HostNeed::Cuda. The Rust vq3
+  oracle (crates/ds4-core/src/vq.rs:346-400) is a different container with
+  a per-row index window and is not wired to a forward.
+  The port would need: a host GVQ1/GVR1 header parse, the flat 12-bit plus
+  one-plane index decode, the 8192-word E4M3 book (64 KiB) and the
+  256-word residual book (2 KiB) per layer host-side, a GEMV that
+  reproduces the reference bf16 rounding and warp reduction order, and one
+  D2H/H2D of the 2816-wide row plus a sync per layer. That is a medium
+  port and it would lose byte identity, which the project's gates rely on.
+  The deciding measurement before committing to it: a standalone CPU GEMV
+  over one 408 KB expert record, to see whether 1.43 G weights per token
+  (240 experts x 3 matrices x 1.98 M) lands under the device path's ~94 ms.
+  The active-expert VRAM cache (Phase 5) is the mechanism already measured
+  on the 4070; --cpu-moe is the last phase, not the next unit.
 
 Phase 6 — RAM-resident experts (optional, capacity not speed)
 
