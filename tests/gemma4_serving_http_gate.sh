@@ -50,8 +50,8 @@
 #
 # Boot flags come from the source, not from habit:
 #   -c 2048 --mem-floor-gb 2   the serving line this family is documented with
-#        (gemma4-port-handoff.md:149-151: -m <release> --cuda -c 2048 --host
-#        127.0.0.1 --port <p> --mem-floor-gb 2, the gate's own lock file).
+#        (-m <release> --cuda -c 2048 --host 127.0.0.1 --port <p>
+#        --mem-floor-gb 2, the gate's own lock file).
 #        The 2 GiB floor is required on a 12 GiB card: 6.71 GiB of weights
 #        plus the default 4 GiB floor leaves no room for the context quote
 #        (docs/gemma4-vq.md "Limits and open work").
