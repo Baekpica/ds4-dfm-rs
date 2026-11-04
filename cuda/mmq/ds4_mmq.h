@@ -1474,6 +1474,16 @@ int ds4_mmq_q8_0_dense_vec(
     int           K,
     cudaStream_t  stream);
 
+/* Q4_K MMVQ for decode rows (N <= MMVQ_MAX_BATCH_SIZE, K % 256 == 0). */
+int ds4_mmq_q4_K_dense_vec(
+    const void  * W_q4_K,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 // Set the thread-local stream that the internal cuda pool uses for
 // cudaMallocAsync / cudaFreeAsync.  Defaults to cudaStreamPerThread.
 // Step 8 (CUDA Graphs) calls this with the capture stream so pool

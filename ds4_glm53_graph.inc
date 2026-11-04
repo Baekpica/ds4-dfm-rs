@@ -410,27 +410,60 @@ static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
     if (!g || !model || !fn || !scale || !base || !norm_weight || !residual_hc) { return false; }
     const uint32_t hc_dim = DS4_N_HC * DS4_N_EMBD;
     const uint32_t mix_dim = DS4_N_HC * (DS4_N_HC + 2u);
-    return ds4_gpu_rms_norm_plain_rows_tensor(g->hc_flat, residual_hc, hc_dim, rows, DS4_RMS_EPS) &&
-        plain_graph_matmul_tensor(g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, rows) &&
+    const int fused = fn->type == DS4_TENSOR_BF16 ? ds4_gpu_glm53_hc_mix(g->hc_mix, residual_hc,
+        model->map, model->size, fn->abs_offset, hc_dim, mix_dim, rows, DS4_RMS_EPS) : 0;
+    return fused >= 0 &&
+        (fused > 0 || (ds4_gpu_rms_norm_plain_rows_tensor(g->hc_flat, residual_hc, hc_dim, rows, DS4_RMS_EPS) &&
+            plain_graph_matmul_tensor(g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, rows))) &&
+        // One decode row fuses the split, weighted sum and RMS norm (same order).
+        (rows == 1u ? ds4_gpu_hc_split_weighted_sum_norm_tensor(g->cur, g->norm, g->hc_split, g->hc_mix,
+            residual_hc, model->map, model->size, scale->abs_offset, base->abs_offset,
+            norm_weight->abs_offset, DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, DS4_RMS_EPS) :
         ds4_gpu_hc_split_weighted_sum_tensor(g->cur, g->hc_split, g->hc_mix, residual_hc,
             model->map, model->size, scale->abs_offset, base->abs_offset,
             DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
         ds4_gpu_rms_norm_weight_rows_tensor(g->norm, g->cur, model->map, model->size,
-            norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS);
+            norm_weight->abs_offset, DS4_N_EMBD, rows, DS4_RMS_EPS));
+}
+
+// Q4_K decode rows take the GEMV; other widths keep the MMQ tile.
+static bool glm53_graph_mm(ds4_gpu_tensor *out, const ds4_model *model, const ds4_tensor *w,
+        uint32_t in_dim, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
+    const int done = w->type == DS4_TENSOR_Q4_K ? ds4_gpu_glm53_q4k_vec(out, x, model->map, model->size,
+        w->abs_offset, in_dim, out_dim, rows) : 0;
+    return done > 0 || (!done && plain_graph_matmul_tensor(out, model, w, in_dim, out_dim, x, rows));
+}
+
+// Rank-128 projections; the KDA chunk scratch is free until the recurrence.
+static bool glm53_graph_rank(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *out, const ds4_model *model,
+        const ds4_tensor *w, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
+    const int done = w->type == GLM53_QUANT_Q8 ? ds4_gpu_glm53_q8_small_k(out, x, g->kda_scratch,
+        model->map, model->size, w->abs_offset, DS4_N_KDA_HEAD_DIM, out_dim, rows) : 0;
+    return done > 0 || (!done && plain_graph_matmul_tensor(out, model, w, DS4_N_KDA_HEAD_DIM, out_dim, x, rows));
 }
 
 static bool glm53_graph_kda(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_layer_weights *l, uint32_t il, uint32_t rows) {
     const uint32_t projection = DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
-    if (!plain_graph_matmul_tensor(g->q, model, l->kda_q, DS4_N_EMBD, projection, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->k, model, l->kda_k, DS4_N_EMBD, projection, g->norm, rows) ||
+    if (!glm53_graph_mm(g->q, model, l->kda_q, DS4_N_EMBD, projection, g->norm, rows) ||
+        !glm53_graph_mm(g->k, model, l->kda_k, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->v, model, l->kda_v, DS4_N_EMBD, projection, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->q_rank, model, l->kda_f_a, DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->heads, model, l->kda_f_b, DS4_N_KDA_HEAD_DIM, projection, g->q_rank, rows) ||
+        !glm53_graph_rank(g, g->heads, model, l->kda_f_b, projection, g->q_rank, rows) ||
         !plain_graph_matmul_tensor(g->kv_rank, model, l->kda_beta, DS4_N_EMBD, DS4_N_HEAD, g->norm, rows) ||
         !plain_graph_matmul_tensor(g->q_rank, model, l->kda_g_a, DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, g->norm, rows) ||
-        !plain_graph_matmul_tensor(g->ffn_gate, model, l->kda_g_b, DS4_N_KDA_HEAD_DIM, projection, g->q_rank, rows)) {
+        !glm53_graph_rank(g, g->ffn_gate, model, l->kda_g_b, projection, g->q_rank, rows)) {
         return false;
+    }
+    // Prefill rows: tensor-core chunks with the gated head norm (forget -> heads).
+    const int mma = ds4_gpu_glm53_kda_mma(g->heads, g->kda_scratch, g->recurrent[il],
+        g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il], g->q, g->k, g->v,
+        g->heads, g->kv_rank, g->q_conv_weight[il], g->k_conv_weight[il], g->v_conv_weight[il],
+        g->decay_scale[il], g->dt_bias[il], g->ffn_gate, g->o_norm[il], rows, DS4_N_HEAD,
+        DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
+    if (mma < 0) { return false; }
+    if (mma > 0) {
+        return plain_graph_matmul_tensor(g->attn_out, model, l->kda_output, projection, DS4_N_EMBD, g->heads, rows);
     }
     const bool recurrence = rows == 1u
         ? ds4_gpu_glm53_kda_decode_tensor(g->ffn_up, g->recurrent[il],
@@ -495,9 +528,7 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
             g->idx_k, g->idx_gate, model->map, model->size, l->indexer_k_norm->abs_offset,
             l->indexer_k_norm_b->abs_offset, l->indexer_compressor_ape->abs_offset,
             pos0, rows, g->ctx_cap, GLM53_POOL_EPS) ||
-        !ds4_gpu_glm53_store_low(g->layer_kv[il], g->kv_rank_norm, rows, pos0, g->ctx_cap, DS4_N_KV_LORA) ||
-        !ds4_gpu_glm53_absorb_q(g->low_q, g->q, model->map, model->size,
-            l->attn_k_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) {
+        !ds4_gpu_glm53_store_low(g->layer_kv[il], g->kv_rank_norm, rows, pos0, g->ctx_cap, DS4_N_KV_LORA)) {
         return false;
     }
     ds4_gpu_tensor *selected = NULL;
@@ -509,21 +540,34 @@ static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g, const ds4_model *model,
         if (!plain_graph_matmul_tensor(g->idx_q, model, l->indexer_attn_q_b, DS4_N_LORA_Q,
                 (uint64_t)DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM, g->q_rank_norm, rows) ||
             !plain_graph_matmul_tensor(g->idx_weights, model, l->indexer_proj,
-                DS4_N_EMBD, DS4_N_INDEXER_HEAD, g->norm, rows) ||
-            !ds4_gpu_glm53_pool_score(g->idx_scores, g->idx_q, g->idx_weights,
-                g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD, scale) ||
+                DS4_N_EMBD, DS4_N_INDEXER_HEAD, g->norm, rows)) { return false; }
+        const int fused = ds4_gpu_glm53_index_mma(g->idx_scores, g->idx_q, g->idx_weights,
+            g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD);
+        if (fused < 0 || (!fused && !ds4_gpu_glm53_pool_score(g->idx_scores, g->idx_q, g->idx_weights,
+                g->layer_pool[il], pools, rows, pos0, DS4_N_INDEXER_HEAD, scale)) ||
             !ds4_gpu_indexer_topk_tensor(g->idx_pools, g->idx_scores, pools, rows, topk, 0u, UINT32_MAX) ||
             !ds4_gpu_glm53_pool_expand(g->idx_selected, g->idx_pools, rows, pos0,
                 topk, DS4_GLM53_INDEX_TOPK, DS4_GLM53_MAX_SELECTED)) { return false; }
         selected = g->idx_selected;
         stride = DS4_GLM53_MAX_SELECTED;
     }
-    return ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il], selected,
-        stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA) &&
-        ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
-            l->attn_v_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_VALUE_MLA) &&
-        plain_graph_matmul_tensor(g->attn_out, model, l->attn_output,
-            qdim, DS4_N_EMBD, g->heads, rows);
+    // Prefill rows borrow the KDA chunk scratch (idle in DSA layers) for F16 K_b/V_b.
+    const int fused = ds4_gpu_glm53_flash(g->heads, g->q, g->low_q, g->low_out, g->kda_scratch,
+        g->layer_kv[il], selected, stride, model->map, model->size, l->attn_k_b->abs_offset,
+        l->attn_v_b->abs_offset, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+    if (fused < 0) { return false; }
+    if (!fused) {
+        if (!ds4_gpu_glm53_absorb_q(g->low_q, g->q, model->map, model->size,
+                l->attn_k_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) { return false; }
+        // Decode rows keep their key-split partials in the (idle) KDA chunk scratch.
+        const int flash = ds4_gpu_glm53_flash_low(g->low_out, g->low_q, g->kda_scratch, g->layer_kv[il],
+            selected, stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA);
+        if (flash < 0 || (!flash && !ds4_gpu_glm53_attn_low(g->low_out, g->low_q, g->layer_kv[il],
+                selected, stride, rows, pos0, g->ctx_cap, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_KEY_MLA)) ||
+            !ds4_gpu_glm53_proj_v(g->heads, g->low_out, model->map, model->size,
+                l->attn_v_b->abs_offset, rows, DS4_N_HEAD, DS4_N_KV_LORA, DS4_N_VALUE_MLA)) { return false; }
+    }
+    return plain_graph_matmul_tensor(g->attn_out, model, l->attn_output, qdim, DS4_N_EMBD, g->heads, rows);
 }
 
 static bool glm53_graph_routed(ds4_glm53_gpu_graph *g, const ds4_model *model,

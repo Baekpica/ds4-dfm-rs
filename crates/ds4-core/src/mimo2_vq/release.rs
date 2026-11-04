@@ -7,10 +7,11 @@
 //! inventory's last tensor. Native maps the returned page-aligned shard
 //! plan; offsets stay file-backed.
 //!
-//! Two releases share this contract: RL (XiaomiMiMo/MiMo-V2.6-Flash-RL) and
+//! Three releases share this contract: RL (XiaomiMiMo/MiMo-V2.6-Flash-RL),
 //! UNCENSORED (dealignai's edition, which differs only in the o_proj of
-//! layers 34-47). UNCENSORED reuses RL's bytes for every part converted from
-//! identical sources and marks them `shared_with_rl`.
+//! layers 34-47) and MOPD (Xiaomi's MOPD post-training of RL, new experts,
+//! body and embedding). UNCENSORED and MOPD reuse RL's bytes for every part
+//! converted from identical sources and mark them `shared_with_rl`.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -42,12 +43,17 @@ const MOE_LAYERS: std::ops::RangeInclusive<u64> = 1..=47;
 const RL_REVISION: &str = "f657ba2f7d24c9adc5730675baaa2d34de878a49";
 
 /// The releases this contract admits: (model, source repo, revision).
-const RELEASES: [(&str, &str, &str); 2] = [
+const RELEASES: [(&str, &str, &str); 3] = [
     ("rl", "XiaomiMiMo/MiMo-V2.6-Flash-RL", RL_REVISION),
     (
         "unc",
         "dealignai/MiMo-V2.6-Flash-RL-UNCENSORED",
         "0bdb11d7f37d3f6939e53f822c2bff518e4852fa",
+    ),
+    (
+        "mopd",
+        "XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
+        "5220c3f513065a0426be5e094571cbed0983386e",
     ),
 ];
 
@@ -272,7 +278,7 @@ fn expert_part(name: &str, entry: &Value) -> Result<Option<u64>> {
 }
 
 /// The revision a part was converted from: the release's own, or RL's for
-/// an UNCENSORED part RL shares byte for byte.
+/// a part the release shares with RL byte for byte.
 fn part_revision<'a>(entry: &'a Value, revision: &str) -> Result<&'a str> {
     let own = text(entry, "source_revision")?;
     let shared = entry

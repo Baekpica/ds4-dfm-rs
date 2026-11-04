@@ -1,7 +1,8 @@
 //! MiMo-V2.6-Flash VQ (`mimo2_vq`) is its own artifact contract over the
 //! `mimo2` runtime. Byte layout: Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF
 //! FORMAT.md at 8a15b057a63dc34dacdf2bdb9970324bf1b0db88 (the UNCENSORED
-//! release at f1cd8523381bc0086178d6c146e2818f0211f0ed shares it). Routed
+//! release at f1cd8523381bc0086178d6c146e2818f0211f0ed and the MOPD release
+//! at 79ae75e5c9b45c23c2c9011f1d3af18262fcb3f9 share it). Routed
 //! experts are 13-bit GVQ1 matrices with GLM's GVR8 residual stage (R13+8)
 //! on 32 layers; the body is Q8_0 with source-precision norms, router and
 //! sinks. Besides the trunk the release has an `embedding` part (the BF16

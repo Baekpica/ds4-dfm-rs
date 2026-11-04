@@ -34,6 +34,49 @@ int ds4_gpu_glm53_proj_v(ds4_gpu_tensor *out,
         const ds4_gpu_tensor *low_out, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t rows, uint32_t heads,
         uint32_t latent_dim, uint32_t head_dim);
+/* Tensor-core attn_low (64 heads, 512 latents): 2+ rows, or 1-4 rows
+ * splitting keys when `scratch` (nullable) holds the partials. 1 done,
+ * 0 not covered (reference kernel applies), -1 failed. Both views are
+ * consumed as scratch; low_out receives the result. */
+int ds4_gpu_glm53_flash_low(ds4_gpu_tensor *low_out, ds4_gpu_tensor *low_q,
+        ds4_gpu_tensor *scratch, const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected,
+        uint32_t sel_stride, uint32_t rows, uint32_t pos0, uint32_t cap,
+        uint32_t heads, uint32_t latent_dim, uint32_t head_dim);
+/* The whole absorbed chain q -> heads for 16+ prefill rows: F16 K_b/V_b
+ * in `wscratch` (32 MiB), strided-batched GEMMs around the flash tile.
+ * low_q/low_out are scratch. 1 done, 0 not covered, -1 failed. */
+int ds4_gpu_glm53_flash(ds4_gpu_tensor *heads_out, const ds4_gpu_tensor *q,
+        ds4_gpu_tensor *low_q, ds4_gpu_tensor *low_out, ds4_gpu_tensor *wscratch,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        const void *model_map, uint64_t model_size, uint64_t k_b_offset, uint64_t v_b_offset,
+        uint32_t rows, uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
+        uint32_t head_dim);
+
+/* Q8_0 projection with K < 256 (KDA's rank-128 f_b/g_b) for 16+ rows:
+ * F32-widened weights in `scratch` and one SGEMM. 1/0/-1 as above. */
+int ds4_gpu_glm53_q8_small_k(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        ds4_gpu_tensor *scratch, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
+/* mHC RMS + 24 BF16 mapping dots of F32 residual rows in one pass. */
+int ds4_gpu_glm53_hc_mix(ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+        const void *model_map, uint64_t model_size, uint64_t fn_offset, uint32_t width,
+        uint32_t outputs, uint32_t rows, float eps);
+
+/* Prefill KDA (64+ rows) on tensor cores with the gated head norm fused:
+ * `out` may alias `forget`. 1 done, 0 not covered, -1 failed. */
+int ds4_gpu_glm53_kda_mma(ds4_gpu_tensor *out, ds4_gpu_tensor *scratch,
+        ds4_gpu_tensor *state, ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+        const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight, const ds4_gpu_tensor *v_weight,
+        const ds4_gpu_tensor *a_log, const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *norm, uint32_t rows, uint32_t heads, float lower_bound, float eps);
+
+/* One-row Q4_K projection on the MMVQ GEMV (decode). 1/0/-1 as above. */
+int ds4_gpu_glm53_q4k_vec(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows);
 
 /* Each four-token pool applies affine LayerNorm to each raw key, then
  * weights it with per-dimension softmax(gate + BF16 APE). Tails are F32
@@ -48,6 +91,11 @@ int ds4_gpu_glm53_pool_score(ds4_gpu_tensor *scores,
         const ds4_gpu_tensor *q, const ds4_gpu_tensor *weights,
         const ds4_gpu_tensor *pool_cache, uint32_t n_pools, uint32_t rows,
         uint32_t pos0, uint32_t heads, float scale);
+/* Tensor-core pool scores for 4+ rows and 32 heads (the scale is fixed at
+ * 1/sqrt(32 * 128)); 1 done, 0 not covered (pool_score applies), -1 failed. */
+int ds4_gpu_glm53_index_mma(ds4_gpu_tensor *scores, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *weights, const ds4_gpu_tensor *pool_cache, uint32_t n_pools,
+        uint32_t rows, uint32_t pos0, uint32_t heads);
 int ds4_gpu_glm53_pool_expand(ds4_gpu_tensor *selected,
         const ds4_gpu_tensor *pool_selected, uint32_t rows, uint32_t pos0,
         uint32_t selected_pools, uint32_t index_topk, uint32_t out_width);

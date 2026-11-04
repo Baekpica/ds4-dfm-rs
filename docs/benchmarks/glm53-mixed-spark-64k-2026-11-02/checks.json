@@ -1,0 +1,82 @@
+{
+ "cold_8k": {
+  "protocol": "ctx-start/max 8192, ctx-alloc 32768, 64 greedy tokens, MTP off, fresh workers, interleaved",
+  "base_8c2068b5": [
+   {
+    "prefill_tps": 215.89,
+    "gen_tps": 15.17
+   },
+   {
+    "prefill_tps": 215.98,
+    "gen_tps": 15.17
+   }
+  ],
+  "final_c3af8f97": [
+   {
+    "prefill_tps": 804.6,
+    "gen_tps": 19.05
+   },
+   {
+    "prefill_tps": 807.22,
+    "gen_tps": 19.06
+   }
+  ]
+ },
+ "nll_gates": {
+  "harness": "tests/glm53_nll (teacher-forced decode after a prefill), reference = all value-changing switches off",
+  "italian_8k_final": {
+   "reference_mean_nll": 2.23065,
+   "mean_nll": 2.22986,
+   "paired_d": -0.00079,
+   "se": 0.00875,
+   "top1": 273,
+   "reference_top1": 270,
+   "positions": 512
+  },
+  "italian_8k_chunk_floor": {
+   "reference_mean_nll": 2.23065,
+   "mean_nll": 2.22013,
+   "paired_d": -0.01052,
+   "se": 0.00875,
+   "top1": 271,
+   "reference_top1": 270,
+   "positions": 512
+  },
+  "italian_32k_final": {
+   "reference_mean_nll": 1.83468,
+   "mean_nll": 1.81931,
+   "paired_d": -0.01537,
+   "se": 0.0123,
+   "top1": 157,
+   "reference_top1": 160,
+   "positions": 256
+  },
+  "italian_32k_chunk_floor": {
+   "reference_mean_nll": 1.83468,
+   "mean_nll": 1.84806,
+   "paired_d": 0.01338,
+   "se": 0.01311,
+   "top1": 156,
+   "reference_top1": 160,
+   "positions": 256
+  },
+  "english_8k_final": {
+   "reference_mean_nll": 0.27126,
+   "mean_nll": 0.33177,
+   "paired_d": 0.06052,
+   "se": 0.04156,
+   "top1": 477,
+   "reference_top1": 483,
+   "positions": 512
+  },
+  "english_8k_chunk_floor": {
+   "reference_mean_nll": 0.27126,
+   "mean_nll": 0.36994,
+   "paired_d": 0.09868,
+   "se": 0.04343,
+   "top1": 475,
+   "reference_top1": 483,
+   "positions": 512
+  }
+ }
+}

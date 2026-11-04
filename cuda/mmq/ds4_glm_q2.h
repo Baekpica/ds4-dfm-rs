@@ -3,7 +3,8 @@
 #include <climits>
 #include <cstdint>
 
-enum class MoePolicy { Generic, GlmQ2Down };
+// GlmIq2: GLM's IQ2 gate/up/down take the pipelined 64-column worklist tile.
+enum class MoePolicy { Generic, GlmQ2Down, GlmIq2 };
 enum class MoeLayout { Raw, SoA };
 
 enum { GLM_Q2_SPARK_CC = 1210, GLM_Q2_TYPE = 10, GLM_Q2_M = 4096,
