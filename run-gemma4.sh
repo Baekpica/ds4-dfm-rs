@@ -45,11 +45,13 @@
 #                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
 #   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the eight measured fast options
 #                         (the attention round's four and Phase 3's four)
-#   DS4_GEMMA4_MMA        1 adds the tensor-core prefill attention
-#                         (DS4_GEMMA4_ATTN_MMA=1). Off by default: it is a
-#                         measured parity path, not bit identity; the pinned
-#                         gate's 8 greedy tokens match, the frontier KL is
-#                         8.6e-5, but the docs prompt diverges on a near-tie.
+#   DS4_GEMMA4_MMA        1 (default) adds the tensor-core prefill attention
+#                         (DS4_GEMMA4_ATTN_MMA=1); 0 keeps the tile kernel.
+#                         A measured parity path, not bit identity: the
+#                         pinned gate's 8 greedy tokens match and the
+#                         frontier KL is 8.6e-5, but the docs prompt
+#                         diverges on a near-tie and the logits relL2 is
+#                         1.7x over the design gate.
 #   DS4_GEMMA4_SPLIT      1 (default) adds the split-K decode attention
 #                         (DS4_GEMMA4_ATTN_SPLIT=1); 0 keeps the single-CTA
 #                         fast kernel. The per-key arithmetic is the fast
@@ -83,7 +85,7 @@ DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
-MMA="${DS4_GEMMA4_MMA:-0}"
+MMA="${DS4_GEMMA4_MMA:-1}"
 SPLIT="${DS4_GEMMA4_SPLIT:-1}"
 # The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
 # at 512, the native bind's own default. A wider chunk needs the MoE

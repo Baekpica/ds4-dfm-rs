@@ -188,8 +188,9 @@ registers, the softmax is f32 and online once per 32-key tile, P rounds to
 bf16 for the P*V mma, and the key loop starts at `(begin_all / 32) * 32` so
 a token sees the same tile sequence at every chunk size. The dispatch takes
 rows >= 16 and keys == 0 only; the MTP verify widths (2..8) stay on the
-bit-exact tile kernel. `DS4_GEMMA4_ATTN_MMA=1` enables it; it is off by
-default because it is a parity path, not a bit-identical one.
+bit-exact tile kernel. `DS4_GEMMA4_ATTN_MMA=1` enables it; the launcher turns
+it on by default (`DS4_GEMMA4_MMA=0` keeps the tile kernel). It is a parity
+path, not a bit-identical one, and the numbers below bound the trade.
 
 Synthetic parity (`tests/test_gemma4_primitives`, both geometries, rows
 16/17/64, first 0/1000/1025/4096/8192, ring, window, shared-prefix and
@@ -206,8 +207,9 @@ metric). On the longer repo-docs prompt the greedy text diverges after the
 first sentence (a near-tie word choice), and the frontier KL is 0.026 at
 256 tokens and 0.10 at 2,048. That is routing propagation, not a kernel
 error: the per-layer attention is four ten-thousandths away from the tile,
-and the MoE's top-8 is discontinuous. The path is therefore explicit,
-measured and off by default; the tile kernel remains the exact reference.
+and the MoE's top-8 is discontinuous. The path is explicit, measured and
+enabled by the launcher; the tile kernel remains the exact reference
+(`DS4_GEMMA4_MMA=0`).
 
 Measured on the Spark, ds4-bench, eight fast options, 17 greedy tokens:
 
@@ -219,6 +221,17 @@ Measured on the Spark, ds4-bench, eight fast options, 17 greedy tokens:
 The 13,447-token prefill falls from 43.5 s to 12.7 s of GPU work, and the
 9.66K open-grok prompt from about 34 s to about 10 s. Decode is unchanged
 because rows == 1 takes the decode kernel.
+
+Server end-to-end with the MMA prefill and the split-K decode (no MTP,
+bf16 KV, ctx 262144), old prefill/decode in parentheses:
+
+| prompt | prefill tok/s | decode tok/s | TTFT |
+|---|---:|---:|---:|
+| 1,696 | 911.8 | 26.23 | 1.86 s |
+| 6,459 | 944.3 | 19.28 | 6.84 s |
+| 11,668 | 856.7 | 19.05 | 13.62 s |
+| 13,557 | 837.4 (287.6) | 17.98 (4.55) | 16.19 s (47.17) |
+| 20,186 | 831.7 (232.7) | 17.20 (3.31) | 24.27 s (86.57) |
 
 ## Split-K decode attention
 

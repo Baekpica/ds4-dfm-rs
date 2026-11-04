@@ -2034,7 +2034,8 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   aligned to (begin_all / 32) * 32 for chunk invariance. The dispatch
   ds4_gpu_g4_attn_mma takes rows >= 16 and keys == 0 only; the MTP verify
   widths stay on the bit-exact tile kernel. DS4_GEMMA4_ATTN_MMA=1 enables
-  it (default off: parity path, not bit identity).
+  it; the launcher turns it on by default (DS4_GEMMA4_MMA=0 keeps the
+  tile kernel), with the parity numbers below bounding the trade.
 - Synthetic gate (tests/test_gemma4_primitives, both geometries, rows
   16/17/64, first 0/1000/1025/4096/8192, ring, window, shared-prefix and
   poisoned-slot cases): max abs error 1.4e-3 against g4_ref_attn, inside
@@ -2059,6 +2060,15 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   open-grok prompt from about 34 s to about 10 s. Decode is unchanged
   (rows == 1 uses the decode kernel). The 13.4K prefill clears the 1,000
   tok/s floor the owner set.
+- Server end-to-end with the MMA prefill and the split-K decode (no MTP,
+  bf16 KV, ctx 262144), old prefill/decode in parentheses:
+    1,696: 911.8 prefill / 26.23 decode, TTFT 1.86 s
+    6,459: 944.3 / 19.28, 6.84 s
+    11,668: 856.7 / 19.05, 13.62 s
+    13,557: 837.4 (287.6) / 17.98 (4.55), 16.19 s (47.17)
+    20,186: 831.7 (232.7) / 17.20 (3.31), 24.27 s (86.57)
+  The launcher now turns the MMA path on by default (DS4_GEMMA4_MMA=0
+  keeps the tile kernel); the parity numbers above bound the trade.
 - Spark binaries rebuilt (ds4, ds4-bench, ds4-server 13:44, and the probe
   build at 13:59); the server is restarted on the committed build with the
   eight-option launcher and draft 2. The worktree HEAD is still 341481b2.
