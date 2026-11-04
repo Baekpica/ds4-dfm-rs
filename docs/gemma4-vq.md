@@ -220,6 +220,36 @@ The 13,447-token prefill falls from 43.5 s to 12.7 s of GPU work, and the
 9.66K open-grok prompt from about 34 s to about 10 s. Decode is unchanged
 because rows == 1 takes the decode kernel.
 
+## Split-K decode attention
+
+`cuda/gemma4_attn_split.cuh` is the long-context decode fix. The fast decode
+kernel is one CTA per KV head: two CTAs on the five full layers and eight
+64-thread CTAs on the sliding ones, so most of the machine is idle while the
+key loop runs. The split kernel divides each KV head's visible key range
+across `splits = ceil(keys / 512)` CTAs (capped at 32), each running the fast
+kernel's own per-key dot and online softmax over its range and writing the
+unnormalized O plus (m, l). A combine kernel joins the partials with
+`m = max m_s`, `l = sum l_s * exp(m_s - m)` and
+`o = sum o_s * exp(m_s - m) / l`. The per-key arithmetic is unchanged; only
+the softmax combine order differs, so this is a parity path. The synthetic
+gate (sliding decode, ring wrap, full decode, shared prefix) measures max
+error 6.6e-7 against the reference. On the 24-token greedy check, 23 tokens
+are identical and the last word flips on a near-tie.
+
+Measured on the Spark, ds4-bench, eight fast options:
+
+| frontier | fast kernel | split-K | ratio | TTFT fast -> split |
+|---|---:|---:|---:|---:|
+| 2,048 | 12.59 | 20.01 | 1.59x | 83 -> 54 ms |
+| 13,447 | 4.81 | 18.96 | 3.94x | 211 -> 57 ms |
+
+MTP draft 6 at 13,447 moves 3.87 -> 6.40 tok/s with the split, but plain
+split decode at 18.96 still beats it by 3x: the seven-row verify is the
+remaining MTP cost and stays on the tile kernel. The long-context serving
+setting is therefore no MTP plus the split path; MTP remains a short-context
+tool. The launcher enables the split by default (`DS4_GEMMA4_SPLIT=0` keeps
+the single-CTA kernel).
+
 ## Lanes
 
 The family serves two lanes from the same binary.

@@ -630,6 +630,18 @@ static bool g4_attn_mma(void) {
     return on != 0;
 }
 
+/* Split-K decode attention (cuda/gemma4_attn_split.cuh), off by default
+ * (DS4_GEMMA4_ATTN_SPLIT=1). The per-key arithmetic is the fast kernel's;
+ * the combine order differs. */
+static bool g4_attn_split(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* Fused RMSNorm + RoPE, off by default (DS4_GEMMA4_FUSE_ROPE=1). The
  * arithmetic is the two-kernel sequence's; the option exists to A/B it. */
 static bool g4_fuse_rope(void) {
@@ -795,7 +807,11 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
             ring, capacity), "key cache store");
         G4_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows, kv_width,
             ring, capacity), "value cache store");
-        if (rows == 1u && g4_attn_fast()) {
+        if (rows == 1u && g4_attn_split()) {
+            G4_STEP(ds4_gpu_g4_attn_split(g->attn, g->q, g->kcache[il], g->vcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
+                ring, 0u), "attention");
+        } else if (rows == 1u && g4_attn_fast()) {
             G4_STEP(ds4_gpu_g4_attn_fast(g->attn, g->q, g->kcache[il], g->vcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
                 ring, 0u), "attention");

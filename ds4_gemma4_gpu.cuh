@@ -21,6 +21,7 @@
 #include "cuda/gemma_vq_decode.cuh"
 #include "cuda/gemma_vq_prefill.cuh"
 #include "cuda/gemma4_attn_mma.cuh"
+#include "cuda/gemma4_attn_split.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
@@ -593,6 +594,58 @@ extern "C" int ds4_gpu_g4_attn_mma(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         return 0;
     }
     return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention");
+}
+
+/* Split-K decode attention (cuda/gemma4_attn_split.cuh): the fast kernel's
+ * per-key arithmetic over `splits` key ranges, joined by a combine kernel.
+ * One row only; the drafter's keys=start case is included. The scratch is
+ * one process-wide buffer, grown to the largest geometry the session asks
+ * for (the engine serializes calls). */
+extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
+        uint32_t ring, uint32_t keys) {
+    if (!out || !query || !key || !value || !positions || rows != 1u ||
+        !heads || !kv_heads || !dim || dim > 512u || (heads % kv_heads)) { return 0; }
+    const uint32_t group = heads / kv_heads;
+    if (group == 0u || group > 16u || group * 32u > 512u) { return 0; }
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (out->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        value->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        positions->bytes < sizeof(uint32_t)) { return 0; }
+    const uint32_t begin = window && first + 1u > window ? first + 1u - window : 0u;
+    const uint32_t last = keys && keys <= first ? keys - 1u : first;
+    if (begin > last) { return 0; }
+    uint32_t splits = (last - begin + 512u) / 512u;
+    if (splits < 1u) { splits = 1u; }
+    if (splits > G4_SPLIT_MAX) { splits = G4_SPLIT_MAX; }
+    const uint64_t partial_count = (uint64_t)splits * heads * dim;
+    const uint64_t stats_count = (uint64_t)splits * heads * 2u;
+    static float *scratch = nullptr;
+    static uint64_t scratch_floats = 0;
+    if (partial_count + stats_count > scratch_floats) {
+        if (scratch) { cudaFree(scratch); scratch = nullptr; }
+        if (cudaMalloc((void **)&scratch,
+                (partial_count + stats_count) * sizeof(float)) != cudaSuccess) {
+            return 0;
+        }
+        scratch_floats = partial_count + stats_count;
+    }
+    float *partial = scratch;
+    float *stats = scratch + partial_count;
+    const uint32_t shared = 2u * G4_SPLIT_TILE * dim * sizeof(__nv_bfloat16);
+    g4_attn_split_kernel<G4_SPLIT_TILE><<<dim3(kv_heads, splits), group * 32u,
+        shared, ds4_current_stream()>>>(partial, stats, (const float *)query->ptr,
+        (const __nv_bfloat16 *)key->ptr, (const __nv_bfloat16 *)value->ptr,
+        first, heads, kv_heads, dim, window, ring, keys, kv_stride, splits);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 split attention")) { return 0; }
+    g4_attn_split_combine_kernel<<<heads, 256u, 0u, ds4_current_stream()>>>(
+        (float *)out->ptr, partial, stats, heads, dim, splits);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 split attention combine");
 }
 
 /* ------------------------------------------------------- routed experts */

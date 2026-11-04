@@ -269,7 +269,11 @@ static bool gemma4_mtp_step(ds4_gemma4_mtp_runtime *r, const ds4_model *m,
          * Six draft steps per round made this the O(ctx) cost at long
          * context (Spark, ctx 13,447: draft 6 2.36 tok/s against 4.55 with
          * the drafter off). */
-        if (g4_attn_fast()) {
+        if (g4_attn_split()) {
+            G4M_STEP(ds4_gpu_g4_attn_split(r->attn, r->q, gemma4_shared_k(g, full),
+                gemma4_shared_v(g, full), g->positions, 1u, start, G4_MTP_HEADS, kv_heads,
+                dim, full ? 0u : G4_WINDOW, ring, start), "shared attention");
+        } else if (g4_attn_fast()) {
             G4M_STEP(ds4_gpu_g4_attn_fast(r->attn, r->q, gemma4_shared_k(g, full),
                 gemma4_shared_v(g, full), g->positions, 1u, start, G4_MTP_HEADS, kv_heads,
                 dim, full ? 0u : G4_WINDOW, ring, start), "shared attention");

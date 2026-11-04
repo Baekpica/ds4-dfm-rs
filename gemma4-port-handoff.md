@@ -2063,6 +2063,37 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   build at 13:59); the server is restarted on the committed build with the
   eight-option launcher and draft 2. The worktree HEAD is still 341481b2.
 
+4ac. Split-K decode attention: 3.94x at long context (2026-11-04)
+
+- cuda/gemma4_attn_split.cuh is new: the fast decode kernel's per-key dot
+  and online softmax over `splits = ceil(keys / 512)` key ranges (capped
+  at 32), each CTA writing unnormalized O plus (m, l); a combine kernel
+  joins them with m = max m_s, l = sum l_s exp(m_s - m), and
+  o = sum o_s exp(m_s - m) / l. The per-key arithmetic is the fast
+  kernel's; only the softmax combine order differs. The dispatch takes
+  rows == 1, including the drafter's keys=start case, and keeps one
+  process-wide scratch buffer.
+- Synthetic gate (sliding decode, ring wrap, full decode, shared prefix):
+  max error 6.6e-7 against g4_ref_attn. Model greedy check at ctx 2,048,
+  24 tokens: 23 identical, the last word flips on a near-tie ("a" vs
+  "the"). The path is near-exact, not bit-identical.
+- Spark, ds4-bench, eight fast options:
+    frontier 2,048: fast 12.59 -> split 20.01 gen tok/s (1.59x),
+                    TTFT 83 -> 54 ms
+    frontier 13,447: fast 4.81 -> split 18.96 gen tok/s (3.94x),
+                    TTFT 211 -> 57 ms
+  The fast kernel's two full-layer CTAs and eight 64-thread sliding CTAs
+  were the whole long-context decode bottleneck; the split fills the
+  machine. Prefill is unchanged (315.5 vs 311.4 at 13.4K, noise).
+- MTP draft 6 at 13,447 with the split: 3.87 -> 6.40 gen tok/s (1.65x),
+  but plain split decode (18.96) still beats it by 3x. The seven-row
+  verify is the remaining MTP cost and stays on the tile kernel. The
+  long-context serving setting is no MTP plus the split path; MTP remains
+  a short-context tool.
+- run-gemma4.sh enables the split by default (DS4_GEMMA4_SPLIT=0 keeps
+  the single-CTA fast kernel). The server is restarted without MTP so the
+  interactive lane gets the split decode.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it

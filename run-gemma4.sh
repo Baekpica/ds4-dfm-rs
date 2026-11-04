@@ -50,6 +50,12 @@
 #                         measured parity path, not bit identity; the pinned
 #                         gate's 8 greedy tokens match, the frontier KL is
 #                         8.6e-5, but the docs prompt diverges on a near-tie.
+#   DS4_GEMMA4_SPLIT      1 (default) adds the split-K decode attention
+#                         (DS4_GEMMA4_ATTN_SPLIT=1); 0 keeps the single-CTA
+#                         fast kernel. The per-key arithmetic is the fast
+#                         kernel's, the softmax combine order differs; the
+#                         synthetic gate is 6.6e-7 and 23 of 24 greedy
+#                         tokens match, so the launcher enables it.
 #   DS4_GEMMA4_LOG        server capture (default misc/scratch/gemma4-serve.log)
 #
 # The FP8 full-layer KV was verified on a short smoke against bf16; its
@@ -78,6 +84,7 @@ MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-0}"
+SPLIT="${DS4_GEMMA4_SPLIT:-1}"
 # The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
 # at 512, the native bind's own default. A wider chunk needs the MoE
 # workspace to follow it (ds4_gemma4_graph.inc); 8,192 still fails in the
@@ -122,6 +129,7 @@ fast_envs() {
                 "DS4_GEMMA4_HEAD_GEMV=0" "DS4_GEMMA4_ROUTER_DOT=0" )
   fi
   if [ "$MMA" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_MMA=1" ); fi
+  if [ "$SPLIT" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_SPLIT=1" ); fi
 }
 
 check_env() {
