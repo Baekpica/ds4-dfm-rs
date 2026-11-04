@@ -2,8 +2,12 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 6cebfe4f (feat(gemma4-vq): SSD expert stream on the
-  server, full 262144 context on the 4070), plus this handoff update.
+last_updated_commit: 5bda5aac (perf(gemma4-vq): full-layer split-K decode
+  on tensor cores), plus this handoff update.
+  4ai records the tensor-core full-layer split (synthetic max error
+  4.8e-6 on sm_89 and 4.7e-6 on sm_121; greedy 32-token sequences
+  identical at ctx 256, 1,024 and 13,447; the 13,447 frontier dump
+  byte-identical; +2.5 percent at 256, +3.0 at 1,024, +9.5 at 13,447).
   4ag records the uncapped split-K span (default 128: 35.81 vs 29.14 at
   ctx 256, 34.16 vs 24.73 at 1,024, 30.66 vs 22.95 at 13,447; the 32
   split cap is gone and the combine uses dynamic shared memory; 64-token
@@ -60,11 +64,12 @@ last_updated_commit: 6cebfe4f (feat(gemma4-vq): SSD expert stream on the
   uncommitted files alone.
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
   long-context sources rsynced and built (ds4, ds4-bench, ds4-server
-  19:35 on 2026-11-04). It serves
-  0.0.0.0:8889 (pid 154108, started 19:35:25, ctx 262144,
+  19:13 on 2026-11-04, the split-MMA round). It serves
+  0.0.0.0:8889 (pid 163167, started 20:25:41, ctx 262144,
   bf16 KV, prefill chunk 2,048, the
-  eight fast options, the MMA prefill, the split-K decode at span 128 and
-  the persistent MoE by default, no MTP, no Q4_K decode). End-to-end
+  eight fast options, the MMA prefill, the split-K decode at span 128
+  with the tensor-core full-layer kernel and the persistent MoE by
+  default, no MTP, no Q4_K decode). End-to-end
   13,557 tokens: 837.4 prefill / 17.98 decode,
   TTFT 16.19 s; 20,186: 831.7 / 17.20, 24.27 s. The script defaults
   2,048 on aarch64 and 512 on x86_64. Model at
@@ -72,22 +77,27 @@ last_updated_commit: 6cebfe4f (feat(gemma4-vq): SSD expert stream on the
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T20:05:00+01:00
+handoff_written_at: 2026-11-04T20:33:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-0. Session state after the span and SSD round (2026-11-04, late night)
+0. Session state after the span, SSD and full-layer MMA round (2026-11-04, late night)
 
 The decode review's ranks 1 and 3 are landed and measured: the persistent
 layer-book MoE decode (4ae, f1db7f61) and the Gemma-owned Q4_K decode
 (4af, e51b564d). Rank 2's first half landed as 4ag (415b6919): the split
 span is a knob with no cap and the default is 128. 4ah (6cebfe4f) makes
 the native discrete SSD stream usable through the server and runs the
-4070 at the full 262144 context from /home/leandro/models. A fresh
-session starts from this block.
+4070 at the full 262144 context from /home/leandro/models. 4ai
+(5bda5aac) is rank 2's second half: the full layers run the split on
+tensor cores, +9.5 percent decode at 13,447 with identical greedy tokens
+and a byte-identical frontier dump. A fresh session starts from this
+block.
 
 Commits on feat/gemma4-family (newest first):
-  (this handoff)  docs: the span and SSD rounds
+  5bda5aac  cuda/gemma4_attn_split_mma.cuh, the tensor-core full-layer
+            split decode
+  (this handoff)  docs: the full-layer split-MMA round
   6cebfe4f  the server's Gemma SSD lane (launcher, two family gates, the
             resident charge)
   415b6919  cuda/gemma4_attn_split.cuh, the uncapped span (default 128)
@@ -124,8 +134,10 @@ invocation is
 The serve status line prints base_url 127.0.0.1:8099 (a display bug); the
 listen address is 0.0.0.0:8889 and /v1/models answers there.
 
-Server: this machine's 4070 SUPER, 127.0.0.1:8099, pid 3281708 started
-19:53:19 with the SSD lane: model /home/leandro/models/gguf-family-it-r8
+Server: this machine's 4070 SUPER, 127.0.0.1:8099, pid 3290680 started
+20:28:18 with the SSD lane on the 5bda5aac build. The earlier pid
+3281708 was no longer running when this round began, so the endpoint was
+restarted with the same lane: model /home/leandro/models/gguf-family-it-r8
 (the fast-disk copy), ctx 262144, E4M3 full-layer KV, span 128, the eight
 fast options, the persistent MoE, --ssd-streaming with a 4GB expert cache.
 The quote is 10.90 GiB of 11.89 available; the log reports 2.35 GiB
@@ -215,12 +227,11 @@ cuda/gemma4_attn_mma.cuh for the full-layer MMA; skip iquest_decode.cuh;
 defer VQ_tools.
 
 Next units, in the agreed order:
-1. Rank 2's second half: the full-layer MMA packing the 8 q heads of a KV
-   head into rows 0-7 of m16n8k16, keeping the split path. The span half
-   landed as 4ag; 64, 32 and 16 still need their 13,447 points (they beat
-   128 at 256 and 1,024, so the default may move once measured).
+1. Rank 2 is complete (4ag span, 4ai full-layer MMA). The remaining
+   unmeasured points are spans 64, 32 and 16 at 13,447: they beat 128 at
+   256 and 1,024, so the default may still move once measured.
 2. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving.
-3. Re-profile the decode after 4ag: the span change moved the attention
+3. Re-profile the decode after 4ag and 4ai: both moved the attention
    bucket, so the ctx-256 step and the 13,447 split need a fresh profile.
 4. The SSD lane is live on the 4070 but unqualified (the plan says so):
    no sustained or long-context decode measurement yet; the 4v numbers
@@ -235,6 +246,9 @@ persistent pass leaves the two launches plus their book staging and the
 split what is left between the MoE and the rest.
 
 Reproduce:
+- Benchmarks run on the Spark only. The 4070 is the serving and
+  manual-test lane (the local endpoint on 127.0.0.1:8099); the owner
+  asked on 2026-11-04 that no benchmark run there.
 - The profile script is /tmp/g4decprof2.sh on the Spark (four nsys runs:
   ctx 256 and 13,447 at gen 0 and 8); /tmp/g4decsum2.py reduces the
   gen8-minus-gen0 deltas.
@@ -246,6 +260,10 @@ Reproduce:
   make test-gemma4-moe-persist.
 - The pinned gate, the synthetic tests and the fallbacks are unchanged
   (4ab, 4ac).
+- The split-MMA gate is /tmp/g4smma_gate.sh (ctx 256 and 1,024, scalar
+  against MMA, token diff), /tmp/g4smma_14k.sh (the 13,447 A/B) and
+  /tmp/g4smma_14k_dump.sh (the same pair with frontier dumps), all on the
+  Spark; the synthetic cases are in make test-gemma4-primitives.
 
 ---
 
@@ -2510,6 +2528,51 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   long-context decode measurement of this lane yet (4v is ctx 1,024:
   51.47 prefill / 13.11 gen). The 4GB cache is the 4v operating point,
   not re-tuned here.
+
+4ai. Rank 2's second half: full-layer split-K decode on tensor cores (2026-11-04)
+
+- What landed. cuda/gemma4_attn_split_mma.cuh replaces the per-split
+  kernel on the full layers (D = 512, group = 8) with m16n8k16: the eight
+  query heads of a KV head in M rows 0-7, the key tile in N, head_dim 512
+  in K, and P V as a second MMA over 64-key tiles with P rounded to bf16.
+  K and V share one 64-key staging buffer; Q is staged once as 16 rows
+  (8-15 zero) and read through ldmatrix. The online softmax crosses the 8
+  warps through two 8x8 shared reductions and rescales once per 64-key
+  tile instead of once per key. The split count, the partial/stats
+  layout and the combine kernel are the scalar path's, so the two arms
+  differ only in the per-split kernel. The option is
+  DS4_GEMMA4_ATTN_SPLIT_MMA (default off in the binary, 1 in the
+  launcher when SPLIT=1; DS4_GEMMA4_ATTN_SPLIT_MMA=0 restores the scalar
+  per-key kernel).
+- Scope: only the bf16 full-layer KV path. With DS4_GEMMA4_FULL_KV=fp8
+  the graph routes the full layers to ds4_gpu_g4_attn_fp8 and never calls
+  the split function, so the 4070's default lane is unchanged; the
+  sliding layers (group 2, D 256) stay on the scalar split kernel.
+- Synthetic gate (tests/test_gemma4_primitives, 8 new cases: span
+  512/128/96, ring wrap, shared prefix, single key, 64-key tile edges):
+  max error 4.8e-6 on sm_89 (4070) and 4.7e-6 on sm_121 (GB10), inside
+  the 2.5e-3 class-B gate. The unaligned span 96 case is the one that
+  exercises split boundaries inside a 64-key tile.
+- Model gate (Spark, ds4-bench, eight fast options, span 128): the 32
+  greedy tokens are identical at ctx 256, 1,024 and 13,447, and the
+  frontier logits dump at 13,447 is byte-identical between the scalar
+  split and the MMA split (cmp of frontier_013447.logits.json). The
+  class-B rounding is below the bf16 activation grid, so the model sees
+  the same frontier.
+- A/B (same run, gen 32): ctx 256 27.60 -> 28.29 tok/s (1.025x), ctx
+  1,024 26.62 -> 27.41 (1.030x), ctx 13,447 24.09 -> 26.38 (1.095x,
+  3.6 ms/step). The review's rank 2 estimate was larger because it
+  priced the scalar full-layer attention at 11.3 ms; the span-128
+  default and the persistent MoE had already removed part of that
+  bucket, and the remaining attention is more bandwidth-bound than the
+  estimate assumed. The attention bucket was not re-profiled with nsys
+  after this change; the bench A/B is the measured gate.
+- Launcher: SPLIT=1 now appends DS4_GEMMA4_ATTN_SPLIT_MMA=1 (override
+  with DS4_GEMMA4_ATTN_SPLIT_MMA=0 in the environment). The launcher
+  comment block and docs/gemma4-vq.md carry the measured table.
+- Commits: the code is 5bda5aac (local until the owner's word for a
+  push); this handoff follows it. The branch was at 3c89d43c when the
+  round started.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
