@@ -176,6 +176,50 @@ one), the two direct VQ expert GEMMs 14.7 percent, the batched dense Q8 down
 sliding tile 47 ms. The attention kernel, not the expert GEMM, is the next
 prefill lever.
 
+## Tensor-core prefill attention
+
+`cuda/gemma4_attn_mma.cuh` is the Phase 8 kernel: one template per geometry,
+`<256, 2>` sliding and `<512, 8>` full, one CTA per (KV head, row tile), 8
+warps, 32-key tiles. The sliding CTA covers 64 tokens (8 tokens x 2 query
+heads per warp, full D = 256, 32 KiB shared). The full CTA covers 8 tokens
+(2 tokens x 8 query heads per warp, two warps per M group split D = 512 into
+two 256-dim halves, 32 KiB K/V plus 16 KiB score exchange). Q stays in
+registers, the softmax is f32 and online once per 32-key tile, P rounds to
+bf16 for the P*V mma, and the key loop starts at `(begin_all / 32) * 32` so
+a token sees the same tile sequence at every chunk size. The dispatch takes
+rows >= 16 and keys == 0 only; the MTP verify widths (2..8) stay on the
+bit-exact tile kernel. `DS4_GEMMA4_ATTN_MMA=1` enables it; it is off by
+default because it is a parity path, not a bit-identical one.
+
+Synthetic parity (`tests/test_gemma4_primitives`, both geometries, rows
+16/17/64, first 0/1000/1025/4096/8192, ring, window, shared-prefix and
+poisoned-slot cases): max absolute error 1.4e-3 against `g4_ref_attn`,
+inside the Phase 8 tolerance (2.5e-3). A one-layer probe on the real model
+(`DS4_GEMMA4_ATTN_CMP=1`, layer 0 sliding and layer 5 full, ctx 256) measures
+the attention output against the tile kernel at relL2 4.05e-4 and 3.94e-4.
+
+The model gate on the pinned 256-token prompt is exact for the design's
+eight greedy tokens `[6113, 1698, 236761, 28333, 506, 877, 6910, 3136]`,
+with KL(tile || mma) 8.6e-5 and relL2 0.101 (the KL gate is 5e-3; the relL2
+gate of 6e-2 is 1.7x over, the logits' tanh-30 scale is harsh on that
+metric). On the longer repo-docs prompt the greedy text diverges after the
+first sentence (a near-tie word choice), and the frontier KL is 0.026 at
+256 tokens and 0.10 at 2,048. That is routing propagation, not a kernel
+error: the per-layer attention is four ten-thousandths away from the tile,
+and the MoE's top-8 is discontinuous. The path is therefore explicit,
+measured and off by default; the tile kernel remains the exact reference.
+
+Measured on the Spark, ds4-bench, eight fast options, 17 greedy tokens:
+
+| frontier | tile prefill tok/s | MMA prefill tok/s | ratio | decode |
+|---|---:|---:|---:|---:|
+| 2,048 | 576.1 | 977.1 | 1.70x | 12.6 (both) |
+| 13,447 | 309.5 | 1,061.4 | 3.43x | 4.82 (both) |
+
+The 13,447-token prefill falls from 43.5 s to 12.7 s of GPU work, and the
+9.66K open-grok prompt from about 34 s to about 10 s. Decode is unchanged
+because rows == 1 takes the decode kernel.
+
 ## Lanes
 
 The family serves two lanes from the same binary.

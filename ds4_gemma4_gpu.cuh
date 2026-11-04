@@ -20,6 +20,7 @@
 #include "cuda/gemma4_attn_tile.cuh"
 #include "cuda/gemma_vq_decode.cuh"
 #include "cuda/gemma_vq_prefill.cuh"
+#include "cuda/gemma4_attn_mma.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
@@ -549,6 +550,49 @@ extern "C" int ds4_gpu_g4_attn_tile(ds4_gpu_tensor *out, const ds4_gpu_tensor *q
             rows, first, heads, kv_heads, dim, window, ring, keys, kv_stride, rtile);
     }
     return cuda_ok(cudaGetLastError(), "Gemma-4 tiled prefill attention");
+}
+
+/* Tensor-core prefill attention (Phase 8): the two specializations of
+ * cuda/gemma4_attn_mma.cuh. Only the trunk's prefill chunk (keys = 0) and
+ * rows >= 16; the MTP verify widths (2..8) stay on the bit-exact tile
+ * kernel, and the parity gate is the model's greedy/frontier check. */
+extern "C" int ds4_gpu_g4_attn_mma(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
+        uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
+        uint32_t ring, uint32_t keys) {
+    if (!out || !query || !key || !value || !positions || rows < 16u || keys ||
+        heads != 16u || !kv_heads || (heads % kv_heads) || (dim != 256u && dim != 512u)) {
+        return 0;
+    }
+    const uint64_t kv_stride = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        key->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        value->bytes < capacity * kv_stride * sizeof(__nv_bfloat16) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    if (dim == 256u && kv_heads == 8u) {
+        const uint32_t shared = 2u * G4_MMA_TK * dim * sizeof(__nv_bfloat16);
+        const uint32_t rtile = 64u;
+        g4_attn_mma_slide_kernel<<<dim3(kv_heads, (rows + rtile - 1u) / rtile),
+            G4_MMA_THREADS, shared, ds4_current_stream()>>>((float *)out->ptr,
+            (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
+            (const __nv_bfloat16 *)value->ptr, rows, first, heads, kv_heads,
+            window, ring, keys, kv_stride);
+    } else if (dim == 512u && kv_heads == 2u) {
+        const uint32_t shared = G4_MMA_TK * dim * sizeof(__nv_bfloat16) +
+            4u * 2u * 16u * 32u * sizeof(float);
+        const uint32_t rtile = 8u;
+        g4_attn_mma_full_kernel<<<dim3(kv_heads, (rows + rtile - 1u) / rtile),
+            G4_MMA_THREADS, shared, ds4_current_stream()>>>((float *)out->ptr,
+            (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
+            (const __nv_bfloat16 *)value->ptr, rows, first, heads, kv_heads,
+            window, ring, keys, kv_stride);
+    } else {
+        return 0;
+    }
+    return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention");
 }
 
 /* ------------------------------------------------------- routed experts */

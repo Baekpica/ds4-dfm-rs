@@ -618,6 +618,18 @@ static bool g4_attn_prefill(void) {
     return on != 0;
 }
 
+/* Tensor-core prefill attention (cuda/gemma4_attn_mma.cuh), off by default
+ * (DS4_GEMMA4_ATTN_MMA=1). It is the parity-gated path, not the bit-exact
+ * one: the MTP verify widths stay on the tile kernel. */
+static bool g4_attn_mma(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_MMA");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* Fused RMSNorm + RoPE, off by default (DS4_GEMMA4_FUSE_ROPE=1). The
  * arithmetic is the two-kernel sequence's; the option exists to A/B it. */
 static bool g4_fuse_rope(void) {
@@ -787,6 +799,39 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
             G4_STEP(ds4_gpu_g4_attn_fast(g->attn, g->q, g->kcache[il], g->vcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
                 ring, 0u), "attention");
+        } else if (rows >= 16u && g4_attn_mma()) {
+            G4_STEP(ds4_gpu_g4_attn_mma(g->attn, g->q, g->kcache[il], g->vcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,
+                ring, 0u), "attention");
+            if (getenv("DS4_GEMMA4_ATTN_CMP") && (il == 0u || il == 5u)) {
+                /* One-layer parity probe: run the tile kernel on the same Q/K/V
+                 * and report the attention output's distance. The model gate
+                 * (frontier logits) cannot say whether a drift is the kernel
+                 * or its propagation through 30 layers. */
+                const uint64_t bytes = (uint64_t)rows * heads_width * sizeof(float);
+                ds4_gpu_tensor *cmp = ds4_gpu_tensor_alloc(bytes);
+                if (cmp && ds4_gpu_g4_attn_tile(cmp, g->q, g->kcache[il], g->vcache[il],
+                        g->positions, rows, first, G4_HEADS, kv, dim,
+                        full ? 0u : G4_WINDOW, ring, 0u)) {
+                    float *a = (float *)malloc((size_t)bytes);
+                    float *b = (float *)malloc((size_t)bytes);
+                    if (a && b && ds4_gpu_tensor_read(g->attn, 0, a, bytes) &&
+                        ds4_gpu_tensor_read(cmp, 0, b, bytes)) {
+                        double num = 0.0, den = 0.0, mx = 0.0;
+                        for (uint64_t i = 0; i < (uint64_t)rows * heads_width; i++) {
+                            const double d = (double)a[i] - (double)b[i];
+                            num += d * d;
+                            den += (double)b[i] * b[i];
+                            if (fabs(d) > mx) { mx = fabs(d); }
+                        }
+                        fprintf(stderr, "ds4: G4 L%u attn mma-vs-tile relL2 %.6g max %.6g\n",
+                            il, sqrt(num / (den > 0.0 ? den : 1.0)), mx);
+                    }
+                    free(a);
+                    free(b);
+                }
+                if (cmp) { ds4_gpu_tensor_free(cmp); }
+            }
         } else if (rows > 1u && g4_attn_prefill()) {
             G4_STEP(ds4_gpu_g4_attn_tile(g->attn, g->q, g->kcache[il], g->vcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, full ? 0u : G4_WINDOW,

@@ -7,6 +7,7 @@
 #include <cmath>
 #include "../cuda/gemma4_primitives.cuh"
 #include "../cuda/gemma4_attn.cuh"
+#include "../cuda/gemma4_attn_mma.cuh"
 #include "../ds4_gemma4_plan.h"
 
 #define CUDA_OK(call) do { cudaError_t e_=(call); if(e_!=cudaSuccess){ \
@@ -235,7 +236,7 @@ static void router_test() {
     uint32_t *di; float *dw;
     CUDA_OK(cudaMalloc(&di,rows*k*sizeof(uint32_t)));
     CUDA_OK(cudaMalloc(&dw,rows*k*sizeof(float)));
-    g4_router_kernel<<<rows,experts>>>(di,dw,dl,dp,rows,experts,k); CUDA_OK(cudaGetLastError());
+    g4_router_kernel<false><<<rows,experts>>>(di,dw,dl,dp,rows,experts,k); CUDA_OK(cudaGetLastError());
     std::vector<uint32_t> got_index(rows*k); std::vector<float> got_weight(rows*k);
     CUDA_OK(cudaMemcpy(got_index.data(),di,got_index.size()*sizeof(uint32_t),cudaMemcpyDeviceToHost));
     CUDA_OK(cudaMemcpy(got_weight.data(),dw,got_weight.size()*sizeof(float),cudaMemcpyDeviceToHost));
@@ -299,9 +300,94 @@ static void attn_case(const char *name,unsigned rows,unsigned first,unsigned hea
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
 }
 
+/* The tensor-core prefill kernel, sliding geometry <256, 2>. Same inputs
+ * and reference as attn_case; the gate is the Phase 8 parity tolerance
+ * (Agy_phase8_review.md section 4.3), not bit identity. */
+static void attn_mma_case(const char *name,unsigned rows,unsigned first,unsigned heads,
+        unsigned kv_heads,unsigned dim,unsigned window,unsigned ring,unsigned keys=0u) {
+    const unsigned capacity=ring?ring:first+rows;
+    const uint64_t stride=(uint64_t)kv_heads*dim;
+    std::vector<float> keys_(capacity*stride),values(capacity*stride);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    std::vector<__nv_bfloat16> key16(keys_.size()),value16(values.size());
+    const unsigned filled=keys?keys:first+rows;
+    const unsigned oldest=(ring&&filled>ring)?filled-ring:0u;
+    for(unsigned p=oldest;p<filled;p++) {
+        const uint64_t slot=ring?p%capacity:p;
+        for(uint64_t j=0;j<stride;j++) {
+            const uint64_t k=(uint64_t)p*stride+j;
+            keys_[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
+            values[slot*stride+j]=g4_ref_bf16(value((unsigned)((k+7)%65536))*0.9f);
+            key16[slot*stride+j]=__float2bfloat16_rn(keys_[slot*stride+j]);
+            value16[slot*stride+j]=__float2bfloat16_rn(values[slot*stride+j]);
+        }
+    }
+    if(keys) {
+        const uint64_t slot=ring?first%capacity:first;
+        for(uint64_t j=0;j<stride;j++) {
+            keys_[slot*stride+j]=key16[slot*stride+j]=1.0e4f;
+            values[slot*stride+j]=value16[slot*stride+j]=-1.0e4f;
+        }
+    }
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),keys_.data(),values.data(),rows,first,heads,kv_heads,dim,window,capacity,ring,keys);
+    float *dq=device(query),*out;
+    __nv_bfloat16 *dk=device(key16),*dv=device(value16);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned rtile=64;
+    const unsigned shared=2u*32u*dim*sizeof(__nv_bfloat16);
+    g4_attn_mma_slide_kernel<<<dim3(kv_heads,(rows+rtile-1)/rtile),256,shared>>>(
+        out,dq,dk,dv,rows,first,heads,kv_heads,window,ring,keys,stride);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,2.5e-3f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
+}
+
+/* The tensor-core prefill kernel, full geometry <512, 8>. The two halves
+ * of each M group exchange partial scores; the gate is the same parity
+ * tolerance as the sliding case. */
+static void attn_mma_full_case(const char *name,unsigned rows,unsigned first,unsigned heads,
+        unsigned kv_heads,unsigned dim,unsigned ring,unsigned keys=0u) {
+    const unsigned capacity=ring?ring:first+rows;
+    const uint64_t stride=(uint64_t)kv_heads*dim;
+    std::vector<float> keys_(capacity*stride),values(capacity*stride);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    std::vector<__nv_bfloat16> key16(keys_.size()),value16(values.size());
+    const unsigned filled=keys?keys:first+rows;
+    const unsigned oldest=(ring&&filled>ring)?filled-ring:0u;
+    for(unsigned p=oldest;p<filled;p++) {
+        const uint64_t slot=ring?p%capacity:p;
+        for(uint64_t j=0;j<stride;j++) {
+            const uint64_t k=(uint64_t)p*stride+j;
+            keys_[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
+            values[slot*stride+j]=g4_ref_bf16(value((unsigned)((k+7)%65536))*0.9f);
+            key16[slot*stride+j]=__float2bfloat16_rn(keys_[slot*stride+j]);
+            value16[slot*stride+j]=__float2bfloat16_rn(values[slot*stride+j]);
+        }
+    }
+    if(keys) {
+        const uint64_t slot=ring?first%capacity:first;
+        for(uint64_t j=0;j<stride;j++) {
+            keys_[slot*stride+j]=key16[slot*stride+j]=1.0e4f;
+            values[slot*stride+j]=value16[slot*stride+j]=-1.0e4f;
+        }
+    }
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),keys_.data(),values.data(),rows,first,heads,kv_heads,dim,0,capacity,ring,keys);
+    float *dq=device(query),*out;
+    __nv_bfloat16 *dk=device(key16),*dv=device(value16);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned rtile=8;
+    const unsigned shared=32u*dim*sizeof(__nv_bfloat16)+4u*2u*16u*32u*sizeof(float);
+    g4_attn_mma_full_kernel<<<dim3(kv_heads,(rows+rtile-1)/rtile),256,shared>>>(
+        out,dq,dk,dv,rows,first,heads,kv_heads,0u,ring,keys,stride);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,2.5e-3f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
+}
+
 static void attn_test() {
-    attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
-    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
     attn_case("attn_full_decode",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0);
     attn_case("attn_full_prefill",4,100,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0);
     /* Wrapped ring: a decode at 4096 in a window+cap cache reads slots
@@ -322,6 +408,24 @@ static void attn_test() {
         G4_REF_HEAD_DIM,G4_REF_WINDOW,G4_REF_WINDOW+1u,4096);
     attn_case("attn_shared_prefix_full",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
         G4_REF_GLOBAL_HEAD_DIM,0,0,8192);
+    attn_mma_case("attn_mma_sliding_prefill",64,0,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_mma_case("attn_mma_sliding_partial",17,0,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_mma_case("attn_mma_sliding_window_edge",64,1000,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
+    attn_mma_case("attn_mma_sliding_ring",64,1025,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,G4_REF_WINDOW+64u);
+    attn_mma_case("attn_mma_sliding_shared_prefix",64,4096,G4_REF_HEADS,G4_REF_KV_HEADS,
+        G4_REF_HEAD_DIM,G4_REF_WINDOW,0,4096);
+    attn_mma_full_case("attn_mma_full_16",16,0,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_full_case("attn_mma_full_prefill",64,0,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_full_case("attn_mma_full_mid",64,1000,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_full_case("attn_mma_full_shared_prefix",64,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,
+        G4_REF_GLOBAL_HEAD_DIM,0,8192);
 }
 
 int main(int argc,char **argv) {

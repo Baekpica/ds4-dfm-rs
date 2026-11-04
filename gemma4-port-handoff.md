@@ -2023,6 +2023,46 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   edits; its git HEAD is still 341481b2. The server is stopped while the
   benches run and is restarted with the eight-option launcher after them.
 
+4ab. Phase 8: the tensor-core prefill attention (2026-11-04)
+
+- cuda/gemma4_attn_mma.cuh is new: one template per geometry, <256, 2>
+  sliding (64 tokens per CTA, 8 tokens x 2 heads per warp, full D = 256,
+  32 KiB shared) and <512, 8> full (8 tokens per CTA, 2 tokens x 8 heads
+  per warp, two warps per M group split D = 512 into 256-dim halves,
+  32 KiB K/V plus 16 KiB score exchange). 32-key tiles, Q in registers,
+  f32 online softmax once per tile, P rounded to bf16 for P*V, key loop
+  aligned to (begin_all / 32) * 32 for chunk invariance. The dispatch
+  ds4_gpu_g4_attn_mma takes rows >= 16 and keys == 0 only; the MTP verify
+  widths stay on the bit-exact tile kernel. DS4_GEMMA4_ATTN_MMA=1 enables
+  it (default off: parity path, not bit identity).
+- Synthetic gate (tests/test_gemma4_primitives, both geometries, rows
+  16/17/64, first 0/1000/1025/4096/8192, ring, window, shared-prefix and
+  poisoned-slot cases): max abs error 1.4e-3 against g4_ref_attn, inside
+  the Phase 8 2.5e-3 tolerance. The test also needed the Phase-3 router
+  template argument fixed (g4_router_kernel<false>).
+- One-layer model probe (DS4_GEMMA4_ATTN_CMP=1, ctx 256, layer 0 sliding
+  and layer 5 full): the attention output against the tile kernel is
+  relL2 4.05e-4 and 3.94e-4, max 0.021 and 0.0073. The kernel is correct
+  for real model data.
+- Pinned 256-token gate (/tmp/g4-bench-256.txt, 8 greedy tokens): both
+  paths return exactly [6113, 1698, 236761, 28333, 506, 877, 6910, 3136];
+  KL(tile || mma) 8.6e-5 (gate 5e-3), relL2 0.101 (gate 6e-2, 1.7x over
+  on the tanh-30 logits). On the repo-docs prompt the greedy text diverges
+  after the first sentence and the frontier KL is 0.026 at 256 tokens and
+  0.10 at 2,048: routing propagation through 30 MoE layers, not a kernel
+  error (per-layer attention is 4e-4 away). Recorded as a measured parity
+  trade; the tile kernel is the exact reference and stays the default.
+- Speed, Spark, ds4-bench, eight fast options, 17 greedy tokens:
+    frontier 2,048: tile 576.1 prefill, MMA 977.1 (1.70x), decode 12.6
+    frontier 13,447: tile 309.5 prefill, MMA 1,061.4 (3.43x), decode 4.82
+  The 13.4K prefill drops from 43.5 s to 12.7 s of GPU work; the 9.66K
+  open-grok prompt from about 34 s to about 10 s. Decode is unchanged
+  (rows == 1 uses the decode kernel). The 13.4K prefill clears the 1,000
+  tok/s floor the owner set.
+- Spark binaries rebuilt (ds4, ds4-bench, ds4-server 13:44, and the probe
+  build at 13:59); the server is restarted on the committed build with the
+  eight-option launcher and draft 2. The worktree HEAD is still 341481b2.
+
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
 Artifact (canonical): /data/vq-artifacts/gguf-family-it
