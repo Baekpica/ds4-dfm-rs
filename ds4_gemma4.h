@@ -7,6 +7,9 @@
 
 #include "ds4_gemma4_plan.h"
 #include "ds4_gemma4_vq.h"
+/* ds4_gvq_model / ds4_gvq_record: the SSD stream plan the bind builds. The
+ * header is guarded and includes nothing back here, so this stays a leaf. */
+#include "ds4_glmvq.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +75,17 @@ static inline uint64_t ds4_gemma4_kv_bytes(unsigned ctx, unsigned chunk) {
     }
     return total;
 }
+
+#ifndef DS4_NO_GPU
+/* SSD streaming on a discrete card (ds4_gemma4_map.inc): after the GVQ plan
+ * binds with the cold records presented header-sized, put the truthful records
+ * back and clear their source entries. `truth` is the record array exactly as
+ * gemma4_gpu_bind built it; `cold` lists the indices that were presented
+ * header-sized. The first ds4_gpu_g4_stream_rebind fills each of them from its
+ * pread slot. Returns 0 on a failed restore (the engine aborts the open). */
+int ds4_gpu_g4_stream_plan_restore(ds4_gvq_model *plan,
+        const ds4_gvq_record *truth, const uint32_t *cold, uint32_t count);
+#endif
 
 #ifdef __cplusplus
 }

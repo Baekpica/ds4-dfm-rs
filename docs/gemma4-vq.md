@@ -81,9 +81,31 @@ routed experts through a bounded device slot cache (4 GiB unless
 `--ssd-streaming-cache-experts N|GB` overrides it) and preads each VQ1 record
 from the artifact. Books, norms, attention, the dense FFN and the token table
 stay resident; `--ssd-streaming-cold` advises eviction of consumed expert
-pages. The option uses the GLM53 stream-map contract, which requires coherent
-CUDA host page tables: it runs on the GB10 and refuses on a discrete card,
-where the 4070 SUPER prints the refusal and keeps the resident path.
+pages.
+
+The stream map has two arms, chosen by the card, and neither changes the
+other (`ds4_gemma4_map.inc`). On coherent CUDA host page tables (GB10) the
+call is the shared GLM53 contract unchanged: the canonical mmap stays
+unregistered and the resident spans are read through ATS. A discrete card has
+no pageable memory access, so the same call installs the same stream state
+without the coherence facts and makes the resident 2.35 GiB device-resident
+instead, through the engine's own unit materializer (one O_DIRECT copy per
+span, published as a device range); the experts stay host-cold and reach the
+device only through the slot pool's pread. On a discrete card the bind-time
+header gather also needs each cold record's first 128 bytes on the device, so
+one 128-byte range per record is published for the bind and the truthful
+record is restored before the first routed read, which re-validates it from
+the pread staging.
+
+Measured on the 4070 SUPER, ctx 1024, 32 greedy tokens, `--mtp --mtp-draft 6`:
+resident 65.0-74.8 prefill / 3.74-4.34 gen t/s and 1.54-1.82 s first token;
+streamed 51.5-52.5 / 11.1-13.1 and 0.51-0.63 s; with
+`DS4_WEIGHT_RESIDENCY_MTP=eager` the 4 GiB pool reaches 13.28 gen t/s and
+0.51 s first token. Prefill pays the cold reads (4.92 GiB read, 99% slot-cache
+hit rate over the run); decode gains because the routed experts are resident
+in VRAM instead of read over PCIe. The frontier logits are bit-identical
+between the two. A pool sized to all 3,840 experts (7.01 GiB) does not fit
+the 4070's graph budget at ctx 1024; the 4 GiB pool is the operating point.
 
 The forward is the reference's order, layer by layer, with every rounding it
 makes: seven RMS norms per block, q/k norm and RoPE per head, the routed

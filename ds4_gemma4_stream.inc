@@ -18,8 +18,10 @@
  * which this port does not use.
  *
  * ds4_gpu_set_stream_map refuses without coherent CUDA host page tables
- * (the GB10 shape). On a discrete card the engine prints that refusal and
- * stops when the option is set; the default resident path is untouched. */
+ * (the GB10 shape); ds4_gemma4_map.inc is the discrete arm of that call, and
+ * ds4_engine_open takes it for Gemma-4 (ds4.c). On a discrete card the
+ * resident spans are device copies published as device ranges and the experts
+ * stay host-cold; the default (resident) path never reaches either. */
 
 #ifndef DS4_GEMMA4_STREAM_INC
 #define DS4_GEMMA4_STREAM_INC
@@ -144,6 +146,9 @@ static void gemma4_stream_report(const ds4_gemma4_stream *s) {
 }
 
 static void gemma4_stream_free(ds4_gemma4_stream *s) {
+    /* The discrete map's cold-header device ranges; a no-op unless
+     * --ssd-streaming installed the Gemma discrete plan. */
+    ds4_gpu_g4_stream_plan_release();
     if (!s) { return; }
     gemma4_stream_report(s);
     ds4_gpu_tensor_free(s->gate);
@@ -313,6 +318,38 @@ static bool gemma4_stream_spans(const ds4_weights *w, const ds4_model *m,
     }
     spans->len = out;
     return spans->len != 0 && spans->max_tensor_bytes != 0;
+}
+
+/* The cold record set: every routed expert VQ record and, on an R13+8
+ * artifact, its residual plane -- exactly the records gemma4_stream_spans
+ * leaves out of the resident plan. `indices` holds 6 * G4_LAYERS * G4_EXPERTS
+ * entries; the returned count is ascending and duplicate-free. The discrete
+ * map (ds4_gemma4_map.inc) publishes one GVQ_HEADER-sized device range per
+ * entry so the bind-time header gather never reads the host map. */
+static int gemma4_stream_index_cmp(const void *a, const void *b) {
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static uint32_t gemma4_stream_cold_records(const ds4_weights *w,
+        const ds4_model *m, uint32_t *indices) {
+    if (!w || !w->gemma4 || !m || !indices) { return 0u; }
+    uint32_t n = 0u;
+    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+        const ds4_gemma4_layer *l = &w->gemma4[il];
+        for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+            const ds4_tensor *const ts[] = {
+                l->gate[e], l->up[e], l->down[e],
+                l->gate_res[e], l->up_res[e], l->down_res[e],
+            };
+            for (uint32_t k = 0; k < sizeof(ts) / sizeof(ts[0]); k++) {
+                const uint32_t i = gemma4_stream_index(m, ts[k]);
+                if (i != DS4_GVQ_NO_LINK) { indices[n++] = i; }
+            }
+        }
+    }
+    qsort(indices, n, sizeof(indices[0]), gemma4_stream_index_cmp);
+    return n;
 }
 
 static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,

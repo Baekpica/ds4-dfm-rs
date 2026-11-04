@@ -74384,8 +74384,16 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 sizes[i] = spans.v[i].end - spans.v[i].off;
                 resident += sizes[i];
             }
-            model_map_ok = ds4_gpu_set_stream_map(e->model.map, e->model.size,
-                offsets, sizes, spans.len);
+            /* Gemma-4 takes its own arm of the same call: a coherent card
+             * (GB10) delegates to the shared function unchanged, a discrete
+             * card installs the same stream state and makes the resident
+             * spans device-resident instead of HMM-direct
+             * (ds4_gemma4_map.inc). GLM53 and the rest are untouched. */
+            model_map_ok = gemma
+                ? ds4_gpu_set_stream_map_gemma(e->model.map, e->model.size,
+                                               offsets, sizes, spans.len)
+                : ds4_gpu_set_stream_map(e->model.map, e->model.size,
+                                         offsets, sizes, spans.len);
             free(offsets);
             free(sizes);
             free(spans.v);
@@ -74411,9 +74419,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     (double)resident / 1073741824.0);
             if (!model_map_ok) {
                 if (gemma) {
-                    fprintf(stderr, "ds4: Gemma-4 SSD streaming requires coherent CUDA "
-                                    "host page tables (the GB10 shape); this card keeps "
-                                    "the resident path\n");
+                    fprintf(stderr, "ds4: Gemma-4 SSD streaming could not install "
+                                    "the model map (see the line above); run "
+                                    "without --ssd-streaming for the resident path\n");
                 }
                 ds4_engine_close(e);
                 *out = NULL;

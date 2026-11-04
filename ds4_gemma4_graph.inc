@@ -119,8 +119,72 @@ static bool gemma4_gpu_bind(ds4_weights *w, const ds4_model *m) {
             }
         }
     }
+    /* Discrete SSD streaming (ds4_gemma4_map.inc): the binder gathers every
+     * VQ/RES record's own GVQ header with a device kernel
+     * (ds4_glmvq_gpu.cuh gvq_headers), and a discrete card cannot read a
+     * pageable host pointer from a kernel. The cold expert records therefore
+     * go in header-sized and plain -- their 128 bytes are a real device range
+     * published by ds4_gpu_g4_stream_plan_cold -- and the truthful record is
+     * put back right after the bind. ds4_gpu_g4_stream_rebind re-validates
+     * each of them from the pread staging before its first routed read, so
+     * nothing is lost: the same rows/cols/book/res checks run there. */
+    const bool discrete_stream = w->gemma4_stream != NULL &&
+                                 ds4_gpu_g4_stream_discrete_plan() != 0;
+    ds4_gvq_record *truth = NULL;
+    uint32_t *cold = NULL;
+    uint32_t cold_n = 0;
+    if (discrete_stream) {
+        truth = xmalloc((size_t)count * sizeof(*truth));
+        memcpy(truth, records, (size_t)count * sizeof(*truth));
+        cold = xmalloc((size_t)6u * G4_LAYERS * G4_EXPERTS * sizeof(*cold));
+        cold_n = gemma4_stream_cold_records(w, m, cold);
+        uint64_t *offsets = xmalloc((size_t)cold_n * sizeof(*offsets));
+        uint64_t *sizes = xmalloc((size_t)cold_n * sizeof(*sizes));
+        uint8_t *headers = xmalloc((size_t)cold_n * G4_STREAM_HEADER);
+        bool ok = cold_n != 0 && m->map != NULL;
+        for (uint32_t k = 0; ok && k < cold_n; k++) {
+            const ds4_gvq_record *r = &records[cold[k]];
+            if (r->bytes < G4_STREAM_HEADER || r->offset > m->size ||
+                G4_STREAM_HEADER > m->size - r->offset) {
+                ok = false;
+                break;
+            }
+            memcpy(headers + (size_t)k * G4_STREAM_HEADER,
+                   (const uint8_t *)m->map + r->offset, G4_STREAM_HEADER);
+            offsets[k] = r->offset;
+            sizes[k] = G4_STREAM_HEADER;
+        }
+        if (ok) {
+            ok = ds4_gpu_g4_stream_plan_cold(m->map, m->size, offsets, sizes,
+                                             cold_n, headers,
+                                             G4_STREAM_HEADER) != 0;
+        }
+        free(headers);
+        free(offsets);
+        free(sizes);
+        if (!ok) {
+            fprintf(stderr, "ds4: Gemma-4 SSD cold header plan failed\n");
+            free(cold);
+            free(truth);
+            free(records);
+            return false;
+        }
+        for (uint32_t k = 0; k < cold_n; k++) {
+            records[cold[k]].type = DS4_TENSOR_BF16;
+            records[cold[k]].bytes = G4_STREAM_HEADER;
+        }
+    }
     w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);
     free(records);
+    if (w->glmvq_gpu && discrete_stream) {
+        if (!ds4_gpu_g4_stream_plan_restore(w->glmvq_gpu, truth, cold, cold_n)) {
+            fprintf(stderr, "ds4: Gemma-4 SSD stream plan restore failed\n");
+            ds4_gpu_gvq_unbind(w->glmvq_gpu);
+            w->glmvq_gpu = NULL;
+        }
+    }
+    free(cold);
+    free(truth);
     return w->glmvq_gpu != NULL;
 }
 

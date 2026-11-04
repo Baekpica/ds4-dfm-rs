@@ -591,6 +591,24 @@ int ds4_gpu_set_model_map_spans(const void *model_map, uint64_t model_size, cons
  * registers/copies the full mmap; the unit plan keeps routed experts cold. */
 int ds4_gpu_set_stream_map(const void *model_map, uint64_t model_size,
         const uint64_t *offsets, const uint64_t *sizes, uint32_t count);
+/* Gemma-4 arm of the same call (ds4_gemma4_map.inc). Coherent CUDA host page
+ * tables take the shared function unchanged; a discrete card installs the
+ * same stream state without the coherence gate and makes the mandatory
+ * resident spans device-resident through the unit materializer, so the
+ * resident tensors no longer need host mapping. */
+int ds4_gpu_set_stream_map_gemma(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *sizes, uint32_t count);
+/* True when that call installed the discrete plan (the Gemma binder then
+ * presents the cold expert records header-sized for the bind). */
+int ds4_gpu_g4_stream_discrete_plan(void);
+/* The 128-byte GVQ header of every cold expert record, published as one
+ * device range per record so the bind-time header gather can read it without
+ * host mapping; `headers` is count * header_bytes, record order. */
+int ds4_gpu_g4_stream_plan_cold(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *bytes, uint32_t count,
+        const uint8_t *headers, uint64_t header_bytes);
+/* Free the cold-header device ranges' backing buffer at engine close. */
+void ds4_gpu_g4_stream_plan_release(void);
 /* Retire the host registration for one mapping BEFORE its owner frees it.
    Required for map-swapping callers (kernel unit tests); a registration that
    outlives its allocation poisons later cudaMemcpy calls whose host buffers
