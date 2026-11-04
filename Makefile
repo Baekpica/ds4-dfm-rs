@@ -485,6 +485,12 @@ tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemm
 test-gemma4-head-rows: tests/gemma4_head_rows
 	./tests/gemma4_head_rows
 
+# The CPU-expert deciding measurement. Build only: it needs a real R13+8
+# trunk and the record offsets are tied to that release, so the run line
+# names the path at the call site (tests/gemma4_cpu_expert_gemv.c).
+tests/gemma4_cpu_expert_gemv: tests/gemma4_cpu_expert_gemv.c
+	$(CC) -O3 -mavx2 -mfma -mf16c -pthread -o $@ $< -lm
+
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
 

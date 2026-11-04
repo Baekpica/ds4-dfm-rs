@@ -2251,14 +2251,32 @@ Last phase — the llama.cpp-style --cpu-moe CPU-expert path (owner, 2026-11-04)
   The deciding measurement before committing to it: a standalone CPU GEMV
   over one 408 KB expert record, to see whether 1.43 G weights per token
   (240 experts x 3 matrices x 1.98 M) lands under the device path's ~94 ms.
+  MEASURED 2026-11-04 (tests/gemma4_cpu_expert_gemv.c, the real layer-5
+  expert-0 down_proj record: 408,448 B GVQ1 + 247,936 B GVR1, 1,982,464
+  weights; the program verifies both headers and shapes and reads the
+  books from the artifact): 28 threads 0.387 ms/matrix, 1.160 ms/expert
+  (three matrices), 278.4 ms per token for 240 experts; 16 threads 285.3,
+  8 threads 409.9, 1 thread 2273. Effective 1.70 GB/s, so the scalar
+  decode is compute-bound, not memory-bound. The device path's ~94 ms is
+  3x faster: the deciding measurement does NOT clear the bar. It would
+  take a roughly 3x faster AVX2 decoder just to break even, and the CPU
+  arm would still lose byte identity and pay the D2H/H2D per layer.
+  Recommendation: stop before the port; the active-expert VRAM cache
+  remains the mechanism. If the owner overrides, the next unit is an AVX2
+  decode microbenchmark (four vectors per iteration, no E4M3 table), not
+  the forward port.
   The active-expert VRAM cache (Phase 5) is the mechanism already measured
   on the 4070.
   REORDERED by the owner on 2026-11-04: no more MTP trials on the 4070
   until this path is implemented, so this phase moves ahead of Phase 8.
-  Order now: P9 (the serving HTTP gate run), then the deciding CPU GEMV
-  measurement above, then the host decoder port if it passes, then Phase 8
-  (the tensor-core attention kernel, MIN_ROWS=16, a prefill lever with no
-  draft-6 value).
+  Order after the measurement: P9 is done (GB10 green; the 4070 lane now
+  boots after the quote fix, 16k FP8 device-resident, 20.95 tok/s), and
+  the CPU GEMV measurement above fails its bar, so the host decoder port
+  is not the next unit. The next phase is Phase 8 (the tensor-core
+  attention kernel, MIN_ROWS=16, a prefill lever with no draft-6 value).
+  The owner's "no 4070 MTP until CPU-MoE" rule has no implementation to
+  wait for; the active-expert VRAM cache is the measured 4070 mechanism,
+  and MTP on the 4070 can be revisited on its own terms.
 
 Phase 6 — RAM-resident experts (optional, capacity not speed)
 
