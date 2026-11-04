@@ -2,12 +2,14 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 993ddd08 (test(gemma4): measure the CPU expert GEMV
-  before porting the host decoder), plus this handoff update. 4v records
-  the P8 trial gate, the offload matrix and the discrete SSD path; 4w
-  records the fused verify head, the PLE verdict and the owner's
-  reordering; 4x records the 4070 serving lane and the CPU-expert verdict.
-  The commits on top of d6ad9774 are
+last_updated_commit: 5905f7e7 (docs(gemma4): agy's CPU-MoE review and the
+  corrected device baseline), plus this handoff update. 4v records the P8
+  trial gate, the offload matrix and the discrete SSD path; 4w records the
+  fused verify head, the PLE verdict and the owner's reordering; 4x
+  records the 4070 serving lane and the CPU-expert verdict. The phase plan
+  now carries Phase 12 (--moe-cache-mib, the SLRU expert cache, next) and
+  Phase 13 (--n-cpu-moe, gated by the AVX2 microbenchmark). The commits on
+  top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
@@ -16,19 +18,21 @@ last_updated_commit: 993ddd08 (test(gemma4): measure the CPU expert GEMV
   dense down), b84e1bb0 (Phase 3), 781bf3cb (the Phase 3 handoff),
   b87664cb (the Phase 7 P8 review) and 7e67cf1b (the six-draft ceiling),
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
-  cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61
-  and 993ddd08.
+  cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61,
+  993ddd08, 78e96e02, 882bf8f8, 85af4cb6 and 5905f7e7.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
-  Spark: leandro@192.168.1.91, ~/ds4-gemma4 at b09744a6 (synced and built,
-  make cuda-spark, 475 s, 0 errors; the head test and the long gate pass
-  there) and ~/models/gguf-family-it-r8.
+  Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
+  verify-head files rsynced and built (make cuda-spark, 475 s, 0 errors;
+  the head test and the long gate pass there); the serving quote fix and
+  the CPU test are not on it. It serves the MTP lane on 0.0.0.0:8889
+  (ctx 262144, bf16 KV, run-gemma4.sh). Model at ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T08:30:00+01:00
+handoff_written_at: 2026-11-04T09:58:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -2294,9 +2298,45 @@ Phase 5 — SSD streaming: measured on both cards (4v)
   ds4_gemma4_graph.inc, ds4_gpu.h, crates/ds4-core/src/ssd.rs and
   serving_host.rs.
 
-Last phase — the llama.cpp-style --cpu-moe CPU-expert path (owner, 2026-11-04)
+Phase 12 — --moe-cache-mib, the SLRU active-expert VRAM cache (next, owner 2026-11-04)
 
-  The owner's last-phase instruction: do what llama.cpp does with
+  The owner's instruction: add llama.cpp's --moe-cache-mib as a phase.
+  What exists already: the Gemma SSD map has a bounded device slot pool,
+  an LRU with pin-before-miss admission, pread from the model fd and the
+  stats vocabulary (ds4_gemma4_stream.inc:2-13, 41-44, 112-128, 486-517).
+  The 4 GiB / 2,189-slot default measured 250,746 hits, 2,694 misses,
+  4.92 GiB read, 0.60 GiB reread, 17.5 s I/O on the 4070 (Phase 5).
+  What it lacks against llama.cpp: the --moe-cache-mib flag itself, the
+  SLRU split (probationary + protected segments), and overlap of the
+  preads with the uploads.
+  Unit 12.1 — the flag. Add --moe-cache-mib N (MiB) to ds4-server and
+  ds4, mapped onto the existing ssd_streaming_cache_bytes; precedence
+  over --ssd-streaming-cache-bytes, default 4 GiB on the 4070, and the
+  resolved pool printed in the plan. Files:
+  crates/ds4-server/src/bin/ds4-server-rs.rs (parse),
+  crates/ds4-core/src/serving.rs (ServingRequest), serving_host.rs (plan
+  and quote), ds4.c (native option), ds4_gemma4_stream.inc (sizing).
+  Gate: the flag sizes the pool in the plan JSON, a 4070 SSD run boots,
+  and the frontier logits and greedy ids stay bit-identical to the
+  current cache.
+  Unit 12.2 — the SLRU. Split the slots into probation and protected
+  (a target protected share, start at 80/20), admit a miss to probation,
+  promote on a hit, evict probation LRU first then protected LRU; keep
+  the current LRU behind --moe-cache-policy lru for the A/B. Files:
+  ds4_gemma4_stream.inc (slot struct, gemma4_stream_find/victim, the
+  admission loop), serving.rs (the policy field). Gate: same prompt,
+  byte-identical logits/ids, hit rate not worse, decode not slower; A/B
+  the reread bytes and the I/O seconds.
+  Unit 12.3 — overlap. A pinned staging buffer and a second stream for
+  the preads (offload_review.md follow-ups 1 and 2); measure the 17.5 s
+  I/O. This is where llama.cpp's prefetch stream maps onto our pread.
+  Risk: the current cache is measured, and a wrong protected share can
+  evict the hot set. Keep the policy selectable, default the new one only
+  after the A/B, and keep the frontier byte gate as the regression.
+
+Phase 13 background — the --cpu-moe feasibility and measurement (2026-11-04)
+
+  The owner's 2026-11-04 instruction: do what llama.cpp does with
   --cpu-moe, i.e. keep the always-active parts on the GPU and compute the
   routed experts on the CPU. The feasibility check (2026-11-04) found no
   CPU GVQ decoder in this tree: every expert GEMV is CUDA
@@ -2339,6 +2379,33 @@ Last phase — the llama.cpp-style --cpu-moe CPU-expert path (owner, 2026-11-04)
   The owner's "no 4070 MTP until CPU-MoE" rule has no implementation to
   wait for; the active-expert VRAM cache is the measured 4070 mechanism,
   and MTP on the 4070 can be revisited on its own terms.
+
+Phase 13 — --n-cpu-moe, static CPU placement for the first N layers (after 12)
+
+  llama.cpp's --n-cpu-moe N keeps the first N layers' MoE weights in the
+  CPU and computes them there (common/arg.cpp:2778-2786,
+  ggml/src/ggml-cpu/ggml-cpu.c:1483-1741); --cpu-moe is the same for all
+  layers. It is a fit mechanism, not a speed one. The feasibility and the
+  deciding measurement are in the Phase 13 background block above: no
+  host GVQ decoder exists, the scalar GEMV is 278.4 ms/token, and agy's
+  review (cpu_moe_agy.md) puts a corrected AVX2 decoder at 38-55 ms/token
+  against the VRAM cache's 9.29 ms/token, with MTP verify at 7 rows at
+  180-250 ms/step. So Phase 13 starts with its gate, not the port.
+  Unit 13.0 — the AVX2 microbenchmark (the gate). Persistent threadpool
+  outside the timed loop, pre-expanded FP16 books, 4-8 vectors per
+  iteration with independent accumulators, and a cold 472 MiB DRAM ring
+  (agy's four fixes to tests/gemma4_cpu_expert_gemv.c). Decision: if it
+  lands at 38-55 ms/token, the port is defensible as a default-off
+  capacity option; if not, Phase 13 stops and the record says so.
+  Unit 13.1 — the host decoder. GVQ1/GVR1 header parse, the 13-bit index
+  plus plane plus residual byte, the 8192-word and 256-word books
+  host-side, a GEMV with the reference bf16 rounding (or tolerance
+  gates), and one D2H/H2D of the row per layer.
+  Unit 13.2 — the option. --n-cpu-moe N places the first N layers'
+  experts on the CPU and the rest in the VRAM cache; default off; the
+  plan prints the split; a tolerance-parity gate and a per-layer timing
+  gate. Risk: slower than the GPU by construction, and MTP verify
+  multiplies the CPU work; only the VRAM freed justifies it.
 
 Phase 6 — RAM-resident experts (optional, capacity not speed)
 
