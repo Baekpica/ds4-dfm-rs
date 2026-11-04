@@ -103,9 +103,10 @@ Commits on feat/gemma4-family (newest first):
             options in the launcher (bit-identical gate)
 
 Push: origin feat/gemma4-family is pushed to JLFN/ds4-dfm-rs on 2026-11-04
-at e51b564d after the OSV scan (1 manifest, 146 packages, 0 vulnerable);
-upstream is untouched. 415b6919, 6cebfe4f and this handoff are local only;
-a push needs the owner's word and a fresh OSV scan. The frozen remote copy
+at e3a21363 (c0ede8c8..e3a21363, carrying 415b6919, 6cebfe4f and this
+handoff) after a fresh OSV scan (1 manifest, 146 packages, 0 vulnerable);
+upstream is untouched, and every later push still needs the owner's word
+and a fresh OSV scan. The frozen remote copy
 backup/gemma4-family-2026-11-04
 points at 65b76e5c, and /data/backups/ds4-gemma4-pre-q4-2026-11-04.bundle
 holds the full history at that point. The Spark worktree carries the same
