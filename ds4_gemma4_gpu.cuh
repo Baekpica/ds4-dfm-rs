@@ -24,6 +24,7 @@
 #include "cuda/gemma4_attn_split.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 #include "cuda/gemma4_moe_persist.cuh"
+#include "cuda/gemma4_q4_decode.cuh"
 
 /* One routed-expert scratch set, sized for `chunk` tokens and reused across
  * layers: gather rows, the three projections of the route set, and the
@@ -1146,7 +1147,147 @@ extern "C" int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *m, ds4_gpu_tensor *out,
     return g4_moe_run_routes(m, out, input, weights, matrices, routes, rows);
 }
 
-/* ------------------------------------------------ persistent decode (4ae) */
+/* -------------------------------------------------------- Q4_K decode (4af) */
+
+/* Debug: DS4_GEMMA4_Q4_DECODE_VERIFY=1 runs the shared per-matrix path beside
+ * the Gemma pass and prints the distance, one line per matrix. */
+static bool g4_q4_decode_verify(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_Q4_DECODE_VERIFY");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+/* One Q4_K matrix of `rows` rows over `cols` inputs, or 0 for anything the
+ * Gemma kernel does not take (the shared dispatcher then stays in charge).
+ * The decode is one token, so the output must hold one column: `rows` here is
+ * the matrix row count, not the token count. */
+static int g4_q4_matrix(ds4_gvq_ctx *ctx, uint32_t index, uint32_t cols, uint32_t rows,
+        const ds4_gpu_tensor *out) {
+    if (!ctx || !out || !cols || cols % G4_Q4_BLOCK || !rows ||
+        index >= ctx->model->source.size()) {
+        return 0;
+    }
+    const glmvq_source &s = ctx->model->source[index];
+    if (ctx->model->records[index].type != GVQ_TYPE_Q4 || !s.data ||
+        (uintptr_t)s.data % 16 || s.cols != cols || s.rows != rows ||
+        out->bytes < (uint64_t)s.rows * sizeof(float)) {
+        return 0;
+    }
+    return 1;
+}
+
+/* One-token Q4_K decode over `count` matrices sharing one input. The kernel
+ * stages eight rows of one matrix per block and walks them with one warp per
+ * row; the matrices are laid out matrix by matrix in the same launch. */
+extern "C" int ds4_gpu_g4_q4_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !outs || !weights || !input || !count || count > G4_Q4_MANY ||
+        rows != 1u || (uintptr_t)input->ptr % 16 || weights[0] >= ctx->model->source.size() ||
+        !outs[0]) {
+        return 0;
+    }
+    const uint32_t cols = ctx->model->source[weights[0]].cols;
+    if (!cols || cols % G4_Q4_BLOCK || input->bytes < (uint64_t)cols * sizeof(float)) {
+        return 0;
+    }
+    g4_q4_many many = {};
+    uint32_t groups = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size() || !outs[c]) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if (!g4_q4_matrix(ctx, weights[c], cols, s.rows, outs[c])) { return 0; }
+        many.weight[c] = (const uint8_t *)s.data;
+        many.out[c] = (float *)outs[c]->ptr;
+        many.rows[c] = s.rows;
+        many.first[c] = groups;
+        groups += 1u + (s.rows - 1u) / G4_Q4_WARPS;
+    }
+    /* The kernel selects by compares, so every slot past the last matrix
+     * must point at the end of the table, not at 0. */
+    for (uint32_t c = count; c <= G4_Q4_MANY; c++) { many.first[c] = groups; }
+    const uint64_t shared = (uint64_t)G4_Q4_WARPS * (cols / G4_Q4_BLOCK) * G4_Q4_BYTES;
+    if (shared > 48u * 1024u) { return 0; }
+    if (g4_q4_decode_verify()) {
+        static ds4_gpu_tensor *ref = nullptr;
+        static float *a = nullptr, *b = nullptr;
+        static uint32_t reports = 0;
+        if (!ref) {
+            ref = ds4_gpu_tensor_alloc(4096u * sizeof(float));
+            a = (float *)malloc(4096u * sizeof(float));
+            b = (float *)malloc(4096u * sizeof(float));
+        }
+        if (!ref || !a || !b) { return 0; }
+        for (uint32_t c = 0; c < count; c++) {
+            const glmvq_source &s = ctx->model->source[weights[c]];
+            if (s.rows > 4096u ||
+                !ds4_gpu_gvq_linear(ctx, ref, weights[c], input, 1u, DS4_GVQ_BF16)) {
+                return 0;
+            }
+            g4_q4_many one = {};
+            one.weight[0] = many.weight[c];
+            one.out[0] = many.out[c];
+            one.rows[0] = many.rows[c];
+            for (uint32_t k = 1; k <= G4_Q4_MANY; k++) { one.first[k] = many.first[c + 1] - many.first[c]; }
+            g4_q4_many_kernel<<<one.first[G4_Q4_MANY], G4_Q4_WARPS * 32u, (size_t)shared,
+                ds4_current_stream()>>>(one, (const float *)input->ptr, cols);
+            if (!cuda_ok(cudaGetLastError(), "Gemma-4 Q4 decode verify") ||
+                !ds4_gpu_tensor_read(ref, 0, a, (uint64_t)s.rows * sizeof(float)) ||
+                !ds4_gpu_tensor_read(outs[c], 0, b, (uint64_t)s.rows * sizeof(float))) {
+                return 0;
+            }
+            if (reports < 40u) {
+                double num = 0.0, den = 0.0, mx = 0.0;
+                uint32_t same = 0;
+                for (uint32_t i = 0; i < s.rows; i++) {
+                    const double d = (double)b[i] - (double)a[i];
+                    num += d * d;
+                    den += (double)a[i] * a[i];
+                    if (fabs(d) > mx) { mx = fabs(d); }
+                    same += a[i] == b[i];
+                }
+                reports++;
+                fprintf(stderr, "ds4: G4 Q4 %ux%u relL2 %.3e max %.3e exact %u/%u\n",
+                    s.rows, s.cols, sqrt(num / (den > 0.0 ? den : 1.0)), mx, same, s.rows);
+            }
+        }
+        return 1;
+    }
+    g4_q4_many_kernel<<<groups, G4_Q4_WARPS * 32u, (size_t)shared, ds4_current_stream()>>>(
+        many, (const float *)input->ptr, cols);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 Q4 decode") ? 1 : 0;
+}
+
+/* The dense gate/up pair in one launch: both matrices' eight-row groups are
+ * staged beside each other and the epilogue is the gelu product the graph
+ * applies today. */
+extern "C" int ds4_gpu_g4_q4_glu(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t gate,
+        uint32_t up, const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !out || !input || rows != 1u || gate >= ctx->model->source.size() ||
+        up >= ctx->model->source.size() || (uintptr_t)input->ptr % 16) {
+        return 0;
+    }
+    const glmvq_source &g = ctx->model->source[gate], &u = ctx->model->source[up];
+    if (ctx->model->records[gate].type != GVQ_TYPE_Q4 ||
+        ctx->model->records[up].type != GVQ_TYPE_Q4 ||
+        !g.data || !u.data || (uintptr_t)g.data % 16 || (uintptr_t)u.data % 16 ||
+        g.cols != u.cols || g.rows != u.rows || !g.rows || g.cols % G4_Q4_BLOCK ||
+        input->bytes < (uint64_t)g.cols * sizeof(float) ||
+        out->bytes < (uint64_t)rows * g.rows * sizeof(float)) {
+        return 0;
+    }
+    const uint64_t shared = 2ull * G4_Q4_WARPS * (g.cols / G4_Q4_BLOCK) * G4_Q4_BYTES;
+    if (shared > 48u * 1024u) { return 0; }
+    const uint32_t groups = 1u + (g.rows - 1u) / G4_Q4_WARPS;
+    g4_q4_glu_kernel<<<groups, G4_Q4_WARPS * 32u, (size_t)shared, ds4_current_stream()>>>(
+        (const uint8_t *)g.data, (const uint8_t *)u.data, (float *)out->ptr,
+        (const float *)input->ptr, g.cols, g.rows);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 Q4 gate/up") ? 1 : 0;
+}
+
+
 
 /* Debug: DS4_GEMMA4_MOE_PERSIST_VERIFY=1 runs the per-expert loop beside the
  * persistent pass and prints the per-layer distance. Off by default; the

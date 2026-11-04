@@ -568,11 +568,29 @@ static bool gemma4_exact_prefill(void) {
     return getenv("DS4_GEMMA4_EXACT_PREFILL") != NULL;
 }
 
+/* Gemma's own Q4_K decode (cuda/gemma4_q4_decode.cuh), off by default
+ * (DS4_GEMMA4_Q4_DECODE=1). One token only; the shared dispatcher, and its
+ * scalar fallback under 4 MiB, stays the reference. */
+static bool g4_q4_decode(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_Q4_DECODE");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
 /* Q4_K projections of one input: the batched prefill path, or the one-row
- * path the exactness gate measures. */
+ * path the exactness gate measures. One token takes the Gemma Q4_K decode
+ * when it is enabled and the matrices are all Q4_K; every other shape falls
+ * through to the shared dispatcher. */
 static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *outs,
         const uint32_t *weights, const uint32_t *widths, uint32_t count,
         const ds4_gpu_tensor *in, uint32_t rows, uint32_t cols) {
+    if (rows == 1u && g4_q4_decode() &&
+        ds4_gpu_g4_q4_many(g->gvq, outs, weights, count, in, rows) != 0) {
+        return true;
+    }
     if (rows == 1 || !gemma4_exact_prefill()) {
         return ds4_gpu_gvq_linear_many(g->gvq, outs, weights, count, in, rows, DS4_GVQ_BF16) != 0;
     }
@@ -896,8 +914,15 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     uint32_t dense[2] = {gemma4_index(m, l->dense_gate), gemma4_index(m, l->dense_up)};
     const uint32_t dense_width[2] = {G4_DENSE, G4_DENSE};
     ds4_gpu_tensor *dense_out[2] = {g->dense_g, g->dense_u};
-    bool dense_ok = gemma4_projection_rows(g, dense_out, dense, dense_width, 2u, g->norm, rows, G4_EMBED) &&
-        ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE);
+    bool dense_ok;
+    if (rows == 1u && g4_q4_decode() &&
+        ds4_gpu_g4_q4_glu(g->gvq, g->dense_mid, dense[0], dense[1], g->norm, rows) != 0) {
+        dense_ok = true;
+    } else {
+        dense_ok = gemma4_projection_rows(g, dense_out, dense, dense_width, 2u, g->norm, rows,
+                G4_EMBED) &&
+            ds4_gpu_g4_gelu(g->dense_mid, g->dense_g, g->dense_u, (uint64_t)rows * G4_DENSE);
+    }
     if (dense_ok && rows > 1u && gemma4_q8_batch() && !gemma4_exact_prefill()) {
         /* Gemma's dense down is K = 8*256 + 64; the shared dispatcher's
          * tile path refuses it and falls to the per-element preq kernel.

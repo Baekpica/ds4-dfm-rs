@@ -46,6 +46,16 @@ int ds4_gpu_g4_moe_run_persist(ds4_g4_moe *moe, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
     const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t layer);
 
+/* One-token Q4_K decode (cuda/gemma4_q4_decode.cuh): `count` matrices sharing
+ * one input, laid out matrix by matrix in one launch with the weights staged
+ * in shared, and the dense gate/up pair fused with the gelu product. Both
+ * return 0 for any geometry the Gemma kernels do not take; the shared
+ * dispatcher stays the fallback. */
+int ds4_gpu_g4_q4_many(ds4_gvq_ctx *gvq, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
+int ds4_gpu_g4_q4_glu(ds4_gvq_ctx *gvq, ds4_gpu_tensor *out, uint32_t gate,
+    uint32_t up, const ds4_gpu_tensor *input, uint32_t rows);
+
 /* Gemma-only SSD rebind: point the plan's host source entry for `index` at a
  * device slot holding a byte copy of the VQ1 record. `header` is the first
  * 128 bytes of that record (the slot copy and the header share the record's
