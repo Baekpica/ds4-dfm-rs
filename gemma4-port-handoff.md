@@ -2,8 +2,11 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
-  attention by default), plus this decode-profile handoff update. 4ad
+last_updated_commit: f1db7f61 (feat(gemma4): persistent layer-book MoE
+  decode), plus this persistent-MoE handoff update. 4ae records the
+  persistent decode (+23.7 percent at ctx 256, +20.1 at 1,024, +19.8 at
+  13,447; 26 of 30 layers bit-identical), its synthetic gate and the
+  64-token model gate. 4ad
   records the fast-path decode profile (ctx 256 and 13,447), the
   split-vs-fast A/B (split neutral at 256, +39 percent at 1,024) and
   agy's decode review (agy_review_decode_20261104.md, three ranks). 4aa
@@ -37,7 +40,7 @@ last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
   cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61,
   993ddd08, 78e96e02, 882bf8f8, 85af4cb6, 5905f7e7, baca41b1, 5dc1f63f,
-  f7deefb8, 7ae1a0f6, 5d8d2a20 and 41c54efc.
+  f7deefb8, 7ae1a0f6, 5d8d2a20, 41c54efc and f1db7f61.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
@@ -55,17 +58,19 @@ last_updated_commit: 41c54efc (feat(gemma4): serve the tensor-core prefill
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T17:06:00+01:00
+handoff_written_at: 2026-11-04T17:55:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-0. Session state after the decode-profile round (2026-11-04, evening)
+0. Session state after the persistent-MoE round (2026-11-04, evening)
 
-The decode round is measured and agy-reviewed; no code changed yet. A
-fresh session starts from this block.
+Rank 1 of agy's decode review is landed and measured: the persistent
+layer-book MoE decode (4ae, f1db7f61). A fresh session starts from this
+block.
 
 Commits on feat/gemma4-family (newest first):
-  (this handoff)  docs: the decode profile and agy's decode review
+  (this handoff)  docs: the persistent MoE round and its numbers
+  f1db7f61  cuda/gemma4_moe_persist.cuh, the persistent MoE decode
   41c54efc  the launcher serves the tensor-core prefill by default
   5d8d2a20  cuda/gemma4_attn_split.cuh, the split-K decode
   7ae1a0f6  cuda/gemma4_attn_mma.cuh, the tensor-core prefill
@@ -73,11 +78,11 @@ Commits on feat/gemma4-family (newest first):
   5dc1f63f  the drafter's fast attention with keys=start; all eight fast
             options in the launcher (bit-identical gate)
 
-Server: Spark 192.168.1.91:8889, pid 126239 at this handoff, the committed
+Server: Spark 192.168.1.91:8889, pid 132308 at this handoff, the committed
 build: bf16 KV, ctx 262144, prefill chunk 2048, the eight fast options,
-the MMA prefill, the split-K decode, no MTP. The server had been stopped
-for the profile and was restarted this session; a "ready" smoke answered
-with TTFT 334.6 ms. The open-grok entry [model."gemma4-vq-spark"] needs
+the MMA prefill, the split-K decode, the persistent MoE decode, no MTP.
+The server had been stopped for the A/B and was restarted this session; a
+"ready" smoke answered with TTFT 341.5 ms. The open-grok entry [model."gemma4-vq-spark"] needs
 no change. The launcher defaults HOST 127.0.0.1, PORT 8099, CTX 16384,
 KV fp8; the Spark invocation is
   DS4_GEMMA4_CTX=262144 DS4_GEMMA4_KV=bf16 DS4_GEMMA4_HOST=0.0.0.0 \
@@ -85,16 +90,17 @@ KV fp8; the Spark invocation is
 The serve status line prints base_url 127.0.0.1:8099 (a display bug); the
 listen address is 0.0.0.0:8889 and /v1/models answers there.
 
-End-to-end server, unchanged from the long-context round, old numbers in
-parentheses:
+End-to-end server before 4ae (the long-context round, no MTP); the decode
+column predates the persistent MoE, whose measured shift is the bench A/B
+below (+19.8 percent at 13.4K), old numbers in parentheses:
   1,696   911.8 prefill / 26.23 decode, TTFT 1.86 s
   6,459   944.3 / 19.28, 6.84 s
   11,668  856.7 / 19.05, 13.62 s
   13,557  837.4 (287.6) / 17.98 (4.55), 16.19 s (47.17)
   20,186  831.7 (232.7) / 17.20 (3.31), 24.27 s (86.57)
 
-Decode profile (4ad; nsys, gen 8 minus gen 0, the exact server options),
-ms per step at ctx 256 / 13,447:
+Decode profile before 4ae (4ad; nsys, gen 8 minus gen 0, the exact server
+options), ms per step at ctx 256 / 13,447:
   split-K attention            9.291 / 19.275
   expert gate/up (block<256>)  8.587 / 8.710
   head (g4_head_gemv)          6.077 / 6.049
@@ -118,6 +124,17 @@ The split kernel's problem is CTA count, not the combine: 8 CTAs at ctx
 256, 16 for the sliding window (2 splits), 54 for the full layers at
 13.4K. More splits, not fewer, is the measured lever.
 
+Persistent MoE decode (4ae, f1db7f61; ds4-bench, same options), gen tok/s
+and ms/step:
+  ctx 256    23.81 -> 29.46 (+23.7%)   42.00 -> 33.94 ms  (-8.06)
+  ctx 1,024  20.57 -> 24.71 (+20.1%)   48.61 -> 40.47     (-8.14)
+  ctx 13,447 19.16 -> 22.95 (+19.8%)   52.19 -> 43.57     (-8.62)
+  prefill unchanged (466.7/458.4, 830.9/830.5, 1003.0/1005.2).
+  Greedy: 64 tokens at ctx 256 and 1,024 byte-identical (frontier logits
+  and token ids, diff -rq clean). Per-layer parity on the real weights:
+  26 of 30 layers bit-identical, L7 3.2e-4, L17 7.6e-5, L21 2.4e-4,
+  L22 2.2e-4 relL2, max 9.8e-4.
+
 agy's decode review is agy_review_decode_20261104.md (215 lines, committed
 with this handoff). Its three ranks:
 1. Persistent layer-book MoE decode plus device route sort, with
@@ -139,18 +156,26 @@ cuda/gemma4_attn_mma.cuh for the full-layer MMA; skip iquest_decode.cuh;
 defer VQ_tools.
 
 Next units, in the agreed order:
-1. Rank 1, the persistent MoE decode (the biggest single win, ~12 ms).
-2. Rank 3, the Q4_K bypass (the cheapest, ~3.7 ms, under 150 lines).
-3. Rank 2, corrected: finer splits first (measure 128- and 256-key
+1. Rank 3, the Q4_K bypass (the cheapest, ~3.7 ms, under 150 lines).
+2. Rank 2, corrected: finer splits first (measure 128- and 256-key
    spans), then the full-layer MMA; keep the split path.
-4. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving; the
-   device route sort is folded into rank 1.
+3. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving.
+Rank 1 landed as 4ae (f1db7f61): the measured saving is 8.1-8.6 ms/step,
+not the review's ~12; the bucket it targeted was 14.35 ms, and the
+persistent pass leaves the two launches plus their book staging and the
+1.97 ms weight floor. The next profile (gen 8 minus gen 0 again) should
+split what is left between the MoE and the rest.
 
 Reproduce:
 - The profile script is /tmp/g4decprof2.sh on the Spark (four nsys runs:
   ctx 256 and 13,447 at gen 0 and 8); /tmp/g4decsum2.py reduces the
   gen8-minus-gen0 deltas.
 - The A/B is /tmp/g4splitab2.sh; the 13.4K prompt is /tmp/g4-prof-14k.txt.
+- The persistent MoE A/B is /tmp/g4moeab.sh, the long-context arm is
+  /tmp/g4moelong.sh, the 64-token gate is /tmp/g4moetok.sh (all on the
+  Spark); the per-layer parity run is DS4_GEMMA4_MOE_PERSIST_VERIFY=1 in
+  /tmp/g4mp_verify.out. The synthetic gate is
+  make test-gemma4-moe-persist.
 - The pinned gate, the synthetic tests and the fallbacks are unchanged
   (4ab, 4ac).
 
@@ -2242,6 +2267,62 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   glmvq_decode_reduce) for the persistent MoE; cuda/ds41_vq_decode.cuh
   for the route sort only; cuda/glm_vq_q4.cuh for the Q4_K path;
   cuda/gemma4_attn_mma.cuh for the full-layer MMA. VQ_tools is deferred.
+
+4ae. Persistent layer-book MoE decode: +23.7 percent at ctx 256 (2026-11-04, evening)
+
+- What landed (f1db7f61). cuda/gemma4_moe_persist.cuh replaces the
+  per-expert decode loop with two launches per layer. The gate/up pass
+  runs 48 CTAs of 16 warps (one CTA per SM), stages the layer's 64 KiB
+  book, its 2 KiB gate/up residual book and the input row as BF16 in
+  shared (73,248 B), and walks 8 x 704 (expert, row) tasks, one warp per
+  row, writing gelu(gate) * up as BF16. The down pass stages the book,
+  the down residual book and the eight mid rows (78,880 B), and computes
+  one output row per warp, walking the eight experts in ascending order
+  and accumulating with the scatter's one rounding per expert. The route
+  order is a rank-count sort in shared memory from the device's selected
+  row (v41_vq_order_kernel's rule, cuda/ds41_vq_decode.cuh:189-196), so
+  no route leaves the device and the 30 D2H reads are gone.
+- Gemma-owned arithmetic. The header includes no GLM decode header: the
+  packed eight-weight dot (g4_moe_word8/_res), the E4M3 pair conversion
+  and the rn multiply/add are Gemma's own copies, each citing the shared
+  definition it must match (g4_vq_dot_vector at
+  cuda/gemma_vq_decode.cuh:74-93). Only the container type and the
+  format constants come from the shared VQ runtime.
+- Numerical class. The down dot keeps the warp<8> kernel's lane walk and
+  reduction, and the weighted sum keeps the scatter's order, so down and
+  the routed sum are bit-identical. The gate/up dot moves from a
+  256-thread block per row to a warp per row, which reorders the FP32 row
+  sum (the split-K class).
+- Synthetic gate, tests/gemma4_moe_persist.cu (make
+  test-gemma4-moe-persist), Spark: gu relL2 5.108e-8, 5631 of 5632 exact,
+  max 0.0625 (one bf16 boundary); down 2816/2816 exact; full 2816/2816
+  exact; 0.3605 -> 0.1449 ms per layer (2.49x) at 48 SMs.
+- Real per-layer verify (DS4_GEMMA4_MOE_PERSIST_VERIFY=1, ctx 256, the
+  per-expert loop beside the persistent pass): 26 of 30 layers relL2 0
+  and 2816/2816 exact; L7 3.225e-4 (max 9.766e-4, 2792/2816), L17
+  7.591e-5 (1.221e-4, 2810/2816), L21 2.433e-4 (2.460e-4, 2807/2816),
+  L22 2.190e-4 (4.883e-4, 2810/2816).
+- Spark ds4-bench, eight fast options plus MMA and split, 32 gen tokens:
+    ctx 256    23.81 -> 29.46 gen tok/s (+23.7%), 42.00 -> 33.94 ms
+    ctx 1,024  20.57 -> 24.71 (+20.1%), 48.61 -> 40.47 ms
+    ctx 13,447 19.16 -> 22.95 (+19.8%), 52.19 -> 43.57 ms
+  Prefill is unchanged within noise (466.7/458.4, 830.9/830.5,
+  1003.0/1005.2 tok/s), TTFT 0.0460/0.0363, 0.0531/0.0439,
+  0.0566/0.0472 s.
+- Model gate: 64 greedy tokens at ctx 256 and 1,024, persist on against
+  off, dump the frontier logits and the token ids; diff -rq is clean on
+  both. The decode sequence is unchanged over the 64-token horizon.
+- The launcher enables it by default (DS4_GEMMA4_PERSIST=0 restores the
+  per-expert loop); the C default stays off, like the other fast
+  options. The server was restarted on the committed build with it on
+  (pid 132308, 0.0.0.0:8889, ctx 262144, bf16 KV) and answered a "ready"
+  smoke at TTFT 341.5 ms.
+- What the 8.1-8.6 ms saving means. agy estimated the whole MoE bucket
+  (14.35-14.55 ms, including gather/scatter and the syncs) would fall to
+  2.5-2.9 ms; the measured saving is 8.1-8.6 ms, so about 6 ms of MoE
+  time remains. The next profile should split it between the two
+  persistent launches (book staging, the 1.97 ms weight floor) and the
+  rest of the step. Rank 3 (the Q4_K bypass) is still the next unit.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
