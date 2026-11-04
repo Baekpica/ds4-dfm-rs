@@ -240,7 +240,7 @@ kernel is one CTA per KV head: two CTAs on the five full layers and eight
 64-thread CTAs on the sliding ones, so most of the machine is idle while the
 key loop runs. The split kernel divides each KV head's visible key range
 across `splits = ceil(visible / span)` CTAs, where the span is
-`DS4_GEMMA4_ATTN_SPLIT_SPAN` (default 128, 16..4096; the Rust host rejects a
+`DS4_GEMMA4_ATTN_SPLIT_SPAN` (default 64, 16..4096; the Rust host rejects a
 value outside that range and the legacy C hosts still clamp), each running the
 fast kernel's own per-key dot and online softmax
 over its range and writing the unnormalized O plus (m, l). A combine kernel
@@ -249,8 +249,8 @@ joins the partials with `m = max m_s`, `l = sum l_s * exp(m_s - m)` and
 the softmax combine order differs, so this is a parity path. The synthetic
 gate (sliding decode, ring wrap, full decode, shared prefix) measures max
 error 6.6e-7 against the reference. On the 24-token greedy check, 23 tokens
-are identical and the last word flips on a near-tie. The span knob's measured
-points and the 64/32/16 split counts are in the handoff (section 4ag).
+are identical and the last word flips on a near-tie. The span sweep that set
+the default is below.
 
 `cuda/gemma4_attn_split_mma.cuh` replaces the per-split kernel on the full
 layers (D = 512, group = 8) with tensor cores: the eight query heads of a KV
@@ -264,13 +264,28 @@ default); 0 keeps the scalar per-key kernel. The synthetic gate (span
 error 5e-6 against the f32 reference on sm_89 and sm_121, inside the 2.5e-3
 class-B gate.
 
-Measured on the Spark, ds4-bench, eight fast options, the span-128 default:
+The MMA path against the scalar one, eight fast options, the span-128 default
+of that build:
 
 | frontier | split-K scalar | split-K MMA | ratio |
 |---|---:|---:|---:|
 | 256 | 27.60 | 28.29 | 1.025x |
 | 1,024 | 26.62 | 27.41 | 1.030x |
 | 13,447 | 24.09 | 26.38 | 1.095x |
+
+Measured on the Spark, ds4-bench, the launcher's fast set, the persistent MoE
+and the 2,048-row prefill chunk, 64 generated tokens, 2026-11-04. The default
+is 64: it wins at every measured context.
+
+| frontier | span 128 | span 64 | span 32 | span 16 |
+|---|---:|---:|---:|---:|
+| 256 | 36.96 | 38.31 | - | - |
+| 1,024 | 35.87 | 37.25 | - | - |
+| 13,447 | 33.96 | 35.72 | 34.56 | 33.30 |
+
+The same frontier with the lighter arm (eight fast options, split-MMA, no
+persistent MoE, shipped chunk) reads 26.41 / 27.28 / 26.85 / 25.98 gen tok/s
+for 128 / 64 / 32 / 16, and 1,005.7 prefill tok/s; 64 is ahead there too.
 
 The greedy 32-token sequences are identical at all three contexts, and at
 13,447 the frontier logits dump is byte-identical between the two paths. The

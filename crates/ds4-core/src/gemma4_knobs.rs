@@ -18,7 +18,11 @@ use serde_json::{json, Value};
 
 pub const SPLIT_SPAN_MIN: u32 = 16;
 pub const SPLIT_SPAN_MAX: u32 = 4096;
-pub const SPLIT_SPAN_DEFAULT: u32 = 128;
+/// Measured on the GB10 at ctx 256, 1,024 and 13,447 with the launcher's fast
+/// set, the persistent MoE and chunk 2,048: 64 beats 128 by 3.7, 3.8 and 5.2
+/// percent (docs/gemma4-vq.md, the span sweep table). The C legacies keep
+/// their own clamp; this is the typed default for Rust hosts.
+pub const SPLIT_SPAN_DEFAULT: u32 = 64;
 pub const CPU_THREADS_MIN: u32 = 1;
 pub const CPU_THREADS_MAX: u32 = 64;
 pub const CPU_THREADS_DEFAULT: u32 = 20;
@@ -628,7 +632,7 @@ mod tests {
     #[test]
     fn defaults_match_the_engine() {
         let d = Gemma4Options::default();
-        assert_eq!(d.attn_split_span, 128);
+        assert_eq!(d.attn_split_span, SPLIT_SPAN_DEFAULT);
         assert_eq!(d.cpu_moe_threads, 20);
         assert_eq!(d.prefill_chunk, 0);
         assert_eq!(d.vq_gemv, Toggle::On);
@@ -647,7 +651,7 @@ mod tests {
         assert!(err.contains("16..4096"), "{err}");
         let err = o.set_env("DS4_GEMMA4_ATTN_SPLIT_SPAN", "4097").unwrap_err();
         assert!(err.contains("16..4096"), "{err}");
-        assert_eq!(o.attn_split_span, 128, "a rejected value must not stick");
+        assert_eq!(o.attn_split_span, SPLIT_SPAN_DEFAULT, "a rejected value must not stick");
     }
 
     #[test]

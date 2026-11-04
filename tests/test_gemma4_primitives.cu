@@ -584,6 +584,14 @@ static void attn_test() {
         G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
     attn_split_mma_case("attn_split_mma_full_span96",8192,G4_REF_HEADS,
         G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,96u);
+    /* The default moved to 64 on the measured rows; the finer spans keep the
+     * combine's stride-256 weight fill covered on the tensor-core path. */
+    attn_split_mma_case("attn_split_mma_full_span64",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,64u);
+    attn_split_mma_case("attn_split_mma_full_span32",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,32u);
+    attn_split_mma_case("attn_split_mma_full_span16",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,16u);
     attn_split_mma_case("attn_split_mma_full_ring",8192,G4_REF_HEADS,
         G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,1025,0u,128u);
     attn_split_mma_case("attn_split_mma_full_shared_prefix",8192,G4_REF_HEADS,
