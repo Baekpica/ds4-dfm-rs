@@ -2008,8 +2008,16 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   Q8 down 3.04 s, 7.0 percent; everything else under 4 percent. The
   full-layer tile averages 656 ms per chunk at this length (about
   171 G MAC/s); the sliding tile 47 ms. Attention, not the expert GEMM,
-  is the next prefill lever: row-tile the scalar kernel first, then the
-  tensor-core kernel.
+  is the next prefill lever.
+- The cheap attention experiment was measured and rejected: widening the
+  tile block to 16 warps (8 rows x 2 heads sliding, 2 rows x 8 heads
+  full, 512 threads) shares one staged K/V range across twice the rows
+  but halves the CTA count. It regressed prefill 315.5 -> 312.9 tok/s,
+  MTP draft 6 3.84 -> 3.60 and no-MTP 4.83 -> 4.80, so it was reverted.
+  The block is back to 8 warps (4 rows x 2 heads sliding, 1 row x 8 heads
+  full). The next attention step is the tensor-core kernel (Phase 8,
+  cuda/gemma4_attn_mma.cuh), which is the only change that removes the
+  scalar per-key dot and the per-key softmax serial chain.
 - The Spark binaries are rebuilt from these sources (ds4, ds4-bench and
   ds4-server at 12:43:34-36) and the worktree carries the same two header
   edits; its git HEAD is still 341481b2. The server is stopped while the
