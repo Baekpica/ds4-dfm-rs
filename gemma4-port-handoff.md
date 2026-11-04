@@ -2,8 +2,14 @@
 project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
-last_updated_commit: f1db7f61 (feat(gemma4): persistent layer-book MoE
-  decode), plus this persistent-MoE handoff update. 4ae records the
+last_updated_commit: e51b564d (feat(gemma4): Gemma-owned Q4_K decode
+  with a fused dense GLU), plus this Q4_K handoff update. 4af records
+  the Q4_K decode (+1.0 percent at ctx 256 over three repeated pairs;
+  5.19 -> 4.71 ms per token on the Q4_K kernels; 175 matrices per token,
+  worst relL2 1.05e-4; 64-token greedy dumps identical at 256 and
+  1,024), the synthetic gate (1.404x on the six-matrix layer) and the
+  measured reason the review's 5.2 -> 1.8-2.0 ms estimate did not hold
+  (the matrices are bandwidth-bound at about 4 ms/token). 4ae records the
   persistent decode (+23.7 percent at ctx 256, +20.1 at 1,024, +19.8 at
   13,447; 26 of 30 layers bit-identical), its synthetic gate and the
   64-token model gate. 4ad
@@ -40,36 +46,41 @@ last_updated_commit: f1db7f61 (feat(gemma4): persistent layer-book MoE
   followed by a7922215, 1bd4afe5, d77cbc97, 27221680, c1330085, 951f6322,
   cdbdf200, 767720d7, 341481b2, b09744a6, 92ad0679, 23af6003, e5b96d61,
   993ddd08, 78e96e02, 882bf8f8, 85af4cb6, 5905f7e7, baca41b1, 5dc1f63f,
-  f7deefb8, 7ae1a0f6, 5d8d2a20, 41c54efc and f1db7f61.
+  f7deefb8, 7ae1a0f6, 5d8d2a20, 41c54efc, f1db7f61 and e51b564d.
   No GLM file is modified.
   Sibling VQ_tools: branch feature/gvq1-gemv-profile at be8c7e6; dev stays
   65ef74d; the owner edits that tree from other sessions, so leave its
   uncommitted files alone.
   Spark: leandro@192.168.1.91, ~/ds4-gemma4 HEAD 341481b2 with the
   long-context sources rsynced and built (ds4, ds4-bench, ds4-server
-  14:24; the MMA build at 13:44 and the probe build at 13:59). It serves
-  0.0.0.0:8889 (pid 126239 after the decode-profile restart, ctx 262144,
+  18:51 on 2026-11-04). It serves
+  0.0.0.0:8889 (pid 144255, started 18:53:43, ctx 262144,
   bf16 KV, prefill chunk 2,048, the
   eight fast options, the MMA prefill and the split-K decode by default,
-  no MTP). End-to-end 13,557 tokens: 837.4 prefill / 17.98 decode,
+  no MTP, no Q4_K decode; the process predates the synced launcher, so
+  it runs without the persistent MoE until the next start). End-to-end
+  13,557 tokens: 837.4 prefill / 17.98 decode,
   TTFT 16.19 s; 20,186: 831.7 / 17.20, 24.27 s. The script defaults
   2,048 on aarch64 and 512 on x86_64. Model at
   ~/models/gguf-family-it-r8.
 plan: docs/gemma4-port-plan.md
 sibling_repo: /data/VQ_tools branch dev; the profile unit is on
   feature/gvq1-gemv-profile (be8c7e6)
-handoff_written_at: 2026-11-04T17:55:00+01:00
+handoff_written_at: 2026-11-04T18:57:00+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
-0. Session state after the persistent-MoE round (2026-11-04, evening)
+0. Session state after the Q4_K decode round (2026-11-04, night)
 
-Rank 1 of agy's decode review is landed and measured: the persistent
-layer-book MoE decode (4ae, f1db7f61). A fresh session starts from this
-block.
+Ranks 1 and 3 of agy's decode review are landed and measured: the
+persistent layer-book MoE decode (4ae, f1db7f61) and the Gemma-owned
+Q4_K decode (4af, e51b564d). A fresh session starts from this block.
 
 Commits on feat/gemma4-family (newest first):
-  (this handoff)  docs: the persistent MoE round and its numbers
+  (this handoff)  docs: the Q4_K decode round and its numbers
+  e51b564d  cuda/gemma4_q4_decode.cuh, the Gemma Q4_K decode
+  65b76e5c  docs: the push and the OSV scan
+  15e774be  docs: the persistent MoE round and its numbers
   f1db7f61  cuda/gemma4_moe_persist.cuh, the persistent MoE decode
   41c54efc  the launcher serves the tensor-core prefill by default
   5d8d2a20  cuda/gemma4_attn_split.cuh, the split-K decode
@@ -79,15 +90,19 @@ Commits on feat/gemma4-family (newest first):
             options in the launcher (bit-identical gate)
 
 Push: origin feat/gemma4-family is pushed to JLFN/ds4-dfm-rs on 2026-11-04
-after the OSV scan (1 manifest, 146 packages, 0 vulnerable); upstream is
-untouched. The Spark worktree carries the same files by rsync and its git
-HEAD is still 341481b2.
+at e51b564d after the OSV scan (1 manifest, 146 packages, 0 vulnerable);
+upstream is untouched. The frozen remote copy backup/gemma4-family-2026-11-04
+points at 65b76e5c, and /data/backups/ds4-gemma4-pre-q4-2026-11-04.bundle
+holds the full history at that point. The Spark worktree carries the same
+files by rsync and its git HEAD is still 341481b2.
 
-Server: Spark 192.168.1.91:8889, pid 132308 at this handoff, the committed
-build: bf16 KV, ctx 262144, prefill chunk 2048, the eight fast options,
-the MMA prefill, the split-K decode, the persistent MoE decode, no MTP.
-The server had been stopped for the A/B and was restarted this session; a
-"ready" smoke answered with TTFT 341.5 ms. The open-grok entry [model."gemma4-vq-spark"] needs
+Server: Spark 192.168.1.91:8889, pid 144255 started 18:53:43 on the final
+build (ds4, ds4-bench, ds4-server 18:51): bf16 KV, ctx 262144, prefill
+chunk 2048, the eight fast options, the MMA prefill, the split-K decode,
+no MTP, no Q4_K decode. It answers /v1/models (200). The process started
+from the Spark's then-stale launcher, so it does not carry the persistent
+MoE; run-gemma4.sh was synced after the start, so the next start picks it
+up. The open-grok entry [model."gemma4-vq-spark"] needs
 no change. The launcher defaults HOST 127.0.0.1, PORT 8099, CTX 16384,
 KV fp8; the Spark invocation is
   DS4_GEMMA4_CTX=262144 DS4_GEMMA4_KV=bf16 DS4_GEMMA4_HOST=0.0.0.0 \
@@ -140,6 +155,17 @@ and ms/step:
   26 of 30 layers bit-identical, L7 3.2e-4, L17 7.6e-5, L21 2.4e-4,
   L22 2.2e-4 relL2, max 9.8e-4.
 
+Q4_K decode (4af, e51b564d; ds4-bench, same options):
+  nsys, ctx 256, 8 gen tokens: the Q4_K kernels 41.51 -> 37.69 ms, that
+  is 5.19 -> 4.71 ms per token (9.2 percent of that component).
+  ctx 256, three repeated pairs of 64 gen tokens: 29.06 -> 29.35 tok/s
+  (+1.0 percent); a single pair sits inside the run-to-run noise.
+  Real-model verify (the first 40 matrices): worst relL2 1.048e-4,
+  4094/4096 exact, the rest one or two bf16 boundaries.
+  Greedy: 64 tokens at 256 and 1,024 byte-identical with the option on
+  and off. Default off (DS4_GEMMA4_Q4_DECODE=1); the launcher does not
+  set it.
+
 agy's decode review is agy_review_decode_20261104.md (215 lines, committed
 with this handoff). Its three ranks:
 1. Persistent layer-book MoE decode plus device route sort, with
@@ -161,11 +187,16 @@ cuda/gemma4_attn_mma.cuh for the full-layer MMA; skip iquest_decode.cuh;
 defer VQ_tools.
 
 Next units, in the agreed order:
-1. Rank 3, the Q4_K bypass (the cheapest, ~3.7 ms, under 150 lines).
-2. Rank 2, corrected: finer splits first (measure 128- and 256-key
+1. Rank 2, corrected: finer splits first (measure 128- and 256-key
    spans), then the full-layer MMA; keep the split path.
-3. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving.
-Rank 1 landed as 4ae (f1db7f61): the measured saving is 8.1-8.6 ms/step,
+2. The older agy 2.2/2.3 (MTP drafter) and Priority 4 serving.
+3. Re-profile the decode after 4af: the step is 33.9 ms at ctx 256, and
+   the head, the attention and the MoE launches are the remaining
+   buckets.
+Rank 3 landed as 4af (e51b564d): the measured saving is 0.48 ms/step,
+not the review's 3.4, because these matrices are bandwidth-bound at
+about 4 ms/token and the scalar fallback was already at 77 percent of
+that floor. Rank 1 landed as 4ae (f1db7f61): the measured saving is 8.1-8.6 ms/step,
 not the review's ~12; the bucket it targeted was 14.35 ms, and the
 persistent pass leaves the two launches plus their book staging and the
 1.97 ms weight floor. The next profile (gen 8 minus gen 0 again) should
@@ -2328,6 +2359,65 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   time remains. The next profile should split it between the two
   persistent launches (book staging, the 1.97 ms weight floor) and the
   rest of the step. Rank 3 (the Q4_K bypass) is still the next unit.
+
+4af. Gemma-owned Q4_K decode: +1.0 percent, bandwidth-bound (2026-11-04, night)
+
+- What landed (e51b564d). cuda/gemma4_q4_decode.cuh decodes the one-token
+  Q4_K matrices: one warp per row, eight rows of one matrix staged in
+  shared per block, and up to five matrices sharing one input in a single
+  launch (q/k/v in one, o alone, the router alone). The dense gate/up
+  pair is one kernel: both matrices staged beside each other, both row
+  sums, and the existing GLU epilogue round(gelu(gate) * round(up))
+  (cuda/gemma4_primitives.cuh:182-187), so it removes a launch and a pass
+  over the input without changing the arithmetic.
+- The arithmetic. The Q4_K block is the container's (cuda/q4_k.cuh: 256
+  elements in 144 bytes, two f16 scales and eight packed six-bit
+  scale/min pairs). The block dot is Gemma's copy of glmvq_q4_acc
+  (cuda/glm_vq_q4.cuh:85-116): lane l covers group l/8 and the four low
+  plus four high nibbles at offset (l%8)*4, eight FMAs per block, the
+  row sum reduced with the same XOR tree. Same per-lane element sets;
+  only the FP32 order of the row sum differs.
+- What it replaces. The shared dispatcher's AUTO choice sends every Q4_K
+  matrix under 4 MiB to glmvq_q4_small, a per-element scalar decode; q
+  and o (6.49 MB) take glmvq_q4_stream. Per token that is 175 matrices:
+  115 small (920/8 in the profile) and 60 stream (480/8).
+- Synthetic gate, tests/gemma4_q4_decode.cu (make test-gemma4-q4-decode),
+  the shared dispatcher as the reference, the artifact's shapes, Spark:
+  q relL2 1.205e-8 with 4095 of 4096 exact (one bf16 boundary), k/v/o
+  and dense gate/up bit-identical, the fused GLU bit-identical; the
+  q/k/v group launch matches the same numbers; 0.1441 -> 0.1026 ms per
+  six-matrix layer (1.404x).
+- Real-model verify (DS4_GEMMA4_Q4_DECODE_VERIFY=1 runs the shared
+  per-matrix path beside the Gemma pass and prints each distance, first
+  40 matrices): worst relL2 1.048e-4, max 3.125e-2 (one bf16 ulp at
+  magnitude about 4), 4094/4096 exact; the rest one or two boundaries.
+- nsys, ctx 256, 8 gen tokens, the server options plus the persistent
+  MoE: the Q4_K kernels fall from 41.51 ms (glmvq_q4_small 21.43 +
+  glmvq_q4_stream 20.08) to 37.69 ms (g4_q4_many 27.66 + g4_q4_glu
+  10.03), that is 5.19 -> 4.71 ms per token, 9.2 percent of that
+  component.
+- ds4-bench, ctx 256, three repeated pairs of 64 gen tokens (the single
+  pair of 32 is inside the noise): 29.06 -> 29.35 gen tok/s (+1.0
+  percent), first token 0.0362 -> 0.0356 s. Prefill unchanged.
+- Model gate: 64 greedy tokens at ctx 256 and 1,024, the option on
+  against off, frontier logits and token ids dumped; diff -rq clean on
+  both. The decode sequence is unchanged over the 64-token horizon.
+- Why the review's estimate missed. agy put the bypass at 5.2 -> 1.8-2.0
+  ms; the measured Q4_K time is 4.71 ms and the floor is about 4 ms: the
+  175 matrices are 31.7 MB per layer, 951 MB per token, which at 240 GB/s
+  is 3.96 ms. The scalar fallback was already at 77 percent of the
+  bandwidth floor, so there was no 3 ms to recover. The synthetic 1.404x
+  is real for a layer of six matrices served from L2, not for the
+  streaming case.
+- Default off (DS4_GEMMA4_Q4_DECODE=1 enables it); the launcher does not
+  set it, because +1.0 percent does not justify a second decode path by
+  default. The C default matches the other fast options.
+- The Makefile also gains cuda/gemma4_moe_persist.cuh and
+  cuda/gemma4_q4_decode.cuh on the runtime objects' dependency line: a
+  header-only edit used to leave the binaries stale (the first Q4 A/B
+  measured two identical paths for exactly that reason, and the entry
+  check also caught an output-size test that squared the row count and
+  refused every matrix).
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
