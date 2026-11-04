@@ -190,11 +190,9 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, S
             // struct from the open options.
             other if other.starts_with("--gemma4-") => {
                 let value = require_value(other, iter.next())?;
-                if !parsed
-                    .gemma4
-                    .set_flag(other, &value)
-                    .map_err(|error| format!("ds4-bench-rs: {error}"))?
-                {
+                // The binary's main prints the "ds4-bench-rs: " prefix once;
+                // the knob error already names the flag the user typed.
+                if !parsed.gemma4.set_flag(other, &value)? {
                     return Err(format!("unsupported ds4-bench-rs option: {other}"));
                 }
             }
