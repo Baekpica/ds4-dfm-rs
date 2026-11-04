@@ -22,6 +22,7 @@
 #include "cuda/gemma_vq_prefill.cuh"
 #include "cuda/gemma4_attn_mma.cuh"
 #include "cuda/gemma4_attn_split.cuh"
+#include "cuda/gemma4_attn_split_mma.cuh"
 #include "cuda/gemma4_moe_fused.cuh"
 #include "cuda/gemma4_moe_persist.cuh"
 #include "cuda/gemma4_q4_decode.cuh"
@@ -636,6 +637,34 @@ static bool g4_split_combine_ready(void) {
     return ready != 0;
 }
 
+/* Tensor-core full-layer decode attention (cuda/gemma4_attn_split_mma.cuh),
+ * off by default (DS4_GEMMA4_ATTN_SPLIT_MMA=1). It replaces only the
+ * D = 512, group = 8 scalar split kernel; the split count and the combine
+ * kernel are the same, so the two paths are directly comparable. */
+static bool g4_split_mma(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_ATTN_SPLIT_MMA");
+        on = v && v[0] == '1' && !v[1];
+    }
+    return on != 0;
+}
+
+static uint32_t g4_split_mma_shared(uint32_t dim) {
+    return (16u * dim + G4_SMMA_TK * dim + G4_SMMA_GROUP * G4_SMMA_TK) *
+            sizeof(__nv_bfloat16) + 2u * 8u * 8u * sizeof(float);
+}
+
+static bool g4_split_mma_ready(uint32_t dim) {
+    static int ready = -1;
+    if (ready < 0) {
+        ready = cudaFuncSetAttribute(g4_attn_split_mma_kernel,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            g4_split_mma_shared(dim)) == cudaSuccess;
+    }
+    return ready != 0;
+}
+
 /* Split-K decode attention (cuda/gemma4_attn_split.cuh): the fast kernel's
  * per-key arithmetic over `splits` key ranges, joined by a combine kernel.
  * One row only; the drafter's keys=start case is included. The scratch is
@@ -679,6 +708,20 @@ extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *
     }
     float *partial = scratch;
     float *stats = scratch + partial_count;
+    /* Full layers (D = 512, group = 8) can run the split on tensor cores;
+     * the split count, the scratch layout and the combine are the scalar
+     * path's, so the option only swaps the per-split kernel. */
+    if (dim == 512u && group == 8u && g4_split_mma() && g4_split_mma_ready(dim)) {
+        g4_attn_split_mma_kernel<<<dim3(kv_heads, splits), G4_SMMA_THREADS,
+            g4_split_mma_shared(dim), ds4_current_stream()>>>(partial, stats,
+            (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
+            (const __nv_bfloat16 *)value->ptr, first, heads, kv_heads, dim,
+            window, ring, keys, kv_stride, splits);
+        if (!cuda_ok(cudaGetLastError(), "Gemma-4 split MMA attention")) { return 0; }
+        g4_attn_split_combine_kernel<<<heads, 256u, combine_shared, ds4_current_stream()>>>(
+            (float *)out->ptr, partial, stats, heads, dim, splits);
+        return cuda_ok(cudaGetLastError(), "Gemma-4 split MMA attention combine");
+    }
     const uint32_t shared = 2u * G4_SPLIT_TILE * dim * sizeof(__nv_bfloat16);
     g4_attn_split_kernel<G4_SPLIT_TILE><<<dim3(kv_heads, splits), group * 32u,
         shared, ds4_current_stream()>>>(partial, stats, (const float *)query->ptr,

@@ -9,6 +9,7 @@
 #include "../cuda/gemma4_attn.cuh"
 #include "../cuda/gemma4_attn_mma.cuh"
 #include "../cuda/gemma4_attn_split.cuh"
+#include "../cuda/gemma4_attn_split_mma.cuh"
 #include "../ds4_gemma4_plan.h"
 
 #define CUDA_OK(call) do { cudaError_t e_=(call); if(e_!=cudaSuccess){ \
@@ -446,6 +447,64 @@ static void attn_split_case(const char *name,unsigned first,unsigned heads,
     CUDA_OK(cudaFree(dpartial)); CUDA_OK(cudaFree(dstats));
 }
 
+/* Full-layer split-K decode on tensor cores (cuda/gemma4_attn_split_mma.cuh):
+ * the same split count, scratch layout and combine as attn_split_case, so
+ * the only difference is the per-split kernel. P is rounded to bf16 before
+ * P V, which makes this a parity path; the gate is the prefill MMA's 2.5e-3
+ * against the f32 reference. */
+static void attn_split_mma_case(const char *name,unsigned first,unsigned heads,
+        unsigned kv_heads,unsigned dim,unsigned ring,unsigned keys=0u,
+        unsigned span=512u) {
+    const unsigned rows=1;
+    const unsigned capacity=ring?ring:first+rows;
+    const uint64_t stride=(uint64_t)kv_heads*dim;
+    std::vector<float> keys_(capacity*stride),values(capacity*stride);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    std::vector<__nv_bfloat16> key16(keys_.size()),value16(values.size());
+    const unsigned filled=keys?keys:first+rows;
+    const unsigned oldest=(ring&&filled>ring)?filled-ring:0u;
+    for(unsigned p=oldest;p<filled;p++) {
+        const uint64_t slot=ring?p%capacity:p;
+        for(uint64_t j=0;j<stride;j++) {
+            const uint64_t k=(uint64_t)p*stride+j;
+            keys_[slot*stride+j]=g4_ref_bf16(value((unsigned)(k%65536))*1.1f);
+            values[slot*stride+j]=g4_ref_bf16(value((unsigned)((k+7)%65536))*0.9f);
+            key16[slot*stride+j]=__float2bfloat16_rn(keys_[slot*stride+j]);
+            value16[slot*stride+j]=__float2bfloat16_rn(values[slot*stride+j]);
+        }
+    }
+    if(keys) {
+        const uint64_t slot=ring?first%capacity:first;
+        for(uint64_t j=0;j<stride;j++) {
+            keys_[slot*stride+j]=key16[slot*stride+j]=1.0e4f;
+            values[slot*stride+j]=value16[slot*stride+j]=-1.0e4f;
+        }
+    }
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),keys_.data(),values.data(),rows,first,heads,kv_heads,dim,0,capacity,ring,keys);
+    float *dq=device(query),*out;
+    __nv_bfloat16 *dk=device(key16),*dv=device(value16);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned last=keys&&keys<=first?keys-1u:first;
+    unsigned splits=(last+span)/span;
+    if(splits<1u) { splits=1u; }
+    float *dpartial,*dstats;
+    CUDA_OK(cudaMalloc(&dpartial,(size_t)splits*heads*dim*sizeof(float)));
+    CUDA_OK(cudaMalloc(&dstats,(size_t)splits*heads*2*sizeof(float)));
+    const unsigned shared=(16u*dim+G4_SMMA_TK*dim+G4_SMMA_GROUP*G4_SMMA_TK)
+        *sizeof(__nv_bfloat16)+2u*8u*8u*sizeof(float);
+    CUDA_OK(cudaFuncSetAttribute(g4_attn_split_mma_kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,shared));
+    g4_attn_split_mma_kernel<<<dim3(kv_heads,splits),G4_SMMA_THREADS,shared>>>(
+        dpartial,dstats,dq,dk,dv,first,heads,kv_heads,dim,0u,ring,keys,stride,splits);
+    CUDA_OK(cudaGetLastError());
+    g4_attn_split_combine_kernel<<<heads,256,splits*sizeof(float)>>>(out,dpartial,dstats,heads,dim,splits);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,2.5e-3f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
+    CUDA_OK(cudaFree(dpartial)); CUDA_OK(cudaFree(dstats));
+}
+
 static void attn_test() {
     attn_case("attn_sliding_decode",1,4096,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);    attn_case("attn_sliding_prefill_window_edge",5,1020,G4_REF_HEADS,G4_REF_KV_HEADS,G4_REF_HEAD_DIM,G4_REF_WINDOW,0);
     attn_case("attn_full_decode",1,8192,G4_REF_HEADS,G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0);
@@ -517,6 +576,24 @@ static void attn_test() {
         G4_REF_GLOBAL_HEAD_DIM,0,0,0u,16u);
     attn_split_case("attn_split_sliding_span16",4096,G4_REF_HEADS,G4_REF_KV_HEADS,
         G4_REF_HEAD_DIM,G4_REF_WINDOW,0,0u,16u);
+    /* Full-layer split-K on tensor cores: span 512/128/96, a wrapped ring,
+     * a shared prefix and the two tile edges (64 keys exactly, then 65). */
+    attn_split_mma_case("attn_split_mma_full_span512",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,512u);
+    attn_split_mma_case("attn_split_mma_full_span128",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_case("attn_split_mma_full_span96",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,96u);
+    attn_split_mma_case("attn_split_mma_full_ring",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,1025,0u,128u);
+    attn_split_mma_case("attn_split_mma_full_shared_prefix",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,8192u,128u);
+    attn_split_mma_case("attn_split_mma_single_key",0,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_case("attn_split_mma_tile_edge63",63,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_case("attn_split_mma_tile_edge64",64,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
 }
 
 int main(int argc,char **argv) {

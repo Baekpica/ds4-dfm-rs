@@ -64,7 +64,13 @@
 #                         fast kernel. The per-key arithmetic is the fast
 #                         kernel's, the softmax combine order differs; the
 #                         synthetic gate is 6.6e-7 and 23 of 24 greedy
-#                         tokens match, so the launcher enables it.
+#                         tokens match, so the launcher enables it. The
+#                         full layers (D = 512, group = 8) run the split on
+#                         tensor cores (DS4_GEMMA4_ATTN_SPLIT_MMA=1, the
+#                         launcher default; 0 keeps the scalar per-key
+#                         kernel): +2.5% decode at ctx 256, +3.0% at 1,024
+#                         and +9.5% at 13,447, with the greedy tokens and
+#                         the frontier logits identical at 13,447.
 #   DS4_GEMMA4_PERSIST    1 (default) adds the persistent layer-book MoE
 #                         decode (DS4_GEMMA4_MOE_PERSIST=1); 0 keeps the
 #                         per-expert loop. One launch per pass, the layer
@@ -153,7 +159,10 @@ fast_envs() {
                 "DS4_GEMMA4_HEAD_GEMV=0" "DS4_GEMMA4_ROUTER_DOT=0" )
   fi
   if [ "$MMA" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_MMA=1" ); fi
-  if [ "$SPLIT" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_ATTN_SPLIT=1" ); fi
+  if [ "$SPLIT" = "1" ]; then
+    FAST_ENVS+=( "DS4_GEMMA4_ATTN_SPLIT=1"
+                 "DS4_GEMMA4_ATTN_SPLIT_MMA=${DS4_GEMMA4_ATTN_SPLIT_MMA:-1}" )
+  fi
   if [ "$PERSIST" = "1" ]; then FAST_ENVS+=( "DS4_GEMMA4_MOE_PERSIST=1" ); fi
 }
 
