@@ -1,7 +1,7 @@
 ---
 project: ds4-gemma4 (Gemma-4 26B A4B dense-VQ R13+8 port into ds4)
 plan_start_commit: 9dd5137e
-last_updated_commit: 9dd5137e
+last_updated_commit: b6ca88c2
 branch: feat/gemma4-family
 remote: https://github.com/JLFN/ds4-dfm-rs.git (public fork; upstream untouched)
 handoff_written_at_context_usage: 21%
@@ -43,30 +43,20 @@ The auto-compact threshold is the failsafe, not the trigger.
 
 2. Current state (2026-11-04 — COMPLETE, verified)
 
-- Newest unit: 4ai, full-layer split-K decode on tensor cores
-  (5bda5aac). cuda/gemma4_attn_split_mma.cuh packs the 8 q heads of a KV
-  head into m16n8k16 rows 0-7, 64-key tiles, P bf16 for P V, K/V share
-  one staging buffer, split count and combine unchanged. Option
-  DS4_GEMMA4_ATTN_SPLIT_MMA (binary default off; launcher default 1 when
-  SPLIT=1; 0 restores the scalar per-key kernel).
-- Gate: 8 synthetic cases max error 4.8e-6 on sm_89 and 4.7e-6 on
-  sm_121 (gate 2.5e-3); 32 greedy tokens identical at ctx 256, 1,024 and
-  13,447; the 13,447 frontier logits dump is byte-identical between the
-  scalar split and the MMA split.
-- A/B at span 128, ds4-bench, eight fast options: ctx 256 27.60 ->
-  28.29 tok/s (1.025x), ctx 1,024 26.62 -> 27.41 (1.030x), ctx 13,447
-  24.09 -> 26.38 (1.095x, 3.6 ms/step).
-- Endpoints live: Spark 192.168.1.91:8889, pid 163167 (20:25:41), ctx
-  262144, bf16 KV, SPLIT_MMA=1, persistent MoE; local 4070
-  127.0.0.1:8099, pid 3290680 (20:28:18), ctx 262144, E4M3 full-layer
-  KV, SSD stream 4GB. Both answer /v1/models and a greedy completion.
-- Bench rule (owner, 2026-11-04): benchmarks run on the Spark only; the
-  4070 is the serving and manual-test lane.
-- Branch feat/gemma4-family; origin at 3c89d43c; 5bda5aac and this
-  handoff reset are local, unpushed (owner's word + OSV scan required).
-- The five owner files in the tree are untracked and untouched
-  (cpu_moe_agy_pane.md, review_agy.md, tests/gemma4_cpu_expert_gemv,
-  tests/gemma4_head_rows, tests/gemma4_mtp_gate).
+- Newest unit b6ca88c2: fair CPU-expert ceiling (review 5.A). 15.31 ms/
+  token cold at 20t vs a 9.37 ms streaming floor (1.63x); scalar cold
+  117.3 ms; max |diff| 4.8e-7. agy's 8-wide lever regressed 4.8%, 2-row
+  blocking was noise; STOP stands, corrected (CPU experts 1.65x the
+  GPU's 9.29 ms, not 4-6x). docs/gemma4-cpu-moe-2026-11-04.md.
+- Prior unit 4ai (5bda5aac): split-K on tensor cores, gates 4.8e-6,
+  32 tokens identical at 256/1,024/13,447, span-128 A/B up to 1.095x.
+- Spark builds from git at 6affa69f (~/ds4-gemma4-git, all four
+  binaries, 0 errors, split-MMA kernel present); the live server still
+  runs the old rsync tree ~/ds4-gemma4. 192.168.1.91:8889 live; local
+  4070 127.0.0.1:8099 DOWN (no listener).
+- Bench rule: Spark only; 4070 is the serving/manual lane. Branch
+  feat/gemma4-family; origin 6affa69f; b6ca88c2 local, unpushed; owner
+  files untouched.
 
 3. Next unit plan — span 64/32/16 at ctx 13,447 (2026-11-04)
 
@@ -93,12 +83,11 @@ Ground truth (verified this session):
   once, so the optimum may move up or down; measure, do not assume.
 
 Phase A — prep the Spark (bench window)
-1. Confirm the Spark worktree has the 5bda5aac sources:
-   cuda/gemma4_attn_split_mma.cuh, ds4_gemma4_gpu.cuh, tests/
-   test_gemma4_primitives.cu, Makefile, run-gemma4.sh. If not, rsync
-   them with -R and rebuild:
-     cd ~/ds4-gemma4 && PATH=$HOME/.cargo/bin:$PATH \
-       make ds4 ds4-bench ds4-server CUDA_ARCH=sm_121
+1. The git clone ~/ds4-gemma4-git is at 6affa69f with a full build
+   (ds4, ds4-server, ds4-bench, ds4-eval, 0 errors, split-MMA kernel
+   present, built 21:06). Use ~/ds4-gemma4-git/ds4-bench for the sweep;
+   do not rsync and do not rebuild. The clone's run-gemma4.sh has not
+   been exercised, so keep the serving lane on the old tree for now.
 2. Stop the server (it holds /tmp/ds4-gemma4-gate.lock):
      cd ~/ds4-gemma4 && ./run-gemma4.sh serve stop
    Verify pgrep -f ds4-server is empty and port 8889 is closed.
