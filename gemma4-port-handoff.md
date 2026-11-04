@@ -5,7 +5,7 @@ last_updated_commit: b99aeb12
 branch: feat/gemma4-family
 remote: https://github.com/JLFN/ds4-dfm-rs.git (public fork; upstream untouched)
 handoff_written_at_context_usage: 21%
-handoff_written_at: 2026-11-04T22:40:36+01:00
+handoff_written_at: 2026-11-04T22:42:30+01:00
 session_id: 01a19693-09d4-71d2-b0ac-5c87d02208e0
 ---
 
@@ -57,8 +57,8 @@ The auto-compact threshold is the failsafe, not the trigger.
 - Pre-existing failures: tokenizer target missing Gemma4Vq arms;
   gemma4_declares_the_serial_chunk expects 1 not 512; one minimax render
   and two ds4-perf artifact tests fail.
-- Metal: no Gemma-4 support. Bench rule: Spark only. origin 6affa69f;
-  local commits unpushed (owner's word + OSV scan).
+- Metal: no Gemma-4 support. Bench rule: Spark only. PUSHED to origin
+  (public fork) at 32ba6de5 after an OSV scan: 146 packages, 0 vulnerable.
 
 3. Next unit plan — span 64/32/16 at ctx 13,447 (2026-11-04)
 
@@ -213,8 +213,9 @@ Phase D — following units (not this one)
 - Open: the span 64/32/16 points at 13,447 (next unit, section 3); agy
   2.2/2.3 and Priority 4 serving; the decode re-profile; SSD lane
   qualification.
-- Open: the push of 788cd338, 74c44b3e, 99775f2c, e7cae8a2 and b99aeb12
-  needs the owner's word and a fresh OSV scan (origin is at 6affa69f).
+- Pushed: 788cd338, 74c44b3e, 99775f2c, e7cae8a2, b99aeb12 and the
+  handoff commits are on origin (public fork, 6affa69f..32ba6de5). The
+  OSV scan before the push found 0 vulnerable of 146 packages.
 - The 4070's FP8 full-layer KV lane never calls the split function, so
   4ai is inert there; the Spark's bf16 lane is the one that uses it.
 
