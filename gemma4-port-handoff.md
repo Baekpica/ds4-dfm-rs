@@ -1798,7 +1798,9 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   the built tests/gemma4_mtp_gate, tests/gemma4_head_rows and
   tests/gemma4_cpu_expert_gemv binaries. The Spark is synced to b09744a6,
   built (475 s, 0 errors), and both the head test and the long gate pass
-  there; it does not yet have the serving quote fix or the CPU test.
+  there; its git HEAD is still 341481b2 and the verify-head files arrived
+  by rsync, so "synced" means the working tree, not a pulled commit. It
+  does not yet have the serving quote fix or the CPU test.
 
 4x. The 4070 serving lane and the CPU-expert verdict (2026-11-04)
 
