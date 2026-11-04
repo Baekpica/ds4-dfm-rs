@@ -3,8 +3,9 @@ project: ds4-dfm-rs (clone of JLFN/ds4-dfm-rs)
 branch: feat/gemma4-family
 base_commit: 8c2068b5 (upstream main)
 last_updated_commit: 7e67cf1b (feat(gemma4): raise the MTP draft ceiling
-  to six), plus this handoff commit. 4u records the Phase 7 P8 work in
-  flight and the tree is clean. The twelve commits on top of d6ad9774 are
+  to six), plus this handoff update. 4u records the Phase 7 P8 work in
+  flight; a7922215 is the first 4u handoff and this update adds the
+  next-unit plan. The twelve commits on top of d6ad9774 are
   f0c2b92a (serving-check prefix reference), 19f5b75b (the Gemma VQ header
   split), 659a152b (optional FP8 full-layer KV and fused expert gate/up),
   bf6b3989 (optional fast decode attention), c09cfbf9 (the prefill-first
@@ -110,17 +111,18 @@ What is still open, in order:
           Section 9 phase 4 owns it; the recommended first slice is the
           decode GEMV profile, not the 4070 stream map.
   1. P8   the drafter is committed in 8fae06b0 and passes gates A, B and C
-          on a short prompt. The serving checklist on the documented short
-          prompt passes with --mtp: result: pass (works 10, FAIL 0, WRONG
-          0, undeclared 0), with the mtp row declared Sidecar/qualified/
-          Serial. It FAILS on a 406-token prompt: reuse prefix WRONG, kept
-          203, top-1 16/17, max_abs 1.525e1, row 16: 623 +0.250 over
-          prefill 107 +0.500. The failure reproduces without --mtp, so it
-          is not the drafter; it is in the batched prefill or the prefix
-          reuse bookkeeping, and the exact-prefill comparison had not been
-          recorded when this handoff was written. Section 9 phase 0 owns it.
-          The one open design question is G4_MTP_DRAFTS = 4 against the
-          checkpoint's num_assistant_tokens = 6 (4k).
+          on a short prompt. The exact wrapped-ring gate passed on the
+          Spark (4u: 1081 tokens, ring 1029, off 126.36 s, on 128.85 s,
+          byte-identical); the default chunk-16 pair is self-consistent
+          but differs from the exact path (the known grouped-prefill
+          trade). The serving checklist passes (works 10, FAIL 0, WRONG 0,
+          undeclared 0), but its mtp row is still "no check yet": no trial
+          runs. The 406-token prefix failure is closed by Phase 0
+          (f0c2b92a) and the exact-prefill reference is the gate. The draft
+          ceiling is 6 (7e67cf1b); the measured matrix at ctx 1024 is
+          no-MTP 6.75, draft 2 12.87, draft 4 15.99, draft 6 18.42 tok/s.
+          Open: the real MTP trial gate, the Gemma-owned verify path, and
+          the serving-default speed number.
   2. P9   the four-part OpenAI gate is scripted (tests/gemma4_serving_http_gate.sh)
           and not yet run; the live tool-tail continuation is done
           (be901c46); the serving-host limits are documented.
@@ -1656,6 +1658,23 @@ fast-attention bench at ctx 2048 are the open Spark runs.
   linear; the multi-row head and device argmax are unmeasured), and the
   speed number at the serving default. The Phase 3 and P8 options stay
   default-off.
+- Next unit (P8 trial gate). The serving checklist's mtp row calls
+  unchecked() and prints "no check yet"; --mtp only binds and declares the
+  sidecar. Build a real trial: run the same session with MTP off and on,
+  compare the emitted token ids byte for byte, and cover (a) prefix reuse
+  (a second prompt sharing the first 11 tokens), (b) snapshot restore,
+  (c) a stop inside an accepted verify block, and (d) temp > 0 sampling,
+  where ds4_gemma4_mtp.inc still hardcodes sample_argmax and never calls
+  spec_sample_rows. The target's tokens must be identical to the no-MTP
+  run; the drafter may only change acceptance and speed. The gate belongs
+  in crates/ds4-core/src/serving_check.rs and the serving_host tests; the
+  Spark is the run host.
+- Reproduce: /tmp/g4-long.txt (1081 tokens), /tmp/g4-spark-gate.sh (exact
+  pair), /tmp/g4-spark-gate2.sh (default chunk 16), /tmp/g4-spark-gate3.sh
+  (2x2), /tmp/g4-spark-logits.sh (four dumps) and /tmp/g4-spark-bench.sh
+  (draft matrix). The four logits JSONs are /tmp/g4-l-*.json on this host;
+  the Spark has the scripts under /tmp and the artifact at
+  ~/models/gguf-family-it-r8.
 
 5. Artifact and checkpoint facts a fresh session cannot re-derive
 
