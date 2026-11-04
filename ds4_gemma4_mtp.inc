@@ -416,6 +416,14 @@ int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
         gemma4_session_fail(s, err, errlen);
         return -1;
     }
+    /* A sampling request draws its targets from the same verify rows with the
+     * host's sampler (sample-and-match); a greedy request keeps the argmax
+     * rows. Inkling's trial tail is the reference (ds4.c:78386): the rows the
+     * verify read back are the plain decode's own, so the draw at row i is the
+     * draw plain sampling would make there. */
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, r->host, G4_VOCAB, G4_VOCAB, tokens, n, target);
+    }
     g->position = start + n;
     r->trial_start = start;
     r->trial_n = n;

@@ -142,7 +142,10 @@ pub use serving::{
     ServingCaps, ServingQuote, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
     DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
 };
-pub use serving_check::{checklist_ctx, serving_check, serving_check_v41, Checklist};
+pub use serving_check::{
+    checklist_ctx, gemma4_mtp_gate, serving_check, serving_check_v41, Checklist, MtpBlock,
+    MtpReport,
+};
 pub use serving_host::{
     attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
     host_available_bytes, QuoteHost, WeightSlice,
