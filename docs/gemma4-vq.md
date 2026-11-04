@@ -217,8 +217,14 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   verify forward.
 - The live tool-tail continuation refuses this family rather than
   mis-rendering; it is P9.
-- `ds4-server` needs `--mem-floor-gb 2` on a 12 GiB card: 6.71 GiB of weights
-  plus the default 4 GiB floor leaves no room for the context quote.
+- `ds4-server` passes its HTTP gate on the GB10 (P9, 2026-11-04: boot,
+  /v1/models, non-stream, determinism, SSE stream, the max_tokens refusal).
+  On the 12 GiB 4070 the serving quote refuses the R13+8 artifact with
+  `quote_overflow` at ctx 2048 and 1024 with `--mem-floor-gb` 2 and 1, and
+  `--ssd-streaming` takes the shared GLM-5.3 branch ("requires one GLM-5.3
+  GGUF shard") rather than the Gemma discrete map. The discrete serving
+  lane is therefore open: the quote accounting for the host-mapped 9.37 GiB
+  weights, or wiring the Gemma SSD map into the server flag.
 - The serial session has no ring-resume guard yet: a divergent continuation
   that reaches back past the rows the ring still holds can read overwritten
   slots. The banked lane is exact and the checklist does not exercise it.

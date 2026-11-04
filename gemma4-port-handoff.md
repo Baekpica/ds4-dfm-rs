@@ -2171,7 +2171,17 @@ Phase 7 — the port gates that remain (runs before Phase 4, owner's order)
   is a known limitation; close it by extending the exact coverage to the
   verify forward or by gating on the frontier logits instead of the whole
   payload.
-  P9: tests/gemma4_serving_http_gate.sh (reworked 951f6322; needs a run).
+  P9 DONE on the GB10 (2026-11-04): tests/gemma4_serving_http_gate.sh
+  passes every check there (boot listening + CUDA backend on NVIDIA GB10
+  sm_121, /v1/models, non-stream completion, field-by-field determinism,
+  SSE stream through [DONE], max_tokens -1 -> 400 invalid_request_error);
+  the MTP arm was skipped. On the 4070 the server refuses to boot:
+  quote_overflow at ctx 2048 and 1024 with --mem-floor-gb 2 and 1, and
+  --ssd-streaming takes the shared GLM-5.3 branch ("requires one GLM-5.3
+  GGUF shard") instead of the Gemma discrete map. That is a real
+  discrete-serving gap to record, not a gate failure: the quote accounting
+  for the host-mapped 9.37 GiB weights, or the Gemma map behind the server
+  flag.
   P10: the HF release directory, the OSV scan (clean 2026-11-04: 1
   manifest, 146 packages, 0 vulnerable), the pushes (owner's word).
   P11: the served-arm comparison and two-stage support in vq-gguf and the
