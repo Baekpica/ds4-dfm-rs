@@ -109,11 +109,19 @@ struct Args {
     /// Add pool arms sized from the card, the requested context and the free
     /// margin: the limited-VRAM setup (128K on a 12 GiB card, 1 GiB free).
     pool_budget: bool,
+    /// Run exactly this arm (a name from --dry-run), for one expensive point.
+    only: Option<String>,
+    /// VRAM free right now (total minus used). The pool budget is priced from
+    /// this, not from the card total: a desktop compositor and the driver
+    /// already hold memory that the engine can never spend.
+    available_mib: u64,
 }
 
 #[derive(Clone, Copy)]
 struct Measured {
     arm_index: usize,
+    /// Client-visible time to the first token: the prefill plus the first
+    /// decode step (the bench's own first_token_sec starts after the prefill).
     ttft_s: f64,
     prefill_tps: f64,
     decode_tps: f64,
@@ -152,6 +160,7 @@ fn usage() -> String {
         "  --pool-budget      add the pool arms that fill the card up to that margin",
         "                     (exact KV + workspace + the measured CUDA runtime);",
         "                     the lane uploads every routed expert before use",
+        "  --only NAME        run one arm by name (see --dry-run), nothing else",
         "  --stop-endpoint    stop the launcher's endpoint first, restore it after",
         "  --port N           endpoint port to check (default 8099)",
         "  --include-expensive  also sweep the whole-model-on-CPU arm",
@@ -185,6 +194,8 @@ fn parse_args() -> Result<Args, String> {
         dry_run: false,
         include_expensive: false,
         pool_budget: false,
+        only: None,
+        available_mib: 0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -241,6 +252,7 @@ fn parse_args() -> Result<Args, String> {
                 args.free_headroom_mib = value()?.parse().map_err(|_| "--free-margin wants MiB")?
             }
             "--pool-budget" => args.pool_budget = true,
+            "--only" => args.only = Some(value()?),
             "--stop-endpoint" => args.stop_endpoint = true,
             "--port" => args.port = value()?.parse().map_err(|_| "--port wants a number")?,
             "--include-expensive" => args.include_expensive = true,
@@ -330,14 +342,18 @@ fn workspace_mib(chunk: u32) -> u64 {
 const CUDA_RUNTIME_MIB: u64 = 533;
 
 /// The pool a limited-VRAM machine can hold at `ctx`, `kv` and `chunk` while
-/// keeping `free_margin` MiB free at peak.
-fn pool_budget_mib(ctx: u32, kv: &str, chunk: u32, total_mib: u64, free_margin: u64) -> u64 {
+/// keeping `free_margin` MiB free at peak, priced from the VRAM free now
+/// rather than the card total: the compositor and the driver already hold
+/// pages the engine can never spend (measured 249 MiB on the 4070, which is
+/// why a total-priced arm at 128K finished with 820 MiB free instead of the
+/// 1,024 the budget promised).
+fn pool_budget_mib(free_mib: u64, ctx: u32, kv: &str, chunk: u32, free_margin: u64) -> u64 {
     let fixed = RESIDENT_SET_MIB
         + kv_exact_mib(ctx, kv, chunk)
         + workspace_mib(chunk)
         + CUDA_RUNTIME_MIB
         + free_margin;
-    total_mib.saturating_sub(fixed).min(EXPERT_MIB)
+    free_mib.saturating_sub(fixed).min(EXPERT_MIB)
 }
 
 fn estimate_mib(ctx: u32, kv: &str, shape: Shape, chunk: u32) -> u64 {
@@ -492,10 +508,10 @@ fn arms(args: &Args) -> Vec<Arm> {
         // the GPU always computes the active routes; the pool decides how
         // often a route costs a fill, not whether it runs on the GPU.
         let budget = pool_budget_mib(
+            args.available_mib,
             args.ctx,
             "fp8",
             512,
-            args.vram_total_mib.max(args.free_headroom_mib + 1),
             args.free_headroom_mib,
         );
         for (name, mib) in [
@@ -760,8 +776,9 @@ fn run_arm(
             .position(|h| *h == name)
             .ok_or_else(|| format!("CSV has no {name} column"))
     };
-    let (c_ctx, c_pf_tps, c_gen_tps, c_ttft, c_kv) = (
+    let (c_ctx, c_pf_tokens, c_pf_tps, c_gen_tps, c_ttft, c_kv) = (
         col("ctx_tokens")?,
+        col("prefill_tokens")?,
         col("prefill_tps")?,
         col("gen_tps")?,
         col("first_token_sec")?,
@@ -772,9 +789,20 @@ fn run_arm(
         .ok_or_else(|| "the arm wrote no data row".to_string())?;
     let f: Vec<&str> = row.split(',').collect();
     let at = |i: usize| f.get(i).copied().unwrap_or("");
+    let prefill_tokens = at(c_pf_tokens).parse::<f64>().unwrap_or(0.0);
     let prefill_tps = at(c_pf_tps).parse::<f64>().unwrap_or(0.0);
     let decode_tps = at(c_gen_tps).parse::<f64>().unwrap_or(0.0);
-    let ttft_s = at(c_ttft).parse::<f64>().unwrap_or(f64::INFINITY);
+    // Time to the first token, as a client waits for it: the bench's
+    // first_token_sec starts counting after the prefill, so at 128K it read
+    // 0.04 s while the request had been running for three minutes. Prefill
+    // dominates this number at long context, which is exactly what the
+    // ranking should see.
+    let decode_start_s = at(c_ttft).parse::<f64>().unwrap_or(f64::INFINITY);
+    let ttft_s = if prefill_tps > 0.0 {
+        decode_start_s + prefill_tokens / prefill_tps
+    } else {
+        decode_start_s
+    };
     let kv_bytes = at(c_kv).parse::<u64>().unwrap_or(0);
     let frontier: u32 = at(c_ctx).parse().unwrap_or(0);
     if !(prefill_tps > 0.0) || !(decode_tps > 0.0) || !(ttft_s > 0.0) {
@@ -831,6 +859,49 @@ fn main() {
     }
 }
 
+/// VRAM free on the card right now: the total minus what nvidia-smi reports
+/// used. A served endpoint, a compositor or another job is inside "used".
+fn free_now_mib(args: &Args) -> u64 {
+    nvidia_used_mib()
+        .map(|used| args.vram_total_mib.saturating_sub(used))
+        .unwrap_or(args.vram_total_mib)
+}
+
+/// The arm list for this invocation: the full sweep, or the one arm `--only`
+/// names. Also the up-front check that the bench binary knows the cache
+/// knobs: an old binary accepts the flag name and carries nothing (PHASE C0).
+fn build_list(args: &Args) -> Result<Vec<Arm>, String> {
+    let list = match &args.only {
+        // One expensive point (a 128K arm is minutes): run exactly that arm,
+        // with the same environment, threshold and report as the sweep.
+        Some(only) => {
+            let filtered: Vec<Arm> = arms(args)
+                .into_iter()
+                .filter(|arm| arm.name == *only)
+                .collect();
+            if filtered.is_empty() {
+                return Err(format!(
+                    "no arm named '{only}'; --dry-run lists the names at this ctx"
+                ));
+            }
+            filtered
+        }
+        None => arms(args),
+    };
+    if list.iter().any(|a| matches!(a.shape, Shape::Cache(_))) {
+        for flag in ["--gemma4-moe-cache-mib", "--gemma4-moe-staging-mib"] {
+            if !bench_knows(&args.bench, flag) {
+                return Err(format!(
+                    "{} does not know {flag} (built before the knob landed); \
+rebuild it: make ds4-bench",
+                    args.bench.display()
+                ));
+            }
+        }
+    }
+    Ok(list)
+}
+
 fn run() -> Result<(), String> {
     let mut args = parse_args()?;
     if !args.bench.is_file() {
@@ -844,25 +915,13 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| "could not ask nvidia-smi for the card total".to_string())?;
     }
     let ceiling = args.vram_total_mib.saturating_sub(args.free_headroom_mib);
-    let list = arms(&args);
-    /* A cache arm measures nothing if the binary predates the knob: refuse up
-     * front instead of reporting a lane that never engaged (PHASE C0). */
-    if list.iter().any(|a| matches!(a.shape, Shape::Cache(_))) {
-        for flag in ["--gemma4-moe-cache-mib", "--gemma4-moe-staging-mib"] {
-            if !bench_knows(&args.bench, flag) {
-                return Err(format!(
-                    "{} does not know {flag} (built before the knob landed); \
-rebuild it: make ds4-bench",
-                    args.bench.display()
-                ));
-            }
-        }
-    }
+    args.available_mib = free_now_mib(&args);
+    let list = build_list(&args)?;
 
     if args.dry_run {
         println!(
-            "card {} MiB, ceiling {} MiB ({} MiB must stay free), ctx {}",
-            args.vram_total_mib, ceiling, args.free_headroom_mib, args.ctx
+            "card {} MiB, free now {} MiB, ceiling {} MiB ({} MiB must stay free), ctx {}",
+            args.vram_total_mib, args.available_mib, ceiling, args.free_headroom_mib, args.ctx
         );
         for (i, arm) in list.iter().enumerate() {
             let (est, source) = estimate_for(&args, arm);
@@ -889,6 +948,15 @@ rebuild it: make ds4-bench",
     }
 
     let _guard = EndpointGuard::new(&args.repo, args.stop_endpoint, args.port)?;
+    // With the endpoint stopped, the card's free memory is the number the pool
+    // budget should be priced from. Rebuild the pool arms on that reading.
+    let was = args.available_mib;
+    args.available_mib = free_now_mib(&args);
+    let list = if args.pool_budget && args.available_mib != was {
+        build_list(&args)?
+    } else {
+        list
+    };
     let work = std::env::temp_dir().join(format!("ds4-advisor-{}", std::process::id()));
     fs::create_dir_all(&work).map_err(|e| format!("could not create {}: {e}", work.display()))?;
     let prompt = match &args.prompt {
@@ -988,13 +1056,24 @@ rebuild it: make ds4-bench",
         .collect();
     measured = fitting;
     for m in &over {
+        // For a pool arm the correction is arithmetic: the sampled peak
+        // missed the margin by exactly as much as the pool was too wide.
+        let deficit = m.peak_mib.saturating_sub(ceiling);
+        let hint = match list[m.arm_index].shape {
+            Shape::Cache(mib) => format!(
+                "; DS4_GEMMA4_MOE_CACHE_MIB={} would meet it",
+                u64::from(mib).saturating_sub(deficit)
+            ),
+            _ => String::new(),
+        };
         skipped.push(Skipped {
             name: list[m.arm_index].name.clone(),
             why: format!(
-                "peak {} MiB leaves {} MiB free, under the {} MiB margin",
+                "peak {} MiB leaves {} MiB free, under the {} MiB margin{}",
                 m.peak_mib,
                 args.vram_total_mib.saturating_sub(m.peak_mib),
-                args.free_headroom_mib
+                args.free_headroom_mib,
+                hint
             ),
         });
     }
@@ -1043,6 +1122,10 @@ rebuild it: make ds4-bench",
             m.seconds
         );
     }
+    println!(
+        "\nttft_s is what a client waits for: the prefill plus the first decode \
+         token. peak_MiB and free_MiB are nvidia-smi samples during the arm."
+    );
     if !skipped.is_empty() {
         println!("\nnot measured:");
         for s in &skipped {
