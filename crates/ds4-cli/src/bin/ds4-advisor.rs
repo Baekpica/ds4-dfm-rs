@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 const MODEL_MIB: u64 = 9_580; // 9.37 GiB map, the weights the resident lane copies
 const RESIDENT_SET_MIB: u64 = 2_406; // 2.35 GiB: attention, norms, books, router
 const EXPERT_MIB: u64 = 7_184; // 7.02 GiB of routed expert records
+const EXPERT_RECORDS: u64 = 3_840; // 30 layers x 128 experts, ~1.87 MiB each
 const WORKSPACE_MIB: u64 = 900; // session graph, logits, scratch (measured at 8192)
 const LAYERS: u64 = 30;
 // Full-layer KV: 5 layers x 2,056 B per token in E4M3, doubled for bf16. The
@@ -105,8 +106,12 @@ struct Args {
     estimate: Estimate,
     dry_run: bool,
     include_expensive: bool,
+    /// Add pool arms sized from the card, the requested context and the free
+    /// margin: the limited-VRAM setup (128K on a 12 GiB card, 1 GiB free).
+    pool_budget: bool,
 }
 
+#[derive(Clone, Copy)]
 struct Measured {
     arm_index: usize,
     ttft_s: f64,
@@ -129,7 +134,7 @@ fn usage() -> String {
         "",
         "usage: ds4-advisor --ctx N [options]",
         "",
-        "  --ctx N            context to size the sweep for (required, max 65536)",
+        "  --ctx N            context to size the sweep for (required, max 262144)",
         "  --gen-tokens N     greedy decode tokens per arm (default 32)",
         "  --prefer MODE      balanced (default), prefill, or decode",
         "  --prompt-file P    prompt to benchmark (default: generated, ~ctx tokens)",
@@ -144,6 +149,9 @@ fn usage() -> String {
         "  --estimate MODE    static (default: offline model), quote (the",
         "                     engine quote only), auto (quote, static fallback)",
         "  --free-margin MiB  VRAM that must stay free at peak (default 384)",
+        "  --pool-budget      add the pool arms that fill the card up to that margin",
+        "                     (exact KV + workspace + the measured CUDA runtime);",
+        "                     the lane uploads every routed expert before use",
         "  --stop-endpoint    stop the launcher's endpoint first, restore it after",
         "  --port N           endpoint port to check (default 8099)",
         "  --include-expensive  also sweep the whole-model-on-CPU arm",
@@ -176,24 +184,28 @@ fn parse_args() -> Result<Args, String> {
         estimate: Estimate::Static,
         dry_run: false,
         include_expensive: false,
+        pool_budget: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
-        let mut value = || {
-            it.next()
-                .ok_or_else(|| format!("{} needs a value", arg))
-        };
+        let mut value = || it.next().ok_or_else(|| format!("{} needs a value", arg));
         match arg.as_str() {
             "--ctx" => args.ctx = value()?.parse().map_err(|_| "--ctx wants a number")?,
             "--gen-tokens" => {
-                args.gen_tokens = value()?.parse().map_err(|_| "--gen-tokens wants a number")?
+                args.gen_tokens = value()?
+                    .parse()
+                    .map_err(|_| "--gen-tokens wants a number")?
             }
             "--prefer" => {
                 args.prefer = match value()?.as_str() {
                     "balanced" => Prefer::Balanced,
                     "prefill" | "ttft" => Prefer::Prefill,
                     "decode" => Prefer::Decode,
-                    other => return Err(format!("--prefer wants balanced, prefill or decode (got {other})")),
+                    other => {
+                        return Err(format!(
+                            "--prefer wants balanced, prefill or decode (got {other})"
+                        ))
+                    }
                 }
             }
             "--prompt-file" => args.prompt = Some(PathBuf::from(value()?)),
@@ -203,7 +215,9 @@ fn parse_args() -> Result<Args, String> {
             "--csv" => args.csv_out = Some(PathBuf::from(value()?)),
             "--json" => args.json_out = Some(PathBuf::from(value()?)),
             "--arm-timeout" => {
-                args.arm_timeout = value()?.parse().map_err(|_| "--arm-timeout wants seconds")?
+                args.arm_timeout = value()?
+                    .parse()
+                    .map_err(|_| "--arm-timeout wants seconds")?
             }
             "--budget-min" => {
                 args.budget_min = value()?.parse().map_err(|_| "--budget-min wants minutes")?
@@ -224,9 +238,9 @@ fn parse_args() -> Result<Args, String> {
                 args.vram_total_mib = value()?.parse().map_err(|_| "--vram-total wants MiB")?
             }
             "--free-margin" => {
-                args.free_headroom_mib =
-                    value()?.parse().map_err(|_| "--free-margin wants MiB")?
+                args.free_headroom_mib = value()?.parse().map_err(|_| "--free-margin wants MiB")?
             }
+            "--pool-budget" => args.pool_budget = true,
             "--stop-endpoint" => args.stop_endpoint = true,
             "--port" => args.port = value()?.parse().map_err(|_| "--port wants a number")?,
             "--include-expensive" => args.include_expensive = true,
@@ -241,9 +255,12 @@ fn parse_args() -> Result<Args, String> {
     if args.ctx == 0 {
         return Err("--ctx is required (the context the sweep is sized for)".into());
     }
-    if args.ctx > 65536 {
+    // 65,536 was the resident lane's ceiling on a 12 GiB card (the whole
+    // 9.37 GiB map plus the graph); the pool lane keeps the experts
+    // host-cold and lifts it. The model itself stops at G4_CONTEXT.
+    if args.ctx > 262_144 {
         return Err(format!(
-            "--ctx {} is past the 4070's 65,536 ceiling",
+            "--ctx {} is past the model's 262,144-token limit",
             args.ctx
         ));
     }
@@ -279,16 +296,68 @@ fn kv_mib(ctx: u32, kv: &str) -> u64 {
     ((per_token as u64 * ctx as u64) / (1024 * 1024)).max(1)
 }
 
-fn estimate_mib(ctx: u32, kv: &str, shape: Shape) -> u64 {
-    let kv = kv_mib(ctx, kv);
+/// The KV rows the engine actually allocates (ds4_gemma4.h
+/// ds4_gemma4_kv_bytes): the five full layers keep the whole context at
+/// 2,056 B/token in E4M3 (4,112 bf16), and the 25 sliding layers keep a ring
+/// of window + chunk rows at 8,192 B each, so they stop growing with ctx.
+/// `kv_mib` above prices only the full layers; at 128K the rings add ~0.3 GiB
+/// and a budget that ignored them would over-fill the pool.
+fn kv_exact_mib(ctx: u32, kv: &str, chunk: u32) -> u64 {
+    const WINDOW: u64 = 1_024;
+    let rows = u64::from(chunk.max(7));
+    let sliding = 25 * (WINDOW + rows).min(u64::from(ctx)) * 8_192;
+    let per_token = if kv == "fp8" {
+        KV_FP8_BYTES_PER_TOKEN
+    } else {
+        KV_BF16_BYTES_PER_TOKEN
+    };
+    ((sliding + per_token * u64::from(ctx)) / (1024 * 1024)).max(1)
+}
+
+/// The session graph's workspace at `chunk` rows, from the engine's own
+/// arithmetic (ds4_core::gemma4_workspace_bytes, the same function the
+/// serving quote and the fit gate consume).
+fn workspace_mib(chunk: u32) -> u64 {
+    ds4_core::gemma4_workspace_bytes(chunk) / (1024 * 1024)
+}
+
+/// The CUDA runtime the process holds before any weights are promoted:
+/// measured 2026-11-05 at 9,083 MiB used with 8,550 MiB of pool and spans
+/// resident (2.35 GiB spans + 6.00 GiB pool), so 533 MiB of context, module
+/// loads and library workspaces. It is inside `memory.used` but in none of
+/// the engine's price lists, which is why the plan-time quote cannot refuse
+/// an arm that the boot gate then refuses.
+const CUDA_RUNTIME_MIB: u64 = 533;
+
+/// The pool a limited-VRAM machine can hold at `ctx`, `kv` and `chunk` while
+/// keeping `free_margin` MiB free at peak.
+fn pool_budget_mib(ctx: u32, kv: &str, chunk: u32, total_mib: u64, free_margin: u64) -> u64 {
+    let fixed = RESIDENT_SET_MIB
+        + kv_exact_mib(ctx, kv, chunk)
+        + workspace_mib(chunk)
+        + CUDA_RUNTIME_MIB
+        + free_margin;
+    total_mib.saturating_sub(fixed).min(EXPERT_MIB)
+}
+
+fn estimate_mib(ctx: u32, kv: &str, shape: Shape, chunk: u32) -> u64 {
+    let kv = kv_exact_mib(ctx, kv, chunk);
     match shape {
-        Shape::Resident => MODEL_MIB + kv + WORKSPACE_MIB,
+        // The resident lane copies the whole map and runs one shared graph.
+        Shape::Resident => MODEL_MIB + kv + workspace_mib(chunk) + CUDA_RUNTIME_MIB,
         Shape::CpuLayers(n) => {
             let n = n.min(LAYERS as u32) as u64;
-            RESIDENT_SET_MIB + EXPERT_MIB * (LAYERS - n) / LAYERS + kv + WORKSPACE_MIB / 2
+            RESIDENT_SET_MIB
+                + EXPERT_MIB * (LAYERS - n) / LAYERS
+                + kv
+                + workspace_mib(chunk)
+                + CUDA_RUNTIME_MIB
         }
-        Shape::Cache(mib) => RESIDENT_SET_MIB + mib as u64 + kv + WORKSPACE_MIB / 2,
-        Shape::CpuMoe => RESIDENT_SET_MIB + kv + 400,
+        // The host-cold pool lane keeps only the promoted spans resident.
+        Shape::Cache(mib) => {
+            RESIDENT_SET_MIB + u64::from(mib) + kv + workspace_mib(chunk) + CUDA_RUNTIME_MIB
+        }
+        Shape::CpuMoe => RESIDENT_SET_MIB + kv + workspace_mib(chunk) + CUDA_RUNTIME_MIB,
     }
 }
 
@@ -398,7 +467,7 @@ fn arms(args: &Args) -> Vec<Arm> {
             kv,
             shape,
             chunk,
-            static_mib: estimate_mib(args.ctx, kv, shape),
+            static_mib: estimate_mib(args.ctx, kv, shape, chunk),
         });
     };
     // Ordered by expected value: the resident lane first (it is the current
@@ -415,6 +484,31 @@ fn arms(args: &Args) -> Vec<Arm> {
     push("cache4g-bf16", "bf16", Shape::Cache(4096), 512);
     if args.include_expensive {
         push("cpumoe-fp8", "fp8", Shape::CpuMoe, 512);
+    }
+    if args.pool_budget {
+        // The limited-VRAM shape: fill the card up to the free margin at the
+        // requested context. Every routed expert is uploaded into a slot
+        // before the kernel reads it (MOE_MISS=evict, pinned in arm_env), so
+        // the GPU always computes the active routes; the pool decides how
+        // often a route costs a fill, not whether it runs on the GPU.
+        let budget = pool_budget_mib(
+            args.ctx,
+            "fp8",
+            512,
+            args.vram_total_mib.max(args.free_headroom_mib + 1),
+            args.free_headroom_mib,
+        );
+        for (name, mib) in [
+            ("pool-budget-fp8", budget),
+            ("pool-two-thirds-fp8", budget * 2 / 3),
+            ("pool-half-fp8", budget / 2),
+        ] {
+            // A pool below 1 GiB cannot hold even a layer's union and the
+            // engine's floor is G4_USED experts; below that the arm is noise.
+            if mib >= 1024 {
+                push(name, "fp8", Shape::Cache(mib as u32), 512);
+            }
+        }
     }
     list
 }
@@ -442,6 +536,9 @@ fn arm_env(arm: &Arm, args: &Args) -> Vec<(&'static str, String)> {
         ("DS4_GEMMA4_MOE_CPU_LAYERS", "0".into()),
         ("DS4_GEMMA4_MOE_CACHE_MIB", "0".into()),
         ("DS4_GEMMA4_MOE_HOST", "0".into()),
+        // The GPU is the only expert compute unit: a slot miss fills the
+        // record into a slot and the GPU runs the route, never the host.
+        ("DS4_GEMMA4_MOE_MISS", "evict".into()),
     ];
     match arm.shape {
         Shape::Resident => env.push(("DS4_CUDA_COPY_MODEL", "1".into())),
@@ -670,7 +767,9 @@ fn run_arm(
         col("first_token_sec")?,
         col("kvcache_bytes")?,
     );
-    let row = lines.last().ok_or_else(|| "the arm wrote no data row".to_string())?;
+    let row = lines
+        .last()
+        .ok_or_else(|| "the arm wrote no data row".to_string())?;
     let f: Vec<&str> = row.split(',').collect();
     let at = |i: usize| f.get(i).copied().unwrap_or("");
     let prefill_tps = at(c_pf_tps).parse::<f64>().unwrap_or(0.0);
@@ -785,9 +884,7 @@ rebuild it: make ds4-bench",
                 fit
             );
         }
-        println!(
-            "\nNote: the estimates only prune; nothing is measured until a real run."
-        );
+        println!("\nNote: the estimates only prune; nothing is measured until a real run.");
         return Ok(());
     }
 
@@ -874,16 +971,66 @@ rebuild it: make ds4-bench",
     if measured.is_empty() {
         return Err("no arm produced a measurement".into());
     }
-    measured.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // The free margin is a measured property, not an estimate: an arm whose
+    // sampled peak leaves less than --free-margin is not a candidate for a
+    // limited-VRAM machine, whatever its throughput. (The static/quote
+    // estimate only prunes; the card decides.)
+    let mut over: Vec<Measured> = Vec::new();
+    let fitting: Vec<Measured> = measured
+        .drain(..)
+        .filter(|m| {
+            let fits = m.peak_mib <= ceiling;
+            if !fits {
+                over.push(*m);
+            }
+            fits
+        })
+        .collect();
+    measured = fitting;
+    for m in &over {
+        skipped.push(Skipped {
+            name: list[m.arm_index].name.clone(),
+            why: format!(
+                "peak {} MiB leaves {} MiB free, under the {} MiB margin",
+                m.peak_mib,
+                args.vram_total_mib.saturating_sub(m.peak_mib),
+                args.free_headroom_mib
+            ),
+        });
+    }
+    if measured.is_empty() {
+        return Err(format!(
+            "no arm kept the {} MiB margin (peaks: {})",
+            args.free_headroom_mib,
+            over.iter()
+                .map(|m| format!("{} {} MiB", list[m.arm_index].name, m.peak_mib))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    measured.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     println!();
     println!(
-        "{:<4} {:<26} {:<4} {:>8} {:>11} {:>10} {:>10} {:>8} {:>7}",
-        "rank", "arm", "kv", "ttft_s", "prefill", "decode", "peak_MiB", "score", "wall_s"
+        "{:<4} {:<26} {:<4} {:>8} {:>11} {:>10} {:>10} {:>9} {:>8} {:>7}",
+        "rank",
+        "arm",
+        "kv",
+        "ttft_s",
+        "prefill",
+        "decode",
+        "peak_MiB",
+        "free_MiB",
+        "score",
+        "wall_s"
     );
     for (r, m) in measured.iter().enumerate() {
         println!(
-        "{:<4} {:<26} {:<4} {:>8.2} {:>11.0} {:>10.1} {:>10} {:>8.1} {:>7.1}",
+            "{:<4} {:<26} {:<4} {:>8.2} {:>11.0} {:>10.1} {:>10} {:>9} {:>8.1} {:>7.1}",
             r + 1,
             list[m.arm_index].name,
             list[m.arm_index].kv,
@@ -891,6 +1038,7 @@ rebuild it: make ds4-bench",
             m.prefill_tps,
             m.decode_tps,
             m.peak_mib,
+            args.vram_total_mib.saturating_sub(m.peak_mib),
             m.score,
             m.seconds
         );
@@ -909,20 +1057,40 @@ rebuild it: make ds4-bench",
     match arm.shape {
         Shape::Resident => println!("  DS4_CUDA_COPY_MODEL=1"),
         Shape::CpuLayers(n) => println!("  DS4_GEMMA4_MOE_CPU_LAYERS={n}"),
-        Shape::Cache(mib) => println!("  DS4_GEMMA4_MOE_CACHE_MIB={mib}"),
+        Shape::Cache(mib) => {
+            println!("  DS4_GEMMA4_MOE_CACHE_MIB={mib}");
+            println!(
+                "    {} of {} expert records resident; a miss fills the slot before the \
+                 GPU runs the route (DS4_GEMMA4_MOE_MISS=evict)",
+                u64::from(mib) * EXPERT_RECORDS / EXPERT_MIB,
+                EXPERT_RECORDS
+            );
+        }
         Shape::CpuMoe => println!("  DS4_GEMMA4_CPU_MOE=1"),
     }
+    println!(
+        "  DS4_GEMMA4_FULL_KV={} at ctx {} keeps {} MiB free at peak",
+        arm.kv,
+        args.ctx,
+        args.vram_total_mib.saturating_sub(best.peak_mib)
+    );
 
     if let Some(path) = &args.csv_out {
-        let mut text = String::from(
-            "arm,kv,chunk,ttft_s,prefill_tps,decode_tps,peak_mib,kv_bytes,score\n",
-        );
+        let mut text =
+            String::from("arm,kv,chunk,ttft_s,prefill_tps,decode_tps,peak_mib,kv_bytes,score\n");
         for m in &measured {
             let a = &list[m.arm_index];
             text.push_str(&format!(
                 "{},{},{},{:.4},{:.2},{:.2},{},{},{:.3}\n",
-                a.name, a.kv, a.chunk, m.ttft_s, m.prefill_tps, m.decode_tps, m.peak_mib,
-                m.kv_bytes, m.score
+                a.name,
+                a.kv,
+                a.chunk,
+                m.ttft_s,
+                m.prefill_tps,
+                m.decode_tps,
+                m.peak_mib,
+                m.kv_bytes,
+                m.score
             ));
         }
         fs::write(path, text).map_err(|e| format!("could not write {}: {e}", path.display()))?;

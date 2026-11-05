@@ -149,8 +149,8 @@ pub use serving_check::{
     MtpReport,
 };
 pub use serving_host::{
-    attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
-    host_available_bytes, QuoteHost, WeightSlice,
+    attach_host_quote, fill_quote_facts, gemma4_workspace_bytes, gguf_slice_span_bytes,
+    gguf_span_bytes, host_available_bytes, QuoteHost, WeightSlice,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,
