@@ -1176,30 +1176,42 @@ fn parse_dots3_invoke(body: &[u8]) -> Option<ToolCall> {
 }
 
 /// Gemma-4 output: reasoning in the `<|channel>thought` channel, then content,
-/// then zero or more `<|tool_call>call:NAME{args}<tool_call|>` blocks. The
-/// reasoning channel is split by the shared `split_reasoning_response`, so this
-/// only separates the calls from the text.
-fn parse_gemma4_generated(text: &[u8]) -> Option<ParsedGenerated> {
+/// then zero or more `<|tool_call>call:NAME{args}<tool_call|>` blocks.
+///
+/// The channel is the reasoning field, so it is split off FIRST, with the same
+/// `split_reasoning_response` the no-tools path uses; the calls are then
+/// separated from what remains. This function used to leave the channel in the
+/// text, which put "<|channel>thought ..." in front of the answer of every
+/// tool-enabled turn (measured 2026-11-05: an open-grok tool turn displayed
+/// the raw markers and no call at all).
+///
+/// A close marker with no open (`<|tool_call|>` written on its own, or a
+/// `<turn|>` the stop list missed) is a degenerate emission, never content:
+/// both are removed from the text after the calls are taken.
+fn parse_gemma4_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
     const START: &[u8] = b"<|tool_call>";
     const END: &[u8] = b"<tool_call|>";
+    let (body, reasoning) =
+        split_reasoning_response(text, ChatFormat::Gemma4, require_thinking_closed);
     let mut content = Vec::new();
     let mut calls = Vec::new();
     let mut pos = 0usize;
-    while let Some(at) = find_substr(&text[pos..], START) {
+    while let Some(at) = find_substr(&body[pos..], START) {
         let start = pos + at;
-        let Some(close) = find_substr(&text[start + START.len()..], END) else {
+        let Some(close) = find_substr(&body[start + START.len()..], END) else {
             // An unclosed call is not a call: keep the text and report not-ok.
-            content.extend_from_slice(&text[pos..]);
+            content.extend_from_slice(&body[pos..]);
             return Some(ParsedGenerated {
-                content,
+                content: gemma4_drop_markers(&content),
+                reasoning,
                 ok: false,
-                raw_tool_text: String::from_utf8_lossy(&text[start..]).into_owned(),
+                raw_tool_text: String::from_utf8_lossy(&body[start..]).into_owned(),
                 ..Default::default()
             });
         };
-        content.extend_from_slice(&text[pos..start]);
-        let body = String::from_utf8_lossy(&text[start + START.len()..start + START.len() + close]);
-        let (name, arguments) = crate::render::gemma4_call_body(&body)?;
+        content.extend_from_slice(&body[pos..start]);
+        let call = String::from_utf8_lossy(&body[start + START.len()..start + START.len() + close]);
+        let (name, arguments) = crate::render::gemma4_call_body(&call)?;
         calls.push(ToolCall {
             id: String::new(),
             name,
@@ -1207,13 +1219,28 @@ fn parse_gemma4_generated(text: &[u8]) -> Option<ParsedGenerated> {
         });
         pos = start + START.len() + close + END.len();
     }
-    content.extend_from_slice(&text[pos..]);
+    content.extend_from_slice(&body[pos..]);
     Some(ParsedGenerated {
-        content,
+        content: gemma4_drop_markers(&content),
+        reasoning,
         calls,
         ok: true,
         ..Default::default()
     })
+}
+
+/// Remove the Gemma-4 template markers that can only be a degenerate
+/// emission: a call close with no open, and a turn close the stop list missed.
+/// The channel markers are already gone (see `split_reasoning_response`).
+fn gemma4_drop_markers(content: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(content);
+    let mut out = text.into_owned();
+    for marker in ["<|tool_call|>", "<tool_call|>", "<|tool_call>", "<turn|>", "<|turn>"] {
+        if out.contains(marker) {
+            out = out.replace(marker, "");
+        }
+    }
+    out.into_bytes()
 }
 
 fn parse_dots3_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
@@ -2014,7 +2041,7 @@ pub fn parse_generated_message(
         ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
-        ModelSyntax::Gemma4 => parse_gemma4_generated(text),
+        ModelSyntax::Gemma4 => parse_gemma4_generated(text, require_thinking_closed),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -2917,5 +2944,62 @@ mod gemma4_split_tests {
         assert_eq!(parsed.calls.len(), 1);
         assert_eq!(parsed.calls[0].name, "lookup");
         assert_eq!(parsed.calls[0].arguments, "{\"q\":\"x\"}");
+        // The channel is the reasoning field, never content (2026-11-05: a
+        // tool-enabled turn displayed "<|channel>thought ..." in front of the
+        // answer because this content used to keep it).
+        assert_eq!(String::from_utf8(parsed.content.clone()).unwrap(), "Paris.");
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "plan\n"
+        );
+    }
+
+    #[test]
+    fn a_tool_turn_without_a_call_still_splits_the_channel() {
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nweigh the options\n<channel|>I need a tool for that.",
+            true,
+            false,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert!(parsed.calls.is_empty());
+        assert_eq!(
+            String::from_utf8(parsed.content.clone()).unwrap(),
+            "I need a tool for that."
+        );
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "weigh the options\n"
+        );
+    }
+
+    #[test]
+    fn degenerate_markers_never_reach_the_answer() {
+        // The measured emission: "``<|tool_call|>" with no open, and a turn
+        // close the stop list missed.
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nmost_recent_thought<channel|>``<|tool_call|><turn|>",
+            true,
+            false,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert!(parsed.calls.is_empty());
+        let content = String::from_utf8(parsed.content.clone()).unwrap();
+        assert_eq!(content, "``");
+        assert!(!content.contains("<|"), "special markers stayed in the answer");
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "most_recent_thought"
+        );
     }
 }
