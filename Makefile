@@ -378,6 +378,13 @@ ds4-perf-gpu:
 
 # NVTX is an optional Rust-host dependency; native linking stays identical.
 # The official SDK build requires libclang for bindgen.
+# The advisor is a driver: it launches ds4-bench and reads its CSV, so it
+# needs no engine linkage and no native feature.
+.PHONY: ds4-advisor
+ds4-advisor:
+	cargo build -p ds4-cli --bin ds4-advisor --release
+	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-advisor" $@
+
 ds4-bench: DS4_RS_BENCH_FEATURES = native
 ds4-bench-perf: DS4_RS_BENCH_FEATURES = native,perf-nvtx
 .PHONY: ds4-bench ds4-bench-perf
