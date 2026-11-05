@@ -447,6 +447,24 @@ thing the lane ever wrote:
   `model\n` instead was measured to miss on the very next turn, because the
   reply's first character merges with the newline.
 
+A sweep with every request cold (an evicting prompt between them), same
+prompts in both arms, 64 greedy tokens on the second turn. A is the first
+turn of a conversation; B is the same conversation plus a short follow-up,
+served after the live session was dropped. One server per arm:
+
+| prompt | A off | A on | B off | B on | B gain |
+|---|---:|---:|---:|---:|---:|
+| 8,294 tokens | 6.26 s | 7.74 s | 6.65 s | 0.66 s | 10.0x |
+| 16,243 | 12.54 s | 14.30 s | 12.94 s | 0.70 s | 18.5x |
+| 31,909 | 26.29 s | 28.64 s | 26.79 s | 0.74 s | 36.4x |
+| 45,737 | 39.78 s | 42.54 s | 40.23 s | 0.80 s | 50.5x |
+
+The lane-on B rows restore prefix minus 446 tokens of tail; the off rows
+re-prefill the whole prompt. Decode rate is 50-55 tok/s in both arms, so the
+lane moves the first token only. The A delta is the 1.10 s checkpoint write
+plus a 4-6 percent prefill-rate difference between the two boots; the store
+cost itself is the paired measurement below.
+
 Measured on the 4070 (ctx 65536, FP8 full-layer KV, chunk 512, store on the
 root NVMe), temperature 0:
 
