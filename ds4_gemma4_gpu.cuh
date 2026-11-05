@@ -598,15 +598,47 @@ extern "C" int ds4_gpu_g4_attn_mma(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         const uint32_t shared = G4_MMA_TK * dim * sizeof(__nv_bfloat16) +
             4u * 2u * 16u * 32u * sizeof(float);
         const uint32_t rtile = 8u;
-        g4_attn_mma_full_kernel<<<dim3(kv_heads, (rows + rtile - 1u) / rtile),
+        g4_attn_mma_full_kernel<false><<<dim3(kv_heads, (rows + rtile - 1u) / rtile),
             G4_MMA_THREADS, shared, ds4_current_stream()>>>((float *)out->ptr,
             (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
-            (const __nv_bfloat16 *)value->ptr, rows, first, heads, kv_heads,
-            window, ring, keys, kv_stride);
+            (const __nv_bfloat16 *)value->ptr, nullptr, rows, first, heads, kv_heads,
+            window, ring, keys, kv_stride, 0u);
     } else {
         return 0;
     }
     return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention");
+}
+
+/* The same full-geometry prefill over the full layers' E4M3 rows
+ * (ds4_gemma4_full_kv_row): the tile is decoded to f16 on the way into
+ * shared memory, then the bf16 kernel's mask, online softmax and mma walk.
+ * The E4M3 lane used to run the scalar kernel (cuda/gemma4_attn_fp8.cuh) for
+ * every row count; at 32,768 keys that was 90.5 percent of GPU kernel time.
+ * The prefill width gate is the bf16 one (rows >= 16, keys = 0): the MTP
+ * verify widths stay on the scalar kernel. */
+extern "C" int ds4_gpu_g4_attn_mma_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+        uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+        uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes) {
+    if (!out || !query || !kv || !positions || rows < 16u || keys ||
+        heads != 16u || kv_heads != 2u || dim != 512u || !row_bytes) {
+        return 0;
+    }
+    const uint64_t kv_dim = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (row_bytes < 2u * kv_dim + 2u * kv_heads * sizeof(uint16_t)) { return 0; }
+    if (out->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)rows * heads * dim * sizeof(float) ||
+        kv->bytes < capacity * row_bytes ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t)) { return 0; }
+    const uint32_t shared = G4_MMA_TK * dim * sizeof(__half) +
+        4u * 2u * 16u * 32u * sizeof(float);
+    const uint32_t rtile = 8u;
+    g4_attn_mma_full_kernel<true><<<dim3(kv_heads, (rows + rtile - 1u) / rtile),
+        G4_MMA_THREADS, shared, ds4_current_stream()>>>((float *)out->ptr,
+        (const float *)query->ptr, nullptr, nullptr, (const uint8_t *)kv->ptr, rows,
+        first, heads, kv_heads, window, ring, keys, 0u, row_bytes);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention (E4M3 rows)");
 }
 
 /* Key span per split CTA (DS4_GEMMA4_ATTN_SPLIT_SPAN, default 128). The
@@ -650,10 +682,11 @@ static uint32_t g4_split_mma_shared(uint32_t dim) {
             sizeof(__nv_bfloat16) + 2u * 8u * 8u * sizeof(float);
 }
 
+template <bool FP8>
 static bool g4_split_mma_ready(uint32_t dim) {
     static int ready = -1;
     if (ready < 0) {
-        ready = cudaFuncSetAttribute(g4_attn_split_mma_kernel,
+        ready = cudaFuncSetAttribute(g4_attn_split_mma_kernel<FP8>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             g4_split_mma_shared(dim)) == cudaSuccess;
     }
@@ -665,6 +698,23 @@ static bool g4_split_mma_ready(uint32_t dim) {
  * One row only; the drafter's keys=start case is included. The scratch is
  * one process-wide buffer, grown to the largest geometry the session asks
  * for (the engine serializes calls). */
+/* Split scratch: one process-wide buffer, grown to the largest geometry the
+ * session asks for (the engine serializes calls). Shared by the bf16 split
+ * and the E4M3 full-layer split, which use the same partial/stats layout. */
+static float *g4_split_scratch(uint64_t partial_count, uint64_t stats_count) {
+    static float *scratch = nullptr;
+    static uint64_t scratch_floats = 0;
+    if (partial_count + stats_count > scratch_floats) {
+        if (scratch) { cudaFree(scratch); scratch = nullptr; }
+        if (cudaMalloc((void **)&scratch,
+                (partial_count + stats_count) * sizeof(float)) != cudaSuccess) {
+            return nullptr;
+        }
+        scratch_floats = partial_count + stats_count;
+    }
+    return scratch;
+}
+
 extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
         const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
         const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,
@@ -691,26 +741,18 @@ extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *
     if (combine_shared > 48u * 1024u && !g4_split_combine_ready()) { return 0; }
     const uint64_t partial_count = (uint64_t)splits * heads * dim;
     const uint64_t stats_count = (uint64_t)splits * heads * 2u;
-    static float *scratch = nullptr;
-    static uint64_t scratch_floats = 0;
-    if (partial_count + stats_count > scratch_floats) {
-        if (scratch) { cudaFree(scratch); scratch = nullptr; }
-        if (cudaMalloc((void **)&scratch,
-                (partial_count + stats_count) * sizeof(float)) != cudaSuccess) {
-            return 0;
-        }
-        scratch_floats = partial_count + stats_count;
-    }
+    float *scratch = g4_split_scratch(partial_count, stats_count);
+    if (!scratch) { return 0; }
     float *partial = scratch;
     float *stats = scratch + partial_count;
     /* Full layers (D = 512, group = 8) can run the split on tensor cores;
      * the split count, the scratch layout and the combine are the scalar
      * path's, so the option only swaps the per-split kernel. */
-    if (dim == 512u && group == 8u && g4_split_mma() && g4_split_mma_ready(dim)) {
-        g4_attn_split_mma_kernel<<<dim3(kv_heads, splits), G4_SMMA_THREADS,
+    if (dim == 512u && group == 8u && g4_split_mma() && g4_split_mma_ready<false>(dim)) {
+        g4_attn_split_mma_kernel<false><<<dim3(kv_heads, splits), G4_SMMA_THREADS,
             g4_split_mma_shared(dim), ds4_current_stream()>>>(partial, stats,
             (const float *)query->ptr, (const __nv_bfloat16 *)key->ptr,
-            (const __nv_bfloat16 *)value->ptr, first, heads, kv_heads, dim,
+            (const __nv_bfloat16 *)value->ptr, nullptr, 0u, first, heads, kv_heads, dim,
             window, ring, keys, kv_stride, splits);
         if (!cuda_ok(cudaGetLastError(), "Gemma-4 split MMA attention")) { return 0; }
         g4_attn_split_combine_kernel<<<heads, 256u, combine_shared, ds4_current_stream()>>>(
@@ -726,6 +768,49 @@ extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *
     g4_attn_split_combine_kernel<<<heads, 256u, combine_shared, ds4_current_stream()>>>(
         (float *)out->ptr, partial, stats, heads, dim, splits);
     return cuda_ok(cudaGetLastError(), "Gemma-4 split attention combine");
+}
+
+/* The same split-K decode over the full layers' E4M3 rows. Before this unit
+ * every full_fp8 call went to cuda/gemma4_attn_fp8.cuh whatever the row
+ * count (ds4_gemma4_graph.inc), so a decode row ran 16 warps over the whole
+ * cache and measured 0.52 tok/s against the bf16 split's 31.80 at 32,768
+ * keys. The split count, the scratch layout and the combine kernel are
+ * ds4_gpu_g4_attn_split's, so the two paths stay directly comparable. */
+extern "C" int ds4_gpu_g4_attn_split_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+        uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+        uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes) {
+    if (!out || !query || !kv || !positions || rows != 1u || heads != 16u ||
+        kv_heads != 2u || dim != 512u || !row_bytes) { return 0; }
+    const uint64_t kv_dim = (uint64_t)kv_heads * dim;
+    const uint64_t capacity = ring ? ring : (uint64_t)first + rows;
+    if (row_bytes < 2u * kv_dim + 2u * kv_heads * sizeof(uint16_t)) { return 0; }
+    if (out->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        query->bytes < (uint64_t)heads * dim * sizeof(float) ||
+        kv->bytes < capacity * row_bytes ||
+        positions->bytes < sizeof(uint32_t)) { return 0; }
+    const uint32_t begin = window && first + 1u > window ? first + 1u - window : 0u;
+    const uint32_t last = keys && keys <= first ? keys - 1u : first;
+    if (begin > last || !g4_split_mma_ready<true>(dim)) { return 0; }
+    const uint32_t span = g4_split_span();
+    uint32_t splits = (last - begin + span) / span;
+    if (splits < 1u) { splits = 1u; }
+    const uint32_t combine_shared = splits * (uint32_t)sizeof(float);
+    if (combine_shared > 48u * 1024u && !g4_split_combine_ready()) { return 0; }
+    const uint64_t partial_count = (uint64_t)splits * heads * dim;
+    const uint64_t stats_count = (uint64_t)splits * heads * 2u;
+    float *scratch = g4_split_scratch(partial_count, stats_count);
+    if (!scratch) { return 0; }
+    float *partial = scratch;
+    float *stats = scratch + partial_count;
+    g4_attn_split_mma_kernel<true><<<dim3(kv_heads, splits), G4_SMMA_THREADS,
+        g4_split_mma_shared(dim), ds4_current_stream()>>>(partial, stats,
+        (const float *)query->ptr, nullptr, nullptr, (const uint8_t *)kv->ptr, row_bytes,
+        first, heads, kv_heads, dim, window, ring, keys, 0u, splits);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 split MMA attention (E4M3 rows)")) { return 0; }
+    g4_attn_split_combine_kernel<<<heads, 256u, combine_shared, ds4_current_stream()>>>(
+        (float *)out->ptr, partial, stats, heads, dim, splits);
+    return cuda_ok(cudaGetLastError(), "Gemma-4 split MMA attention combine (E4M3 rows)");
 }
 
 /* ------------------------------------------------------- routed experts */

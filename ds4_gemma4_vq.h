@@ -133,6 +133,20 @@ int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
     uint32_t heads, uint32_t kv_heads, uint32_t dim, uint32_t window,
     uint32_t ring, uint32_t keys);
 
+/* The two tensor-core paths over the full layers' combined E4M3 rows
+ * (ds4_gpu_g4_attn_fp8's cache): the prefill kernel decodes the tile to f16
+ * on the way into shared memory, the split decode decodes it per 16-byte
+ * slot. Both keep the bf16 path's mask, online softmax and split/combine
+ * layout; both are parity paths, not bit-exact ones. */
+int ds4_gpu_g4_attn_mma_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+    const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+    uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+    uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes);
+int ds4_gpu_g4_attn_split_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+    const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+    uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+    uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes);
+
 /* Primitives as tensor calls (cuda/gemma4_primitives.cuh owns the kernels). */
 int ds4_gpu_g4_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
     uint32_t weight, uint32_t rows, uint32_t width, float eps);

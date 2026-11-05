@@ -54,7 +54,8 @@ Every layer keeps a BF16 key cache and a BF16 value cache; row bytes are
 layer and 2,048 for a full one. With `DS4_GEMMA4_FULL_KV=fp8` the five full
 layers instead keep one combined E4M3 row per token (K, V, then one f16
 scale per KV head for each: 2,056 bytes against 4,096), and that format
-selects the scalar attention kernel described under the full-layer KV lane.
+selects the tensor-core attention kernels described under the full-layer KV
+lane.
 
 | Layer type | Rows | Slot |
 |---|---|---|
@@ -243,20 +244,20 @@ The five full layers keep their rows in one of two formats
 (`DS4_GEMMA4_FULL_KV`, typed knob, compiled default bf16). The format decides
 which attention kernel runs, not just how many bytes the row holds:
 
-- bf16 rows take `g4_attn_mma_full_kernel` (cuda/gemma4_attn_mma.cuh:256,
-  dispatched at ds4_gemma4_gpu.cuh:601): 8 rows per CTA, 32-key mma tiles,
-  the two 256-dim halves of D = 512 exchanged through shared memory. Prefill
-  takes it; a decode row (rows == 1) takes the split-K kernel instead.
-- E4M3 rows take `g4_attn_fp8_kernel` (cuda/gemma4_attn_fp8.cuh:36): one warp
-  per (row, head), a scalar loop over every visible key that decodes each
-  K and V element with `__nv_cvt_fp8x2_to_halfraw2`. There is no tensor-core
-  path in it, so its cost per query row grows with the context for prefill
-  and for decode alike.
+- bf16 rows take the tensor-core kernels: `g4_attn_mma_full_kernel<false>`
+  (cuda/gemma4_attn_mma.cuh) for prefill and
+  `g4_attn_split_mma_kernel<false>` (cuda/gemma4_attn_split_mma.cuh) for a
+  decode row.
+- E4M3 rows take the same two kernels with `FP8 = true`. The tile is decoded
+  from E4M3 to f16 on the way into shared memory, the mma runs the f16 form,
+  and the mask, online softmax, half exchange, split division, partials and
+  combine are the bf16 path's own code.
 
-The FP8 lane exists to fit the 12 GiB card (see Execution on a 12 GiB card
-above). It is not the fast lane on a box with memory to spare. nsys on the Spark
-(`--trace=cuda`, ds4-bench, chunk 2048, one cold frontier, gen 1) puts the
-scalar kernel at:
+Before that port the E4M3 lane had only `g4_attn_fp8_kernel`
+(cuda/gemma4_attn_fp8.cuh:36): one warp per (row, head), a scalar loop over
+every visible key that decoded each K and V element, used for prefill and
+decode alike. nsys on the Spark (`--trace=cuda`, ds4-bench, chunk 2048, one
+cold frontier, gen 1) put that kernel at:
 
 | frontier | `g4_attn_fp8_kernel` | share of GPU kernel time | all other families |
 |---|---:|---:|---:|
@@ -265,14 +266,82 @@ scalar kernel at:
 | 65,536 | 1,113.7 s | 95.0 % | 58.6 s |
 
 Every other family scales linearly in the token count (1.83 s, 29.1 s,
-58.6 s for 16x and 32x the rows); only the full-layer attention grows
-quadratically, because each chunk of 2,048 rows attends over everything
-before it. The VQ prefill GEMMs, the Q8_0 batch GEMM, the grouped MoE and the
-sliding layers' MMA attention are all below 4 percent each at 32K.
+58.6 s for 16x and 32x the rows); only the full-layer attention grew with the
+context, because each chunk of 2,048 rows attends over everything before it.
 
-The same command in the two lanes (unprofiled; the 65,536 FP8 row is from the
-trace, and the 32,768 row agrees between the traced and untraced runs to
-0.2 percent, so that trace did not distort the kernel weights):
+### The E4M3 tensor-core port
+
+`g4_fp8_decode8` (cuda/gemma4_attn_mma.cuh) is the whole new mechanism: eight
+E4M3 codes per uint2, the hardware `e4m3x2 -> f16x2` conversion, the product
+with the row's f16 scale in fp32, and rn rounding to f16 — the decode stage of
+the Solar warp-specialized kernel (cuda/mmq/ds4_fattn.cu:1557 `fp8_ws_scale4`);
+the tile write and the two-stage buffer are Solar's
+`fp8_ws_decode` (1557-1594's sibling at 1568), specialised here to the
+shared-memory tile the Gemma kernel already stages. The scalar kernel's decode
+is the same conversion with the product kept in fp32, so the tensor-core arm
+differs from it by one f16 rounding of K and V.
+
+Everything else is the bf16 kernel's arithmetic: the same swizzle, ldmatrix,
+32-key causal mask, f32 online softmax, half-order score exchange and
+`m16n8k16` mma, on f16 fragments instead of bf16. The tile's f16 slot is
+exactly one 16-byte shared chunk, which is why the ldmatrix addressing and the
+swizzle are unchanged between the two arms; only the staging loop differs
+(`cp.async` of 16 bf16 bytes versus eight E4M3 codes decoded into the same
+slot). The dispatch reuses the existing knobs: `DS4_GEMMA4_ATTN_MMA` for the
+prefill width and `DS4_GEMMA4_ATTN_SPLIT` + `DS4_GEMMA4_ATTN_SPLIT_MMA` for
+the decode, both already typed, with the scalar kernel as the fallback.
+
+Synthetic parity (`tests/test_gemma4_primitives`, full geometry, rows
+16/17/64, first 0/1000/1025/4096/8192, ring, shared-prefix, decode split
+spans 512/128/64 and the tile edges 63/64): max absolute error 1.4e-4
+prefill (sm_89) and 3.2e-6 decode against `g4_ref_attn`, inside the 2.5e-3
+gate; the E4M3 arm is closer to its scalar reference than the bf16 arm is to
+the tile, because f16 keeps 11 significand bits against bf16's 8.
+
+A one-layer probe on the real model (`DS4_GEMMA4_ATTN_CMP=1`, ctx 256) puts
+layer 5 (full, E4M3) at relL2 1.82e-4 against the scalar FP8 kernel, max
+2.9e-3. Layer 0, the bf16 sliding kernel through the same probe, is 4.03e-4 —
+unchanged by this unit.
+
+The model gate, ctx 256, the same prompt and method on both arms: the eight
+design greedy tokens `[6113, 1698, 236761, 28333, 506, 877, 6910, 3136]`
+match exactly; KL(scalar || tensor-core) 1.7e-3 (gate 5e-3) and logits relL2
+0.32. For calibration the bf16 lane on the same prompt and method is KL
+9.8e-5 and relL2 0.159, so the E4M3 arm is twice as far in relL2 and 17x in
+KL while staying inside the KL gate; the per-layer probe above shows that
+this is propagation through 30 layers of MoE routing, not kernel drift.
+
+Measured on the Spark, ds4-bench, cold frontier, prefill chunk 2048 (one
+machine, one session, scalar and tensor-core arms back to back):
+
+| frontier | scalar prefill tok/s | tensor-core prefill tok/s | ratio |
+|---|---:|---:|---:|
+| 2,048 | 489.6 | 770.1 | 1.57x |
+| 32,768 | 97.9 | 746.6 | 7.63x |
+
+The same pair at 65,536, measured at the engine's default prefill chunk in the
+same session, is 47.2 against 460.3 tok/s (9.75x).
+
+Decode at 32,768 with 16 greedy tokens: 0.50 tok/s scalar, 19.27 tok/s
+tensor-core (38.5x). At 2,048 the scalar kernel was 28.2 percent of GPU time,
+so the 1.57x already exceeds the 1.39x that removing it entirely would give
+at that frontier (the two arms share everything else); the gain grows with the
+context exactly as the scalar kernel's share did.
+
+The same session, the same chunk, the two lanes side by side at 32,768:
+
+| lane | prefill tok/s | decode tok/s (gen 16) |
+|---|---:|---:|
+| E4M3 rows, tensor cores | 746.6 | 19.27 |
+| bf16 rows, tensor cores | 804.6 | 18.71 |
+
+So the E4M3 lane now prefills at 93 percent of the bf16 lane and decodes
+above it. The remaining prefill gap is the decode instruction stream: the
+bf16 tile is copied with `cp.async` and costs no ALU, while every E4M3 element
+costs a conversion, a multiply and a rounding before it can be staged. Both
+lanes keep the same arithmetic after the tile (mask, online softmax, mma).
+
+The bf16 lane, for reference, from the earlier session:
 
 | frontier | FP8 prefill tok/s | bf16 prefill tok/s | ratio |
 |---|---:|---:|---:|
@@ -280,11 +349,10 @@ trace, and the 32,768 row agrees between the traced and untraced runs to
 | 32,768 | 107.4 | 1,029.1 | 9.6x |
 | 65,536 | 56.1 | 970.4 | 17.3x |
 
-Decode is hit harder, because a decode row is 1 and the FP8 kernel has one
-warp per (row, head): at 32,768 tokens and 16 greedy tokens, the FP8 lane
-generates 0.52 tok/s and the bf16 lane 31.80 tok/s (61x). The bf16 lane is
-also the one the MMA table above was measured in, and it is the mode the
-server runs when the knob is unset.
+with 0.52 against 31.80 tok/s decode at 32,768. Those scalar numbers are the
+same kernel measured before this port, at the engine's default prefill chunk;
+they are kept as the historical record of the lane, and only ratios measured
+back to back in one session should be compared across the two tables.
 
 The deployed route, end to end: the Spark launcher (bf16 lane, ctx 262144,
 chunk 2048) answered a cold 32,370-token request with 31.1 s to the first
@@ -292,12 +360,22 @@ token, 1,041.9 prefill tok/s and 30.1 decode tok/s (attach-mode sweep, one
 frontier, 4 greedy tokens). Those 32,768 tokens are the 305 s FP8 prefill in
 the table above.
 
-The cost is memory: the full layers' cache is 967 MB at 32,768 and 1.30 GB at
-65,536 in FP8, against 1.30 GB and 1.97 GB in bf16, and 5.4 GB of full-layer
-cache at the 262,144-token ceiling. On the GB10 that is unremarkable. On the
-12 GiB card the FP8 lane is what makes ctx 32768 fit, so the lane is a
-deliberate trade there, and the tensor-core FP8 kernel named under Limits and
-open work is what would retire it.
+On the 12 GiB card the lane is now the whole story. With the FP8 rows,
+`run-gemma4.sh` boots device-resident at ctx 65536, no SSD: 10.12 GiB resident
+at boot, 11.45 GiB with the session graph, 833 MiB free, and a cold
+61,932-token request answers in 55.7 s. The measured ladder on that card is
+ctx 32768 at 11.11 GiB, 49152 at 11.28, 65536 at 11.45; 98304 is refused by
+the serving quote before it boots, so 65536 is the ceiling for this release.
+The session graph needs `DS4_SESSION_GRAPH_HEADROOM_MB=0` (and the launcher
+sets it): the engine's own 1 GiB headroom refuses a 32K graph that actually
+fits in the free VRAM it leaves.
+
+The cost is memory, and the port does not change it: the full layers' cache is
+967 MB at 32,768 and 1.30 GB at 65,536 in FP8, against 1.30 GB and 1.97 GB in
+bf16, and 5.4 GB of full-layer cache at the 262,144-token ceiling. On the GB10
+that is unremarkable. On the 12 GiB card the FP8 lane is what makes the 64K
+context fit at all, and the tensor-core port is what makes that lane worth
+running.
 
 Selecting the lane is the knob alone; the sweep records the lane it measured
 in its meta file, so a CSV can no longer outlive the reason for its numbers.
@@ -512,25 +590,26 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   On the 12 GiB 4070 the serving quote used to price the whole release
   directory, including the 622 MB MTP part a no-MTP boot never maps; the
   Gemma release span now excludes that part (the rule Ling-3.1 applies to
-  its embedded MTP), and the card boots device-resident at ctx 16384 with
-  the FP8 full-layer KV: 9.37 GiB copied in 2.8 s, 10.16 GiB of the 12 GiB
-  used, 20.95 tok/s against 2.66 tok/s host-mapped. The banked lane is
-  refused at that size (serial only, reuse=exact); the quote admits ctx
-  32768 with about 0.2 GiB of margin. `run-gemma4.sh` starts it (serve
-  start/stop/status/logs, chat, plan, bench), and the open-grok model entry
-  is `gemma4-vq-4070` on port 8099. `--ssd-streaming` still takes the
-  shared GLM-5.3 branch ("requires one GLM-5.3 GGUF shard") rather than the
-  Gemma discrete map; that remains open.
-- The FP8 full-layer lane has no tensor-core attention. `g4_attn_fp8_kernel`
-  is a scalar warp-per-(row, head) loop, and at 32,768 tokens cold it is 90.5
-  percent of GPU kernel time: the lane prefills 9.6x slower than bf16 and
-  decodes 61x slower (0.52 against 31.80 tok/s). The compiled default is
-  bf16 and both the sweep and the Spark launcher run it; FP8 is kept for the
-  12 GiB card's 32K fit, not for speed. The way out is the warp-specialized
-  FP8 attention already in the tree for the Solar geometry
-  (`ds4_fattn_hmma_fp8_ws_kernel`, cuda/mmq/ds4_fattn.cu), ported to the
-  16-head / 2-KV-head / D = 512 full geometry; until then, choosing FP8 for
-  mmap room costs the prefill and decode rates above.
+  its embedded MTP), and the card boots device-resident with the FP8
+  full-layer KV: 9.37 GiB copied in 2.8 s, 10.16 GiB of the 12 GiB used at
+  ctx 16384, 20.95 tok/s against 2.66 tok/s host-mapped. The banked lane is
+  refused at that size (serial only, reuse=exact). Since the E4M3 tensor-core
+  port and with `DS4_SESSION_GRAPH_HEADROOM_MB=0`, the launcher boots at ctx
+  65536: 11.45 GiB of the 12 GiB with the session graph, 833 MiB free, and a
+  cold 61,932-token request in 55.7 s; 98304 is refused by the quote.
+  `run-gemma4.sh` starts it (serve start/stop/status/logs, chat, plan, bench),
+  and the open-grok model entry is `gemma4-vq-4070` on port 8099.
+  `--ssd-streaming` still takes the shared GLM-5.3 branch ("requires one
+  GLM-5.3 GGUF shard") rather than the Gemma discrete map; that remains open.
+- The E4M3 full-layer lane runs the tensor-core kernels since the port above:
+  `g4_attn_mma_full_kernel<true>` for prefill and
+  `g4_attn_split_mma_kernel<true>` for decode, selected by the existing
+  `DS4_GEMMA4_ATTN_MMA` and `DS4_GEMMA4_ATTN_SPLIT`/`_MMA` knobs. Two gaps
+  remain and neither is new in kind: the MTP verify widths (2..8 rows) stay on
+  the scalar kernel exactly as they do in bf16, and the E4M3 prefill runs at
+  93 percent of the bf16 lane because every element is decoded on the way into
+  the tile. The scalar FP8 kernel is still reachable with
+  `DS4_GEMMA4_ATTN_MMA=0` and `DS4_GEMMA4_ATTN_SPLIT_MMA=0`.
 - The sweep's top frontier is skipped. At 65,536 the byte-estimated prompt
   lands a few tokens over the booted context and the server refuses it
   ("bridge error 1: prompt exceeds context"), so both committed 2K-64K CSVs

@@ -381,8 +381,8 @@ static void attn_mma_full_case(const char *name,unsigned rows,unsigned first,uns
     CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
     const unsigned rtile=8;
     const unsigned shared=32u*dim*sizeof(__nv_bfloat16)+4u*2u*16u*32u*sizeof(float);
-    g4_attn_mma_full_kernel<<<dim3(kv_heads,(rows+rtile-1)/rtile),256,shared>>>(
-        out,dq,dk,dv,rows,first,heads,kv_heads,0u,ring,keys,stride);
+    g4_attn_mma_full_kernel<false><<<dim3(kv_heads,(rows+rtile-1)/rtile),256,shared>>>(
+        out,dq,dk,dv,nullptr,rows,first,heads,kv_heads,0u,ring,keys,stride,0u);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,2.5e-3f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
@@ -493,15 +493,157 @@ static void attn_split_mma_case(const char *name,unsigned first,unsigned heads,
     CUDA_OK(cudaMalloc(&dstats,(size_t)splits*heads*2*sizeof(float)));
     const unsigned shared=(16u*dim+G4_SMMA_TK*dim+G4_SMMA_GROUP*G4_SMMA_TK)
         *sizeof(__nv_bfloat16)+2u*8u*8u*sizeof(float);
-    CUDA_OK(cudaFuncSetAttribute(g4_attn_split_mma_kernel,
+    CUDA_OK(cudaFuncSetAttribute(g4_attn_split_mma_kernel<false>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,shared));
-    g4_attn_split_mma_kernel<<<dim3(kv_heads,splits),G4_SMMA_THREADS,shared>>>(
-        dpartial,dstats,dq,dk,dv,first,heads,kv_heads,dim,0u,ring,keys,stride,splits);
+    g4_attn_split_mma_kernel<false><<<dim3(kv_heads,splits),G4_SMMA_THREADS,shared>>>(
+        dpartial,dstats,dq,dk,dv,nullptr,0u,first,heads,kv_heads,dim,0u,ring,keys,stride,splits);
     CUDA_OK(cudaGetLastError());
     g4_attn_split_combine_kernel<<<heads,256,splits*sizeof(float)>>>(out,dpartial,dstats,heads,dim,splits);
     CUDA_OK(cudaGetLastError());
     check_abs(name,expected,out,2.5e-3f);
     CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dk)); CUDA_OK(cudaFree(dv)); CUDA_OK(cudaFree(out));
+    CUDA_OK(cudaFree(dpartial)); CUDA_OK(cudaFree(dstats));
+}
+
+/* ---- The E4M3 full-layer lane (cuda/gemma4_attn_mma.cuh, FP8 = true).
+ *
+ * The cache rows are built with the device encoder's own arithmetic
+ * (ds4_gemma4_gpu.cuh:102-133: amax/448 rounded through f16, then the E4M3
+ * round-to-nearest table search) and the reference reads the values the
+ * kernel will decode, so the gate is the attention arithmetic, not the
+ * quantizer: K and V reach the reference exactly as g4_fp8_decode8 produces
+ * them (the exact E4M3 value times the f16 row scale, rounded to f16). */
+
+static float e4m3_value_host(unsigned code) {
+    const unsigned s=(code>>7)&1u,e=(code>>3)&15u,m=code&7u;
+    float v;
+    if(e==0u) { v=(float)m*(1.0f/8.0f)*0.015625f; }
+    else { v=(1.0f+(float)m/8.0f)*std::ldexp(1.0f,(int)e-7); }
+    return s?-v:v;
+}
+
+static unsigned char e4m3_encode_host(float x) {
+    if(!std::isfinite(x)||x==0.0f) { return 0u; }
+    const unsigned sign=x<0.0f?0x80u:0u;
+    const float ax=std::fmin(std::fabs(x),448.0f);
+    int lo=0,hi=126;
+    while(lo<hi) {
+        const int mid=(lo+hi+1)>>1;
+        if(e4m3_value_host((unsigned)mid)<=ax) { lo=mid; } else { hi=mid-1; }
+    }
+    int best=lo;
+    if(best<126) {
+        const float bd=std::fabs(ax-e4m3_value_host((unsigned)best));
+        const float nd=std::fabs(ax-e4m3_value_host((unsigned)(best+1)));
+        if(nd<bd||(nd==bd&&(((best+1)&1)==0)&&((best&1)!=0))) { best++; }
+    }
+    return (unsigned char)(sign|(unsigned)best);
+}
+
+static float half_round_host(float x) { return __half2float(__float2half(x)); }
+
+static void build_fp8_rows(unsigned capacity,unsigned first,unsigned rows,
+        unsigned kv_heads,unsigned dim,unsigned ring,unsigned keys,
+        std::vector<uint8_t> &bytes,std::vector<float> &kf,std::vector<float> &vf) {
+    const uint64_t kv_dim=(uint64_t)kv_heads*dim;
+    const uint64_t row_bytes=2u*kv_dim+2u*kv_heads*sizeof(uint16_t);
+    bytes.assign((size_t)capacity*row_bytes,0);
+    kf.assign((size_t)capacity*kv_dim,0.0f);
+    vf.assign((size_t)capacity*kv_dim,0.0f);
+    const unsigned filled=keys?keys:first+rows;
+    const unsigned oldest=(ring&&filled>ring)?filled-ring:0u;
+    auto encode=[&](unsigned p,bool poison) {
+        const uint64_t slot=ring?p%capacity:p;
+        uint8_t *row=&bytes[(size_t)slot*row_bytes];
+        for(unsigned h=0;h<kv_heads;h++) {
+            std::vector<float> kx(dim),vx(dim);
+            float kmax=0.0f,vmax=0.0f;
+            for(unsigned d=0;d<dim;d++) {
+                if(poison) { kx[d]=1.0e4f; vx[d]=-1.0e4f; }
+                else {
+                    const uint64_t k=(uint64_t)p*kv_dim+(uint64_t)h*dim+d;
+                    kx[d]=value((unsigned)(k%65536))*1.1f;
+                    vx[d]=value((unsigned)((k+7)%65536))*0.9f;
+                }
+                kmax=std::fmax(kmax,std::fabs(kx[d]));
+                vmax=std::fmax(vmax,std::fabs(vx[d]));
+            }
+            const float kscale=half_round_host(kmax/448.0f);
+            const float vscale=half_round_host(vmax/448.0f);
+            for(unsigned d=0;d<dim;d++) {
+                const unsigned kc=e4m3_encode_host(kx[d]/kscale);
+                const unsigned vc=e4m3_encode_host(vx[d]/vscale);
+                row[(uint64_t)h*dim+d]=(uint8_t)kc;
+                row[kv_dim+(uint64_t)h*dim+d]=(uint8_t)vc;
+                kf[(size_t)slot*kv_dim+(uint64_t)h*dim+d]=half_round_host(e4m3_value_host(kc)*kscale);
+                vf[(size_t)slot*kv_dim+(uint64_t)h*dim+d]=half_round_host(e4m3_value_host(vc)*vscale);
+            }
+            const __half hk=__float2half(kscale),hv=__float2half(vscale);
+            std::memcpy(row+2u*kv_dim+h*2u,&hk,2);
+            std::memcpy(row+2u*kv_dim+(kv_heads+h)*2u,&hv,2);
+        }
+    };
+    for(unsigned p=oldest;p<filled;p++) { encode(p,false); }
+    if(keys) { encode(first,true); }
+}
+
+/* The full-geometry prefill over the E4M3 rows. */
+static void attn_mma_fp8_case(const char *name,unsigned rows,unsigned first,
+        unsigned heads,unsigned kv_heads,unsigned dim,unsigned ring,unsigned keys=0u) {
+    const unsigned capacity=ring?ring:first+rows;
+    const unsigned row_bytes=2u*kv_heads*dim+2u*kv_heads*(unsigned)sizeof(uint16_t);
+    std::vector<uint8_t> bytes;
+    std::vector<float> kf,vf;
+    build_fp8_rows(capacity,first,rows,kv_heads,dim,ring,keys,bytes,kf,vf);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),kf.data(),vf.data(),rows,first,heads,kv_heads,dim,0,capacity,ring,keys);
+    float *dq=device(query),*out;
+    uint8_t *dkv=device(bytes);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned rtile=8;
+    const unsigned shared=32u*dim*sizeof(__half)+4u*2u*16u*32u*sizeof(float);
+    g4_attn_mma_full_kernel<true><<<dim3(kv_heads,(rows+rtile-1)/rtile),256,shared>>>(
+        out,dq,nullptr,nullptr,dkv,rows,first,heads,kv_heads,0u,ring,keys,0u,row_bytes);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,2.5e-3f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dkv)); CUDA_OK(cudaFree(out));
+}
+
+/* The split-K decode over the E4M3 rows: the same split count and combine
+ * as attn_split_mma_case. */
+static void attn_split_mma_fp8_case(const char *name,unsigned first,unsigned heads,
+        unsigned kv_heads,unsigned dim,unsigned ring,unsigned keys=0u,unsigned span=512u) {
+    const unsigned rows=1;
+    const unsigned capacity=ring?ring:first+rows;
+    const unsigned row_bytes=2u*kv_heads*dim+2u*kv_heads*(unsigned)sizeof(uint16_t);
+    std::vector<uint8_t> bytes;
+    std::vector<float> kf,vf;
+    build_fp8_rows(capacity,first,rows,kv_heads,dim,ring,keys,bytes,kf,vf);
+    std::vector<float> query((uint64_t)rows*heads*dim),expected((uint64_t)rows*heads*dim);
+    for(uint64_t i=0;i<query.size();i++) { query[i]=g4_ref_bf16(value((unsigned)((i+3)%65536))*1.4f); }
+    g4_ref_attn(expected.data(),query.data(),kf.data(),vf.data(),rows,first,heads,kv_heads,dim,0,capacity,ring,keys);
+    float *dq=device(query),*out;
+    uint8_t *dkv=device(bytes);
+    CUDA_OK(cudaMalloc(&out,expected.size()*sizeof(float)));
+    const unsigned last=keys&&keys<=first?keys-1u:first;
+    unsigned splits=(last+span)/span;
+    if(splits<1u) { splits=1u; }
+    float *dpartial,*dstats;
+    CUDA_OK(cudaMalloc(&dpartial,(size_t)splits*heads*dim*sizeof(float)));
+    CUDA_OK(cudaMalloc(&dstats,(size_t)splits*heads*2*sizeof(float)));
+    const unsigned shared=(16u*dim+G4_SMMA_TK*dim+G4_SMMA_GROUP*G4_SMMA_TK)
+        *sizeof(__half)+2u*8u*8u*sizeof(float);
+    CUDA_OK(cudaFuncSetAttribute(g4_attn_split_mma_kernel<true>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,shared));
+    g4_attn_split_mma_kernel<true><<<dim3(kv_heads,splits),G4_SMMA_THREADS,shared>>>(
+        dpartial,dstats,dq,nullptr,nullptr,dkv,row_bytes,first,heads,kv_heads,dim,0u,ring,
+        keys,0u,splits);
+    CUDA_OK(cudaGetLastError());
+    g4_attn_split_combine_kernel<<<heads,256,splits*sizeof(float)>>>(out,dpartial,dstats,heads,dim,splits);
+    CUDA_OK(cudaGetLastError());
+    check_abs(name,expected,out,2.5e-3f);
+    CUDA_OK(cudaFree(dq)); CUDA_OK(cudaFree(dkv)); CUDA_OK(cudaFree(out));
     CUDA_OK(cudaFree(dpartial)); CUDA_OK(cudaFree(dstats));
 }
 
@@ -601,6 +743,36 @@ static void attn_test() {
     attn_split_mma_case("attn_split_mma_tile_edge63",63,G4_REF_HEADS,
         G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
     attn_split_mma_case("attn_split_mma_tile_edge64",64,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    /* The E4M3 full-layer lane (cuda/gemma4_attn_mma.cuh, FP8 = true): the
+     * row counts and ring/window edges the unit gates on. */
+    attn_mma_fp8_case("attn_mma_fp8_full_16",16,0,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_fp8_case("attn_mma_fp8_full_17",17,0,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_fp8_case("attn_mma_fp8_full_64",64,0,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_fp8_case("attn_mma_fp8_full_mid",64,1000,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0);
+    attn_mma_fp8_case("attn_mma_fp8_full_ring",64,1025,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,1025u+64u);
+    attn_mma_fp8_case("attn_mma_fp8_full_shared_prefix",64,4096,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,4096u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_span512",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,512u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_span128",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_span64",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,64u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_ring",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,1025,0u,128u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_shared_prefix",8192,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,8192u,128u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_single_key",0,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_tile_edge63",63,G4_REF_HEADS,
+        G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
+    attn_split_mma_fp8_case("attn_split_mma_fp8_tile_edge64",64,G4_REF_HEADS,
         G4_REF_GLOBAL_KV_HEADS,G4_REF_GLOBAL_HEAD_DIM,0,0u,128u);
 }
 

@@ -34,8 +34,14 @@
 #   DS4_GEMMA4_SERVER_BIN server binary (default <root>/ds4-server)
 #   DS4_GEMMA4_HOST       listen address (default 127.0.0.1; 0.0.0.0 for the LAN)
 #   DS4_GEMMA4_PORT       port (default 8099)
-#   DS4_GEMMA4_CTX        context (default 16384; the Spark takes 262144)
-#   DS4_GEMMA4_MEM_FLOOR  memory floor in GiB (default 1)
+#   DS4_GEMMA4_CTX        context (default 65536, the largest that fits the
+#                         12 GiB card resident with the FP8 full-layer KV; the
+#                         Spark takes 262144)
+#   DS4_GEMMA4_MEM_FLOOR  memory floor in GiB (default 0)
+#   DS4_GEMMA4_SESSION_GRAPH_HEADROOM_MB
+#                         extra free VRAM the session-graph admission check
+#                         demands beyond its own estimate (default 0; the
+#                         engine's own default is 1024, which refuses 32768)
 #   DS4_GEMMA4_KV         fp8 (default) or bf16; fp8 refuses MTP by design.
 #                         fp8 is what fits ctx 32768 on this card, but its
 #                         full-layer attention is scalar: at 32,768 tokens it
@@ -90,12 +96,21 @@
 # long-context gate is still open. If a long answer degrades, rerun with
 # DS4_GEMMA4_KV=bf16 and compare on the same prompt.
 #
-# Speed says the same thing. FP8 rows select the scalar attention kernel, and
-# at 32,768 tokens that lane is 9.6x slower at prefill and 61x slower at
-# decode than the bf16 lane (GB10, ds4-bench; docs/gemma4-vq.md). bf16 costs
-# 0.17 GiB more at ctx 16384 (10.33 against 10.16 GiB of the 12), so prefer
-# DS4_GEMMA4_KV=bf16 at this context and keep fp8 for ctx 32768, where bf16
-# no longer fits. The fit has to be measured on the card after any change.
+# The FP8 full-layer KV keeps the whole context on the card, so this script
+# wants no SSD for it: RESIDENT=1 copies the 9.37 GiB trunk to the device and
+# the cache lives in VRAM. Measured on 2026-11-05 (12 GiB card, ctx 65536):
+# 10.12 GiB resident at boot, 11.45 GiB with the session graph, 833 MiB free;
+# a 61,932-token request served in 55.7 s. The sliding layers' bf16 rings are
+# fixed at their 1,024 window, so the context cost is the five full layers'
+# E4M3 rows only (2,056 bytes per token per layer, ~337 MB from 32K to 64K).
+# ctx 98304 is refused by the serving quote; 65536 is the ceiling.
+#
+# Speed: the E4M3 rows now take the tensor-core prefill and split-K decode
+# (DS4_GEMMA4_MMA and DS4_GEMMA4_SPLIT below), which on the GB10 at 32,768
+# tokens is 5.9x the old scalar prefill and 38.6x its decode, and lands at
+# 93 percent of the bf16 lane's prefill and above its decode (docs/gemma4-vq.md,
+# "The E4M3 tensor-core port"). bf16 still costs more memory for the same
+# context, so FP8 stays the lane for this card.
 
 set -u
 
@@ -113,8 +128,15 @@ else
 fi
 HOST="${DS4_GEMMA4_HOST:-127.0.0.1}"
 PORT="${DS4_GEMMA4_PORT:-8099}"
-CTX="${DS4_GEMMA4_CTX:-16384}"
-FLOOR="${DS4_GEMMA4_MEM_FLOOR:-1}"
+CTX="${DS4_GEMMA4_CTX:-65536}"
+FLOOR="${DS4_GEMMA4_MEM_FLOOR:-0}"
+# The session graph's admission check asks for a fixed headroom on top of its
+# own estimate; at 1 GiB (the engine default) ctx 32768 is refused on this
+# card even though the graph then sits in 1.17 GiB of free VRAM. The measured
+# boots (2026-11-05): ctx 32768 uses 11.11 GiB of the 12 with the session
+# graph, ctx 49152 11.28, ctx 65536 11.45 (833 MiB free); ctx 98304 is
+# refused by the serving quote before it boots.
+GRAPH_HEADROOM="${DS4_GEMMA4_SESSION_GRAPH_HEADROOM_MB:-0}"
 KV="${DS4_GEMMA4_KV:-fp8}"
 MTP="${DS4_GEMMA4_MTP:-}"
 DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
@@ -260,7 +282,8 @@ serve_start() {
   rm -f "$LOG"
   fast_envs
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
-      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}"
+      "DS4_SESSION_GRAPH_HEADROOM_MB=$GRAPH_HEADROOM" )
   [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && [ "$CPU_MOE" != "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   local -a extra=()
   # SSD streaming (ds4_gemma4_map.inc, the discrete arm): resident spans are
@@ -395,7 +418,8 @@ bench_mode() {
   fi
   fast_envs
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
-      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}"
+      "DS4_SESSION_GRAPH_HEADROOM_MB=$GRAPH_HEADROOM" )
   [ "$RESIDENT" = "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
   env "${envs[@]}" "$ROOT/ds4-bench" -m "$MODEL" --cuda \
       --prompt-file "$PROMPT_FILE" --ctx-start "$CTX" --ctx-max "$CTX" \

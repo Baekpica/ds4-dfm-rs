@@ -3,6 +3,8 @@
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
+#include <cuda_fp8.h>
 
 /* Gemma-4 tensor-core prefill attention (Phase 8).
  *
@@ -69,6 +71,85 @@ __device__ __forceinline__ void g4_mma_mma(float *d, const uint32_t *a, uint32_t
 __device__ __forceinline__ uint32_t g4_mma_pack(float lo, float hi) {
     const __nv_bfloat162_raw v = __floats2bfloat162_rn(lo, hi);
     return (uint32_t)v.x | ((uint32_t)v.y << 16);
+}
+
+/* The same two rows for the FP8 lane's f16 tiles. A query value is already
+ * bf16-rounded by g4_rms_rope_kernel and every bf16 with a half-range
+ * exponent is exactly representable in f16, so this conversion is 0 ULP;
+ * rounding a softmax probability to f16 keeps 11 significand bits against
+ * bf16's 8, so the P V product here is strictly closer to the f32 reference
+ * than the bf16 path's. */
+__device__ __forceinline__ uint32_t g4_mma_pack_h(float lo, float hi) {
+    const __half2 v = __floats2half2_rn(lo, hi);
+    return *reinterpret_cast<const uint32_t *>(&v);
+}
+
+__device__ __forceinline__ void g4_mma_mma_h(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+/* The staged-tile element: bf16 for the bf16 rows, f16 for the E4M3 rows.
+ * ldmatrix and the swizzle are format-agnostic (both types are 2 bytes), so
+ * only the mma instruction and the staging decode differ. */
+template <bool FP8> struct g4_mma_elem { using type = __nv_bfloat16; };
+template <> struct g4_mma_elem<true> { using type = __half; };
+
+template <bool FP8>
+__device__ __forceinline__ uint32_t g4_mma_pack_t(float lo, float hi) {
+    if constexpr (FP8) { return g4_mma_pack_h(lo, hi); }
+    return g4_mma_pack(lo, hi);
+}
+
+template <bool FP8>
+__device__ __forceinline__ void g4_mma_mma_t(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    if constexpr (FP8) { g4_mma_mma_h(d, a, b0, b1); }
+    else { g4_mma_mma(d, a, b0, b1); }
+}
+
+/* Rounding a softmax probability into the staged element type, and reading
+ * it back. The bf16 arm is the split kernel's original pair
+ * (__float2bfloat16_rn / __bfloat162float). */
+template <bool FP8>
+__device__ __forceinline__ typename g4_mma_elem<FP8>::type g4_mma_store_t(float x) {
+    if constexpr (FP8) { return __float2half_rn(x); }
+    else { return __float2bfloat16_rn(x); }
+}
+
+template <bool FP8>
+__device__ __forceinline__ float g4_mma_load_t(typename g4_mma_elem<FP8>::type x) {
+    if constexpr (FP8) { return __half2float(x); }
+    else { return __bfloat162float(x); }
+}
+
+/* Eight E4M3 codes (one uint2) times one f16 row scale, as eight f16 values
+ * in a uint4. This is the decode stage of the Solar warp-specialized FP8
+ * kernel, cuda/mmq/ds4_fattn.cu:1557 (fp8_ws_scale4): the exact hardware
+ * e4m3x2 conversion, the product in fp32, then rn rounding to f16, which is
+ * the correctly rounded half of the exact product. The scalar kernel this
+ * lane used before (gemma4_attn_fp8.cuh, g4_fp8_e4m3) decodes through the
+ * same conversion and keeps the product in fp32, so the two agree to the
+ * f16 rounding of K and V; the parity gate below measures that. */
+__device__ __forceinline__ uint4 g4_fp8_decode8(uint2 codes, __half scale) {
+    const float s = __half2float(scale);
+    const float2 f0 = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes.x & 0xffffu), __NV_E4M3)));
+    const float2 f1 = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes.x >> 16u), __NV_E4M3)));
+    const float2 f2 = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes.y & 0xffffu), __NV_E4M3)));
+    const float2 f3 = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes.y >> 16u), __NV_E4M3)));
+    const __half2 h0 = __floats2half2_rn(f0.x * s, f0.y * s);
+    const __half2 h1 = __floats2half2_rn(f1.x * s, f1.y * s);
+    const __half2 h2 = __floats2half2_rn(f2.x * s, f2.y * s);
+    const __half2 h3 = __floats2half2_rn(f3.x * s, f3.y * s);
+    return make_uint4(*reinterpret_cast<const uint32_t *>(&h0),
+                      *reinterpret_cast<const uint32_t *>(&h1),
+                      *reinterpret_cast<const uint32_t *>(&h2),
+                      *reinterpret_cast<const uint32_t *>(&h3));
 }
 
 /* One 32-key tile of the sliding geometry: D = 256, group = 2, one warp per
@@ -252,17 +333,27 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_slide_kernel(
 /* One 32-key tile of the full geometry: D = 512, group = 8, 8 tokens per
  * CTA. Each warp owns 2 tokens x 8 query heads (16 M rows) and one 256-dim
  * half; the two halves of an M group exchange their partial 16x32 scores in
- * shared memory and add in half order before the softmax. */
+ * shared memory and add in half order before the softmax.
+ *
+ * FP8 = true runs the same walk over the full layers' combined E4M3 rows
+ * (ds4_gemma4.h, ds4_gemma4_full_kv_row): K at kv_head * D bytes, V at
+ * kv_dim + kv_head * D, the two f16 scale arrays at 2 * kv_dim, and the tile
+ * is decoded to f16 on the way into shared memory (g4_fp8_decode8) instead
+ * of being cp.async'd. Everything after the staging step is the bf16 path:
+ * the same swizzle, ldmatrix, mask, online softmax and half-order exchange. */
+template <bool FP8>
 __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
         float *out, const float *query, const __nv_bfloat16 *key,
-        const __nv_bfloat16 *value, uint32_t rows, uint32_t first,
-        uint32_t heads, uint32_t kv_heads, uint32_t window, uint32_t ring,
-        uint32_t keys, uint64_t kv_stride) {
+        const __nv_bfloat16 *value, const uint8_t *fp8, uint32_t rows,
+        uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t window,
+        uint32_t ring, uint32_t keys, uint64_t kv_stride, uint64_t row_bytes) {
     constexpr uint32_t D = 512u, GROUP = 8u, RTILE = 8u, TK = G4_MMA_TK;
     constexpr uint32_t HALF = 256u;
+    using E = typename g4_mma_elem<FP8>::type;
     extern __shared__ __align__(16) uint8_t smem[];
-    __nv_bfloat16 *kv = (__nv_bfloat16 *)smem;
+    E *kv = (E *)smem;
     float *exchange = (float *)(kv + TK * D);
+    const uint64_t kv_dim = (uint64_t)kv_heads * D;
 
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
     const uint32_t g = lane >> 2, q = lane & 3u;
@@ -294,11 +385,11 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
             const float lo8 = valid ? qr[col + 8u] : 0.0f;
             const float hi8 = valid ? qr[col + 9u] : 0.0f;
             if (m == 0u) {
-                qa[k][0] = g4_mma_pack(lo, hi);
-                qa[k][2] = g4_mma_pack(lo8, hi8);
+                qa[k][0] = g4_mma_pack_t<FP8>(lo, hi);
+                qa[k][2] = g4_mma_pack_t<FP8>(lo8, hi8);
             } else {
-                qa[k][1] = g4_mma_pack(lo, hi);
-                qa[k][3] = g4_mma_pack(lo8, hi8);
+                qa[k][1] = g4_mma_pack_t<FP8>(lo, hi);
+                qa[k][3] = g4_mma_pack_t<FP8>(lo8, hi8);
             }
         }
     }
@@ -307,14 +398,33 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
     float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.0f, 0.0f};
 
     for (uint32_t base = base_start; base <= last_all; base += TK) {
-        /* Stage K: 32 keys x 512 dims, 64 chunks per key, 2 per lane. */
-        for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
-            const uint32_t k_abs = base + t;
-            const bool valid = k_abs >= begin_all && k_abs <= last_all;
-            const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
-            const __nv_bfloat16 *src = key + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
-            for (uint32_t c = lane; c < D / 8u; c += 32u) {
-                g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+        /* Stage K: 32 keys x 512 dims, 64 chunks per key, 2 per lane. The
+         * bf16 lane cp.asyncs each 16-byte chunk; the E4M3 lane decodes 8
+         * codes into the same 16-byte shared slot, so the tile layout and
+         * the ldmatrix addressing below are identical for both. */
+        if constexpr (FP8) {
+            for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= begin_all && k_abs <= last_all;
+                const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
+                const uint8_t *row = fp8 + (uint64_t)slot * row_bytes;
+                const __half kscale = ((const __half *)(row + 2u * kv_dim))[kv_head];
+                const uint8_t *src = row + (uint64_t)kv_head * D;
+                for (uint32_t c = lane; c < D / 8u; c += 32u) {
+                    const uint2 raw = valid ? __ldg((const uint2 *)(src + c * 8u))
+                                            : make_uint2(0u, 0u);
+                    *(uint4 *)(kv + g4_mma_swz(t, c, D)) = g4_fp8_decode8(raw, kscale);
+                }
+            }
+        } else {
+            for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= begin_all && k_abs <= last_all;
+                const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
+                const __nv_bfloat16 *src = key + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
+                for (uint32_t c = lane; c < D / 8u; c += 32u) {
+                    g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+                }
             }
         }
         asm volatile("cp.async.commit_group;" ::: "memory");
@@ -332,8 +442,8 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
                 const uint32_t krow = (j + (mat >> 1)) * 8u + (lane & 7u);
                 const uint32_t chunk = half * 32u + k * 2u + (mat & 1u);
                 g4_mma_ldsm4(b, kv + g4_mma_swz(krow, chunk, D), false);
-                g4_mma_mma(s[j], qa[k], b[0], b[1]);
-                g4_mma_mma(s[j + 1u], qa[k], b[2], b[3]);
+                g4_mma_mma_t<FP8>(s[j], qa[k], b[0], b[1]);
+                g4_mma_mma_t<FP8>(s[j + 1u], qa[k], b[2], b[3]);
             }
         }
 
@@ -405,13 +515,29 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
         /* Stage V over the K tile (K is dead after the QK barrier) and
          * accumulate O += P V over this half's 256 output dims. */
         __syncthreads();
-        for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
-            const uint32_t k_abs = base + t;
-            const bool valid = k_abs >= begin_all && k_abs <= last_all;
-            const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
-            const __nv_bfloat16 *src = value + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
-            for (uint32_t c = lane; c < D / 8u; c += 32u) {
-                g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+        if constexpr (FP8) {
+            for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= begin_all && k_abs <= last_all;
+                const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
+                const uint8_t *row = fp8 + (uint64_t)slot * row_bytes;
+                const __half vscale = ((const __half *)(row + 2u * kv_dim))[kv_heads + kv_head];
+                const uint8_t *src = row + kv_dim + (uint64_t)kv_head * D;
+                for (uint32_t c = lane; c < D / 8u; c += 32u) {
+                    const uint2 raw = valid ? __ldg((const uint2 *)(src + c * 8u))
+                                            : make_uint2(0u, 0u);
+                    *(uint4 *)(kv + g4_mma_swz(t, c, D)) = g4_fp8_decode8(raw, vscale);
+                }
+            }
+        } else {
+            for (uint32_t t = warp * 4u; t < warp * 4u + 4u; t++) {
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= begin_all && k_abs <= last_all;
+                const uint32_t slot = valid ? (ring ? (k_abs % ring) : k_abs) : 0u;
+                const __nv_bfloat16 *src = value + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
+                for (uint32_t c = lane; c < D / 8u; c += 32u) {
+                    g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+                }
             }
         }
         asm volatile("cp.async.commit_group;" ::: "memory");
@@ -421,10 +547,10 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
         #pragma unroll
         for (uint32_t kk = 0; kk < 2u; kk++) {
             const uint32_t pa[4] = {
-                g4_mma_pack(s[2u * kk][0], s[2u * kk][1]),
-                g4_mma_pack(s[2u * kk][2], s[2u * kk][3]),
-                g4_mma_pack(s[2u * kk + 1u][0], s[2u * kk + 1u][1]),
-                g4_mma_pack(s[2u * kk + 1u][2], s[2u * kk + 1u][3])};
+                g4_mma_pack_t<FP8>(s[2u * kk][0], s[2u * kk][1]),
+                g4_mma_pack_t<FP8>(s[2u * kk][2], s[2u * kk][3]),
+                g4_mma_pack_t<FP8>(s[2u * kk + 1u][0], s[2u * kk + 1u][1]),
+                g4_mma_pack_t<FP8>(s[2u * kk + 1u][2], s[2u * kk + 1u][3])};
             #pragma unroll
             for (uint32_t t = 0; t < 32u; t += 2u) {
                 uint32_t b[4];
@@ -432,8 +558,8 @@ __global__ void __launch_bounds__(G4_MMA_THREADS, 1) g4_attn_mma_full_kernel(
                 const uint32_t krow = kk * 16u + (mat & 1u) * 8u + (lane & 7u);
                 const uint32_t chunk = half * 32u + t + (mat >> 1);
                 g4_mma_ldsm4(b, kv + g4_mma_swz(krow, chunk, D), true);
-                g4_mma_mma(o[t], pa, b[0], b[1]);
-                g4_mma_mma(o[t + 1u], pa, b[2], b[3]);
+                g4_mma_mma_t<FP8>(o[t], pa, b[0], b[1]);
+                g4_mma_mma_t<FP8>(o[t + 1u], pa, b[2], b[3]);
             }
         }
         __syncthreads();

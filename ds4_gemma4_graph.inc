@@ -18,6 +18,12 @@ static bool gemma4_mtp_publish(struct ds4_gemma4_graph *g, uint32_t row);
 static void gemma4_mtp_drop_hidden(struct ds4_gemma4_graph *g);
 static void gemma4_mtp_runtime_free(struct ds4_gemma4_mtp_runtime *r);
 
+/* The attention selectors, defined with the dispatch below; the graph-open
+ * log names the kernels the full-layer lane will run. */
+static bool g4_attn_mma(void);
+static bool g4_attn_split(void);
+static bool g4_attn_split_mma(void);
+
 typedef struct ds4_gemma4_graph {
     ds4_gvq_model *model;
     ds4_gvq_ctx *gvq;
@@ -441,13 +447,25 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
         ctx, cap, (double)g->kv_bytes / 1073741824.0, (double)act * 6.0 / 1048576.0);
     /* The row format selects the kernel, so the cost is not just bytes:
      * bf16 rows take the tensor-core MMA kernel, E4M3 rows take the scalar
-     * g4_attn_fp8_kernel (docs/gemma4-vq.md, "The full-layer KV lane").
-     * Measured on the GB10 at 32,768 tokens: 9.6x slower prefill and 61x
-     * slower decode in the E4M3 lane. Say it at boot so the choice is loud. */
-    ds4_log(stderr, DS4_LOG_TIMING, "ds4: Gemma-4 full-layer KV: %s\n",
-        g->full_fp8
-            ? "E4M3 rows (scalar attention: 9.6x slower prefill, 61x slower decode at 32K than bf16)"
-            : "bf16 rows (tensor-core attention)");
+     * g4_attn_fp8_kernel unless the tensor-core E4M3 paths are on
+     * (docs/gemma4-vq.md, "The full-layer KV lane"). Measured on the GB10 at
+     * 32,768 tokens: the scalar E4M3 lane is 9.6x slower at prefill and 61x
+     * at decode than the bf16 lane. Say it at boot so the choice is loud. */
+    if (g->full_fp8) {
+        const bool mma = g4_attn_mma();
+        const bool split = g4_attn_split() && g4_attn_split_mma();
+        ds4_log(stderr, DS4_LOG_TIMING, "ds4: Gemma-4 full-layer KV: %s\n",
+            mma && split
+                ? "E4M3 rows (tensor-core prefill and split-K decode)"
+                : mma
+                    ? "E4M3 rows (tensor-core prefill; scalar decode: 61x slower than bf16 at 32K)"
+                    : split
+                        ? "E4M3 rows (scalar prefill: 9.6x slower than bf16 at 32K; split-K decode)"
+                        : "E4M3 rows (scalar attention: 9.6x slower prefill, 61x slower decode at 32K than bf16)");
+    } else {
+        ds4_log(stderr, DS4_LOG_TIMING,
+            "ds4: Gemma-4 full-layer KV: bf16 rows (tensor-core attention)\n");
+    }
     return g;
 }
 
@@ -655,6 +673,20 @@ static bool g4_attn_mma(void) {
     if (on < 0) {
         on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_mma,
             "DS4_GEMMA4_ATTN_MMA");
+    }
+    return on != 0;
+}
+
+/* Tensor-core split-K decode for the full layers
+ * (cuda/gemma4_attn_split_mma.cuh), off by default
+ * (DS4_GEMMA4_ATTN_SPLIT_MMA=1). The E4M3 lane reads it only when the scalar
+ * split's knobs are on as well, so the deployed default is still the scalar
+ * kernel it always was. */
+static bool g4_attn_split_mma(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_split_mma,
+            "DS4_GEMMA4_ATTN_SPLIT_MMA");
     }
     return on != 0;
 }
@@ -922,8 +954,54 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
     if (full && g->full_fp8) {
         G4_STEP(ds4_gpu_g4_kv_store_fp8(g->fkcache[il], g->k, g->v, g->positions, rows,
             kv_width, kv, dim, ring, capacity), "key/value FP8 cache store");
-        G4_STEP(ds4_gpu_g4_attn_fp8(g->attn, g->q, g->fkcache[il], g->positions, rows,
-            first, G4_HEADS, kv, dim, 0u, ring, 0u, ds4_gemma4_full_kv_row()), "attention");
+        /* Until this unit every call here went to the scalar kernel
+         * (cuda/gemma4_attn_fp8.cuh), whatever the row count, so a decode row
+         * ran 16 warps over the whole cache. The two tensor-core paths take
+         * the same knobs as their bf16 counterparts and fall back to the
+         * scalar kernel otherwise. */
+        const uint64_t row_bytes = ds4_gemma4_full_kv_row();
+        if (rows == 1u && kv == 2u && dim == 512u &&
+            g4_attn_split() && g4_attn_split_mma()) {
+            G4_STEP(ds4_gpu_g4_attn_split_fp8(g->attn, g->q, g->fkcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes),
+                "attention");
+        } else if (rows >= 16u && kv == 2u && dim == 512u && g4_attn_mma()) {
+            G4_STEP(ds4_gpu_g4_attn_mma_fp8(g->attn, g->q, g->fkcache[il],
+                g->positions, rows, first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes),
+                "attention");
+        } else {
+            G4_STEP(ds4_gpu_g4_attn_fp8(g->attn, g->q, g->fkcache[il], g->positions, rows,
+                first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes), "attention");
+        }
+        if (getenv("DS4_GEMMA4_ATTN_CMP") && rows >= 16u && (il == 0u || il == 5u) &&
+            g4_attn_mma()) {
+            /* One-layer probe for the E4M3 lane, the bf16 block's counterpart:
+             * run the scalar FP8 kernel on the same Q and cache and report the
+             * distance, so a frontier drift can be attributed to the kernel or
+             * to its propagation through 30 layers of routing. */
+            const uint64_t bytes = (uint64_t)rows * heads_width * sizeof(float);
+            ds4_gpu_tensor *cmp = ds4_gpu_tensor_alloc(bytes);
+            if (cmp && ds4_gpu_g4_attn_fp8(cmp, g->q, g->fkcache[il], g->positions,
+                    rows, first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes)) {
+                float *a = (float *)malloc((size_t)bytes);
+                float *b = (float *)malloc((size_t)bytes);
+                if (a && b && ds4_gpu_tensor_read(g->attn, 0, a, bytes) &&
+                    ds4_gpu_tensor_read(cmp, 0, b, bytes)) {
+                    double num = 0.0, den = 0.0, mx = 0.0;
+                    for (uint64_t i = 0; i < (uint64_t)rows * heads_width; i++) {
+                        const double d = (double)a[i] - (double)b[i];
+                        num += d * d;
+                        den += (double)b[i] * b[i];
+                        if (fabs(d) > mx) { mx = fabs(d); }
+                    }
+                    fprintf(stderr, "ds4: G4 L%u fp8 attn mma-vs-scalar relL2 %.6g max %.6g\n",
+                        il, sqrt(num / (den > 0.0 ? den : 1.0)), mx);
+                }
+                free(a);
+                free(b);
+            }
+            if (cmp) { ds4_gpu_tensor_free(cmp); }
+        }
     } else {
         G4_STEP(ds4_gpu_g4_kv_store(g->kcache[il], g->k, g->positions, rows, kv_width,
             ring, capacity), "key cache store");

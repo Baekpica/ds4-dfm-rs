@@ -52,18 +52,28 @@ __device__ __forceinline__ void g4_smma_ldsm2(uint32_t *r, const void *p) {
 /* One (KV head, key split) CTA. `k0..k1` are the split's absolute keys; the
  * host divides the visible range with DS4_GEMMA4_ATTN_SPLIT_SPAN and passes
  * the resulting `splits`, and the kernel re-derives the same even division
- * the scalar split kernel uses. */
+ * the scalar split kernel uses.
+ *
+ * FP8 = true reads the combined E4M3 rows of ds4_gemma4_full_kv_row instead
+ * of the bf16 pair (K at kv_head * D bytes, V at kv_dim + kv_head * D, the
+ * two f16 scale arrays at 2 * kv_dim) and decodes each 16-byte shared slot
+ * with g4_fp8_decode8; the split division, the partial/stats layout, the
+ * combine kernel and the softmax are the bf16 path's. */
+template <bool FP8>
 __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
         float *partial, float *stats, const float *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        const uint8_t *fp8, uint64_t row_bytes,
         uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
         uint32_t window, uint32_t ring, uint32_t keys, uint64_t kv_stride,
         uint32_t splits) {
     constexpr uint32_t D = G4_SMMA_D, TK = G4_SMMA_TK, GROUP = G4_SMMA_GROUP;
+    using E = typename g4_mma_elem<FP8>::type;
+    const uint64_t kv_dim = (uint64_t)kv_heads * D;
     extern __shared__ __align__(16) uint8_t smem[];
-    __nv_bfloat16 *qs = (__nv_bfloat16 *)smem;   /* 16 x D */
-    __nv_bfloat16 *kv = qs + 16u * D;            /* TK x D, K then V */
-    __nv_bfloat16 *ps = kv + TK * D;             /* GROUP x TK */
+    E *qs = (E *)smem;                           /* 16 x D */
+    E *kv = qs + 16u * D;                        /* TK x D, K then V */
+    E *ps = kv + TK * D;                         /* GROUP x TK */
     float *red_max = (float *)(ps + GROUP * TK);
     float *red_sum = red_max + 8u * 8u;
 
@@ -93,11 +103,11 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
         uint4 v = make_uint4(0u, 0u, 0u, 0u);
         if (row < GROUP) {
             const float *src = query + (uint64_t)(kv_head * GROUP + row) * D;
-            __nv_bfloat162 *h = (__nv_bfloat162 *)&v;
+            uint32_t *w = reinterpret_cast<uint32_t *>(&v);
             #pragma unroll
             for (uint32_t e = 0; e < 4u; e++) {
-                h[e] = __floats2bfloat162_rn(src[chunk * 8u + 2u * e],
-                                             src[chunk * 8u + 2u * e + 1u]);
+                w[e] = g4_mma_pack_t<FP8>(src[chunk * 8u + 2u * e],
+                                          src[chunk * 8u + 2u * e + 1u]);
             }
         }
         *(uint4 *)(qs + g4_mma_swz(row, chunk, D)) = v;
@@ -108,15 +118,30 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
     float m = -INFINITY, l = 0.0f;
     const uint32_t base_start = (k0 / TK) * TK;
     for (uint32_t base = base_start; base <= k1; base += TK) {
-        /* Stage K (a key outside this split's range is hardware-zeroed and
+        /* Stage K (a key outside this split's range is zero-filled and
          * masked below). */
-        for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
-            const uint32_t t = i / (D / 8u), c = i % (D / 8u);
-            const uint32_t k_abs = base + t;
-            const bool valid = k_abs >= k0 && k_abs <= k1;
-            const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
-            const __nv_bfloat16 *src = key + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
-            g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+        if constexpr (FP8) {
+            for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
+                const uint32_t t = i / (D / 8u), c = i % (D / 8u);
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= k0 && k_abs <= k1;
+                const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
+                const uint8_t *row = fp8 + (uint64_t)slot * row_bytes;
+                const __half kscale = ((const __half *)(row + 2u * kv_dim))[kv_head];
+                const uint8_t *src = row + (uint64_t)kv_head * D;
+                const uint2 raw = valid ? __ldg((const uint2 *)(src + c * 8u))
+                                        : make_uint2(0u, 0u);
+                *(uint4 *)(kv + g4_mma_swz(t, c, D)) = g4_fp8_decode8(raw, kscale);
+            }
+        } else {
+            for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
+                const uint32_t t = i / (D / 8u), c = i % (D / 8u);
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= k0 && k_abs <= k1;
+                const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
+                const __nv_bfloat16 *src = key + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
+                g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+            }
         }
         asm volatile("cp.async.commit_group;" ::: "memory");
         asm volatile("cp.async.wait_group 0;" ::: "memory");
@@ -135,7 +160,7 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
             const uint32_t brow = warp * 8u + (lane & 7u);
             const uint32_t bchunk = k * 2u + ((lane >> 3) & 1u);
             g4_smma_ldsm2(b, kv + g4_mma_swz(brow, bchunk, D));
-            g4_mma_mma(s, qa, b[0], b[1]);
+            g4_mma_mma_t<FP8>(s, qa, b[0], b[1]);
         }
 
         /* Mask and online softmax; only row g (heads 0-7) is valid. The
@@ -160,8 +185,8 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
         const float alpha = any ? (m == -INFINITY ? 0.0f : expf(m - mn)) : 1.0f;
         const float p0 = any ? expf(s[0] - mn) : 0.0f;
         const float p1 = any ? expf(s[1] - mn) : 0.0f;
-        ps[g * TK + warp * 8u + 2u * q] = __float2bfloat16_rn(p0);
-        ps[g * TK + warp * 8u + 2u * q + 1u] = __float2bfloat16_rn(p1);
+        ps[g * TK + warp * 8u + 2u * q] = g4_mma_store_t<FP8>(p0);
+        ps[g * TK + warp * 8u + 2u * q + 1u] = g4_mma_store_t<FP8>(p1);
         float lsum = p0 + p1;
         lsum += __shfl_xor_sync(0xffffffffu, lsum, 1);
         lsum += __shfl_xor_sync(0xffffffffu, lsum, 2);
@@ -179,13 +204,28 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
         }
 
         /* Stage V over K; P is already in shared. */
-        for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
-            const uint32_t t = i / (D / 8u), c = i % (D / 8u);
-            const uint32_t k_abs = base + t;
-            const bool valid = k_abs >= k0 && k_abs <= k1;
-            const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
-            const __nv_bfloat16 *src = value + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
-            g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+        if constexpr (FP8) {
+            for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
+                const uint32_t t = i / (D / 8u), c = i % (D / 8u);
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= k0 && k_abs <= k1;
+                const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
+                const uint8_t *row = fp8 + (uint64_t)slot * row_bytes;
+                const __half vscale = ((const __half *)(row + 2u * kv_dim))[kv_heads + kv_head];
+                const uint8_t *src = row + kv_dim + (uint64_t)kv_head * D;
+                const uint2 raw = valid ? __ldg((const uint2 *)(src + c * 8u))
+                                        : make_uint2(0u, 0u);
+                *(uint4 *)(kv + g4_mma_swz(t, c, D)) = g4_fp8_decode8(raw, vscale);
+            }
+        } else {
+            for (uint32_t i = tid; i < TK * (D / 8u); i += G4_SMMA_THREADS) {
+                const uint32_t t = i / (D / 8u), c = i % (D / 8u);
+                const uint32_t k_abs = base + t;
+                const bool valid = k_abs >= k0 && k_abs <= k1;
+                const uint32_t slot = valid ? (ring ? k_abs % ring : k_abs) : 0u;
+                const __nv_bfloat16 *src = value + (uint64_t)slot * kv_stride + (uint64_t)kv_head * D;
+                g4_mma_cp16(kv + g4_mma_swz(t, c, D), src + c * 8u, valid ? 16u : 0u);
+            }
         }
         asm volatile("cp.async.commit_group;" ::: "memory");
         asm volatile("cp.async.wait_group 0;" ::: "memory");
@@ -196,11 +236,11 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
         #pragma unroll
         for (uint32_t kk = 0; kk < 4u; kk++) {
             const uint32_t pa[4] = {
-                g4_mma_pack(__bfloat162float(ps[g * TK + kk * 16u + 2u * q]),
-                            __bfloat162float(ps[g * TK + kk * 16u + 2u * q + 1u])),
+                g4_mma_pack_t<FP8>(g4_mma_load_t<FP8>(ps[g * TK + kk * 16u + 2u * q]),
+                                   g4_mma_load_t<FP8>(ps[g * TK + kk * 16u + 2u * q + 1u])),
                 0u,
-                g4_mma_pack(__bfloat162float(ps[g * TK + kk * 16u + 2u * q + 8u]),
-                            __bfloat162float(ps[g * TK + kk * 16u + 2u * q + 9u])),
+                g4_mma_pack_t<FP8>(g4_mma_load_t<FP8>(ps[g * TK + kk * 16u + 2u * q + 8u]),
+                                   g4_mma_load_t<FP8>(ps[g * TK + kk * 16u + 2u * q + 9u])),
                 0u};
             #pragma unroll
             for (uint32_t t = 0; t < 8u; t += 2u) {
@@ -209,8 +249,8 @@ __global__ __launch_bounds__(G4_SMMA_THREADS, 1) void g4_attn_split_mma_kernel(
                 const uint32_t krow = kk * 16u + (mat & 1u) * 8u + (lane & 7u);
                 const uint32_t chunk = warp * 8u + t + (mat >> 1);
                 g4_mma_ldsm4(b, kv + g4_mma_swz(krow, chunk, D), true);
-                g4_mma_mma(o[t], pa, b[0], b[1]);
-                g4_mma_mma(o[t + 1u], pa, b[2], b[3]);
+                g4_mma_mma_t<FP8>(o[t], pa, b[0], b[1]);
+                g4_mma_mma_t<FP8>(o[t + 1u], pa, b[2], b[3]);
             }
         }
         __syncthreads();
