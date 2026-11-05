@@ -425,14 +425,18 @@ impl Drop for EndpointGuard {
 }
 
 fn write_prompt(path: &Path, ctx: u32) -> Result<(), String> {
-    // 2.9 bytes per token is the ratio measured on this corpus; the sweep only
-    // needs a prompt that reaches the frontier, not a specific text.
+    // The ratio is measured, not assumed: the technical-prose fixture runs at
+    // 2.9 bytes per token, while this repeated paragraph measured 4.8 on the
+    // first live run (1,290 tokens from 6,144 bytes), which made every arm fail
+    // with "prompt has 1290 tokens, need at least N". Seven bytes per token
+    // leaves margin over the worse of the two, and an undersized prompt still
+    // fails loudly instead of being silently benchmarked below the frontier.
     const PARA: &str = "A dense vector quantized model keeps its experts in a compact \
 codebook and rebuilds every weight row from an index, a gain and a residual plane, so the \
 decoder reads a small number of bytes for a large number of weights. This paragraph exists \
 only to give the prefill stage realistic prose to chew on, with ordinary sentence lengths and \
 the usual punctuation, because the frontier, not the wording, is what the sweep measures.\n";
-    let want_bytes = (ctx as usize).saturating_mul(3);
+    let want_bytes = (ctx as usize).saturating_mul(7);
     let mut text = String::with_capacity(want_bytes + PARA.len());
     while text.len() < want_bytes {
         text.push_str(PARA);
@@ -514,20 +518,54 @@ fn run_arm(
         return Err(format!("ds4-bench exited {}: {tail}", out.status));
     }
     let csv = fs::read_to_string(csv_path).map_err(|e| format!("no CSV from the arm: {e}"))?;
-    let row = csv
-        .lines()
-        .filter(|l| !l.starts_with("ctx_tokens"))
-        .filter(|l| !l.trim().is_empty())
-        .last()
-        .ok_or_else(|| "the arm wrote an empty CSV".to_string())?;
+    let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
+    let header: Vec<&str> = lines
+        .next()
+        .ok_or_else(|| "the arm wrote an empty CSV".to_string())?
+        .split(',')
+        .collect();
+    // Resolve by name: the first version read fixed offsets and silently took
+    // gen_tokens as prefill throughput, so every arm reported 32 tok/s.
+    let col = |name: &str| {
+        header
+            .iter()
+            .position(|h| *h == name)
+            .ok_or_else(|| format!("CSV has no {name} column"))
+    };
+    let (c_ctx, c_pf_tps, c_gen_tps, c_ttft, c_kv) = (
+        col("ctx_tokens")?,
+        col("prefill_tps")?,
+        col("gen_tps")?,
+        col("first_token_sec")?,
+        col("kvcache_bytes")?,
+    );
+    let row = lines.last().ok_or_else(|| "the arm wrote no data row".to_string())?;
     let f: Vec<&str> = row.split(',').collect();
-    if f.len() < 8 {
-        return Err(format!("unexpected CSV row: {row}"));
+    let at = |i: usize| f.get(i).copied().unwrap_or("");
+    let prefill_tps = at(c_pf_tps).parse::<f64>().unwrap_or(0.0);
+    let decode_tps = at(c_gen_tps).parse::<f64>().unwrap_or(0.0);
+    let ttft_s = at(c_ttft).parse::<f64>().unwrap_or(f64::INFINITY);
+    let kv_bytes = at(c_kv).parse::<u64>().unwrap_or(0);
+    let frontier: u32 = at(c_ctx).parse().unwrap_or(0);
+    if !(prefill_tps > 0.0) || !(decode_tps > 0.0) || !(ttft_s > 0.0) {
+        return Err(format!(
+            "the arm reported no usable timings (frontier {frontier}): {row}"
+        ));
     }
-    let prefill_tps = f[3].parse::<f64>().unwrap_or(0.0);
-    let decode_tps = f[4].parse::<f64>().unwrap_or(0.0);
-    let ttft_s = f[5].parse::<f64>().unwrap_or(f64::INFINITY);
-    let kv_bytes = f[7].parse::<u64>().unwrap_or(0);
+    // An arm is only a measurement of the lane it names: a host-mapped run
+    // with no map installed peaks near 1.2 GiB, and the cache lane through
+    // ds4-bench does exactly that today (reproduced: DS4_GEMMA4_MOE_CACHE_MIB
+    // = 2048, peak 1,217 MiB, decode 6.5 tok/s). Reporting those numbers as
+    // "cache4g" would be a wrong answer with a confident face.
+    let floor_mib = match arm.shape {
+        Shape::Resident => 8_000,
+        Shape::CpuLayers(_) | Shape::Cache(_) | Shape::CpuMoe => 2_200,
+    };
+    if peak < floor_mib {
+        return Err(format!(
+            "the lane did not engage: peak {peak} MiB is below the {floor_mib} MiB floor"
+        ));
+    }
     let score = match args.prefer {
         Prefer::Prefill => prefill_tps,
         Prefer::Decode => decode_tps,
