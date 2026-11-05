@@ -200,6 +200,19 @@ run_request() { # <tag> <req-file> <resp-file>
     else
         echo "server $SRV sha256 $BIN_SHA"
     fi
+    # The full-layer KV lane decides which attention kernel runs (bf16 rows
+    # take the tensor-core MMA kernel, E4M3 rows take the scalar FP8 one), so
+    # a result without it cannot be reproduced. Attach mode reads the value
+    # the server itself was started with.
+    if [ "$MODE" = "attach" ]; then
+        fkv=$(tr '\0' '\n' < "/proc/$PID/environ" 2>/dev/null |
+            sed -n 's/^DS4_GEMMA4_FULL_KV=//p' | head -1)
+        echo "full-kv ${fkv:-unset} (server environment)"
+    elif [ -n "${DS4_GEMMA4_FULL_KV:-}" ]; then
+        echo "full-kv $DS4_GEMMA4_FULL_KV (environment)"
+    else
+        echo "full-kv bf16 (compiled default)"
+    fi
     echo "ctx $CTXS; gen $GEN; prefill chunk $PREFILL; port extra args: ${PORT_EXTRA:-<none>}"
     echo "corpus $CORPUS sha256 $(sha256sum "$CORPUS" | awk '{print $1}')"
     if [ "$MODE" = "boot" ]; then

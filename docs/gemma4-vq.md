@@ -51,7 +51,10 @@ in the VQ_tools repository (`docs/codebook.md` and the
 
 Every layer keeps a BF16 key cache and a BF16 value cache; row bytes are
 `kv_heads · head_dim · 2 · sizeof(uint16_t)`, so 8,192 bytes for a sliding
-layer and 2,048 for a full one.
+layer and 2,048 for a full one. With `DS4_GEMMA4_FULL_KV=fp8` the five full
+layers instead keep one combined E4M3 row per token (K, V, then one f16
+scale per KV head for each: 2,056 bytes against 4,096), and that format
+selects the scalar attention kernel described under the full-layer KV lane.
 
 | Layer type | Rows | Slot |
 |---|---|---|
@@ -233,6 +236,71 @@ bf16 KV, ctx 262144), old prefill/decode in parentheses:
 | 11,668 | 856.7 | 19.05 | 13.62 s |
 | 13,557 | 837.4 (287.6) | 17.98 (4.55) | 16.19 s (47.17) |
 | 20,186 | 831.7 (232.7) | 17.20 (3.31) | 24.27 s (86.57) |
+
+## The full-layer KV lane
+
+The five full layers keep their rows in one of two formats
+(`DS4_GEMMA4_FULL_KV`, typed knob, compiled default bf16). The format decides
+which attention kernel runs, not just how many bytes the row holds:
+
+- bf16 rows take `g4_attn_mma_full_kernel` (cuda/gemma4_attn_mma.cuh:256,
+  dispatched at ds4_gemma4_gpu.cuh:601): 8 rows per CTA, 32-key mma tiles,
+  the two 256-dim halves of D = 512 exchanged through shared memory. Prefill
+  takes it; a decode row (rows == 1) takes the split-K kernel instead.
+- E4M3 rows take `g4_attn_fp8_kernel` (cuda/gemma4_attn_fp8.cuh:36): one warp
+  per (row, head), a scalar loop over every visible key that decodes each
+  K and V element with `__nv_cvt_fp8x2_to_halfraw2`. There is no tensor-core
+  path in it, so its cost per query row grows with the context for prefill
+  and for decode alike.
+
+The FP8 lane exists to fit the 12 GiB card (see Execution on a 12 GiB card
+above). It is not the fast lane on a box with memory to spare. nsys on the Spark
+(`--trace=cuda`, ds4-bench, chunk 2048, one cold frontier, gen 1) puts the
+scalar kernel at:
+
+| frontier | `g4_attn_fp8_kernel` | share of GPU kernel time | all other families |
+|---|---:|---:|---:|
+| 2,048 | 0.72 s | 28.2 % | 1.83 s |
+| 32,768 | 277.1 s | 90.5 % | 29.1 s |
+| 65,536 | 1,113.7 s | 95.0 % | 58.6 s |
+
+Every other family scales linearly in the token count (1.83 s, 29.1 s,
+58.6 s for 16x and 32x the rows); only the full-layer attention grows
+quadratically, because each chunk of 2,048 rows attends over everything
+before it. The VQ prefill GEMMs, the Q8_0 batch GEMM, the grouped MoE and the
+sliding layers' MMA attention are all below 4 percent each at 32K.
+
+The same command in the two lanes (unprofiled; the 65,536 FP8 row is from the
+trace, and the 32,768 row agrees between the traced and untraced runs to
+0.2 percent, so that trace did not distort the kernel weights):
+
+| frontier | FP8 prefill tok/s | bf16 prefill tok/s | ratio |
+|---|---:|---:|---:|
+| 2,048 | 783.2 | 1,003.0 | 1.28x |
+| 32,768 | 107.4 | 1,029.1 | 9.6x |
+| 65,536 | 56.1 | 970.4 | 17.3x |
+
+Decode is hit harder, because a decode row is 1 and the FP8 kernel has one
+warp per (row, head): at 32,768 tokens and 16 greedy tokens, the FP8 lane
+generates 0.52 tok/s and the bf16 lane 31.80 tok/s (61x). The bf16 lane is
+also the one the MMA table above was measured in, and it is the mode the
+server runs when the knob is unset.
+
+The deployed route, end to end: the Spark launcher (bf16 lane, ctx 262144,
+chunk 2048) answered a cold 32,370-token request with 31.1 s to the first
+token, 1,041.9 prefill tok/s and 30.1 decode tok/s (attach-mode sweep, one
+frontier, 4 greedy tokens). Those 32,768 tokens are the 305 s FP8 prefill in
+the table above.
+
+The cost is memory: the full layers' cache is 967 MB at 32,768 and 1.30 GB at
+65,536 in FP8, against 1.30 GB and 1.97 GB in bf16, and 5.4 GB of full-layer
+cache at the 262,144-token ceiling. On the GB10 that is unremarkable. On the
+12 GiB card the FP8 lane is what makes ctx 32768 fit, so the lane is a
+deliberate trade there, and the tensor-core FP8 kernel named under Limits and
+open work is what would retire it.
+
+Selecting the lane is the knob alone; the sweep records the lane it measured
+in its meta file, so a CSV can no longer outlive the reason for its numbers.
 
 ## The request path
 
@@ -453,6 +521,23 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   is `gemma4-vq-4070` on port 8099. `--ssd-streaming` still takes the
   shared GLM-5.3 branch ("requires one GLM-5.3 GGUF shard") rather than the
   Gemma discrete map; that remains open.
+- The FP8 full-layer lane has no tensor-core attention. `g4_attn_fp8_kernel`
+  is a scalar warp-per-(row, head) loop, and at 32,768 tokens cold it is 90.5
+  percent of GPU kernel time: the lane prefills 9.6x slower than bf16 and
+  decodes 61x slower (0.52 against 31.80 tok/s). The compiled default is
+  bf16 and both the sweep and the Spark launcher run it; FP8 is kept for the
+  12 GiB card's 32K fit, not for speed. The way out is the warp-specialized
+  FP8 attention already in the tree for the Solar geometry
+  (`ds4_fattn_hmma_fp8_ws_kernel`, cuda/mmq/ds4_fattn.cu), ported to the
+  16-head / 2-KV-head / D = 512 full geometry; until then, choosing FP8 for
+  mmap room costs the prefill and decode rates above.
+- The sweep's top frontier is skipped. At 65,536 the byte-estimated prompt
+  lands a few tokens over the booted context and the server refuses it
+  ("bridge error 1: prompt exceeds context"), so both committed 2K-64K CSVs
+  end at 63,488. The bytes-per-token ratio is calibrated on an 8,192-byte
+  slice, and the last frontiers' text tokenizes slightly denser than that
+  slice. The repair is either a few hundred tokens of headroom in the boot
+  context or a trim-and-retry in the sweep; neither is in this unit.
 - The serial session has no ring-resume guard yet: a divergent continuation
   that reaches back past the rows the ring still holds can read overwritten
   slots. The banked lane is exact and the checklist does not exercise it.

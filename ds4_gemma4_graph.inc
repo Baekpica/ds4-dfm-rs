@@ -439,8 +439,15 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     ds4_log(stderr, DS4_LOG_TIMING,
         "ds4: Gemma-4 graph ctx=%u chunk=%u KV=%.2f GiB activation=%.1f MiB\n",
         ctx, cap, (double)g->kv_bytes / 1073741824.0, (double)act * 6.0 / 1048576.0);
+    /* The row format selects the kernel, so the cost is not just bytes:
+     * bf16 rows take the tensor-core MMA kernel, E4M3 rows take the scalar
+     * g4_attn_fp8_kernel (docs/gemma4-vq.md, "The full-layer KV lane").
+     * Measured on the GB10 at 32,768 tokens: 9.6x slower prefill and 61x
+     * slower decode in the E4M3 lane. Say it at boot so the choice is loud. */
     ds4_log(stderr, DS4_LOG_TIMING, "ds4: Gemma-4 full-layer KV: %s\n",
-        g->full_fp8 ? "E4M3 rows" : "bf16 rows");
+        g->full_fp8
+            ? "E4M3 rows (scalar attention: 9.6x slower prefill, 61x slower decode at 32K than bf16)"
+            : "bf16 rows (tensor-core attention)");
     return g;
 }
 

@@ -36,7 +36,11 @@
 #   DS4_GEMMA4_PORT       port (default 8099)
 #   DS4_GEMMA4_CTX        context (default 16384; the Spark takes 262144)
 #   DS4_GEMMA4_MEM_FLOOR  memory floor in GiB (default 1)
-#   DS4_GEMMA4_KV         fp8 (default) or bf16; fp8 refuses MTP by design
+#   DS4_GEMMA4_KV         fp8 (default) or bf16; fp8 refuses MTP by design.
+#                         fp8 is what fits ctx 32768 on this card, but its
+#                         full-layer attention is scalar: at 32,768 tokens it
+#                         prefills 9.6x and decodes 61x slower than bf16
+#                         (docs/gemma4-vq.md, "The full-layer KV lane").
 #   DS4_GEMMA4_MTP        drafter GGUF path (default empty = no MTP)
 #   DS4_GEMMA4_MTP_DRAFT  drafts per round when MTP is on (default 6)
 #   DS4_GEMMA4_MTP_MODE   off|auto|on (default on; auto leaves Gemma off)
@@ -85,6 +89,13 @@
 # The FP8 full-layer KV was verified on a short smoke against bf16; its
 # long-context gate is still open. If a long answer degrades, rerun with
 # DS4_GEMMA4_KV=bf16 and compare on the same prompt.
+#
+# Speed says the same thing. FP8 rows select the scalar attention kernel, and
+# at 32,768 tokens that lane is 9.6x slower at prefill and 61x slower at
+# decode than the bf16 lane (GB10, ds4-bench; docs/gemma4-vq.md). bf16 costs
+# 0.17 GiB more at ctx 16384 (10.33 against 10.16 GiB of the 12), so prefer
+# DS4_GEMMA4_KV=bf16 at this context and keep fp8 for ctx 32768, where bf16
+# no longer fits. The fit has to be measured on the card after any change.
 
 set -u
 
