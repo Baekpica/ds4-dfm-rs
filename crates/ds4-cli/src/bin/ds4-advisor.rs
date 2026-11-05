@@ -126,6 +126,9 @@ struct Measured {
     prefill_tps: f64,
     decode_tps: f64,
     peak_mib: u64,
+    /// The lowest `memory.free` sampled during the arm: the number the
+    /// operator's "keep N MiB free" promise is measured against.
+    free_mib: u64,
     kv_bytes: u64,
     score: f64,
     seconds: f64,
@@ -595,6 +598,22 @@ fn nvidia_used_mib() -> Option<u64> {
         .ok()
 }
 
+/// The card's own free figure. It is smaller than total-minus-used by the
+/// reserved pages the driver never hands out (measured 387 MiB on the 4070),
+/// so it is the number a "keep N MiB free" promise has to be checked against.
+fn nvidia_free_mib() -> Option<u64> {
+    let out = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 fn nvidia_total_mib() -> Option<u64> {
     let out = Command::new("nvidia-smi")
         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
@@ -725,10 +744,14 @@ fn run_arm(
         .map_err(|e| format!("could not start {}: {e}", args.bench.display()))?;
 
     let mut peak = 0u64;
+    let mut low_free = u64::MAX;
     let mut timed_out = false;
     loop {
         if let Some(used) = nvidia_used_mib() {
             peak = peak.max(used);
+        }
+        if let Some(free) = nvidia_free_mib() {
+            low_free = low_free.min(free);
         }
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -843,6 +866,13 @@ fn run_arm(
         prefill_tps,
         decode_tps,
         peak_mib: peak,
+        // The card's own free reading when it answered, else the total minus
+        // the sampled peak (which ignores the driver's reserved pages).
+        free_mib: if low_free == u64::MAX {
+            args.vram_total_mib.saturating_sub(peak)
+        } else {
+            low_free
+        },
         kv_bytes,
         score,
         seconds,
@@ -859,12 +889,11 @@ fn main() {
     }
 }
 
-/// VRAM free on the card right now: the total minus what nvidia-smi reports
-/// used. A served endpoint, a compositor or another job is inside "used".
+/// VRAM free on the card right now, from the card's own memory.free. A served
+/// endpoint, a compositor or another job, and the driver's reserved pages,
+/// are already gone from this number.
 fn free_now_mib(args: &Args) -> u64 {
-    nvidia_used_mib()
-        .map(|used| args.vram_total_mib.saturating_sub(used))
-        .unwrap_or(args.vram_total_mib)
+    nvidia_free_mib().unwrap_or(args.vram_total_mib)
 }
 
 /// The arm list for this invocation: the full sweep, or the one arm `--only`
@@ -941,6 +970,13 @@ fn run() -> Result<(), String> {
                 est,
                 source,
                 fit
+            );
+        }
+        if args.pool_budget {
+            println!(
+                "\nThe pool budget is priced from the {} MiB free right now; stop a served \
+                 endpoint (./run-gemma4.sh serve stop) to price it from the idle card.",
+                args.available_mib
             );
         }
         println!("\nNote: the estimates only prune; nothing is measured until a real run.");
@@ -1047,7 +1083,7 @@ fn run() -> Result<(), String> {
     let fitting: Vec<Measured> = measured
         .drain(..)
         .filter(|m| {
-            let fits = m.peak_mib <= ceiling;
+            let fits = m.free_mib >= args.free_headroom_mib;
             if !fits {
                 over.push(*m);
             }
@@ -1056,9 +1092,9 @@ fn run() -> Result<(), String> {
         .collect();
     measured = fitting;
     for m in &over {
-        // For a pool arm the correction is arithmetic: the sampled peak
-        // missed the margin by exactly as much as the pool was too wide.
-        let deficit = m.peak_mib.saturating_sub(ceiling);
+        // For a pool arm the correction is arithmetic: the pool was as much
+        // too wide as the sampled free memory missed the margin.
+        let deficit = args.free_headroom_mib.saturating_sub(m.free_mib);
         let hint = match list[m.arm_index].shape {
             Shape::Cache(mib) => format!(
                 "; DS4_GEMMA4_MOE_CACHE_MIB={} would meet it",
@@ -1069,20 +1105,17 @@ fn run() -> Result<(), String> {
         skipped.push(Skipped {
             name: list[m.arm_index].name.clone(),
             why: format!(
-                "peak {} MiB leaves {} MiB free, under the {} MiB margin{}",
-                m.peak_mib,
-                args.vram_total_mib.saturating_sub(m.peak_mib),
-                args.free_headroom_mib,
-                hint
+                "peak {} MiB, lowest free {} MiB, under the {} MiB margin{}",
+                m.peak_mib, m.free_mib, args.free_headroom_mib, hint
             ),
         });
     }
     if measured.is_empty() {
         return Err(format!(
-            "no arm kept the {} MiB margin (peaks: {})",
+            "no arm kept the {} MiB margin (lowest free: {})",
             args.free_headroom_mib,
             over.iter()
-                .map(|m| format!("{} {} MiB", list[m.arm_index].name, m.peak_mib))
+                .map(|m| format!("{} {} MiB", list[m.arm_index].name, m.free_mib))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1117,14 +1150,15 @@ fn run() -> Result<(), String> {
             m.prefill_tps,
             m.decode_tps,
             m.peak_mib,
-            args.vram_total_mib.saturating_sub(m.peak_mib),
+            m.free_mib,
             m.score,
             m.seconds
         );
     }
     println!(
         "\nttft_s is what a client waits for: the prefill plus the first decode \
-         token. peak_MiB and free_MiB are nvidia-smi samples during the arm."
+         token. free_MiB is the lowest memory.free sampled during the arm, the \
+         number the margin is checked against."
     );
     if !skipped.is_empty() {
         println!("\nnot measured:");
@@ -1153,18 +1187,17 @@ fn run() -> Result<(), String> {
     }
     println!(
         "  DS4_GEMMA4_FULL_KV={} at ctx {} keeps {} MiB free at peak",
-        arm.kv,
-        args.ctx,
-        args.vram_total_mib.saturating_sub(best.peak_mib)
+        arm.kv, args.ctx, best.free_mib
     );
 
     if let Some(path) = &args.csv_out {
-        let mut text =
-            String::from("arm,kv,chunk,ttft_s,prefill_tps,decode_tps,peak_mib,kv_bytes,score\n");
+        let mut text = String::from(
+            "arm,kv,chunk,ttft_s,prefill_tps,decode_tps,peak_mib,free_mib,kv_bytes,score\n",
+        );
         for m in &measured {
             let a = &list[m.arm_index];
             text.push_str(&format!(
-                "{},{},{},{:.4},{:.2},{:.2},{},{},{:.3}\n",
+                "{},{},{},{:.4},{:.2},{:.2},{},{},{},{:.3}\n",
                 a.name,
                 a.kv,
                 a.chunk,
@@ -1172,6 +1205,7 @@ fn run() -> Result<(), String> {
                 m.prefill_tps,
                 m.decode_tps,
                 m.peak_mib,
+                m.free_mib,
                 m.kv_bytes,
                 m.score
             ));
@@ -1192,8 +1226,9 @@ fn run() -> Result<(), String> {
                 text.push(',');
             }
             text.push_str(&format!(
-                "\n    {{\"arm\":\"{}\",\"kv\":\"{}\",\"chunk\":{},\"ttft_s\":{:.4},\"prefill_tps\":{:.2},\"decode_tps\":{:.2},\"peak_mib\":{},\"score\":{:.3}}}",
-                a.name, a.kv, a.chunk, m.ttft_s, m.prefill_tps, m.decode_tps, m.peak_mib, m.score
+                "\n    {{\"arm\":\"{}\",\"kv\":\"{}\",\"chunk\":{},\"ttft_s\":{:.4},\"prefill_tps\":{:.2},\"decode_tps\":{:.2},\"peak_mib\":{},\"free_mib\":{},\"score\":{:.3}}}",
+                a.name, a.kv, a.chunk, m.ttft_s, m.prefill_tps, m.decode_tps, m.peak_mib,
+                m.free_mib, m.score
             ));
         }
         text.push_str("\n  ]\n}\n");
