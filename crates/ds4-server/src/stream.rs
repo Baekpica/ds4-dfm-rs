@@ -938,6 +938,28 @@ pub fn openai_sse_stream_update(
         }
         return true;
     }
+    // Gemma-4 opens its own thought channel, and the template only opens an
+    // empty one when thinking is off, so a model that opens one anyway used to
+    // stream "<|channel>thought" as answer text: this machine only looked for
+    // the opener when the request asked for thinking, and a tool turn can
+    // reach a round where it did not (measured 2026-11-05, open-grok tool
+    // turn: the opener leaked into the final answer while the calls arrived
+    // fine). Hold the head while it can still be that opener, and switch the
+    // stream to the reasoning field when it is.
+    if r.chat_format == ChatFormat::Gemma4
+        && st.mode == OpenaiMode::Text
+        && !st.checked_think_prefix
+    {
+        let open = think_start(r.chat_format).as_bytes();
+        if raw.len() < open.len() && raw == &open[..raw.len()] && !final_ {
+            return true;
+        }
+        if raw.len() >= open.len() && raw.starts_with(open) {
+            st.mode = OpenaiMode::Thinking;
+            st.emit_pos = open.len();
+        }
+        st.checked_think_prefix = true;
+    }
     if st.mode == OpenaiMode::Thinking && !st.checked_think_prefix {
         match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
             ToolHead::Wait => return true,
@@ -2792,6 +2814,53 @@ pub fn project_responses_thinking(created: i64) -> Vec<u8> {
 mod stream_failure_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// A Gemma-4 stream whose request did not ask for thinking but whose model
+    /// opened the channel anyway: the opener is the reasoning field, never
+    /// answer text. This is the leak a tool turn showed on 2026-11-05.
+    #[test]
+    fn gemma4_channel_opener_never_streams_as_content() {
+        let r = StreamReq {
+            syntax: ModelSyntax::Gemma4,
+            chat_format: ChatFormat::Gemma4,
+            think_mode: ThinkMode::None,
+            ..StreamReq::default()
+        };
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = openai_stream_start(&r);
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut drain = |w: &mut Writer, content: &mut String, reasoning: &mut String| {
+            for line in std::str::from_utf8(&w.out).unwrap().lines() {
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+                let delta = &chunk["choices"][0]["delta"];
+                if let Some(s) = delta["content"].as_str() {
+                    content.push_str(s);
+                }
+                if let Some(s) = delta["reasoning_content"].as_str() {
+                    reasoning.push_str(s);
+                }
+            }
+            w.out.clear();
+        };
+        // The opener arrives across a chunk boundary: nothing may be emitted
+        // while the head can still be it.
+        let mut raw = b"<|channel>tho".to_vec();
+        openai_sse_stream_update(&mut w, &r, "chat_test", &mut st, &raw, false);
+        drain(&mut w, &mut content, &mut reasoning);
+        assert!(content.is_empty() && reasoning.is_empty());
+        raw = b"<|channel>thought\nplan<channel|>Paris.".to_vec();
+        openai_sse_stream_update(&mut w, &r, "chat_test", &mut st, &raw, false);
+        drain(&mut w, &mut content, &mut reasoning);
+        assert_eq!(reasoning, "plan");
+        assert_eq!(content, "Paris.");
+        assert!(!content.contains("<|channel>") && !content.contains("thought"));
+    }
 
     #[test]
     fn minimax_long_string_deltas() {

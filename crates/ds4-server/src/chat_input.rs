@@ -91,10 +91,55 @@ pub fn render(
         ThinkMode::High => ChatThinkMode::High,
         ThinkMode::Max => ChatThinkMode::Max,
     };
-    template
+    let rendered = template
         .render_chat(&messages, &tools, ChatOptions::new(model_id, mode))
-        .map(String::into_bytes)
-        .map_err(input_error)
+        .map_err(input_error)?;
+    trace_tools(&parsed.tool_orders, &tools, rendered.as_bytes());
+    Ok(rendered.into_bytes())
+}
+
+/// `DS4_SERVER_TRACE_TOOLS=1`: one line per rendered chat prompt naming every
+/// tool the request carried and every declaration the template wrote. The
+/// served Gemma-4 family renders through the artifact's Jinja template
+/// (`tokenizer.chat_template`), not through the Rust family renderer, so this
+/// is the only place that sees what the model was actually offered.
+fn trace_tools(orders: &[crate::parse::ToolSchemaOrder], tools: &[Value], rendered: &[u8]) {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("DS4_SERVER_TRACE_TOOLS").ok().as_deref() == Some("1")) {
+        return;
+    }
+    let names: Vec<&str> = orders.iter().map(|o| o.name.as_str()).collect();
+    let declared = rendered
+        .windows(b"<|tool>declaration:".len())
+        .filter(|w| *w == b"<|tool>declaration:")
+        .count();
+    let calls = rendered
+        .windows(b"<|tool_call>".len())
+        .filter(|w| *w == b"<|tool_call>")
+        .count();
+    eprintln!(
+        "ds4: tools: request carries {} schema(s), template receives {}, {} B, prompt {} B, {} declaration(s), {} past call(s): {}",
+        names.len(),
+        tools.len(),
+        serde_json::to_string(tools).map(|s| s.len()).unwrap_or(0),
+        rendered.len(),
+        declared,
+        calls,
+        names.join(", ")
+    );
+    // The rendered prompt itself, for checking a declaration field by field.
+    if let Ok(path) = std::env::var("DS4_SERVER_TRACE_PROMPT") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = f.write_all(b"\n===== prompt =====\n");
+            let _ = f.write_all(rendered);
+        }
+    }
 }
 
 fn prepare_image_text(model_id: i32, messages: &mut [Value]) {

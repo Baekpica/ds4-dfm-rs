@@ -1377,16 +1377,49 @@ pub fn render_prompt_ex(
 ) -> Result<Vec<u8>, GenerateError> {
     match parsed.kind {
         ReqKind::Completion => Ok(parsed.prompt_text.clone().unwrap_or_default().into_bytes()),
-        ReqKind::Chat => Ok(render_chat_choice_ex(
-            syntax_for_model_id(model_id),
-            &parsed.messages,
-            &parsed.tool_schemas,
-            &parsed.tool_orders,
-            parsed.think_mode,
-            parsed.tool_choice,
-            head,
-        )?),
+        ReqKind::Chat => {
+            let prompt = render_chat_choice_ex(
+                syntax_for_model_id(model_id),
+                &parsed.messages,
+                &parsed.tool_schemas,
+                &parsed.tool_orders,
+                parsed.think_mode,
+                parsed.tool_choice,
+                head,
+            )?;
+            trace_tools(parsed, syntax_for_model_id(model_id), &prompt);
+            Ok(prompt)
+        }
     }
+}
+
+/// `DS4_SERVER_TRACE_TOOLS=1` names the tools a request carried and counts the
+/// declarations the template actually wrote, one line per rendered prompt.
+/// This answers "did the model ever see this tool", which no log line could:
+/// a tool the harness did not send and a tool the template dropped look the
+/// same from the outside.
+fn trace_tools(parsed: &ParsedRequest, syntax: ModelSyntax, prompt: &[u8]) {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("DS4_SERVER_TRACE_TOOLS").ok().as_deref() == Some("1")) {
+        return;
+    }
+    let names: Vec<&str> = parsed.tool_orders.iter().map(|o| o.name.as_str()).collect();
+    const GEMMA: &[u8] = b"<|tool>declaration:";
+    let declared = if syntax == ModelSyntax::Gemma4 {
+        prompt.windows(GEMMA.len()).filter(|w| *w == GEMMA).count()
+    } else {
+        0
+    };
+    eprintln!(
+        "ds4: tools: {} schema(s) [{}], {} B of schemas, prompt {} B, {} Gemma-4 declaration(s), think {:?}",
+        names.len(),
+        names.join(", "),
+        parsed.tool_schemas.len(),
+        prompt.len(),
+        declared,
+        parsed.think_mode
+    );
 }
 
 pub(crate) fn ordinary_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
