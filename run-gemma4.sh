@@ -157,6 +157,11 @@ HOST="${DS4_GEMMA4_HOST:-127.0.0.1}"
 PORT="${DS4_GEMMA4_PORT:-8099}"
 CTX="${DS4_GEMMA4_CTX:-65536}"
 FLOOR="${DS4_GEMMA4_MEM_FLOOR:-0}"
+# The Gemma model card's standardized sampling is temperature 1.0, top_p 0.95
+# and top_k 64. Temperature and top_p travel in the request (the open-grok
+# model block sets them); top_k is not an OpenAI field, so the server carries
+# it as its default. 0 disables it.
+TOP_K="${DS4_GEMMA4_TOP_K:-64}"
 # The session graph's admission check asks for a fixed headroom on top of its
 # own estimate; at 1 GiB (the engine default) ctx 32768 is refused on this
 # card even though the graph then sits in 1.17 GiB of free VRAM. The measured
@@ -279,7 +284,8 @@ plan_json() {
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
   env "${LAUNCHER_ENVS[@]}" "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
-      --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" --check-config 2>/dev/null
+      --mem-floor-gb "$FLOOR" --max-seqs 1 --top-k "$TOP_K" "${extra[@]}" \
+      --check-config 2>/dev/null
 }
 
 plan_mode() {
@@ -383,7 +389,7 @@ serve_start() {
   fi
   setsid env "${LAUNCHER_ENVS[@]}" "${envs[@]}" \
       "$BIN" -m "$MODEL" --cuda --host "$HOST" --port "$PORT" \
-      -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" \
+      -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 --top-k "$TOP_K" "${extra[@]}" \
       > "$LOG" 2>&1 < /dev/null &
   pid=$!
   echo "$pid" > "$PIDFILE"
