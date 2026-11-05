@@ -149,6 +149,20 @@ FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
 SPLIT="${DS4_GEMMA4_SPLIT:-1}"
 PERSIST="${DS4_GEMMA4_PERSIST:-1}"
+# Disk KV parking: empty keeps the disk lane off (the default, and what the
+# owner's endpoint runs). Pointing it at a directory lets the server park a
+# session's whole cache, keyed by the rendered text prefix, and restore it on
+# a later request instead of re-prefilling (crates/ds4-kv, generate.rs). The
+# cold maximum must cover the card's 65,536-token ceiling or a full-context
+# session is never parked.
+KV_DIR="${DS4_GEMMA4_KV_DIR:-}"
+KV_SPACE="${DS4_GEMMA4_KV_SPACE:-32G}"
+KV_COLD_MAX="${DS4_GEMMA4_KV_COLD_MAX:-65536}"
+# The three knobs above are this script's, not the engine's. The engine warns
+# about any DS4_GEMMA4_* it does not read, so they are removed from the child
+# environment rather than left to trip that check.
+LAUNCHER_ENVS=( -u DS4_GEMMA4_KV_DIR -u DS4_GEMMA4_KV_SPACE
+                -u DS4_GEMMA4_KV_COLD_MAX )
 # The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
 # at 512, the native bind's own default. A wider chunk needs the MoE
 # workspace to follow it (ds4_gemma4_graph.inc); 8,192 still fails in the
@@ -219,6 +233,10 @@ plan_json() {
   if [ "$SSD" = "1" ]; then
     extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
   fi
+  if [ -n "$KV_DIR" ]; then
+    extra+=( --kv-disk-dir "$KV_DIR" --kv-disk-space "$KV_SPACE"
+             --kv-cache-cold-max-tokens "$KV_COLD_MAX" )
+  fi
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
   # picks the partial/bank lane here, so the drafter pins exact reuse and
   # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
@@ -226,7 +244,7 @@ plan_json() {
     extra+=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
-  env "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
+  env "${LAUNCHER_ENVS[@]}" "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
       --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" --check-config 2>/dev/null
 }
 
@@ -293,6 +311,11 @@ serve_start() {
   if [ "$SSD" = "1" ]; then
     extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
   fi
+  if [ -n "$KV_DIR" ]; then
+    extra+=( --kv-disk-dir "$KV_DIR" --kv-disk-space "$KV_SPACE"
+             --kv-cache-cold-max-tokens "$KV_COLD_MAX" )
+    echo "kv disk: $KV_DIR (space $KV_SPACE, cold max $KV_COLD_MAX tokens)"
+  fi
   # Gemma-4 MTP runs only on the serial lane (mtp_lane); the auto reuse
   # picks the partial/bank lane here, so the drafter pins exact reuse and
   # DS4_SERVER_CONTINUOUS=0 makes the driver serial (serving.rs:581-587).
@@ -300,7 +323,7 @@ serve_start() {
     extra+=( --mtp "$MTP" --mtp-draft "$DRAFT" --mtp-mode "$MTP_MODE" --prefix-reuse exact )
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
-  setsid env "${envs[@]}" \
+  setsid env "${LAUNCHER_ENVS[@]}" "${envs[@]}" \
       "$BIN" -m "$MODEL" --cuda --host "$HOST" --port "$PORT" \
       -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 "${extra[@]}" \
       > "$LOG" 2>&1 < /dev/null &

@@ -410,6 +410,72 @@ After the change a request's TTFT is its prefill: 62,921 ms against 62,841
 ms of prefill at 984.6 tok/s, and 120 ms for a request that only has to
 restore a 61,871-token checkpoint.
 
+## Disk KV parking
+
+`--kv-disk-dir` lets the server park a session's whole cache on disk and
+restore it on a later request instead of re-prefilling. The store is keyed
+by the SHA-1 of the rendered text prefix and the restored token stream is
+re-validated against that text, so a restore is only taken when the model,
+the quantization, the context and the tokens all agree (`crates/ds4-kv`,
+`generate.rs`). The launcher exposes it as `DS4_GEMMA4_KV_DIR` (empty keeps
+the lane off), with `DS4_GEMMA4_KV_SPACE` (default 32G) and
+`DS4_GEMMA4_KV_COLD_MAX` (default 65536).
+
+Three defects had to be fixed before the lane could pay for itself on this
+card. Each is measured, and the first is why an empty store was the only
+thing the lane ever wrote:
+
+- The family had no KV identity class (827a5af1). `routed_quant_bits`
+  matched GGUF aliases and HF names only, while the release names its
+  experts `model.layers.N.experts.M.gate_proj`, so it read 0 and
+  `kv_identity` returned None. The failure was silent: every store was
+  skipped.
+- Non-ASCII piece text (`tok.rs`, `piece_text`). The printer applied GPT-2's
+  byte alphabet to every vocabulary, so the Italian piece `▁però`
+  (id 41843, U+00F2 in the vocabulary) printed byte 0xF2 instead of its
+  UTF-8 bytes. Re-rendering a prefix then produced a byte the prompt never
+  contained, so the text key no longer matched the prompt. The pinned
+  tokenizer.json decoder is Replace(U+2581 -> " "), ByteFallback, Fuse with
+  no ByteLevel stage, which is what `utf8_piece_text` records
+  (`tok/gemma4.rs`); byte-level vocabularies keep the old arm.
+- The chat anchor. With no user/assistant token ids, `chat_anchor_pos`
+  returns -1 and a store fell back to trim 32 / align 2048, which cut a
+  10.1K chat turn back to 8,192 tokens. `generation_anchor` cuts at the
+  start of the last `<|turn>model\n` marker instead. The start is the
+  `<|turn>` special token, which splits the encoder's input, so the stored
+  tokens stay a prefix whatever the reply begins with; a cut after
+  `model\n` instead was measured to miss on the very next turn, because the
+  reply's first character merges with the newline.
+
+Measured on the 4070 (ctx 65536, FP8 full-layer KV, chunk 512, store on the
+root NVMe), temperature 0:
+
+| case | lane off | lane on |
+|---|---:|---:|
+| new conversation, 9.7K prompt | 7.44 s TTFT | 8.55 s TTFT |
+| returning chat turn, 10.1K | 7.69 s TTFT (full prefill after evict) | 0.52-0.95 s TTFT (9,700 restored; the first return also parks the evicted session, about 1.7 s) |
+| identical 62K prompt, after its cold store | 57.08 s TTFT | 1.00-2.22 s TTFT (61,440 restored) |
+| full-prompt restore, 9,652 tokens, trim/align 0 | 7.27 s TTFT, prefill 9,652 | 0.31 s TTFT, prefill 0 |
+
+The cost is the write on the cold turn: 1.10 s measured per 989 MB
+checkpoint. The store sits on the root NVMe (WD_BLACK SN850X, nvme0n1p2),
+whose own throughput at that path is 3.9 GB/s O_DIRECT write, 4.8 GB/s read
+and 2.7 GB/s with fdatasync, so the disk is not the limit. The device writes
+about 1.98 GB per checkpoint: the native payload is staged to a temporary
+file, then copied into the final KVC file with its header and text, and both
+files are fsynced (store.rs write_payload_file, format.rs stage_stream). The
+effective rate is therefore about 0.9 GB/s of file for about 1.8 GB/s of
+device traffic, and a single-write path would roughly halve the cost. At the
+32 GB budget that is about thirty parked prompts; eviction is score-ordered.
+
+A restore is not required to reproduce a fresh prefill bit for bit, and on
+this card it cannot be made to: two identical fresh prefills of the same
+10,104-token prompt, same server, temperature 0, returned different texts,
+while the restored path repeated identically across three requests. The
+full-prompt restore did return the same 16 greedy tokens as a fresh prefill
+in the tested sample, which is the strongest equality the path supports
+without a logits dump.
+
 ## Split-K decode attention
 
 `cuda/gemma4_attn_split.cuh` is the long-context decode fix. The fast decode
@@ -620,6 +686,26 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
 - The serial session has no ring-resume guard yet: a divergent continuation
   that reaches back past the rows the ring still holds can read overwritten
   slots. The banked lane is exact and the checklist does not exercise it.
+- A request that loads a checkpoint stores nothing deeper when it finishes.
+  The only stores on that path are the previous live session (before the
+  load) and the continued interval (10,000 tokens, aligned to 10,240), so a
+  growing conversation restores one turn behind: turn N parks at its own
+  marker only when turn N+1 begins. Storing at the request's end would let
+  every turn restore its full own prefix; it is a policy change, not a
+  correctness one.
+- The parked payload is the whole cache, sliding rings included, so it is
+  about 989 MB at ctx 65536 almost independently of the prefix length. A
+  later slice can narrow the full layers to the live window if the budget
+  or the write time ever bites (the payload format already has the field).
+- Each checkpoint is written twice: the native payload goes to a staged file
+  and `stage_stream` copies it into the final KVC file. With both fsyncs the
+  device sees 1.98 GB per 989 MB checkpoint, which is most of the 1.10 s
+  save. Handing the native save the final file and an offset would remove
+  the copy and one of the two writes.
+- `--kv-cache-cold-max-tokens 0` does not stop the lane from writing: it only
+  disables the cold-path store, while the store taken before a load (the
+  previous live session) still fires. Measured: an arm configured that way
+  wrote a checkpoint per request anyway.
 
 ## Reproduce
 
