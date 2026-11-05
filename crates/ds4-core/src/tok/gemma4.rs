@@ -49,6 +49,11 @@ pub(super) fn specials(v: &mut Vocab, g: &GgufFile) -> Result<(), TokError> {
      * Fuse only joins pieces, so these two flags are all the printer needs. */
     v.decode_space = 0x2581;
     v.byte_fallback = true;
+    /* No ByteLevel stage, so a piece holds the character itself: id 41843 is
+     * "▁però" (U+00F2 in UTF-8), not the byte-mapped "Ã²". Printing it
+     * through the GPT-2 byte table would yield 0xF2, a byte the prompt never
+     * had, and the re-render would stop matching the prompt bytes. */
+    v.utf8_piece_text = true;
     if (
         v.bos_id,
         v.eos_id,
