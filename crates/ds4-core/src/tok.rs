@@ -3121,8 +3121,14 @@ mod piece_text_tests {
     /// Both arms pass other alphabets through unchanged.
     #[test]
     fn other_alphabets_pass_through() {
-        assert_eq!(piece_text("日本".as_bytes(), 0x2581, true), "日本".as_bytes());
-        assert_eq!(piece_text("日本".as_bytes(), 0x2581, false), "日本".as_bytes());
+        assert_eq!(
+            piece_text("日本".as_bytes(), 0x2581, true),
+            "日本".as_bytes()
+        );
+        assert_eq!(
+            piece_text("日本".as_bytes(), 0x2581, false),
+            "日本".as_bytes()
+        );
     }
 
     /// ASCII is the same byte in both encodings (the GPT-2 table maps

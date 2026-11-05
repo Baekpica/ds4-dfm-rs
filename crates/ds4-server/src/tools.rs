@@ -1235,7 +1235,13 @@ fn parse_gemma4_generated(text: &[u8], require_thinking_closed: bool) -> Option<
 fn gemma4_drop_markers(content: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(content);
     let mut out = text.into_owned();
-    for marker in ["<|tool_call|>", "<tool_call|>", "<|tool_call>", "<turn|>", "<|turn>"] {
+    for marker in [
+        "<|tool_call|>",
+        "<tool_call|>",
+        "<|tool_call>",
+        "<turn|>",
+        "<|turn>",
+    ] {
         if out.contains(marker) {
             out = out.replace(marker, "");
         }
@@ -2996,7 +3002,10 @@ mod gemma4_split_tests {
         assert!(parsed.calls.is_empty());
         let content = String::from_utf8(parsed.content.clone()).unwrap();
         assert_eq!(content, "``");
-        assert!(!content.contains("<|"), "special markers stayed in the answer");
+        assert!(
+            !content.contains("<|"),
+            "special markers stayed in the answer"
+        );
         assert_eq!(
             String::from_utf8(parsed.reasoning.clone()).unwrap(),
             "most_recent_thought"

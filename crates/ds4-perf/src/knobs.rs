@@ -21,7 +21,9 @@ fn validate_gemma4(key: &str, value: &str) -> Option<Result<(), String>> {
         "DS4_GEMMA4_MOE_CACHE_MIB" => number(0, 12288),
         "DS4_GEMMA4_MOE_STAGING_MIB" => Some(match value.parse::<u32>() {
             Ok(n) if n == 0 || (64..=2048).contains(&n) => Ok(()),
-            _ => Err(format!("{key}: expected 0 (default 256) or 64..2048, got {value}")),
+            _ => Err(format!(
+                "{key}: expected 0 (default 256) or 64..2048, got {value}"
+            )),
         }),
         "DS4_GEMMA4_PREFILL_CHUNK" => number(1, 8192),
         "DS4_GEMMA4_VQ_GEMV_VARIANT" => number(0, 2),
