@@ -66,7 +66,24 @@ struct Arm {
     kv: &'static str,
     shape: Shape,
     chunk: u32,
-    estimate_mib: u64,
+    /// The static estimate, kept as the offline fallback: the card and the
+    /// artifact are not read, so it answers in microseconds and never opens
+    /// the model. `--estimate quote` replaces it with the engine's own
+    /// serving quote; `auto` tries the quote and falls back to this.
+    static_mib: u64,
+}
+
+/// Where an arm's memory estimate comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Estimate {
+    /// The engine's --check-config quote when the server binary can answer,
+    /// the static model otherwise.
+    Auto,
+    /// The static model only: no model open, no card read beyond the total.
+    Static,
+    /// The engine's quote only; an arm whose quote cannot be produced is
+    /// reported as skipped rather than estimated.
+    Quote,
 }
 
 struct Args {
@@ -85,6 +102,7 @@ struct Args {
     budget_min: u64,
     vram_total_mib: u64,
     free_headroom_mib: u64,
+    estimate: Estimate,
     dry_run: bool,
     include_expensive: bool,
 }
@@ -123,6 +141,8 @@ fn usage() -> String {
         "  --arm-timeout S    per-arm wall clock (default 1800)",
         "  --budget-min M     stop starting arms after M minutes (default 0 = no budget)",
         "  --vram-total MiB   card total (default: asked from nvidia-smi)",
+        "  --estimate MODE    static (default: offline model), quote (the",
+        "                     engine quote only), auto (quote, static fallback)",
         "  --free-margin MiB  VRAM that must stay free at peak (default 384)",
         "  --stop-endpoint    stop the launcher's endpoint first, restore it after",
         "  --port N           endpoint port to check (default 8099)",
@@ -153,6 +173,7 @@ fn parse_args() -> Result<Args, String> {
         budget_min: 0,
         vram_total_mib: 0,
         free_headroom_mib: 384,
+        estimate: Estimate::Static,
         dry_run: false,
         include_expensive: false,
     };
@@ -186,6 +207,18 @@ fn parse_args() -> Result<Args, String> {
             }
             "--budget-min" => {
                 args.budget_min = value()?.parse().map_err(|_| "--budget-min wants minutes")?
+            }
+            "--estimate" => {
+                args.estimate = match value()?.as_str() {
+                    "auto" => Estimate::Auto,
+                    "static" => Estimate::Static,
+                    "quote" => Estimate::Quote,
+                    other => {
+                        return Err(format!(
+                            "--estimate wants auto, static or quote (got '{other}')"
+                        ))
+                    }
+                };
             }
             "--vram-total" => {
                 args.vram_total_mib = value()?.parse().map_err(|_| "--vram-total wants MiB")?
@@ -259,6 +292,104 @@ fn estimate_mib(ctx: u32, kv: &str, shape: Shape) -> u64 {
     }
 }
 
+/// The engine's own serving quote for one arm, in MiB: the server binary is
+/// asked for --check-config with exactly the environment the arm runs with,
+/// and `quote.total` is the number its admission check uses. This is the
+/// portable path - the same code answers on a discrete card and on GB10's
+/// coherent memory - so `--estimate auto` prefers it and the static model is
+/// only the fallback. None means the binary is absent or would not answer.
+/// Does this bench binary know the knob? Its table is compiled in, so a
+/// binary built before the knob landed accepts the flag name at the usage
+/// level and then ignores it - which is exactly how the cache lane stayed
+/// unreachable under ds4-bench (PHASE C0): the binary predated the placement
+/// knobs, --gemma4-moe-cache-mib was rejected as unsupported, and from_env()
+/// carried nothing either. Asking for --help with the knob first is the
+/// cheapest probe that separates the two.
+fn bench_knows(bench: &Path, flag: &str) -> bool {
+    match Command::new(bench)
+        .arg(flag)
+        .arg("1")
+        .arg("--help")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(out) => !String::from_utf8_lossy(&out.stderr).contains("unsupported"),
+        Err(_) => false,
+    }
+}
+
+fn quote_total_mib(args: &Args, arm: &Arm) -> Option<u64> {
+    let server = args.repo.join("ds4-server");
+    if !server.is_file() {
+        return None;
+    }
+    let mut child = Command::new(&server)
+        .arg("-m")
+        .arg(&args.model)
+        .arg("--cuda")
+        .arg("-c")
+        .arg(args.ctx.to_string())
+        .arg("--mem-floor-gb")
+        .arg("0")
+        .arg("--max-seqs")
+        .arg("1")
+        .arg("--check-config")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .envs(passthrough_env())
+        .envs(arm_env(arm, args))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    /* An engine open takes tens of seconds and must never hang the sweep. */
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(200));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.trim_start().starts_with('{'))?;
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let total = value.get("quote")?.get("total")?.as_u64()?;
+    Some(total.div_ceil(1024 * 1024))
+}
+
+/// The estimate an arm is judged by, and the source it came from so the
+/// report can say which one answered.
+fn estimate_for(args: &Args, arm: &Arm) -> (u64, &'static str) {
+    match args.estimate {
+        Estimate::Static => (arm.static_mib, "static"),
+        Estimate::Quote => match quote_total_mib(args, arm) {
+            Some(mib) => (mib, "quote"),
+            None => (0, "quote-unavailable"),
+        },
+        Estimate::Auto => match quote_total_mib(args, arm) {
+            Some(mib) => (mib, "quote"),
+            None => (arm.static_mib, "static"),
+        },
+    }
+}
+
 fn arms(args: &Args) -> Vec<Arm> {
     let mut list: Vec<Arm> = Vec::new();
     let mut push = |name: &str, kv: &'static str, shape: Shape, chunk: u32| {
@@ -267,7 +398,7 @@ fn arms(args: &Args) -> Vec<Arm> {
             kv,
             shape,
             chunk,
-            estimate_mib: estimate_mib(args.ctx, kv, shape),
+            static_mib: estimate_mib(args.ctx, kv, shape),
         });
     };
     // Ordered by expected value: the resident lane first (it is the current
@@ -615,6 +746,19 @@ fn run() -> Result<(), String> {
     }
     let ceiling = args.vram_total_mib.saturating_sub(args.free_headroom_mib);
     let list = arms(&args);
+    /* A cache arm measures nothing if the binary predates the knob: refuse up
+     * front instead of reporting a lane that never engaged (PHASE C0). */
+    if list.iter().any(|a| matches!(a.shape, Shape::Cache(_))) {
+        for flag in ["--gemma4-moe-cache-mib", "--gemma4-moe-staging-mib"] {
+            if !bench_knows(&args.bench, flag) {
+                return Err(format!(
+                    "{} does not know {flag} (built before the knob landed); \
+rebuild it: make ds4-bench",
+                    args.bench.display()
+                ));
+            }
+        }
+    }
 
     if args.dry_run {
         println!(
@@ -622,18 +766,22 @@ fn run() -> Result<(), String> {
             args.vram_total_mib, ceiling, args.free_headroom_mib, args.ctx
         );
         for (i, arm) in list.iter().enumerate() {
-            let fit = if arm.estimate_mib <= ceiling {
+            let (est, source) = estimate_for(&args, arm);
+            let fit = if source == "quote-unavailable" {
+                "the engine quote did not answer"
+            } else if est <= ceiling {
                 "fits"
             } else {
                 "estimated over the ceiling"
             };
             println!(
-                "{:>2}. {:<26} kv {:<4} chunk {:<5} est {:>5} MiB  {}",
+                "{:>2}. {:<26} kv {:<4} chunk {:<5} est {:>5} MiB ({})  {}",
                 i + 1,
                 arm.name,
                 arm.kv,
                 arm.chunk,
-                arm.estimate_mib,
+                est,
+                source,
                 fit
             );
         }
@@ -672,12 +820,20 @@ fn run() -> Result<(), String> {
     let mut measured: Vec<Measured> = Vec::new();
     let mut skipped: Vec<Skipped> = Vec::new();
     for (i, arm) in list.iter().enumerate() {
-        if arm.estimate_mib > ceiling {
+        let (estimate, source) = estimate_for(&args, arm);
+        if source == "quote-unavailable" {
+            skipped.push(Skipped {
+                name: arm.name.clone(),
+                why: "the engine quote did not answer (--estimate quote)".into(),
+            });
+            continue;
+        }
+        if estimate > ceiling {
             skipped.push(Skipped {
                 name: arm.name.clone(),
                 why: format!(
-                    "estimated {} MiB over the {} MiB ceiling",
-                    arm.estimate_mib, ceiling
+                    "estimated {} MiB ({}) over the {} MiB ceiling",
+                    estimate, source, ceiling
                 ),
             });
             continue;
@@ -690,11 +846,12 @@ fn run() -> Result<(), String> {
             continue;
         }
         eprintln!(
-            "[{}/{}] {} (est {} MiB)",
+            "[{}/{}] {} (est {} MiB, {})",
             i + 1,
             list.len(),
             arm.name,
-            arm.estimate_mib
+            estimate,
+            source
         );
         match run_arm(arm, i, &args, &prompt, &csv_path) {
             Ok(m) => {
