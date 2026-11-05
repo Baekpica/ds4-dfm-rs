@@ -42,8 +42,8 @@
 # usage: gemma4_serving_http_gate.sh <server> <release-dir> <port> \
 #            [expected-sm] [prompt] [mtp-gguf]
 #
-#   <release-dir> is host-local: /data/vq-artifacts/gguf-family-it-r8 on the
-#   4070 SUPER, ~/models/gguf-family-it-r8 on the Spark.
+#   <release-dir> is host-local: /data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf
+#   on the 4070 SUPER, ~/models/gemma-4-26b-a4b-vq-gguf on the Spark.
 #   [expected-sm] defaults to sm_89; pass sm_121 for the Spark build.
 #   [prompt] is inserted with jq --arg, so quotes and backslashes in it are
 #   escaped instead of breaking the request body.

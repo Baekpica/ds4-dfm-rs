@@ -29,14 +29,29 @@
 # they do not.
 #
 # Env overrides:
-#   DS4_GEMMA4_MODEL      release directory (default /data/vq-artifacts/gguf-family-it-r8,
-#                         else $HOME/models/gguf-family-it-r8)
+#   DS4_GEMMA4_MODEL      release directory (default
+#                         /data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf, else
+#                         $HOME/data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf)
 #   DS4_GEMMA4_SERVER_BIN server binary (default <root>/ds4-server)
-#   DS4_GEMMA4_HOST       listen address (default 127.0.0.1; 0.0.0.0 for the LAN)
+#   DS4_GEMMA4_HOST       listen address (default 0.0.0.0, the LAN face this
+#                         endpoint is served on; 127.0.0.1 keeps it local)
 #   DS4_GEMMA4_PORT       port (default 8099)
-#   DS4_GEMMA4_CTX        context (default 65536, the largest that fits the
-#                         12 GiB card resident with the FP8 full-layer KV; the
-#                         Spark takes 262144)
+#   DS4_GEMMA4_MODEL_ID   id served by /v1/models and sent in the request's
+#                         model field (default gemma-4-26b-a4b-vq-gguf)
+#   DS4_GEMMA4_ADVISOR    1 (default) lets serve start pick the arm with a
+#                         sweep when no arm knob is set; 0 boots as given
+#   DS4_GEMMA4_ADVISOR_PREFER  balanced (default), prefill or decode
+#   DS4_GEMMA4_ADVISOR_MARGIN  VRAM kept free at peak for the sweep (default
+#                         384 MiB, the engine's own session margin)
+#   DS4_GEMMA4_ADVISOR_BUDGET_MIN  stop starting new arms after N minutes
+#                         (default 15; an arm already running finishes)
+#   DS4_GEMMA4_ADVISOR_INCLUDE_EXPENSIVE  1 adds the whole-model-on-CPU arm
+#                         to the sweep (default 0; its prefill takes hours at
+#                         long contexts)
+#   DS4_GEMMA4_CTX_LADDER  contexts tried largest first (default
+#                         "262144 131072 65536 32768")
+#   DS4_GEMMA4_CTX        context (default 131072, the pool arm; the resident
+#                         lane takes 65536, and the Spark 262144)
 #   DS4_GEMMA4_MEM_FLOOR  memory floor in GiB (default 0)
 #   DS4_GEMMA4_SESSION_GRAPH_HEADROOM_MB
 #                         extra free VRAM the session-graph admission check
@@ -145,17 +160,16 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN="${DS4_GEMMA4_SERVER_BIN:-$ROOT/ds4-server}"
 if [ -n "${DS4_GEMMA4_MODEL:-}" ]; then
   MODEL="$DS4_GEMMA4_MODEL"
-elif [ -d "$HOME/models/gguf-family-it-r8" ]; then
+elif [ -d "$HOME/data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf" ]; then
   # The streamed experts live here: the fast disk is the SSD lane's point.
-  MODEL="$HOME/models/gguf-family-it-r8"
-elif [ -d /data/vq-artifacts/gguf-family-it-r8 ]; then
-  MODEL=/data/vq-artifacts/gguf-family-it-r8
+  MODEL="$HOME/data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf"
+elif [ -d /data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf ]; then
+  MODEL=/data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf
 else
-  MODEL="$HOME/models/gguf-family-it-r8"
+  MODEL="$HOME/data/vq-artifacts/hf-gemma-4-26b-a4b-vq-gguf"
 fi
-HOST="${DS4_GEMMA4_HOST:-127.0.0.1}"
+HOST="${DS4_GEMMA4_HOST:-0.0.0.0}"
 PORT="${DS4_GEMMA4_PORT:-8099}"
-CTX="${DS4_GEMMA4_CTX:-65536}"
 FLOOR="${DS4_GEMMA4_MEM_FLOOR:-0}"
 # The Gemma model card's standardized sampling is temperature 1.0, top_p 0.95
 # and top_k 64. Temperature and top_p travel in the request (the open-grok
@@ -170,6 +184,7 @@ TOP_K="${DS4_GEMMA4_TOP_K:-64}"
 # refused by the serving quote before it boots.
 GRAPH_HEADROOM="${DS4_GEMMA4_SESSION_GRAPH_HEADROOM_MB:-0}"
 KV="${DS4_GEMMA4_KV:-fp8}"
+CTX="${DS4_GEMMA4_CTX:-131072}"
 MTP="${DS4_GEMMA4_MTP:-}"
 DRAFT="${DS4_GEMMA4_MTP_DRAFT:-6}"
 MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
@@ -193,10 +208,17 @@ PERSIST="${DS4_GEMMA4_PERSIST:-1}"
 KV_DIR="${DS4_GEMMA4_KV_DIR:-}"
 KV_SPACE="${DS4_GEMMA4_KV_SPACE:-32G}"
 KV_COLD_MAX="${DS4_GEMMA4_KV_COLD_MAX:-65536}"
-# The three knobs above are this script's, not the engine's. The engine warns
-# about any DS4_GEMMA4_* it does not read, so they are removed from the child
-# environment rather than left to trip that check.
-LAUNCHER_ENVS=( -u DS4_GEMMA4_KV_DIR -u DS4_GEMMA4_KV_SPACE
+# The knobs above and the advisor/launcher switches are this script's, not
+# the engine's. The engine warns about any DS4_GEMMA4_* it does not read, so
+# they are removed from the child environment rather than left to trip that
+# check.
+LAUNCHER_ENVS=( -u DS4_GEMMA4_MODEL -u DS4_GEMMA4_SERVER_BIN
+                -u DS4_GEMMA4_MODEL_ID
+                -u DS4_GEMMA4_ADVISOR -u DS4_GEMMA4_ADVISOR_PREFER
+                -u DS4_GEMMA4_ADVISOR_MARGIN -u DS4_GEMMA4_ADVISOR_BUDGET_MIN
+                -u DS4_GEMMA4_ADVISOR_INCLUDE_EXPENSIVE
+                -u DS4_GEMMA4_CTX_LADDER
+                -u DS4_GEMMA4_KV_DIR -u DS4_GEMMA4_KV_SPACE
                 -u DS4_GEMMA4_KV_COLD_MAX )
 # The GB10's unified 128 GB takes a 2,048-row chunk; the 12 GiB 4070 stays
 # at 512, the native bind's own default. A wider chunk needs the MoE
@@ -204,7 +226,25 @@ LAUNCHER_ENVS=( -u DS4_GEMMA4_KV_DIR -u DS4_GEMMA4_KV_SPACE
 # router GEMM, and 2,048 is the measured Spark point.
 if [ "$(uname -m)" = "aarch64" ]; then PREFILL_DEFAULT=2048; else PREFILL_DEFAULT=512; fi
 PREFILL="${DS4_GEMMA4_PREFILL:-$PREFILL_DEFAULT}"
-GROK_NAME="${DS4_GEMMA4_GROK_NAME:-gemma4-vq-4070}"
+# The release directory is an artifact name, not a model name; the wire id is
+# the model's. Every client request echoes it in the model field.
+MODEL_ID="${DS4_GEMMA4_MODEL_ID:-gemma-4-26b-a4b-vq-gguf}"
+# Serving arm. With none of the arm knobs below set, serve start asks the
+# advisor: it sweeps the contexts in CTX_LADDER from largest down, keeps the
+# first that measures an arm, and boots that winner. Setting any one of them
+# is an explicit manual arm and skips the sweep entirely.
+ARM_EXPLICIT=0
+for _arm_knob in DS4_GEMMA4_CTX DS4_GEMMA4_PREFILL DS4_GEMMA4_MOE_CACHE_MIB \
+                 DS4_GEMMA4_RESIDENT DS4_GEMMA4_CPU_MOE \
+                 DS4_GEMMA4_MOE_CPU_LAYERS DS4_GEMMA4_KV DS4_GEMMA4_SSD; do
+  [ -n "${!_arm_knob+x}" ] && ARM_EXPLICIT=1
+done
+unset _arm_knob
+ADVISOR="${DS4_GEMMA4_ADVISOR:-1}"
+ADVISOR_PREFER="${DS4_GEMMA4_ADVISOR_PREFER:-balanced}"
+ADVISOR_MARGIN="${DS4_GEMMA4_ADVISOR_MARGIN:-384}"
+ADVISOR_BUDGET_MIN="${DS4_GEMMA4_ADVISOR_BUDGET_MIN:-15}"
+CTX_LADDER="${DS4_GEMMA4_CTX_LADDER:-262144 131072 65536 32768}"
 SCRATCH="$ROOT/misc/scratch"
 mkdir -p "$SCRATCH"
 LOG="${DS4_GEMMA4_LOG:-$SCRATCH/gemma4-serve.log}"
@@ -284,6 +324,7 @@ plan_json() {
     envs+=( "DS4_SERVER_CONTINUOUS=0" )
   fi
   env "${LAUNCHER_ENVS[@]}" "${envs[@]}" "$BIN" -m "$MODEL" --cuda -c "$CTX" \
+      --model-id "$MODEL_ID" \
       --mem-floor-gb "$FLOOR" --max-seqs 1 --top-k "$TOP_K" "${extra[@]}" \
       --check-config 2>/dev/null
 }
@@ -316,6 +357,59 @@ preflight() {
   printf '%s' "$json" | jq -c '{quote: (.quote|{shared_weights,expert_cache,per_bank,scratch,floor,available,total}), issues: [.issues[].code]}'
 }
 
+# One advisory sweep at ctx, then load the arm it ranked first into this
+# script's knobs. The advisor prints the winner as DS4_* assignments; the
+# pattern is anchored to a single-token value so the prose line below the
+# block ("...=fp8 at ctx 131072 keeps ...") cannot overwrite them.
+advisor_pick() {
+  local ctx=$1 out stamp json csv line key value
+  local extra=()
+  stamp=$(date +%Y%m%d-%H%M%S)
+  json="$SCRATCH/advisor-ctx$ctx-$ADVISOR_MARGIN-$stamp.json"
+  csv="$SCRATCH/advisor-ctx$ctx-$ADVISOR_MARGIN-$stamp.csv"
+  [ "${DS4_GEMMA4_ADVISOR_INCLUDE_EXPENSIVE:-0}" = "1" ] && extra+=(--include-expensive)
+  echo "advisor: sweep ctx $ctx, prefer $ADVISOR_PREFER, budget ${ADVISOR_BUDGET_MIN} min" >&2
+  # DS4_GEMMA4_ADVISOR=0 in the child environment is inherited by the
+  # endpoint guard's restore call, so it can never re-enter this sweep.
+  out=$(DS4_GEMMA4_ADVISOR=0 ./ds4-advisor --ctx "$ctx" \
+        --model "$MODEL" --bench "$ROOT/ds4-bench" --repo "$ROOT" \
+        --pool-budget --prefer "$ADVISOR_PREFER" --estimate static \
+        --free-margin "$ADVISOR_MARGIN" --budget-min "$ADVISOR_BUDGET_MIN" \
+        --json "$json" --csv "$csv" \
+        "${extra[@]}" \
+        --stop-endpoint --port "$PORT" 2>&1) || return 1
+  printf '%s\n' "$out" | grep -q '^best for ctx ' || return 1
+  printf '%s\n' "$out" | grep '^best for ctx \|^  DS4_[A-Z0-9_]*=' | sed 's/^/advisor: /' >&2
+  RESIDENT=0
+  CPU_MOE=0
+  CPU_MOE_LAYERS=0
+  MOE_CACHE_MIB=0
+  while IFS= read -r line; do
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      DS4_CUDA_COPY_MODEL) RESIDENT=1 ;;
+      DS4_GEMMA4_FULL_KV) KV=$value ;;
+      DS4_GEMMA4_PREFILL_CHUNK) PREFILL=$value ;;
+      DS4_GEMMA4_MOE_CACHE_MIB) MOE_CACHE_MIB=$value ;;
+      DS4_GEMMA4_MOE_CPU_LAYERS) CPU_MOE_LAYERS=$value ;;
+      DS4_GEMMA4_CPU_MOE) CPU_MOE=$value ;;
+    esac
+  done <<< "$(printf '%s\n' "$out" | grep -E '^  DS4_[A-Z0-9_]+=[^ ]+$' | sed 's/^  //')"
+  CTX=$ctx
+  return 0
+}
+
+# Largest context that still measures an arm. A card that cannot hold
+# 262144 shrinks one rung at a time instead of guessing a ceiling.
+resolve_auto_arm() {
+  local ctx
+  for ctx in $CTX_LADDER; do
+    advisor_pick "$ctx" && return 0
+  done
+  return 1
+}
+
 pid_of() {
   [ -f "$PIDFILE" ] || return 1
   local pid
@@ -335,6 +429,14 @@ serve_start() {
   check_env
   if curl -s -m 2 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
     die "port $PORT already answers /v1/models; stop that server or set DS4_GEMMA4_PORT"
+  fi
+  # No arm knob was given: let the advisor measure the largest context that
+  # fits this card and boot the arm it ranked first. Any explicit arm knob
+  # (see ARM_EXPLICIT) is the manual path and boots exactly as given.
+  if [ "$ARM_EXPLICIT" = "0" ] && [ "$ADVISOR" != "0" ]; then
+    [ -x "$ROOT/ds4-advisor" ] || die "the advisor is missing (make ds4-advisor); set DS4_GEMMA4_ADVISOR=0 to boot without it"
+    [ -x "$ROOT/ds4-bench" ] || die "ds4-bench is missing (make ds4-bench); set DS4_GEMMA4_ADVISOR=0 to boot without it"
+    resolve_auto_arm || die "the advisor measured no fitting arm for: $CTX_LADDER"
   fi
   echo "model:   $MODEL"
   if [ "$SSD" = "1" ]; then
@@ -389,6 +491,7 @@ serve_start() {
   fi
   setsid env "${LAUNCHER_ENVS[@]}" "${envs[@]}" \
       "$BIN" -m "$MODEL" --cuda --host "$HOST" --port "$PORT" \
+      --model-id "$MODEL_ID" \
       -c "$CTX" --mem-floor-gb "$FLOOR" --max-seqs 1 --top-k "$TOP_K" "${extra[@]}" \
       > "$LOG" 2>&1 < /dev/null &
   pid=$!
@@ -421,13 +524,11 @@ serve_start() {
   echo "log:     $LOG"
   echo "note:    one ds4 model at a time; this server holds the slot until stopped"
   echo
-  echo "open-grok config block ([model.$GROK_NAME]):"
-  echo "  [model.\"$GROK_NAME\"]"
-  echo "  model = \"$(curl -s -m 10 "http://127.0.0.1:$PORT/v1/models" | jq -r '.data[0].id // "gguf-family-it-r8"')\""
-  echo "  base_url = \"http://$base_host:$PORT/v1\""
-  echo "  context_window = $CTX"
-  echo "  api_key = \"local\""
-  echo "  supports_images = false"
+  echo "OpenAI API:"
+  echo "  base_url: http://$base_host:$PORT/v1"
+  echo "  model:    $(curl -s -m 10 "http://127.0.0.1:$PORT/v1/models" | jq -r '.data[0].id // "unknown"')"
+  echo "  api_key:  local"
+  echo "  ctx:      $CTX"
 }
 
 serve_stop() {
@@ -514,7 +615,32 @@ bench_mode() {
 }
 
 usage() {
-  sed -n '5,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '7,15p' "$0" | sed 's/^# \{0,1\}//'
+  echo
+  echo "Serving arm: with none of DS4_GEMMA4_CTX, DS4_GEMMA4_PREFILL,"
+  echo "DS4_GEMMA4_MOE_CACHE_MIB, DS4_GEMMA4_RESIDENT, DS4_GEMMA4_CPU_MOE,"
+  echo "DS4_GEMMA4_MOE_CPU_LAYERS, DS4_GEMMA4_KV or DS4_GEMMA4_SSD set,"
+  echo "'serve start' sweeps the contexts in DS4_GEMMA4_CTX_LADDER from largest"
+  echo "down and boots the arm the advisor ranked first. Setting any one of them"
+  echo "is a manual arm and skips the sweep."
+  echo
+  echo "Environment overrides (manual runs):"
+  grep -E '^#   DS4_[A-Z0-9_]+ ' "$0" | sed 's/^# \{0,1\}//'
+  echo
+  echo "Each override is described in full in the comment block at the top of"
+  echo "this file."
+  echo
+  echo "Manual ds4-server invocations (no advisor, no launcher):"
+  echo "  # GB10: bf16 full-layer KV, the model's own 262,144-token context"
+  echo "  ./ds4-server --cuda -m $MODEL -c 262144 --mem-floor-gb 0 --host 127.0.0.1 --port 8000"
+  echo
+  echo "  # 12 GiB card: E4M3 full-layer KV, 65,536 tokens resident"
+  echo "  DS4_GEMMA4_FULL_KV=fp8 \\"
+  echo "    ./ds4-server --cuda -m $MODEL -c 65536 --mem-floor-gb 0 --host 127.0.0.1 --port 8000"
+  echo
+  echo "  # 12 GiB card, 131,072 tokens: experts in a 5,856 MiB VRAM slot pool"
+  echo "  DS4_GEMMA4_FULL_KV=fp8 DS4_GEMMA4_MOE_CACHE_MIB=5856 \\"
+  echo "    ./ds4-server --cuda -m $MODEL -c 131072 --mem-floor-gb 0 --host 127.0.0.1 --port 8000"
 }
 
 case "${1:-serve}" in

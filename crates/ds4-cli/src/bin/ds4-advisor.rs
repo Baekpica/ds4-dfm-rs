@@ -149,7 +149,7 @@ fn usage() -> String {
         "  --gen-tokens N     greedy decode tokens per arm (default 32)",
         "  --prefer MODE      balanced (default), prefill, or decode",
         "  --prompt-file P    prompt to benchmark (default: generated, ~ctx tokens)",
-        "  --model DIR        release directory (default ~/models/gguf-family-it-r8)",
+        "  --model DIR        release directory (default ~/models/gemma-4-26b-a4b-vq-gguf)",
         "  --bench PATH       ds4-bench binary (default <repo>/ds4-bench)",
         "  --repo DIR         repository root (default: parent of --bench)",
         "  --csv FILE         write every measured arm as CSV",
@@ -281,7 +281,7 @@ fn parse_args() -> Result<Args, String> {
     }
     let home = std::env::var("HOME").unwrap_or_default();
     if args.model.as_os_str().is_empty() {
-        args.model = PathBuf::from(format!("{home}/models/gguf-family-it-r8"));
+        args.model = PathBuf::from(format!("{home}/models/gemma-4-26b-a4b-vq-gguf"));
     }
     if args.bench.as_os_str().is_empty() {
         // The launcher's build puts it next to this binary's repository root;

@@ -7,6 +7,12 @@
 #   ./run-advisor.sh --dry-run       # arm list and estimates, runs nothing
 #   ./run-advisor.sh --only pool-budget-fp8
 #   ./run-advisor.sh --ctx 65536 --free-margin 384
+#   DS4_ADVISOR_INCLUDE_EXPENSIVE=1 ./run-advisor.sh   # add the CPU-only arm
+#
+# The default sweep carries the partial CPU arms (cpu8-fp8, cpu16-fp8, the
+# llama.cpp -ncmoe shape) but not cpumoe-fp8, the whole-model-on-CPU arm: its
+# prefill runs at a few dozen tokens per second, so a 128K arm takes hours.
+# DS4_ADVISOR_INCLUDE_EXPENSIVE=1 adds it.
 #
 # The sweep needs the card to itself: --stop-endpoint stops the launcher's
 # server, and the guard restores it afterwards. The environment exported below
@@ -54,6 +60,11 @@ echo "run-advisor: ctx $CTX, margin $MARGIN MiB, estimate $ESTIMATE"
 echo "run-advisor: json $JSON"
 echo "run-advisor: csv  $CSV"
 
+EXTRA=()
+if [ "${DS4_ADVISOR_INCLUDE_EXPENSIVE:-0}" = "1" ]; then
+    EXTRA+=(--include-expensive)
+fi
+
 ./ds4-advisor \
     --ctx "$CTX" \
     --free-margin "$MARGIN" \
@@ -63,6 +74,7 @@ echo "run-advisor: csv  $CSV"
     --port "$PORT" \
     --json "$JSON" \
     --csv "$CSV" \
+    "${EXTRA[@]}" \
     "$@"
 status=$?
 
