@@ -944,10 +944,12 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| "could not ask nvidia-smi for the card total".to_string())?;
     }
     let ceiling = args.vram_total_mib.saturating_sub(args.free_headroom_mib);
-    args.available_mib = free_now_mib(&args);
-    let list = build_list(&args)?;
 
     if args.dry_run {
+        // A dry run never touches the server, so the pool budget it prints is
+        // priced from whatever the card has free right now.
+        args.available_mib = free_now_mib(&args);
+        let list = build_list(&args)?;
         println!(
             "card {} MiB, free now {} MiB, ceiling {} MiB ({} MiB must stay free), ctx {}",
             args.vram_total_mib, args.available_mib, ceiling, args.free_headroom_mib, args.ctx
@@ -983,16 +985,12 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    // Stop the endpoint before anything is priced: with it up, the pool
+    // budget would be priced against a card it is already holding, and a
+    // --pool-budget --only NAME request would not even find its arm.
     let _guard = EndpointGuard::new(&args.repo, args.stop_endpoint, args.port)?;
-    // With the endpoint stopped, the card's free memory is the number the pool
-    // budget should be priced from. Rebuild the pool arms on that reading.
-    let was = args.available_mib;
     args.available_mib = free_now_mib(&args);
-    let list = if args.pool_budget && args.available_mib != was {
-        build_list(&args)?
-    } else {
-        list
-    };
+    let list = build_list(&args)?;
     let work = std::env::temp_dir().join(format!("ds4-advisor-{}", std::process::id()));
     fs::create_dir_all(&work).map_err(|e| format!("could not create {}: {e}", work.display()))?;
     let prompt = match &args.prompt {
