@@ -74377,16 +74377,33 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #endif
         int model_map_ok = 0;
         bool budget_ok = true; /* --mem-budget-mb L1 gate */
-        /* Host routed experts (DS4_GEMMA4_CPU_MOE=1) need the same host-cold
-         * map as the SSD arm, but no slot pool: the CPU reads the records
-         * from the mmap. Gemma-only; every other family is untouched. */
+        /* Host routed experts (DS4_GEMMA4_CPU_MOE=1, or the per-layer
+         * DS4_GEMMA4_MOE_CPU_LAYERS=N) need the same host-cold map as the SSD
+         * arm; the per-layer lane needs no slot pool because the CPU reads
+         * the records from the mmap. DS4_GEMMA4_MOE_CACHE_MIB=N is the
+         * opposite shape (llama.cpp's --moe-cache-mib): every expert stays
+         * host-cold and a bounded VRAM pool is filled from the mmap on a
+         * routed miss, so the GPU does the arithmetic. Gemma-only; every
+         * other family is untouched. */
+        const uint32_t gemma_host_layers = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4
+            ? gemma4_moe_cpu_layers() : 0u;
+        const uint64_t gemma_cache_bytes = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4
+            ? gemma4_moe_cache_bytes() : 0u;
         const bool gemma_host_experts =
-            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 && gemma4_cpu_moe_on();
+            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 &&
+            (gemma4_cpu_moe_on() || gemma_host_layers > 0u || gemma_cache_bytes > 0u);
         if (opt->ssd_streaming || gemma_host_experts) {
             ds4_model_map_span_vec spans;
             const bool gemma = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4;
+            /* The stream and the cache lane own every expert record, so
+             * their resident plan is the all-cold one whatever the per-layer
+             * knob says; the host-compute lane leaves exactly the first N
+             * layers cold. */
+            const bool all_cold = opt->ssd_streaming || gemma_cache_bytes > 0u;
+            const uint32_t cold_layers = all_cold
+                ? (uint32_t)G4_LAYERS : gemma_host_layers;
             if (gemma) {
-                if (!gemma4_stream_spans(&e->weights, &e->model, &spans)) {
+                if (!gemma4_stream_spans(&e->weights, &e->model, cold_layers, &spans)) {
                     fprintf(stderr, "ds4: Gemma-4 SSD resident span plan failed\n");
                     ds4_engine_close(e);
                     *out = NULL;
@@ -74419,16 +74436,24 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             free(sizes);
             free(spans.v);
             if (model_map_ok) {
-                if (gemma && gemma_host_experts) {
-                    /* Host experts: the map is all this lane needs. The slot
-                     * pool would stream records the CPU already reads from
-                     * the mmap, and e->gemma4_stream stays NULL on purpose. */
+                if (gemma && gemma_host_experts && gemma_cache_bytes == 0u) {
+                    /* Host-compute experts: the map is all this lane needs.
+                     * The slot pool would stream records the CPU already
+                     * reads from the mmap, and e->gemma4_stream stays NULL
+                     * on purpose. */
                 } else if (gemma) {
-                    /* The option is opt-in: this allocation exists only after
-                     * --ssd-streaming and the family gate above. */
+                    /* Opt-in either way: this allocation exists after
+                     * --ssd-streaming or DS4_GEMMA4_MOE_CACHE_MIB, and the
+                     * cache lane takes its capacity from that knob instead
+                     * of the stream's own size flags. */
                     e->gemma4_stream = xcalloc(1, sizeof(*e->gemma4_stream));
+                    ds4_engine_options cache_opt = *opt;
+                    if (gemma_cache_bytes > 0u && !opt->ssd_streaming) {
+                        cache_opt.ssd_streaming_cache_bytes = gemma_cache_bytes;
+                        cache_opt.ssd_streaming_cache_experts = 0;
+                    }
                     model_map_ok = gemma4_stream_alloc(e->gemma4_stream,
-                        &e->model, &e->weights, opt);
+                        &e->model, &e->weights, &cache_opt);
                     if (model_map_ok) {
                         e->weights.gemma4_stream = e->gemma4_stream;
                     } else {

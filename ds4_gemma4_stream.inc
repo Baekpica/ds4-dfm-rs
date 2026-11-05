@@ -71,6 +71,11 @@ struct ds4_gemma4_stream {
     uint64_t *shard_end;
     bool cold;
     bool residual;
+    /* Fill from the model mmap instead of the shard fds. The cache lane
+     * (DS4_GEMMA4_MOE_CACHE_MIB) always sets this: its experts are cold in
+     * the mmap by construction and there is no --ssd-streaming to give the
+     * slots a file to read. */
+    bool host_source;
     ds4_gemma4_stream_stats stats;
 };
 
@@ -203,6 +208,9 @@ static bool gemma4_stream_alloc(ds4_gemma4_stream *s, const ds4_model *m,
     memset(s, 0, sizeof(*s));
     s->model = m;
     s->cold = opt->ssd_streaming_cold;
+    /* The cache lane has no shard fds in its contract: its experts are the
+     * host-cold records of the mmap the open already installed. */
+    s->host_source = gemma4_moe_cache_bytes() > 0u;
     /* Reconstruct model_open_split's page-aligned shard bases. The combined
      * map is one reserved range; a tensor's abs_offset is relative to it, so
      * pread needs the shard base and the shard's own fd. */
@@ -305,15 +313,21 @@ static bool gemma4_stream_attach(ds4_gemma4_stream *s, ds4_gvq_model *plan) {
 /* The resident set: every tensor except the routed expert matrices and their
  * residual planes. Books, norms, attention, dense FFN, the token table and
  * the router stay directly addressable; the expert records arrive through
- * the slot pool. */
+ * the slot pool. `cold_layers` bounds which layers pay that: the first N
+ * layers' experts stay host-cold (the CPU MoE lane, DS4_GEMMA4_MOE_CPU_LAYERS
+ * and the SSD stream's -ncmoe shape), and every layer at or above N keeps its
+ * expert records in this resident plan, so the GPU path reads them exactly
+ * as it does with no host or stream arm at all. G4_LAYERS is today's
+ * all-cold behaviour; 0 is the all-resident default. */
 static bool gemma4_stream_spans(const ds4_weights *w, const ds4_model *m,
-        ds4_model_map_span_vec *spans) {
+        uint32_t cold_layers, ds4_model_map_span_vec *spans) {
     if (!w || !w->gemma4 || !m || !m->tensors || !m->n_tensors || !spans) {
         return false;
     }
     memset(spans, 0, sizeof(*spans));
     uint8_t *streamed = xcalloc(m->n_tensors, sizeof(*streamed));
-    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+    if (cold_layers > (uint32_t)G4_LAYERS) { cold_layers = (uint32_t)G4_LAYERS; }
+    for (uint32_t il = 0; il < cold_layers; il++) {
         const ds4_gemma4_layer *l = &w->gemma4[il];
         for (uint32_t e = 0; e < G4_EXPERTS; e++) {
             const uint32_t indices[] = {
@@ -348,10 +362,11 @@ static bool gemma4_stream_spans(const ds4_weights *w, const ds4_model *m,
     return spans->len != 0 && spans->max_tensor_bytes != 0;
 }
 
-/* The cold record set: every routed expert VQ record and, on an R13+8
- * artifact, its residual plane -- exactly the records gemma4_stream_spans
- * leaves out of the resident plan. `indices` holds 6 * G4_LAYERS * G4_EXPERTS
- * entries; the returned count is ascending and duplicate-free. The discrete
+/* The cold record set: the routed expert VQ records, and on an R13+8
+ * artifact their residual planes, of the first `cold_layers` layers -- the
+ * records gemma4_stream_spans leaves out of the resident plan. `indices`
+ * holds 6 * G4_LAYERS * G4_EXPERTS entries; the returned count is ascending
+ * and duplicate-free. The discrete
  * map (ds4_gemma4_map.inc) publishes one GVQ_HEADER-sized device range per
  * entry so the bind-time header gather never reads the host map. */
 static int gemma4_stream_index_cmp(const void *a, const void *b) {
@@ -360,10 +375,11 @@ static int gemma4_stream_index_cmp(const void *a, const void *b) {
 }
 
 static uint32_t gemma4_stream_cold_records(const ds4_weights *w,
-        const ds4_model *m, uint32_t *indices) {
+        const ds4_model *m, uint32_t cold_layers, uint32_t *indices) {
     if (!w || !w->gemma4 || !m || !indices) { return 0u; }
     uint32_t n = 0u;
-    for (uint32_t il = 0; il < G4_LAYERS; il++) {
+    if (cold_layers > (uint32_t)G4_LAYERS) { cold_layers = (uint32_t)G4_LAYERS; }
+    for (uint32_t il = 0; il < cold_layers; il++) {
         const ds4_gemma4_layer *l = &w->gemma4[il];
         for (uint32_t e = 0; e < G4_EXPERTS; e++) {
             const ds4_tensor *const ts[] = {
@@ -397,7 +413,7 @@ static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,
         host_source = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_host,
             "DS4_GEMMA4_MOE_HOST");
     }
-    if (host_source && s->model->map) {
+    if ((host_source || s->host_source) && s->model->map) {
         const uint8_t *src = (const uint8_t *)s->model->map + t->abs_offset;
         if (header) { memcpy(header, src, G4_STREAM_HEADER); }
         const uint64_t upload_start = gemma4_stream_ns();

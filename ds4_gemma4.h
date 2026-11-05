@@ -23,6 +23,50 @@ static inline int gemma4_cpu_moe_on(void) {
     return v && v[0] == '1' && !v[1];
 }
 
+/* Per-layer host placement (DS4_GEMMA4_MOE_CPU_LAYERS=N): layers below N
+ * keep their routed experts host-cold and their top-8 on the CPU, layers at
+ * or above N keep theirs device-resident. This is llama.cpp's -ncmoe shape
+ * (common/arg.cpp:2778-2787 pushes blk.0 .. blk.(N-1)); llama.cpp decides it
+ * once at load by tensor-name regex, and so does this: the value is read when
+ * the map and the binder are planned, never per token.
+ *
+ * N = 0 keeps today's all-GPU placement, and DS4_GEMMA4_CPU_MOE=1 stays the
+ * shorthand for N = G4_LAYERS (every expert on the host), so the two knobs
+ * cannot disagree: the boolean widens the layer count, and the count never
+ * narrows the boolean.
+ *
+ * The accepted range is 0..999 and the clamp below is deliberate, not a
+ * guard: llama.cpp's -ncmoe accepts any N and lets an N past the last block
+ * match nothing (common/arg.cpp:2778-2787), which is what makes "-ncmoe 99"
+ * mean "every layer" there. So 30, 99 and 999 all mean the whole model. */
+static inline uint32_t gemma4_moe_cpu_layers(void) {
+    if (gemma4_cpu_moe_on()) { return (uint32_t)G4_LAYERS; }
+    if (ds4_gemma4_knobs()->present) {
+        const uint32_t n = ds4_gemma4_knobs()->moe_cpu_layers;
+        return n > (uint32_t)G4_LAYERS ? (uint32_t)G4_LAYERS : n;
+    }
+    const char *v = getenv("DS4_GEMMA4_MOE_CPU_LAYERS");
+    long n = v ? strtol(v, NULL, 10) : 0;
+    if (n <= 0) { return 0u; }
+    if (n > G4_LAYERS) { n = G4_LAYERS; }
+    return (uint32_t)n;
+}
+
+/* The routing-driven GPU expert cache (DS4_GEMMA4_MOE_CACHE_MIB=N), the
+ * --moe-cache-mib shape: the experts stay host-cold in the mmap and a bounded
+ * pool of VRAM slots is filled from them as the router asks for them, so a
+ * hot expert runs on the GPU and a cold one misses. 0 means off, which is the
+ * default and what every earlier lane measured. */
+static inline uint64_t gemma4_moe_cache_bytes(void) {
+    if (ds4_gemma4_knobs()->present) {
+        return (uint64_t)ds4_gemma4_knobs()->moe_cache_mib << 20;
+    }
+    const char *v = getenv("DS4_GEMMA4_MOE_CACHE_MIB");
+    long mib = v ? strtol(v, NULL, 10) : 0;
+    if (mib <= 0) { return 0u; }
+    return (uint64_t)mib << 20;
+}
+
 #ifdef __cplusplus
 extern "C" {
 #endif

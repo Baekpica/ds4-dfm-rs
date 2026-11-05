@@ -17,6 +17,8 @@ fn validate_gemma4(key: &str, value: &str) -> Option<Result<(), String>> {
     match key {
         "DS4_GEMMA4_ATTN_SPLIT_SPAN" => number(16, 4096),
         "DS4_GEMMA4_CPU_MOE_THREADS" => number(1, 64),
+        "DS4_GEMMA4_MOE_CPU_LAYERS" => number(0, 999),
+        "DS4_GEMMA4_MOE_CACHE_MIB" => number(0, 12288),
         "DS4_GEMMA4_PREFILL_CHUNK" => number(1, 8192),
         "DS4_GEMMA4_VQ_GEMV_VARIANT" => number(0, 2),
         "DS4_GEMMA4_VQ_GEMV_THREADS" => Some(match value.parse::<u32>() {

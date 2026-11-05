@@ -135,7 +135,8 @@ static bool gemma4_gpu_bind(ds4_weights *w, const ds4_model *m) {
      * each of them from the pread staging before its first routed read, so
      * nothing is lost: the same rows/cols/book/res checks run there. */
     const bool discrete_stream = ds4_gpu_g4_stream_discrete_plan() != 0 &&
-                                 (w->gemma4_stream != NULL || gemma4_cpu_moe_on());
+                                 (w->gemma4_stream != NULL ||
+                                  gemma4_moe_cpu_layers() > 0u);
     ds4_gvq_record *truth = NULL;
     uint32_t *cold = NULL;
     uint32_t cold_n = 0;
@@ -143,7 +144,11 @@ static bool gemma4_gpu_bind(ds4_weights *w, const ds4_model *m) {
         truth = xmalloc((size_t)count * sizeof(*truth));
         memcpy(truth, records, (size_t)count * sizeof(*truth));
         cold = xmalloc((size_t)6u * G4_LAYERS * G4_EXPERTS * sizeof(*cold));
-        cold_n = gemma4_stream_cold_records(w, m, cold);
+        /* The stream keeps every expert cold; the per-layer lane keeps the
+         * first N layers cold and leaves the rest device-resident. */
+        const uint32_t cold_layers = w->gemma4_stream
+            ? (uint32_t)G4_LAYERS : gemma4_moe_cpu_layers();
+        cold_n = gemma4_stream_cold_records(w, m, cold_layers, cold);
         uint64_t *offsets = xmalloc((size_t)cold_n * sizeof(*offsets));
         uint64_t *sizes = xmalloc((size_t)cold_n * sizeof(*sizes));
         uint8_t *headers = xmalloc((size_t)cold_n * G4_STREAM_HEADER);
@@ -822,9 +827,10 @@ static bool gemma4_moe_run_mix(ds4_gemma4_graph *g, const ds4_model *m,
         return false;
     }
     const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il, mix_ids, 0, 1);
+    ds4_gpu_g4_moe_note_routes(il, ids, G4_USED);
     if (!chunk ||
         !ds4_gpu_g4_moe_run_ids(g->moe, g->exp_acc, g->norm, mix_w, experts,
-                                g->stream->ids, chunk)) {
+                                g->stream->ids, chunk, il)) {
         return false;
     }
     if (!ncpu) { return true; }
@@ -849,13 +855,27 @@ static bool gemma4_moe_run_mix(ds4_gemma4_graph *g, const ds4_model *m,
 static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
         const ds4_weights *w, uint32_t il, const uint32_t *experts, uint32_t rows) {
     if (!g->stream) {
+        /* Per-layer host placement (DS4_GEMMA4_MOE_CPU_LAYERS=N): layers
+         * below N keep their experts host-cold in the mmap and run their
+         * top-8 on the CPU, exactly as DS4_GEMMA4_CPU_MOE=1 does for every
+         * layer; layers at or above N keep theirs device-resident and take
+         * the path below unchanged. The choice is made here, per layer, so a
+         * mixed model needs no route split and no order change: a CPU
+         * layer's accumulation stays one ascending host walk
+         * (cpu_moe.cuh:373-379) and a GPU layer's stays the device
+         * scatter's. N = 0 leaves this branch cold, so the default keeps the
+         * persistent and grouped kernels exactly as measured. */
+        if (il < gemma4_moe_cpu_layers()) {
+            return ds4_gpu_g4_moe_run_cpu(g->moe, g->exp_acc, g->norm,
+                g->selected, g->weights, experts, rows, il) != 0;
+        }
         if (rows == 1u && g4_moe_persist() &&
             ds4_gpu_g4_moe_run_persist(g->moe, g->exp_acc, g->norm, g->selected,
                 g->weights, experts, il) != 0) {
             return true;
         }
         return ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected,
-            g->weights, experts, rows) != 0;
+            g->weights, experts, rows, il) != 0;
     }
     if (rows == 1u && gemma4_moe_miss_cpu()) {
         return gemma4_moe_run_mix(g, m, w, il, experts);
@@ -875,7 +895,7 @@ static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
             (uint64_t)chunk * G4_USED * sizeof(float));
         const bool ok = out && in && wt &&
             ds4_gpu_g4_moe_run_ids(g->moe, out, in, wt, experts,
-                g->stream->ids, chunk) != 0;
+                g->stream->ids, chunk, il) != 0;
         ds4_gpu_tensor_free(wt);
         ds4_gpu_tensor_free(in);
         ds4_gpu_tensor_free(out);

@@ -58,6 +58,23 @@
 #                         experts stream from the artifact.
 #   DS4_GEMMA4_SSD_CACHE  expert cache for the stream (default 4GB, the 4v
 #                         measured 4070 point; auto or a count also work)
+#   DS4_GEMMA4_MOE_CPU_LAYERS 0..999 (default 0, clamped to the 30 routed
+#                         layers, so 30, 99 and 999 all mean "every layer"):
+#                         layers below N keep their
+#                         routed experts host-cold and run their top-8 on the
+#                         CPU, layers at or above N keep theirs on the device.
+#                         This is llama.cpp's -ncmoe shape; 0 is today's
+#                         all-GPU placement and 30 (or 99, or 999, the knob
+#                         clamps like llama.cpp's) equals DS4_GEMMA4_CPU_MOE=1.
+#                         With N > 0 the trunk is not copied: the mandatory
+#                         resident spans are promoted by the map install.
+#   DS4_GEMMA4_MOE_CACHE_MIB  llama.cpp's --moe-cache-mib: N MiB of VRAM slots
+#                         over host-cold experts, filled from the mmap as the
+#                         router asks. 0 (default) keeps the lane off. The
+#                         experts stay in the mmap; a decode miss takes
+#                         DS4_GEMMA4_MOE_MISS (evict, or cpu to compute it on
+#                         the host). Pair it with MOE_MISS=cpu for the
+#                         "hot on GPU, cold on CPU" mix.
 #   DS4_GEMMA4_PREFILL    prefill rows per forward (default 512, the native
 #                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
 #   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the eight measured fast options
@@ -144,6 +161,8 @@ MTP_MODE="${DS4_GEMMA4_MTP_MODE:-on}"
 RESIDENT="${DS4_GEMMA4_RESIDENT:-1}"
 SSD="${DS4_GEMMA4_SSD:-0}"
 CPU_MOE="${DS4_GEMMA4_CPU_MOE:-0}"
+CPU_MOE_LAYERS="${DS4_GEMMA4_MOE_CPU_LAYERS:-0}"
+MOE_CACHE_MIB="${DS4_GEMMA4_MOE_CACHE_MIB:-0}"
 SSD_CACHE="${DS4_GEMMA4_SSD_CACHE:-4GB}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
@@ -229,7 +248,9 @@ check_env() {
 plan_json() {
   fast_envs
   local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
-      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}" )
+      "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}"
+      "DS4_GEMMA4_MOE_CPU_LAYERS=$CPU_MOE_LAYERS"
+      "DS4_GEMMA4_MOE_CACHE_MIB=$MOE_CACHE_MIB" )
   if [ "$SSD" = "1" ]; then
     extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
   fi
@@ -296,13 +317,26 @@ serve_start() {
     echo "backend: cuda (host-mapped weights), ctx $CTX, floor ${FLOOR}G, max-seqs 1, host $HOST:$PORT"
   fi
   echo "kv:      $KV full layers; fast attention $FAST; mtp ${MTP:-off}"
+  if [ "$CPU_MOE" = "1" ]; then
+    echo "moe:     all 30 layers on the host (CPU_MOE=1)"
+  elif [ "$CPU_MOE_LAYERS" != "0" ]; then
+    echo "moe:     layers 0..$((CPU_MOE_LAYERS - 1)) on the host, the rest on the device"
+  elif [ "$MOE_CACHE_MIB" != "0" ]; then
+    echo "moe:     host-cold experts with a ${MOE_CACHE_MIB} MiB GPU slot cache"
+  fi
   preflight
   rm -f "$LOG"
   fast_envs
   local -a envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
       "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}"
       "DS4_SESSION_GRAPH_HEADROOM_MB=$GRAPH_HEADROOM" )
-  [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && [ "$CPU_MOE" != "1" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  [ "$RESIDENT" = "1" ] && [ "$SSD" != "1" ] && [ "$CPU_MOE" != "1" ] && \
+    [ "$CPU_MOE_LAYERS" = "0" ] && [ "$MOE_CACHE_MIB" = "0" ] && \
+    envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  # Per-layer host placement: the engine reads this itself, so it is passed
+  # explicitly and echoed with the rest of the placement.
+  envs+=( "DS4_GEMMA4_MOE_CPU_LAYERS=$CPU_MOE_LAYERS" )
+  envs+=( "DS4_GEMMA4_MOE_CACHE_MIB=$MOE_CACHE_MIB" )
   local -a extra=()
   # SSD streaming (ds4_gemma4_map.inc, the discrete arm): resident spans are
   # promoted to the device and the routed experts stream from the artifact

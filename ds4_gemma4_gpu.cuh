@@ -1211,25 +1211,45 @@ static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_
     return cuda_ok(cudaGetLastError(), "Gemma-4 expert scatter") ? 1 : 0;
 }
 
+/* Host expert arm: the routed records stay in the model mmap and never reach
+ * the device, so the GPU grouping and every expert launch are skipped
+ * (cuda/gemma4_cpu_moe.cuh). Reached for all 30 layers when
+ * DS4_GEMMA4_CPU_MOE=1, and per layer when DS4_GEMMA4_MOE_CPU_LAYERS=N puts
+ * the first N layers on the host. */
+static int g4_moe_run_cpu(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
+        const uint32_t *matrices, const int32_t *routes, uint32_t rows,
+        uint32_t layer) {
+    if (!m->gvq || !m->gvq->model || !g_model_host_base) {
+        fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
+        return 0;
+    }
+    if (!g4_cpu_moe_run_tensors(g_model_host_base, m->gvq->model, out, input,
+                                weights, matrices, routes, rows, layer)) {
+        fprintf(stderr, "ds4: Gemma-4 CPU MoE layer failed\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* Routing histogram only (DS4_GEMMA4_MOE_TRACE=1): the mix lane reads the
+ * routes on the host before it decides which of them run here, so the same
+ * counting call serves it without another device read. */
+extern "C" void ds4_gpu_g4_moe_note_routes(uint32_t layer, const int32_t *ids,
+        uint32_t count) {
+    g4_cpu_route_note(layer, ids, count);
+}
+
 static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
         const ds4_gpu_tensor *weights, const uint32_t *matrices, const int32_t *routes,
-        uint32_t rows) {
+        uint32_t rows, uint32_t layer) {
     if (!m || !out || !input || !weights || !matrices || !routes || !rows ||
         rows > m->chunk) { return 0; }
     if (gemma4_cpu_moe_on()) {
         /* Host experts: the records stay in the model mmap and never reach
          * the device, so the GPU grouping and every expert launch are
          * skipped (cuda/gemma4_cpu_moe.cuh). */
-        if (!m->gvq || !m->gvq->model || !g_model_host_base) {
-            fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
-            return 0;
-        }
-        if (!g4_cpu_moe_run_tensors(g_model_host_base, m->gvq->model, out, input,
-                                    weights, matrices, routes, rows)) {
-            fprintf(stderr, "ds4: Gemma-4 CPU MoE layer failed\n");
-            return 0;
-        }
-        return 1;
+        return g4_moe_run_cpu(m, out, input, weights, matrices, routes, rows, layer);
     }
     const uint64_t pairs = (uint64_t)rows * G4_USED;
     if (routes != m->routes) {
@@ -1379,19 +1399,37 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
 
 extern "C" int ds4_gpu_g4_moe_run(ds4_g4_moe *m, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
-        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows) {
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows,
+        uint32_t layer) {
     if (!m || !selected || !rows || rows > m->chunk) { return 0; }
     const uint64_t pairs = (uint64_t)rows * G4_USED;
     if (!ds4_gpu_tensor_read(selected, 0, m->routes, pairs * sizeof(int32_t))) {
         return 0;
     }
-    return g4_moe_run_routes(m, out, input, weights, matrices, m->routes, rows);
+    return g4_moe_run_routes(m, out, input, weights, matrices, m->routes, rows, layer);
 }
 
 extern "C" int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *m, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
-        const uint32_t *matrices, const int32_t *routes, uint32_t rows) {
-    return g4_moe_run_routes(m, out, input, weights, matrices, routes, rows);
+        const uint32_t *matrices, const int32_t *routes, uint32_t rows,
+        uint32_t layer) {
+    return g4_moe_run_routes(m, out, input, weights, matrices, routes, rows, layer);
+}
+
+/* The host arm for one layer (DS4_GEMMA4_MOE_CPU_LAYERS=N): the same route
+ * read as ds4_gpu_g4_moe_run, then only the CPU walk. The caller decides per
+ * layer, so a mixed model needs no route split and the arithmetic of each
+ * layer is the arithmetic of that layer's placement. */
+extern "C" int ds4_gpu_g4_moe_run_cpu(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows,
+        uint32_t layer) {
+    if (!m || !selected || !rows || rows > m->chunk) { return 0; }
+    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    if (!ds4_gpu_tensor_read(selected, 0, m->routes, pairs * sizeof(int32_t))) {
+        return 0;
+    }
+    return g4_moe_run_cpu(m, out, input, weights, matrices, m->routes, rows, layer);
 }
 
 /* -------------------------------------------------------- Q4_K decode (4af) */
@@ -1667,7 +1705,7 @@ extern "C" int ds4_gpu_g4_moe_run_persist(ds4_g4_moe *m, ds4_gpu_tensor *out,
         b = (float *)malloc((size_t)G4_EMBED * sizeof(float));
     }
     if (!ref || !a || !b ||
-        !ds4_gpu_g4_moe_run(m, ref, input, selected, weights, matrices, 1u) ||
+        !ds4_gpu_g4_moe_run(m, ref, input, selected, weights, matrices, 1u, layer) ||
         !g4_moe_persist_launch(m, out, input, selected, weights, matrices, layer) ||
         !ds4_gpu_tensor_read(ref, 0, a, (uint64_t)G4_EMBED * sizeof(float)) ||
         !ds4_gpu_tensor_read(out, 0, b, (uint64_t)G4_EMBED * sizeof(float))) {

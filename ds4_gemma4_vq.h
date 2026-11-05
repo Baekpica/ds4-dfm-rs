@@ -29,12 +29,21 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *moe);
  * index_add_ does. */
 int ds4_gpu_g4_moe_run(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
-    const uint32_t *matrices, uint32_t rows);
+    const uint32_t *matrices, uint32_t rows, uint32_t layer);
 /* The same run with the route ids already on the host (the SSD stage reads
  * them once); `routes` is rows * G4_USED expert indices. */
 int ds4_gpu_g4_moe_run_ids(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *weights, const uint32_t *matrices,
-    const int32_t *routes, uint32_t rows);
+    const int32_t *routes, uint32_t rows, uint32_t layer);
+/* One layer's host arm (DS4_GEMMA4_MOE_CPU_LAYERS=N): reads the routes from
+ * `selected` and runs only the CPU walk, so the caller can place layers one
+ * by one. */
+int ds4_gpu_g4_moe_run_cpu(ds4_g4_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+    const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+    const uint32_t *matrices, uint32_t rows, uint32_t layer);
+/* Routing histogram only (DS4_GEMMA4_MOE_TRACE=1): count these route ids
+ * against `layer`. No arithmetic, no device read. */
+void ds4_gpu_g4_moe_note_routes(uint32_t layer, const int32_t *ids, uint32_t count);
 /* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): one expert's down output
  * computed on the host, and the ordered add of that contribution. */
 int ds4_gpu_g4_cpu_moe_expert(ds4_gvq_ctx *ctx, const uint32_t *matrices,

@@ -30,6 +30,78 @@
 #include <string.h>
 #include <atomic>
 
+/* Routing histogram (DS4_GEMMA4_MOE_TRACE=1): how a host-placed layer's
+ * routes distribute over its 128 experts. A decode slot cache can only hold
+ * K of them per layer, so the printed top-K shares are the cache's sizing
+ * input: a layer whose top 32 experts carry most of the routing needs a
+ * small pool, and a flat layer needs a big one or gains nothing. Diagnostic
+ * only -- it counts, it never changes arithmetic, and it rides the routes the
+ * host path already has (no extra device read). */
+static uint64_t g4_cpu_route_counts[G4_LAYERS][G4_EXPERTS];
+static uint64_t g4_cpu_route_total[G4_LAYERS];
+
+static int g4_cpu_route_trace_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_GEMMA4_MOE_TRACE");
+        on = v && v[0] && v[0] != '0';
+    }
+    return on;
+}
+
+static void g4_cpu_route_report(void) {
+    for (uint32_t il = 0; il < (uint32_t)G4_LAYERS; il++) {
+        const uint64_t total = g4_cpu_route_total[il];
+        if (!total) { continue; }
+        uint32_t order[G4_EXPERTS];
+        uint32_t unique = 0;
+        for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+            order[e] = e;
+            if (g4_cpu_route_counts[il][e]) { unique++; }
+        }
+        /* Insertion sort by count, descending: 128 entries, once at exit. */
+        for (uint32_t i = 1; i < G4_EXPERTS; i++) {
+            const uint32_t v = order[i];
+            const uint64_t c = g4_cpu_route_counts[il][v];
+            uint32_t j = i;
+            while (j > 0 && g4_cpu_route_counts[il][order[j - 1]] < c) {
+                order[j] = order[j - 1];
+                j--;
+            }
+            order[j] = v;
+        }
+        const uint32_t k[4] = {8, 16, 32, 64};
+        double share[4];
+        for (uint32_t b = 0; b < 4; b++) {
+            uint64_t acc = 0;
+            for (uint32_t i = 0; i < k[b] && i < G4_EXPERTS; i++) {
+                acc += g4_cpu_route_counts[il][order[i]];
+            }
+            share[b] = 100.0 * (double)acc / (double)total;
+        }
+        fprintf(stderr, "ds4: Gemma-4 routes layer %02u: routed=%llu unique=%u "
+                "top8=%.1f%% top16=%.1f%% top32=%.1f%% top64=%.1f%% hottest=",
+                il, (unsigned long long)total, unique,
+                share[0], share[1], share[2], share[3]);
+        for (uint32_t i = 0; i < 8; i++) {
+            fprintf(stderr, "%s%u", i ? "," : "", order[i]);
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+static void g4_cpu_route_note(uint32_t layer, const int32_t *routes, uint32_t n) {
+    static int registered;
+    if (!routes || !n || layer >= (uint32_t)G4_LAYERS) { return; }
+    if (!g4_cpu_route_trace_on()) { return; }
+    if (!registered) { registered = 1; atexit(g4_cpu_route_report); }
+    for (uint32_t i = 0; i < n; i++) {
+        const int32_t e = routes[i];
+        if (e >= 0 && e < G4_EXPERTS) { g4_cpu_route_counts[layer][e]++; }
+    }
+    g4_cpu_route_total[layer] += n;
+}
+
 /* The routed-expert kernels below are AVX2 + F16C intrinsics: the 4070's
  * host lane, where the expert records stay in the model mmap. The CUDA
  * translation unit includes this header on every target (the Spark is
@@ -447,14 +519,16 @@ static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
     return 1;
 }
 
-/* Decode entry: rows tokens of G4_USED routes each, all through the host. */
+/* Decode entry: rows tokens of G4_USED routes each, all through the host.
+ * `layer` is only the histogram's index; it never reaches the arithmetic. */
 static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
                                   ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
                                   const ds4_gpu_tensor *weights, const uint32_t *matrices,
-                                  const int32_t *routes, uint32_t rows) {
+                                  const int32_t *routes, uint32_t rows, uint32_t layer) {
     if (!map || !model || !out || !input || !weights || !matrices || !routes || !rows) {
         return 0;
     }
+    g4_cpu_route_note(layer, routes, rows * G4_USED);
     if (!g4_cpu_pool_init()) { return 0; }
     const uint64_t in_bytes = (uint64_t)rows * G4_EMBED * sizeof(float);
     const uint64_t w_bytes = (uint64_t)rows * G4_USED * sizeof(float);
@@ -543,9 +617,9 @@ static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
 static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
                                   ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
                                   const ds4_gpu_tensor *weights, const uint32_t *matrices,
-                                  const int32_t *routes, uint32_t rows) {
+                                  const int32_t *routes, uint32_t rows, uint32_t layer) {
     (void)map; (void)model; (void)out; (void)input; (void)weights;
-    (void)matrices; (void)routes; (void)rows;
+    (void)matrices; (void)routes; (void)rows; (void)layer;
     return g4_cpu_moe_unavailable();
 }
 

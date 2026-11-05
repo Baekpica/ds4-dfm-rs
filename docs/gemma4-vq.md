@@ -725,6 +725,91 @@ sliding layers, 128 on full ones, where the reference rotates 128 of 128 and
   previous live session) still fires. Measured: an arm configured that way
   wrote a checkpoint per request anyway.
 
+## Expert placement: three knobs, llama.cpp's shapes
+
+The routed experts are 7.02 GiB of the 9.37 GiB map (the other 2.35 GiB is the
+resident set: attention, norms, books, the token table and the router). Three
+typed knobs decide where they run, and each mirrors a llama.cpp flag:
+
+- `DS4_GEMMA4_CPU_MOE=1` (`-cmoe`): every expert stays host-cold in the mmap
+  and the top-8 runs on the CPU (cuda/gemma4_cpu_moe.cuh, AVX2 R13+8 GEMV,
+  ascending expert-id accumulation, 20 threads by default).
+- `DS4_GEMMA4_MOE_CPU_LAYERS=N` (`-ncmoe N`): layers below N host-cold with
+  CPU top-8, layers at or above N device-resident on the GPU. The accepted
+  range is 0..999 and the C side clamps to the 30 routed layers, so 30, 99 and
+  999 all mean "every layer", exactly as `-ncmoe 99` does in llama.cpp
+  (common/arg.cpp:2778-2787). The dispatch chooses per layer
+  (ds4_gemma4_graph.inc), so a mixed model needs no route split: each layer
+  keeps its own accumulation order.
+- `DS4_GEMMA4_MOE_CACHE_MIB=N` (`--moe-cache-mib`): every expert stays
+  host-cold and N MiB of VRAM slots are filled from the mmap as the router
+  asks (ds4_gemma4_stream.inc, the same pool `--ssd-streaming` uses, with
+  `MOE_HOST` implied). A decode miss takes `DS4_GEMMA4_MOE_MISS`: `evict`
+  (default) or `cpu` to compute it on the host.
+
+`DS4_GEMMA4_MOE_TRACE=1` prints a per-layer routing histogram at exit
+(`top8/top16/top32/top64` shares and the eight hottest ids), which is the
+sizing input for the cache.
+
+## Measured, 4070 SUPER, 2026-11-05
+
+Cold server per arm, greedy 32 tokens, prefix cache empty. TTFT is the first
+token; VRAM is boot/peak.
+
+| mode | ctx | prompt | TTFT | decode | VRAM |
+|---|---|---|---|---|---|
+| resident | 8192 | 7,555 | 5.87 s | 54.8 tok/s | 10,121/10,861 MiB |
+| resident | 32768 | 8,294 | 6.46 s | 54.6 | 10,121/11,103 |
+| resident | 32768 | 31,909 | 26.45 s | 52.5 | 10,121/11,113 |
+| resident | 65536 | 31,909 | 26.43 s | 51.8 | 10,121/11,433 |
+| CPU MoE | 8192 | 7,555 | 362.8 s | 17.3 | 3,617/3,673 |
+| CPU MoE | 65536 | 8,294 | 370.0 s | 18.7 | 4,177/4,233 |
+| CPU MoE | 65536 | 31,909 | 1,410.0 s | 19.2 | 4,177/4,233 |
+| cache 4 GiB + miss=cpu | 8192 | 7,555 | 22.1 s | 28.0 | 7,713/7,773 |
+| cache 4 GiB + miss=cpu | 32768 | 8,294 | 24.3 s | 26.9 | 7,953/8,015 |
+| cache 4 GiB + miss=cpu | 32768 | 31,909 | 81.6 s | 28.5 | 7,953/8,025 |
+| cache 4 GiB + miss=cpu | 65536 | 31,909 | 82.0 s | 27.6 | 8,273/8,345 |
+
+Reading the table: the host-compute lane costs about 1.6 ms per token per CPU
+layer, so six layers turn a 7,555-token prefill from 5.9 s into 42 s (99
+tok/s) for 734 MiB of VRAM, and thirty layers turn it into six minutes. The
+CPU arms ran while unrelated jobs shared the host, so their decode is a floor,
+not a ceiling. The cache lane is three times slower at prefill than the
+resident lane and lands at 28 tok/s decode; its prefill cost is the slot pool
+re-staging VQ expert records into a 4 GiB pool, not disk traffic (see below).
+
+Two corrections to earlier readings:
+
+- The `reread=72.85 GiB` line the stream reports is VQ expert payload
+  re-uploaded into the pool: `reread_bytes` counts records `seen` before
+  (ds4_gemma4_stream.inc:469 and :511) and with the host source the bytes come
+  from the mmap, so `read=0.00 GiB` and `io=0.0 ms` on the same line. It is
+  PCIe upload time, not disk.
+- Token identity must be defined against `DS4_GEMMA4_PERSIST=0`: the
+  persistent MoE decode is near-exact (26 of 30 layers bit-identical). With
+  persist off, the all-GPU host-mapped arm and the all-CPU arm produced the
+  same 32-token reply (md5 d9eb05c0b72d at ctx 8192), which is the parity the
+  placement change has to keep.
+
+Open defects on the new lanes, both reproduced:
+
+- With `DS4_GEMMA4_MOE_CPU_LAYERS` between 1 and 29 at ctx 8192, a
+  7,555-token prompt is refused with "prompt exceeds context" while the same
+  prompt is accepted at N=0 and N=30, and 6,597 tokens is accepted at N=6.
+  The check is `prompt->len > s->ctx_size` (ds4.c:78685), so the session ctx
+  is being right-sized below the advertised 8,192 on those lanes.
+- `DS4_GEMMA4_MOE_CACHE_MIB` shows the same refusal at ctx 8192 with a 2 GiB
+  and a 4 GiB pool, so the right-sizing is tied to the promoted-stream map
+  rather than to how much VRAM the lane leaves free.
+
+The next unit is the one this table argues for: keep the GPU as the only
+expert compute unit, pin the expert store for fast copies, stream each layer's
+used experts during prefill (llama.cpp offloads any `MUL_MAT_ID` above 32
+tokens, ggml-cuda.cu:182, and `sched_copy_experts` uploads only the used set,
+llama-context.cpp:2780), and upload decode misses into a slot-mapped cache
+instead of computing them on the host (llama-moe-cache.cpp:496-506 bypasses
+its cache above 32 tokens for exactly that reason).
+
 ## Reproduce
 
 ```

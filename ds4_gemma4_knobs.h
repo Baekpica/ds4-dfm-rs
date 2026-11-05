@@ -49,10 +49,19 @@ typedef struct {
     /* Host routed experts and the expert-slot cache.  `moe_miss_cpu` is the
      * miss policy: 0 evicts a resident slot, 1 computes the route on the
      * host.  `moe_host` sources slot fills from the model mmap instead of
-     * the shard fds. */
+     * the shard fds.  `moe_cpu_layers` is the per-layer split: layers below
+     * it keep their routed experts host-cold and run top-8 on the CPU, the
+     * layers at or above it keep theirs device-resident (llama.cpp's
+     * -ncmoe shape).  0 is the all-GPU default and G4_LAYERS is the whole
+     * model on the host, which is what `cpu_moe` has always meant. */
     int32_t cpu_moe;
     int32_t moe_host;
     int32_t moe_miss_cpu;
+    uint32_t moe_cpu_layers;
+    /* The routing-driven GPU slot cache over host-cold experts, llama.cpp's
+     * --moe-cache-mib: 0 keeps the lane off, N reserves N MiB of VRAM for
+     * expert slots that fill from the mmap (ds4_gemma4_stream.inc). */
+    uint32_t moe_cache_mib;
 
     /* Full-layer KV format (0 bf16, 1 E4M3) and the direct VQ GEMV. */
     int32_t full_kv_fp8;

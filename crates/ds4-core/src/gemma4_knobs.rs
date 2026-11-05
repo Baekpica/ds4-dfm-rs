@@ -26,6 +26,18 @@ pub const SPLIT_SPAN_DEFAULT: u32 = 64;
 pub const CPU_THREADS_MIN: u32 = 1;
 pub const CPU_THREADS_MAX: u32 = 64;
 pub const CPU_THREADS_DEFAULT: u32 = 20;
+/// The accepted range for the per-layer host split. llama.cpp's -ncmoe takes
+/// any non-negative N (common/arg.cpp:2778-2787 rejects only negatives) and
+/// builds one override per named block; an N past the last block simply
+/// matches nothing, which is how `-ncmoe 99` means "every layer". This knob
+/// mirrors that: any N up to 999 is accepted, and the C side clamps it to
+/// `G4_LAYERS`, so 30, 99 and 999 all mean the whole model on the host.
+pub const MOE_CPU_LAYERS_MAX: u32 = 999;
+/// The cache lane's ceiling, in MiB. llama.cpp's --moe-cache-mib takes any
+/// non-negative size and splits it across the GPUs (common/arg.cpp:2789-2797);
+/// this card has 12 GiB, so 12,288 MiB is already the whole card and anything
+/// larger is a typo the host should name rather than accept.
+pub const MOE_CACHE_MIB_MAX: u32 = 12288;
 /// `G4_PREFILL_MAX` in ds4_gemma4_plan.h.
 pub const PREFILL_CHUNK_MAX: u32 = 8192;
 pub const VQ_GEMV_THREADS_MIN: u32 = 32;
@@ -174,6 +186,18 @@ pub const KNOBS: &[KnobInfo] = &[
         "--gemma4-moe-miss",
         "moe_miss",
         "evict|cpu"
+    ),
+    knob!(
+        "DS4_GEMMA4_MOE_CPU_LAYERS",
+        "--gemma4-moe-cpu-layers",
+        "moe_cpu_layers",
+        "0..999, clamped to the layer count"
+    ),
+    knob!(
+        "DS4_GEMMA4_MOE_CACHE_MIB",
+        "--gemma4-moe-cache-mib",
+        "moe_cache_mib",
+        "0..12288"
     ),
     knob!(
         "DS4_GEMMA4_PREFILL_CHUNK",
@@ -381,6 +405,18 @@ pub struct Gemma4Options {
     pub cpu_moe_threads: u32,
     pub moe_host: Toggle,
     pub moe_miss: MissPolicy,
+    /// Per-layer host split: layers below N keep their routed experts
+    /// host-cold and run top-8 on the CPU; layers at or above N keep theirs
+    /// device-resident. 0 is the all-GPU default and 30 is the whole model
+    /// on the host. The C side widens this to 30 whenever `cpu_moe` is on,
+    /// so the two knobs can never disagree.
+    pub moe_cpu_layers: u32,
+    /// The routing-driven GPU slot cache over host-cold experts, llama.cpp's
+    /// --moe-cache-mib: 0 disables the lane (the default), N reserves N MiB
+    /// of VRAM for expert slots that fill from the mmap and run on the GPU.
+    /// The experts themselves stay host-cold; a decode miss takes the
+    /// DS4_GEMMA4_MOE_MISS policy (evict by default, host compute on "cpu").
+    pub moe_cache_mib: u32,
     pub prefill_chunk: u32,
     pub full_kv: FullKv,
     pub vq_gemv: Toggle,
@@ -414,6 +450,8 @@ impl Default for Gemma4Options {
             cpu_moe_threads: CPU_THREADS_DEFAULT,
             moe_host: Toggle::Off,
             moe_miss: MissPolicy::Evict,
+            moe_cpu_layers: 0,
+            moe_cache_mib: 0,
             prefill_chunk: 0,
             full_kv: FullKv::Bf16,
             vq_gemv: Toggle::On,
@@ -483,6 +521,12 @@ impl Gemma4Options {
             }
             "DS4_GEMMA4_MOE_HOST" => self.moe_host = Toggle::parse(label, raw)?,
             "DS4_GEMMA4_MOE_MISS" => self.moe_miss = MissPolicy::parse(label, raw)?,
+            "DS4_GEMMA4_MOE_CPU_LAYERS" => {
+                self.moe_cpu_layers = bounded(label, raw, 0, MOE_CPU_LAYERS_MAX)?;
+            }
+            "DS4_GEMMA4_MOE_CACHE_MIB" => {
+                self.moe_cache_mib = bounded(label, raw, 0, MOE_CACHE_MIB_MAX)?;
+            }
             "DS4_GEMMA4_PREFILL_CHUNK" => {
                 self.prefill_chunk = bounded(label, raw, 1, PREFILL_CHUNK_MAX)?;
             }
@@ -563,6 +607,8 @@ impl Gemma4Options {
             "cpu_moe_threads": self.cpu_moe_threads,
             "moe_host": self.moe_host.as_str(),
             "moe_miss": self.moe_miss.as_str(),
+            "moe_cpu_layers": self.moe_cpu_layers,
+            "moe_cache_mib": self.moe_cache_mib,
             "prefill_chunk": self.prefill_chunk,
             "full_kv": self.full_kv.as_str(),
             "vq_gemv": self.vq_gemv.as_str(),
@@ -614,6 +660,8 @@ impl Gemma4Options {
             cpu_moe: on(self.cpu_moe),
             moe_host: on(self.moe_host),
             moe_miss_cpu: i32::from(self.moe_miss == MissPolicy::Cpu),
+            moe_cpu_layers: self.moe_cpu_layers,
+            moe_cache_mib: self.moe_cache_mib,
             full_kv_fp8: i32::from(self.full_kv == FullKv::Fp8),
             vq_gemv: on(self.vq_gemv),
             attn_split_span: self.attn_split_span,
@@ -681,6 +729,45 @@ mod tests {
     }
 
     #[test]
+    fn moe_cpu_layers_covers_every_layer_and_rejects_the_rest() {
+        let mut o = Gemma4Options::default();
+        assert_eq!(o.moe_cpu_layers, 0, "the all-GPU default");
+        // 99 is the llama.cpp spelling of "every layer"; the C side clamps.
+        for good in ["0", "8", "30", "99", "999"] {
+            o.set_env("DS4_GEMMA4_MOE_CPU_LAYERS", good)
+                .unwrap_or_else(|e| panic!("{good}: {e}"));
+            assert_eq!(o.moe_cpu_layers.to_string(), good);
+        }
+        for bad in ["1000", "-1", "x", ""] {
+            let err = o.set_env("DS4_GEMMA4_MOE_CPU_LAYERS", bad).unwrap_err();
+            assert!(err.contains("DS4_GEMMA4_MOE_CPU_LAYERS"), "{err}");
+        }
+        assert_eq!(o.moe_cpu_layers, 999, "a rejected value must not stick");
+        assert_eq!(o.to_ffi().moe_cpu_layers, 999);
+        assert_eq!(o.to_json()["moe_cpu_layers"], 999);
+        assert!(o
+            .rows()
+            .iter()
+            .any(|r| r == "DS4_GEMMA4_MOE_CPU_LAYERS=999"));
+    }
+
+    #[test]
+    fn moe_cache_mib_is_bounded() {
+        let mut o = Gemma4Options::default();
+        assert_eq!(o.moe_cache_mib, 0, "the lane is off by default");
+        for good in ["0", "512", "12288"] {
+            o.set_env("DS4_GEMMA4_MOE_CACHE_MIB", good)
+                .unwrap_or_else(|e| panic!("{good}: {e}"));
+            assert_eq!(o.moe_cache_mib.to_string(), good);
+        }
+        for bad in ["12289", "-1", "x"] {
+            let err = o.set_env("DS4_GEMMA4_MOE_CACHE_MIB", bad).unwrap_err();
+            assert!(err.contains("DS4_GEMMA4_MOE_CACHE_MIB"), "{err}");
+        }
+        assert_eq!(o.to_ffi().moe_cache_mib, 12288);
+    }
+
+    #[test]
     fn booleans_are_strict() {
         let mut o = Gemma4Options::default();
         for good in ["1", "0", "true", "false", "on", "off"] {
@@ -739,7 +826,8 @@ mod tests {
                 info.env
             );
         }
-        assert_eq!(KNOBS.len(), 25, "a new knob needs a table row");
+        // Bumped when a knob joins the table: moe_cache_mib is the 26th.
+        assert_eq!(KNOBS.len(), 26, "a new knob needs a table row");
     }
 
     #[test]
@@ -796,5 +884,21 @@ mod tests {
         assert_eq!(json["moe_miss"], "cpu");
         assert_eq!(json["cpu_moe_threads"], 8);
         assert_eq!(json["vq_gemv"], "on");
+    }
+}
+
+#[cfg(test)]
+mod knobs_presence {
+    use super::*;
+    #[test]
+    fn the_cache_knob_is_in_the_table() {
+        assert!(
+            KNOBS.iter().any(|k| k.env == "DS4_GEMMA4_MOE_CACHE_MIB"),
+            "KNOBS is missing the cache knob"
+        );
+        assert!(
+            KNOBS.iter().any(|k| k.env == "DS4_GEMMA4_MOE_CPU_LAYERS"),
+            "KNOBS is missing the per-layer knob"
+        );
     }
 }
