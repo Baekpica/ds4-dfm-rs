@@ -251,6 +251,10 @@ pub struct EngineFacts {
     pub ssd_cache_bytes: Option<u64>,
     pub ssd_staging_bytes: Option<u64>,
     pub ssd_metadata_bytes: Option<u64>,
+    /// Gemma-4's routing-driven slot pool (DS4_GEMMA4_MOE_CACHE_MIB): device
+    /// VRAM the native open allocates before any session exists
+    /// (gemma4_stream_alloc). Charged through the quote's expert_cache term.
+    pub gemma4_pool_bytes: Option<u64>,
     pub per_bank_bytes: Option<u64>,
     pub mtp_state_bytes: Option<u64>,
     pub scratch_bytes: Option<u64>,
@@ -2404,7 +2408,10 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
     let available = facts.host_available_bytes?;
     let mut quote = ServingQuote {
         shared_weights: facts.shared_weights_bytes.unwrap_or(0),
-        expert_cache: facts.ssd_cache_bytes.unwrap_or(0),
+        expert_cache: facts
+            .ssd_cache_bytes
+            .unwrap_or(0)
+            .saturating_add(facts.gemma4_pool_bytes.unwrap_or(0)),
         expert_staging: facts.ssd_staging_bytes.unwrap_or(0),
         expert_metadata: facts.ssd_metadata_bytes.unwrap_or(0),
         per_bank: facts.per_bank_bytes.unwrap_or(0),

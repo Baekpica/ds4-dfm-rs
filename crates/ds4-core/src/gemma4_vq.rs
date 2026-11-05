@@ -104,6 +104,66 @@ pub(super) fn is_release(path: &std::path::Path) -> bool {
     release::is_release(path)
 }
 
+/// Device-resident bytes when the routed experts of the first `cold_layers`
+/// layers stay host-cold: the DS4_GEMMA4_MOE_CPU_LAYERS and
+/// DS4_GEMMA4_MOE_CACHE_MIB lanes, where the 4070 keeps the whole expert set
+/// in the mmap and promotes the rest.
+///
+/// Term for term the native plan: `gemma4_stream_spans`
+/// (ds4_gemma4_stream.inc:574-615) leaves every cold record out of the
+/// resident spans and every other tensor in, and the cold records keep one
+/// GVQ header each on the device (ds4: "Gemma-4 SSD cold records: 23040
+/// headers, 2.81 MiB device"). The merged spans measure 2.345 GiB on the
+/// R13+8 release, which is the engine's own "2.35 GiB device-resident".
+///
+/// `cold_layers` is the native count: all 30 for the slot-cache lane (the
+/// engine forces all cold), N for the per-layer host split, 0 for the
+/// resident lane. `None` when the artifact cannot be read, so the caller
+/// falls back to the whole mapping.
+pub fn resident_span_bytes(path: &std::path::Path, cold_layers: u32) -> Option<u64> {
+    let cold_layers = cold_layers.min(30);
+    let tensors = if path.is_dir() {
+        if !is_release(path) {
+            return None;
+        }
+        release::tensor_directory(path).ok()?
+    } else {
+        let g = GgufFile::open(path).ok()?;
+        crate::tensors::TensorInventory::from_file(path, &g)
+            .ok()?
+            .tensors
+    };
+    Some(resident_span_of(&tensors, cold_layers))
+}
+
+/// The layer whose routed experts a tensor belongs to, `None` for every
+/// other tensor. The native expert set is exactly `l->gate[e]`, `up[e]`,
+/// `down[e]` and their R13+8 residual planes at
+/// `model.layers.<il>.experts.<e>.<matrix>[.res]`
+/// (ds4_gemma4_stream.inc:583-599). The shared per-stack books
+/// (`...experts.<stack>.vq_codebook`, `...vq_residual_book`) name no expert
+/// index and stay resident.
+pub fn expert_layer(name: &str) -> Option<u32> {
+    let fields: Vec<&str> = name.split('.').collect();
+    if fields.len() < 6
+        || fields[0] != "model"
+        || fields[1] != "layers"
+        || fields[3] != "experts"
+        || fields[4].is_empty()
+        || !fields[4].bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    fields[2].parse::<u32>().ok()
+}
+
+fn resident_span_of(tensors: &[crate::tensors::TensorInfo], cold_layers: u32) -> u64 {
+    tensors.iter().fold(0u64, |total, t| {
+        let cold = expert_layer(&t.name).is_some_and(|il| il < cold_layers);
+        total.saturating_add(if cold { HEADER } else { t.bytes })
+    })
+}
+
 pub(super) fn identify(
     path: &std::path::Path,
 ) -> std::result::Result<crate::Identified, crate::IdentifyError> {
@@ -565,4 +625,76 @@ pub(super) fn validate_part(
     }
     validate_books(g, tensors, &links)?;
     validate_residuals(g, tensors)
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use crate::tensors::TensorInfo;
+
+    fn tensor(name: &str, bytes: u64) -> TensorInfo {
+        TensorInfo {
+            name: name.to_string(),
+            ndim: 2,
+            dim: [0; crate::tensors::MAX_DIMS as usize],
+            typ: VQ,
+            rel_offset: 0,
+            abs_offset: 0,
+            elements: 0,
+            bytes,
+            shard: 0,
+        }
+    }
+
+    #[test]
+    fn expert_records_are_the_per_expert_matrices_only() {
+        // ds4_gemma4_stream.inc:583-599 marks l->gate[e], up[e], down[e] and
+        // the R13+8 residual planes; the shared per-stack books stay resident.
+        assert_eq!(expert_layer("model.layers.0.experts.0.down_proj"), Some(0));
+        assert_eq!(
+            expert_layer("model.layers.29.experts.127.gate_proj"),
+            Some(29)
+        );
+        assert_eq!(
+            expert_layer("model.layers.7.experts.12.up_proj.res"),
+            Some(7)
+        );
+        assert_eq!(
+            expert_layer("model.layers.0.experts.down_proj.vq_codebook"),
+            None
+        );
+        assert_eq!(
+            expert_layer("model.layers.0.experts.gate_up_proj.vq_residual_book"),
+            None
+        );
+        assert_eq!(expert_layer("model.layers.0.self_attn.q_proj.weight"), None);
+        assert_eq!(expert_layer("model.embed_tokens.weight"), None);
+    }
+
+    #[test]
+    fn cold_records_leave_one_header_each() {
+        let tensors = vec![
+            tensor("model.layers.0.experts.0.gate_proj", 1_000),
+            tensor("model.layers.0.experts.0.down_proj.res", 500),
+            tensor("model.layers.0.experts.down_proj.vq_codebook", 70_000),
+            tensor("model.layers.0.mlp.gate.weight", 3_000),
+            tensor("model.layers.1.experts.0.gate_proj", 1_000),
+            tensor("model.embed_tokens.weight", 9_000),
+        ];
+        // Nothing cold: every tensor whole.
+        assert_eq!(
+            resident_span_of(&tensors, 0),
+            1_000 + 500 + 70_000 + 3_000 + 1_000 + 9_000
+        );
+        // Layer 0 cold: its two expert records leave one 128 B header each.
+        assert_eq!(
+            resident_span_of(&tensors, 1),
+            HEADER + HEADER + 70_000 + 3_000 + 1_000 + 9_000
+        );
+        // Every layer cold: both records of layer 0 and layer 1 are headers.
+        assert_eq!(
+            resident_span_of(&tensors, 30),
+            HEADER * 3 + 70_000 + 3_000 + 9_000
+        );
+    }
 }

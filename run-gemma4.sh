@@ -74,7 +74,11 @@
 #                         experts stay in the mmap; a decode miss takes
 #                         DS4_GEMMA4_MOE_MISS (evict, or cpu to compute it on
 #                         the host). Pair it with MOE_MISS=cpu for the
-#                         "hot on GPU, cold on CPU" mix.
+#                         "hot on GPU, cold on CPU" mix. The quote charges
+#                         the pool plus the graph's workspace, and boot
+#                         refuses a session graph that would leave less than
+#                         384 MiB free at peak (measured: 5,632 MiB at
+#                         chunk 4096 runs, 6,144 MiB does not).
 #   DS4_GEMMA4_MOE_STAGING_MIB  pinned host ring the slot fills are copied
 #                         through, in MiB: 0 (default) means 256, otherwise
 #                         64..2048. Each record is copied from the mmap into
@@ -286,15 +290,24 @@ plan_mode() {
 }
 
 # Refuse before boot when the quote does not fit; the numbers are the message.
+#
+# The quote is the plan-time estimate and prices what the engine will
+# allocate: the device-resident spans of a host-cold lane, the expert slot
+# pool, the KV rows and the session graph's workspace. It is taken before
+# CUDA exists, so it cannot see the process's own runtime; the exact verdict
+# is the engine's at boot, after the pool and the spans are installed, with
+# the family's 384 MiB peak floor (ds4_gemma4_plan.h G4_SESSION_FIT_MARGIN).
+# An arm can therefore pass here and still be refused at boot, with the
+# workspace bytes named -- that is the intended two-tier behaviour.
 preflight() {
   local json code
   json="$(plan_json)" || die "the plan did not print (server error)"
   code="$(printf '%s' "$json" | jq -r '[.issues[] | select(.level == "error") | .code] | join(",")')"
   if [ -n "$code" ]; then
     printf '%s' "$json" | jq '{quote, issues}'
-    die "the serving quote refuses this configuration ($code); lower DS4_GEMMA4_CTX or free host RAM"
+    die "the serving quote refuses this configuration ($code); lower DS4_GEMMA4_CTX, DS4_GEMMA4_PREFILL or DS4_GEMMA4_MOE_CACHE_MIB"
   fi
-  printf '%s' "$json" | jq -c '{quote: (.quote|{shared_weights,per_bank,floor,available,total}), issues: [.issues[].code]}'
+  printf '%s' "$json" | jq -c '{quote: (.quote|{shared_weights,expert_cache,per_bank,scratch,floor,available,total}), issues: [.issues[].code]}'
 }
 
 pid_of() {

@@ -30,7 +30,7 @@ use super::{
 };
 use crate::gguf::{GgufError, GgufFile};
 use crate::mapped::page_size;
-use crate::tensors::{ShardPlan, TensorError, TensorInventory};
+use crate::tensors::{ShardPlan, TensorError, TensorInfo, TensorInventory};
 
 const MAX_METADATA: u64 = 64 * 1024 * 1024;
 const RELEASE: &str = "release.json";
@@ -301,6 +301,23 @@ pub(super) fn first_part(root: &Path) -> Result<PathBuf> {
 
 pub(super) fn part_count(root: &Path) -> Result<u32> {
     Ok(parts(root, Gemma4VqFeature::Trunk)?.len() as u32)
+}
+
+/// Every tensor of the trunk parts, from the GGUF directories alone.
+///
+/// This is the cheap read: `TensorInventory::open` hashes every part
+/// (`verify_part`, 9.4 GiB on the 4070 release, 22 s) which a
+/// `--check-config` preflight must not do. Names, types, offsets and byte
+/// sizes are all the resident-span arithmetic needs, and both live in the
+/// tensor directory.
+pub(super) fn tensor_directory(root: &Path) -> Result<Vec<TensorInfo>> {
+    let mut out = Vec::new();
+    for part in parts(root, Gemma4VqFeature::Trunk)? {
+        let path = root.join(&part.name);
+        let g = GgufFile::open(&path)?;
+        out.extend(TensorInventory::from_file(&path, &g)?.tensors);
+    }
+    Ok(out)
 }
 
 /// On-disk bytes of the device-copied parts (trunk, and the MTP drafter with

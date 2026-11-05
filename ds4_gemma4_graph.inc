@@ -447,9 +447,24 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
                 (double)low, (double)high, peak_at, (double)peak, bad);
         }
     }
-    ds4_log(stderr, DS4_LOG_TIMING,
-        "ds4: Gemma-4 graph ctx=%u chunk=%u KV=%.2f GiB activation=%.1f MiB\n",
-        ctx, cap, (double)g->kv_bytes / 1073741824.0, (double)act * 6.0 / 1048576.0);
+    /* The session's own numbers, term for term what this function allocates:
+     * the KV rows, the activation set, the linear (GVQ) workspace and the
+     * routed-expert scratch. gemma4_session_memory (ds4_gemma4_bind.inc)
+     * prices the same four for the fit gate and the serving quote, and the
+     * crash this line answers was a configuration that passed the quote and
+     * then missed by 65 KiB in the first forward. */
+    const uint64_t ws_act = gemma4_activation_bytes(cap);
+    const uint64_t ws_lin = ds4_gpu_gvq_workspace_linear(rows);
+    const uint64_t ws_moe = ds4_gpu_g4_moe_bytes(rows);
+    fprintf(stderr,
+        "ds4: Gemma-4 graph ctx=%u chunk=%u rows=%u KV=%.2f GiB "
+        "workspace=%.1f MiB (activation %.1f + linear %.1f + moe %.1f) "
+        "session=%.2f GiB\n",
+        ctx, cap, rows, (double)g->kv_bytes / 1073741824.0,
+        (double)(ws_act + ws_lin + ws_moe) / 1048576.0,
+        (double)ws_act / 1048576.0, (double)ws_lin / 1048576.0,
+        (double)ws_moe / 1048576.0,
+        (double)(g->kv_bytes + ws_act + ws_lin + ws_moe) / 1073741824.0);
     /* The row format selects the kernel, so the cost is not just bytes:
      * bf16 rows take the tensor-core MMA kernel, E4M3 rows take the scalar
      * g4_attn_fp8_kernel unless the tensor-core E4M3 paths are on

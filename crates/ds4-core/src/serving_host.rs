@@ -230,6 +230,27 @@ const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
 const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
 const GEMMA4_FULL_KV_HEADS: u64 = 2;
 const GEMMA4_FULL_HEAD_DIM: u64 = 512;
+// The session graph's other half: the activation set (ds4_gemma4_plan.h
+// gemma4_activation_bytes), the linear workspace and the routed-expert
+// scratch (ds4_gemma4_bind.inc:283-290 gemma4_session_memory). The quote
+// priced the KV rows and left these at zero, which is how a chunk-4096 arm
+// with a 6,144 MiB pool passed --check-config and then failed the first
+// forward by 66,816 B with 31.75 MiB free (measured 2026-11-05).
+const GEMMA4_EMBED: u64 = 2816;
+const GEMMA4_VOCAB: u64 = 262_144;
+const GEMMA4_DENSE: u64 = 2112;
+const GEMMA4_HEADS: u64 = 16;
+const GEMMA4_EXPERTS: u64 = 128;
+const GEMMA4_USED: u64 = 8;
+const GEMMA4_FF: u64 = 704;
+/// `GVQ_CUBLAS_WORKSPACE` (ds4_glmvq_gpu.cuh:22) and `GVQ_USED`
+/// (ds4_glmvq_gpu.cuh:21): the linear workspace is the cuBLAS scratch plus
+/// one u32 per (row, expert-use) pair.
+const GVQ_CUBLAS_WORKSPACE: u64 = 32 << 20;
+const GVQ_USED: u64 = 8;
+/// `sizeof(glmvq_matrix)` on a 64-bit host (cuda/glm_vq.cuh:18): four
+/// pointers, two u32, the padded precision enum and two residual pointers.
+const GLMVQ_MATRIX_BYTES: u64 = 64;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
@@ -715,6 +736,23 @@ pub fn fill_quote_facts(
                 },
             )
         }
+        (ModelFamily::Gemma4Vq, _) => {
+            // ds4_gemma4_bind.inc:283-290 gemma4_session_memory: the session
+            // is activation set + KV rows + linear workspace + routed-expert
+            // scratch, and gemma4_graph_bytes allocates exactly that. The KV
+            // rows are `kv` (bank_kv_bytes); the other three are the graph's
+            // workspace and used to be priced at zero.
+            let cap = native.min(ctx_tokens).max(1);
+            if !req.ssd_streaming && req.gemma4.moe_cache_mib > 0 {
+                // The slot pool's device slots (gemma4_stream_alloc,
+                // ds4_gemma4_stream.inc:383-396): capacity * per, rounded
+                // down to whole experts, so the knob is the ceiling. Its
+                // pinned staging ring is host memory and is not charged here,
+                // because on a discrete card `available` is VRAM.
+                facts.gemma4_pool_bytes = Some(u64::from(req.gemma4.moe_cache_mib) << 20);
+            }
+            (kv, gemma4_workspace_bytes(cap), 0, 0)
+        }
         _ => (kv, 0, 0, 0),
     };
     let mut media_extra = 0;
@@ -917,6 +955,24 @@ pub fn attach_host_quote(
             })
             .unwrap_or(0)
     };
+    // A Gemma-4 host-cold lane does not put the mapping on the device: the
+    // map install promotes every non-cold tensor and leaves each cold record
+    // a GVQ header (ds4: "152 resident spans, 2.35 GiB device-resident,
+    // experts host-cold"). Charging the whole 9.37 GiB mapping against VRAM
+    // over-stated the lane by 7 GiB while the expert slots were missing
+    // entirely; the two errors nearly cancelled at chunk 4096 and let an arm
+    // through that died in the first forward. Unreadable artifact: keep the
+    // whole span, which over-charges but never under-charges.
+    if !req.ssd_streaming && caps.family == ModelFamily::Gemma4Vq {
+        let cold = gemma4_host_cold_layers(req);
+        if cold > 0 {
+            if let Some(bytes) =
+                model_path.and_then(|path| crate::gemma4_vq::resident_span_bytes(path, cold))
+            {
+                weights_bytes = bytes;
+            }
+        }
+    }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
     // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
     if let (ModelFamily::Ling31Vq, MtpMode::On, Some(path)) =
@@ -995,6 +1051,11 @@ pub fn attach_host_quote(
         .saturating_add(facts.ssd_cache_bytes.unwrap_or(0))
         .saturating_add(facts.ssd_staging_bytes.unwrap_or(0))
         .saturating_add(facts.ssd_metadata_bytes.unwrap_or(0))
+        // The Gemma-4 slot pool is allocated by the open itself
+        // (gemma4_stream_alloc), like the SSD cache above: by the time the
+        // post-open quote runs it is inside `live` already, so it must be
+        // credited or the total would charge it twice.
+        .saturating_add(facts.gemma4_pool_bytes.unwrap_or(0))
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
@@ -3287,6 +3348,60 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         _ => u64::from(shape.n_layer).saturating_mul(ctx),
     };
     tokens.saturating_mul(row)
+}
+
+/// How many layers of a Gemma-4 artifact keep their routed experts host-cold
+/// on the lane this request selects. The native rule
+/// (ds4.c:74380-74395): DS4_GEMMA4_CPU_MOE and the slot-cache lane leave
+/// every layer cold, the per-layer host split leaves the first N cold, and
+/// the all-GPU lanes leave none cold.
+fn gemma4_host_cold_layers(req: &ServingRequest) -> u32 {
+    let g = &req.gemma4;
+    if g.cpu_moe.is_on() || g.moe_cache_mib > 0 {
+        return GEMMA4_LAYERS;
+    }
+    g.moe_cpu_layers.min(GEMMA4_LAYERS)
+}
+
+/// The Gemma-4 session graph's non-KV half, term for term
+/// `gemma4_session_memory` (ds4_gemma4_bind.inc:283-290): the activation set
+/// `gemma4_activation_bytes` (ds4_gemma4_plan.h), the linear workspace
+/// `ds4_gpu_gvq_workspace_linear` (ds4_glmvq_gpu.cuh:311) and the
+/// routed-expert scratch `ds4_gpu_g4_moe_bytes` (ds4_gemma4_gpu.cuh:818).
+/// The KV rows are priced by `bank_kv_bytes`.
+///
+/// The rows are `gemma4_token_rows(cap)`: a draft round's verify block is
+/// seven rows even when the prefill chunk is narrower.
+pub fn gemma4_workspace_bytes(cap: u32) -> u64 {
+    let rows = u64::from(cap.max(GEMMA4_MTP_DRAFTS + 1));
+    // gemma4_activation_bytes: five hidden rows (cur, norm, branch, tmp,
+    // exp_acc), three dense-FF rows, the wide query and attention buffers at
+    // the full-layer width, both KV widths, the router scores and the top-8
+    // selection, plus the token and position rows and the tied logits.
+    let per_row = 5 * GEMMA4_EMBED
+        + 3 * GEMMA4_DENSE
+        + GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
+        + GEMMA4_HEADS * GEMMA4_SLIDING_HEAD_DIM
+        + 2 * GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM
+        + GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM
+        + GEMMA4_EXPERTS
+        + 2 * GEMMA4_USED;
+    let activation =
+        rows * per_row * SIZEOF_F32 + rows * (SIZEOF_I32 + SIZEOF_U32) + GEMMA4_VOCAB * SIZEOF_F32;
+    let linear = GVQ_CUBLAS_WORKSPACE + rows * GVQ_USED * SIZEOF_U32;
+    // ds4_gpu_g4_moe_bytes: one pair per (row, expert use) with in/out at the
+    // hidden width, gate/up/mid at the expert FF width, order/routes/tokpair
+    // index rows, the layer book of glmvq_matrix, and the bf16 staging row.
+    let pairs = rows * GEMMA4_USED;
+    let moe = pairs * GEMMA4_EMBED * SIZEOF_F32 * 2
+        + pairs * GEMMA4_FF * SIZEOF_F32 * 3
+        + pairs * SIZEOF_U32
+        + pairs * GEMMA4_USED * SIZEOF_U32
+        + pairs * SIZEOF_I32
+        + pairs * SIZEOF_F32
+        + u64::from(GEMMA4_LAYERS) * 3 * GEMMA4_EXPERTS * GLMVQ_MATRIX_BYTES
+        + GEMMA4_USED * GEMMA4_FF * SIZEOF_U16;
+    activation.saturating_add(linear).saturating_add(moe)
 }
 
 /// Bonsai (qwen35) per-bank footprint.
@@ -7677,6 +7792,98 @@ exit 1
             host,
         );
         assert_eq!(facts.ssd_cache_bytes, None);
+    }
+
+    /// The measured arm that passed --check-config and then OOM'd: chunk
+    /// 4096, a 6,144 MiB slot pool, ctx 8192. The quote must carry the
+    /// graph's workspace and the pool; the session line at the first forward
+    /// printed workspace=1596.5 MiB (activation 594.3 + linear 32.1 + moe
+    /// 970.1) and KV=1.05 GiB.
+    #[test]
+    fn gemma4_quote_prices_the_graph_workspace_and_the_slot_pool() {
+        let _env = lock_test_env();
+        let _kv = EnvGuard::set("DS4_GEMMA4_FULL_KV", "fp8");
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 2_518_251_580,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        let req = ServingRequest {
+            ctx: 8192,
+            native_chunk: Some(4096),
+            gemma4: crate::Gemma4Options {
+                moe_cache_mib: 6144,
+                ..crate::Gemma4Options::default()
+            },
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        // gemma4_session_memory's scratch terms at rows 4096, byte for byte.
+        assert_eq!(facts.scratch_bytes, Some(1_674_046_464));
+        assert_eq!(facts.gemma4_pool_bytes, Some(6144 * MIB));
+        // The KV rows stay in the bank term.
+        assert_eq!(facts.per_bank_bytes, Some(1_132_789_760));
+
+        // With no pool the lane allocates no slots, so nothing is charged.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                ctx: 8192,
+                native_chunk: Some(4096),
+                ..ServingRequest::default()
+            },
+            caps,
+            Some(shape),
+            host,
+        );
+        assert_eq!(facts.gemma4_pool_bytes, None);
+        assert_eq!(facts.scratch_bytes, Some(1_674_046_464));
+    }
+
+    /// ds4.c:74380-74395: the slot-cache lane and CPU_MOE leave every layer
+    /// cold; the per-layer split leaves the first N; the resident lane none.
+    #[test]
+    fn gemma4_host_cold_layers_follow_the_native_rule() {
+        let lane = |g: crate::Gemma4Options| ServingRequest {
+            gemma4: g,
+            ..ServingRequest::default()
+        };
+        assert_eq!(gemma4_host_cold_layers(&lane(Default::default())), 0);
+        assert_eq!(
+            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
+                moe_cache_mib: 4096,
+                ..Default::default()
+            })),
+            30
+        );
+        assert_eq!(
+            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
+                moe_cpu_layers: 12,
+                ..Default::default()
+            })),
+            12
+        );
+        assert_eq!(
+            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
+                cpu_moe: crate::gemma4_knobs::Toggle::On,
+                ..Default::default()
+            })),
+            30
+        );
+        // The native knob clamps at 30, so the quote must too.
+        assert_eq!(
+            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
+                moe_cpu_layers: 99,
+                ..Default::default()
+            })),
+            30
+        );
     }
 
     /// The graph groups its Q4 projections and expert routes over a prefill

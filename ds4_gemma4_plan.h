@@ -73,7 +73,14 @@ enum {
      * A draft round verifies at most G4_MTP_DRAFTS + 1 = 7 rows; 8 is the
      * ceiling that keeps the bf16 staging at 8 * 2816 * 2 = 45,056 B, under
      * the 48 KiB static shared-memory limit. */
-    G4_HEAD_ROWS = 8
+    G4_HEAD_ROWS = 8,
+    /* The session-graph admission floor (ds4.c gemma4_session_fit): a graph
+     * is admitted only when at least this much VRAM stays free at peak. It
+     * is the serving bar (handoff PHASE B/B3, 384 MiB free at peak) and it
+     * replaces a shared knob that the 4070 launcher sets to 0: at 0 the gate
+     * admitted a 2.61 GiB graph into 2.75 GiB free and the first forward
+     * then missed by 66,816 B (measured 2026-11-05). */
+    G4_SESSION_FIT_MARGIN = 384 * 1024 * 1024
 };
 
 /* Logit softcap (3.9), the checkpoint's final_logit_softcapping = 30

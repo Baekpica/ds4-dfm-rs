@@ -844,6 +844,70 @@ llama-context.cpp:2780), and upload decode misses into a slot-mapped cache
 instead of computing them on the host (llama-moe-cache.cpp:496-506 bypasses
 its cache above 32 tokens for exactly that reason).
 
+## The session quote and the boot admission, 4070 SUPER, 2026-11-05
+
+The quote priced the KV rows and nothing else. With a slot pool at chunk
+4096 it therefore approved an arm the card cannot hold: `plan` printed
+10.43 GiB against 11.63 GiB free with `issues: []`, the server booted, and
+the first forward died 65 KiB short inside the mmq pool allocator
+(`cuda/mmq/ds4_ggml_stubs.cu:139`) with 31.75 MiB free.
+
+The engine names the terms itself now (the graph line at the first forward):
+
+```
+ds4: Gemma-4 graph ctx=8192 chunk=4096 rows=4096 KV=1.05 GiB
+     workspace=1596.5 MiB (activation 594.3 + linear 32.1 + moe 970.1)
+     session=2.61 GiB
+```
+
+Three of those were missing from the quote, and one was charged to the wrong
+domain:
+
+- The workspace. `gemma4_session_memory` (ds4_gemma4_bind.inc:283-290) is
+  activation set + linear workspace + routed-expert scratch, and
+  `gemma4_graph_bytes` allocates exactly that. The quote's scratch is now the
+  same three terms (`gemma4_workspace_bytes`, mirroring
+  `gemma4_activation_bytes`, `ds4_gpu_gvq_workspace_linear` and
+  `ds4_gpu_g4_moe_bytes`).
+- The slot pool. `DS4_GEMMA4_MOE_CACHE_MIB` is device VRAM the open allocates
+  before any session exists (`gemma4_stream_alloc`), and the quote charged it
+  as zero. It is now the quote's `expert_cache`.
+- The mapping. On a host-cold lane only the promoted spans reach the device:
+  152 spans, 2.345 GiB measured, plus one 128 B GVQ header per cold record
+  (23,040 headers, 2.81 MiB). The quote charged the whole 9.37 GiB mapping
+  against VRAM, over-stating the lane by 7 GiB; it now prices
+  `gemma4_vq::resident_span_bytes`, which sums the same tensor set from the
+  GGUF directory (no hashing: 2.5 s, not the 22 s a verified open costs).
+
+The corrected quote, ctx 8192, pool in MiB, chunk in rows:
+
+| arm | spans | pool | KV | workspace | total | free | plan |
+|---|---|---|---|---|---|---|---|
+| pool 7,168, chunk 2,048 | 2.35 GiB | 7.00 | 0.66 | 0.80 | 10.81 GiB | 11.37 | admits |
+| pool 5,632, chunk 4,096 | 2.35 GiB | 5.50 | 1.05 | 1.56 | 10.46 GiB | 11.37 | admits |
+| pool 6,144, chunk 4,096 | 2.35 GiB | 6.00 | 1.05 | 1.56 | 10.96 GiB | 11.37 | admits |
+
+The last row is still admitted at plan time, because the quote is taken
+before CUDA exists and cannot see the process's own runtime (measured: 533
+MiB of context and library allocations at boot, which is why 10.96 GiB of
+arithmetic does not fit in 11.37 GiB of pre-init free memory). The exact
+verdict is the engine's, at boot, after the open has installed the pool and
+the spans. `gemma4_session_fit` now keeps a floor of 384 MiB free at peak
+(`G4_SESSION_FIT_MARGIN`, the serving bar in the handoff), and the server
+refuses to listen when the serial lane cannot host the session:
+
+```
+ds4: Gemma-4 session does not fit: ctx=8192 chunk=4096 need=2.61 GiB
+     (KV 1.05 GiB + workspace 1596.5 MiB: activation 594.3 + linear 32.1
+     + moe 970.1) + margin 384 MiB > free 2823.75 MiB (deficit 237.1 MiB)
+ds4-server-rs: no Gemma-4 session graph fits at ctx 8192: ...
+```
+
+The 5,632 MiB arm boots and serves: peak 11,401 MiB of the card's 12,282
+(881 MiB free), 31 greedy tokens in 1.54 s on a 19-token prompt. The 6,144
+MiB arm is refused at boot with the workspace bytes named. Two tiers, on
+purpose: `plan` prices the mix, `serve start` decides on the card.
+
 ## Reproduce
 
 ```
