@@ -75,6 +75,12 @@
 #                         DS4_GEMMA4_MOE_MISS (evict, or cpu to compute it on
 #                         the host). Pair it with MOE_MISS=cpu for the
 #                         "hot on GPU, cold on CPU" mix.
+#   DS4_GEMMA4_MOE_STAGING_MIB  pinned host ring the slot fills are copied
+#                         through, in MiB: 0 (default) means 256, otherwise
+#                         64..2048. Each record is copied from the mmap into
+#                         a ring slice and submitted to the upload stream, so
+#                         the six copies of one expert queue back to back
+#                         instead of each blocking until the device is idle.
 #   DS4_GEMMA4_PREFILL    prefill rows per forward (default 512, the native
 #                         bind's min(ctx, 512); 1 makes an 8K prompt minutes)
 #   DS4_GEMMA4_FAST_ATTN  1 (default) or 0; the eight measured fast options
@@ -163,6 +169,7 @@ SSD="${DS4_GEMMA4_SSD:-0}"
 CPU_MOE="${DS4_GEMMA4_CPU_MOE:-0}"
 CPU_MOE_LAYERS="${DS4_GEMMA4_MOE_CPU_LAYERS:-0}"
 MOE_CACHE_MIB="${DS4_GEMMA4_MOE_CACHE_MIB:-0}"
+MOE_STAGING_MIB="${DS4_GEMMA4_MOE_STAGING_MIB:-0}"
 SSD_CACHE="${DS4_GEMMA4_SSD_CACHE:-4GB}"
 FAST="${DS4_GEMMA4_FAST_ATTN:-1}"
 MMA="${DS4_GEMMA4_MMA:-1}"
@@ -250,7 +257,8 @@ plan_json() {
   local -a extra=() envs=( "DS4_LOCK_FILE=$LOCK" "$(kv_env)"
       "DS4_GEMMA4_PREFILL_CHUNK=$PREFILL" "${FAST_ENVS[@]}"
       "DS4_GEMMA4_MOE_CPU_LAYERS=$CPU_MOE_LAYERS"
-      "DS4_GEMMA4_MOE_CACHE_MIB=$MOE_CACHE_MIB" )
+      "DS4_GEMMA4_MOE_CACHE_MIB=$MOE_CACHE_MIB"
+      "DS4_GEMMA4_MOE_STAGING_MIB=$MOE_STAGING_MIB" )
   if [ "$SSD" = "1" ]; then
     extra+=( --ssd-streaming --ssd-streaming-cache-experts "$SSD_CACHE" )
   fi
@@ -323,6 +331,7 @@ serve_start() {
     echo "moe:     layers 0..$((CPU_MOE_LAYERS - 1)) on the host, the rest on the device"
   elif [ "$MOE_CACHE_MIB" != "0" ]; then
     echo "moe:     host-cold experts with a ${MOE_CACHE_MIB} MiB GPU slot cache"
+    echo "upload:  pinned staging ring $(( MOE_STAGING_MIB == 0 ? 256 : MOE_STAGING_MIB )) MiB, queued copies"
   fi
   preflight
   rm -f "$LOG"
@@ -337,6 +346,7 @@ serve_start() {
   # explicitly and echoed with the rest of the placement.
   envs+=( "DS4_GEMMA4_MOE_CPU_LAYERS=$CPU_MOE_LAYERS" )
   envs+=( "DS4_GEMMA4_MOE_CACHE_MIB=$MOE_CACHE_MIB" )
+  envs+=( "DS4_GEMMA4_MOE_STAGING_MIB=$MOE_STAGING_MIB" )
   local -a extra=()
   # SSD streaming (ds4_gemma4_map.inc, the discrete arm): resident spans are
   # promoted to the device and the routed experts stream from the artifact

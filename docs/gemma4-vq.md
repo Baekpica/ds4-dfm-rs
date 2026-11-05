@@ -802,9 +802,43 @@ Open defects on the new lanes, both reproduced:
   and a 4 GiB pool, so the right-sizing is tied to the promoted-stream map
   rather than to how much VRAM the lane leaves free.
 
+## The expert fill, 4070 SUPER, 2026-11-05
+
+One prompt (7,239 tokens at ctx 8192, chunk 2048) with the reply md5
+57a0da50adbfbc90ca06b5e73cb6d842 in every row, so the changes below are
+token-identical. `copy` is the host read into the pinned ring, `submit` the
+cudaMemcpyAsync submissions, `wait` the device drain.
+
+| step | TTFT | prefill | where the time went |
+|---|---|---|---|
+| cache 4 GiB, chunk 512, linear scan | 22.0 s | 329 tok/s | scan 2.3 s, 71.5 GiB of rereads |
+| + chunk 2048 | 13.8 s | 524 | rereads 18.5 GiB, upload 7.1 s |
+| + pool 7 GiB | 12.2 s | 594 | rereads 0.0 GiB, scan 2.3 s, copy 4.9 s |
+| + per-layer slot map | 10.1 s | 718 | scan 0.02 s |
+| + warm the mapping at open | 5.71 s | 1,279 | copy 787 ms for 6.51 GiB (8.27 GiB/s) |
+
+What the numbers say:
+
+- The fill's ceiling is the source, never the card. `tests/bench_gemma4_staging`
+  reads the same 0.39 MiB records at 12.8 GiB/s pageable, 18.5 pinned,
+  8.4 through the mapping and 6.4 by pread. The device side needs 43.5 ms to
+  submit and 1.4 ms to drain 6.5 GiB once the records are staged.
+- Pinning the staging buffer does not help on its own: 12.31 s queued against
+  12.23 s blocking at a 7 GiB pool. The 3.9x came from removing page faults -
+  the same records read 1.36 GiB/s on first touch and 8.3 GiB/s afterwards in
+  one process - so the engine touches every expert record once at open
+  (`ds4: Gemma-4 expert warm`, 7.01 GiB in 4.98 s, disk-bound at 1.41 GiB/s)
+  and `DS4_GEMMA4_MOE_WARM=0` skips it.
+- The staging ring must hold one whole layer (768 slices): a shorter ring
+  wraps mid-layer and that wrap waits behind the previous layer's compute.
+  With a whole layer it never wraps, and a batch that fills free slots is not
+  ordered behind compute at all, so the fill runs under the previous layer.
+- A 7 GiB pool holds all 3,830 expert records that fit and re-reads nothing
+  after the first pass; 6 GiB re-reads 2.2 GiB and 4 GiB re-reads 18.5 GiB for
+  the same prompt, because every 512-row chunk re-walks all thirty layers.
+
 The next unit is the one this table argues for: keep the GPU as the only
-expert compute unit, pin the expert store for fast copies, stream each layer's
-used experts during prefill (llama.cpp offloads any `MUL_MAT_ID` above 32
+expert compute unit, stream each layer's used experts during prefill (llama.cpp offloads any `MUL_MAT_ID` above 32
 tokens, ggml-cuda.cu:182, and `sched_copy_experts` uploads only the used set,
 llama-context.cpp:2780), and upload decode misses into a slot-mapped cache
 instead of computing them on the host (llama-moe-cache.cpp:496-506 bypasses

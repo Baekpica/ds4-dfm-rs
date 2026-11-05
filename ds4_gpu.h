@@ -85,6 +85,29 @@ ds4_gpu_upload *ds4_gpu_upload_new(void);
 int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
                         uint64_t offset, const void *src, uint64_t bytes);
 void ds4_gpu_upload_free(ds4_gpu_upload *upload);
+/* Pinned host memory for a staging ring (UNIT 7 PHASE A in the Gemma-4
+ * handoff).  cudaHostAlloc, so a record staged here can be submitted with
+ * cudaMemcpyAsync and the host is free to stage the next one; free with
+ * ds4_gpu_host_pinned_free. */
+void *ds4_gpu_host_pinned_alloc(uint64_t bytes);
+void ds4_gpu_host_pinned_free(void *host);
+/* Queued copy path over ds4_gpu_upload.  begin() orders the upload stream
+ * after everything already queued on the caller's stream (a slot must not be
+ * overwritten while a kernel still reads it), enqueue() submits one
+ * host-to-device copy without waiting, publish() orders the caller's stream
+ * after the copies (the next kernel sees the data), and sync() blocks until
+ * they land, which is what makes reusing a ring slot safe.  The trio is
+ * unusable while a CUDA graph capture is active: begin() then returns 0 and
+ * the caller keeps the blocking ds4_gpu_tensor_write path. */
+int ds4_gpu_upload_begin(ds4_gpu_upload *upload);
+/* 1 while a CUDA graph capture is open on this thread; the queued upload
+ * path and every blocking copy are illegal inside one, so callers consult
+ * this before choosing the path. */
+int ds4_gpu_capture_active(void);
+int ds4_gpu_upload_enqueue(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+                           uint64_t offset, const void *src, uint64_t bytes);
+int ds4_gpu_upload_publish(ds4_gpu_upload *upload);
+int ds4_gpu_upload_sync(ds4_gpu_upload *upload);
 int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes);
 int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
                           const ds4_gpu_tensor *src, uint64_t src_offset,

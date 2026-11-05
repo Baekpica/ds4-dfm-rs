@@ -62,6 +62,11 @@ typedef struct {
      * --moe-cache-mib: 0 keeps the lane off, N reserves N MiB of VRAM for
      * expert slots that fill from the mmap (ds4_gemma4_stream.inc). */
     uint32_t moe_cache_mib;
+    /* Pinned host ring the slot fills are staged through, in MiB: 0 means
+     * the 256 MiB default, otherwise 64..2048.  The ring is what turns the
+     * pool's six blocking cudaMemcpy calls per expert into queued copies on
+     * the upload stream (ds4_gemma4_stream.inc, UNIT 7 PHASE A). */
+    uint32_t moe_staging_mib;
 
     /* Full-layer KV format (0 bf16, 1 E4M3) and the direct VQ GEMV. */
     int32_t full_kv_fp8;

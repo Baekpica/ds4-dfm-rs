@@ -74456,6 +74456,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                         &e->model, &e->weights, &cache_opt);
                     if (model_map_ok) {
                         e->weights.gemma4_stream = e->gemma4_stream;
+                        /* First touch of the expert records here, not on the
+                         * first request: the fill's cost is page faults on
+                         * the mapping (ds4_gemma4_stream.inc). */
+                        gemma4_stream_warm(e->gemma4_stream, &e->weights);
                     } else {
                         gemma4_stream_free(e->gemma4_stream);
                         e->gemma4_stream = NULL;

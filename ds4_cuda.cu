@@ -5401,6 +5401,11 @@ extern "C" int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, con
 struct ds4_gpu_upload {
     cudaStream_t stream;
     int device;
+    /* Ordering anchors for the queued path (ds4_gpu_upload_begin /
+     * _publish / _sync).  Both are disable-timing: only their position in a
+     * stream matters, never how long the copy took. */
+    cudaEvent_t ready;
+    cudaEvent_t done;
 };
 
 extern "C" ds4_gpu_upload *ds4_gpu_upload_new(void) {
@@ -5408,7 +5413,14 @@ extern "C" ds4_gpu_upload *ds4_gpu_upload_new(void) {
     if (!upload) { return NULL; }
     if (!cuda_ok(cudaGetDevice(&upload->device), "SSD upload device") ||
         !cuda_ok(cudaStreamCreateWithFlags(&upload->stream, cudaStreamNonBlocking),
-                 "SSD upload stream")) {
+                 "SSD upload stream") ||
+        !cuda_ok(cudaEventCreateWithFlags(&upload->ready, cudaEventDisableTiming),
+                 "SSD upload ready event") ||
+        !cuda_ok(cudaEventCreateWithFlags(&upload->done, cudaEventDisableTiming),
+                 "SSD upload done event")) {
+        if (upload->stream) { (void)cudaStreamDestroy(upload->stream); }
+        if (upload->ready) { (void)cudaEventDestroy(upload->ready); }
+        if (upload->done) { (void)cudaEventDestroy(upload->done); }
         delete upload;
         return NULL;
     }
@@ -5432,8 +5444,78 @@ extern "C" void ds4_gpu_upload_free(ds4_gpu_upload *upload) {
     if (!upload) { return; }
     (void)cudaSetDevice(upload->device);
     (void)cudaStreamSynchronize(upload->stream);
+    (void)cudaEventDestroy(upload->ready);
+    (void)cudaEventDestroy(upload->done);
     (void)cudaStreamDestroy(upload->stream);
     delete upload;
+}
+
+/* ---- Pinned staging ring and the queued upload path (UNIT 7 PHASE A) ----
+ * The pool's fill is six records per expert (gate/up/down and their resi-
+ * duals).  With ds4_gpu_tensor_write each is a blocking cudaMemcpy from the
+ * pageable model mmap: the driver stages the bytes itself, the caller waits
+ * for the device to go idle first, and the next record cannot be staged
+ * while the copy runs.  The queued path replaces that with an explicit copy
+ * from the mmap into a pinned ring slice and one cudaMemcpyAsync on the
+ * upload stream, ordering the two streams with events. */
+
+extern "C" void *ds4_gpu_host_pinned_alloc(uint64_t bytes) {
+    if (!bytes) { return NULL; }
+    void *host = NULL;
+    if (!cuda_ok(cudaHostAlloc(&host, (size_t)bytes, cudaHostAllocDefault),
+                 "pinned staging ring")) {
+        return NULL;
+    }
+    return host;
+}
+
+extern "C" void ds4_gpu_host_pinned_free(void *host) {
+    if (!host) { return; }
+    (void)cudaFreeHost(host);
+}
+
+extern "C" int ds4_gpu_capture_active(void) {
+    return ds4_capture_active();
+}
+
+extern "C" int ds4_gpu_upload_begin(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    /* A capture cannot wait on an event recorded outside it, and a blocking
+     * sync would invalidate it: the caller keeps the blocking path. */
+    if (ds4_capture_active()) { return 0; }
+    if (!cuda_ok(cudaSetDevice(upload->device), "upload device")) { return 0; }
+    if (!cuda_ok(cudaEventRecord(upload->ready, ds4_current_stream()),
+                 "upload ready event")) {
+        return 0;
+    }
+    return cuda_ok(cudaStreamWaitEvent(upload->stream, upload->ready, 0),
+                   "upload ready wait");
+}
+
+extern "C" int ds4_gpu_upload_enqueue(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+        uint64_t offset, const void *src, uint64_t bytes) {
+    if (!upload || !dst || !src || offset > dst->bytes ||
+        bytes > dst->bytes - offset) { return 0; }
+    if (!cuda_ok(cudaSetDevice(upload->device), "upload device")) { return 0; }
+    return cuda_ok(cudaMemcpyAsync((char *)dst->ptr + offset, src, (size_t)bytes,
+                                   cudaMemcpyHostToDevice, upload->stream),
+                   "upload copy");
+}
+
+extern "C" int ds4_gpu_upload_publish(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    if (ds4_capture_active()) { return 0; }
+    if (!cuda_ok(cudaEventRecord(upload->done, upload->stream),
+                 "upload done event")) {
+        return 0;
+    }
+    return cuda_ok(cudaStreamWaitEvent(ds4_current_stream(), upload->done, 0),
+                   "upload done wait");
+}
+
+extern "C" int ds4_gpu_upload_sync(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    return cuda_ok(cudaEventSynchronize(upload->done), "upload completion");
 }
 
 extern "C" int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes) {

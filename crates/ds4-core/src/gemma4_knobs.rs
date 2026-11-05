@@ -38,6 +38,14 @@ pub const MOE_CPU_LAYERS_MAX: u32 = 999;
 /// this card has 12 GiB, so 12,288 MiB is already the whole card and anything
 /// larger is a typo the host should name rather than accept.
 pub const MOE_CACHE_MIB_MAX: u32 = 12288;
+/// The pinned staging ring the cache lane copies expert records through
+/// (ds4_gemma4_stream.inc). 0 selects the engine's 256 MiB default; anything
+/// else must be 64..2048 MiB. The ring bounds how many records can be in
+/// flight, and one layer needs at most 128 of the 0.39 MiB records (49 MiB),
+/// so even the floor holds two layers' fills.
+pub const MOE_STAGING_MIB_DEFAULT: u32 = 256;
+pub const MOE_STAGING_MIB_MIN: u32 = 64;
+pub const MOE_STAGING_MIB_MAX: u32 = 2048;
 /// `G4_PREFILL_MAX` in ds4_gemma4_plan.h.
 pub const PREFILL_CHUNK_MAX: u32 = 8192;
 pub const VQ_GEMV_THREADS_MIN: u32 = 32;
@@ -198,6 +206,12 @@ pub const KNOBS: &[KnobInfo] = &[
         "--gemma4-moe-cache-mib",
         "moe_cache_mib",
         "0..12288"
+    ),
+    knob!(
+        "DS4_GEMMA4_MOE_STAGING_MIB",
+        "--gemma4-moe-staging-mib",
+        "moe_staging_mib",
+        "0 = default (256), else 64..2048"
     ),
     knob!(
         "DS4_GEMMA4_PREFILL_CHUNK",
@@ -417,6 +431,11 @@ pub struct Gemma4Options {
     /// The experts themselves stay host-cold; a decode miss takes the
     /// DS4_GEMMA4_MOE_MISS policy (evict by default, host compute on "cpu").
     pub moe_cache_mib: u32,
+    /// The pinned host ring the cache lane's slot fills are staged through,
+    /// in MiB. 0 keeps the engine's 256 MiB default; the floor is 64 MiB.
+    /// It is a staging footprint, not a pin of the expert set: the records
+    /// still live in the mmap and only the in-flight copies occupy the ring.
+    pub moe_staging_mib: u32,
     pub prefill_chunk: u32,
     pub full_kv: FullKv,
     pub vq_gemv: Toggle,
@@ -452,6 +471,7 @@ impl Default for Gemma4Options {
             moe_miss: MissPolicy::Evict,
             moe_cpu_layers: 0,
             moe_cache_mib: 0,
+            moe_staging_mib: 0,
             prefill_chunk: 0,
             full_kv: FullKv::Bf16,
             vq_gemv: Toggle::On,
@@ -526,6 +546,15 @@ impl Gemma4Options {
             }
             "DS4_GEMMA4_MOE_CACHE_MIB" => {
                 self.moe_cache_mib = bounded(label, raw, 0, MOE_CACHE_MIB_MAX)?;
+            }
+            "DS4_GEMMA4_MOE_STAGING_MIB" => {
+                let n = bounded(label, raw, 0, MOE_STAGING_MIB_MAX)?;
+                if n != 0 && n < MOE_STAGING_MIB_MIN {
+                    return Err(format!(
+                        "{label} wants 0 (default {MOE_STAGING_MIB_DEFAULT}) or {MOE_STAGING_MIB_MIN}..{MOE_STAGING_MIB_MAX} (got '{raw}')"
+                    ));
+                }
+                self.moe_staging_mib = n;
             }
             "DS4_GEMMA4_PREFILL_CHUNK" => {
                 self.prefill_chunk = bounded(label, raw, 1, PREFILL_CHUNK_MAX)?;
@@ -609,6 +638,7 @@ impl Gemma4Options {
             "moe_miss": self.moe_miss.as_str(),
             "moe_cpu_layers": self.moe_cpu_layers,
             "moe_cache_mib": self.moe_cache_mib,
+            "moe_staging_mib": self.moe_staging_mib,
             "prefill_chunk": self.prefill_chunk,
             "full_kv": self.full_kv.as_str(),
             "vq_gemv": self.vq_gemv.as_str(),
@@ -662,6 +692,7 @@ impl Gemma4Options {
             moe_miss_cpu: i32::from(self.moe_miss == MissPolicy::Cpu),
             moe_cpu_layers: self.moe_cpu_layers,
             moe_cache_mib: self.moe_cache_mib,
+            moe_staging_mib: self.moe_staging_mib,
             full_kv_fp8: i32::from(self.full_kv == FullKv::Fp8),
             vq_gemv: on(self.vq_gemv),
             attn_split_span: self.attn_split_span,
@@ -768,6 +799,24 @@ mod tests {
     }
 
     #[test]
+    fn moe_staging_mib_takes_the_default_or_a_ring_in_range() {
+        let mut o = Gemma4Options::default();
+        assert_eq!(o.moe_staging_mib, 0, "0 selects the engine default");
+        for good in ["0", "64", "256", "2048"] {
+            o.set_env("DS4_GEMMA4_MOE_STAGING_MIB", good)
+                .unwrap_or_else(|e| panic!("{good}: {e}"));
+            assert_eq!(o.moe_staging_mib.to_string(), good);
+        }
+        for bad in ["63", "2049", "-1", "x", ""] {
+            let err = o.set_env("DS4_GEMMA4_MOE_STAGING_MIB", bad).unwrap_err();
+            assert!(err.contains("DS4_GEMMA4_MOE_STAGING_MIB"), "{err}");
+        }
+        assert_eq!(o.moe_staging_mib, 2048, "a rejected value must not stick");
+        assert_eq!(o.to_ffi().moe_staging_mib, 2048);
+        assert_eq!(o.to_json()["moe_staging_mib"], 2048);
+    }
+
+    #[test]
     fn booleans_are_strict() {
         let mut o = Gemma4Options::default();
         for good in ["1", "0", "true", "false", "on", "off"] {
@@ -826,8 +875,8 @@ mod tests {
                 info.env
             );
         }
-        // Bumped when a knob joins the table: moe_cache_mib is the 26th.
-        assert_eq!(KNOBS.len(), 26, "a new knob needs a table row");
+        // Bumped when a knob joins the table: moe_staging_mib is the 28th.
+        assert_eq!(KNOBS.len(), 28, "a new knob needs a table row");
     }
 
     #[test]
@@ -891,10 +940,14 @@ mod tests {
 mod knobs_presence {
     use super::*;
     #[test]
-    fn the_cache_knob_is_in_the_table() {
+    fn the_cache_and_staging_knobs_are_in_the_table() {
         assert!(
             KNOBS.iter().any(|k| k.env == "DS4_GEMMA4_MOE_CACHE_MIB"),
             "KNOBS is missing the cache knob"
+        );
+        assert!(
+            KNOBS.iter().any(|k| k.env == "DS4_GEMMA4_MOE_STAGING_MIB"),
+            "KNOBS is missing the staging-ring knob"
         );
         assert!(
             KNOBS.iter().any(|k| k.env == "DS4_GEMMA4_MOE_CPU_LAYERS"),

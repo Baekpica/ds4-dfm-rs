@@ -407,6 +407,7 @@ pub struct ds4_gemma4_options {
     pub moe_miss_cpu: i32,
     pub moe_cpu_layers: u32,
     pub moe_cache_mib: u32,
+    pub moe_staging_mib: u32,
     pub full_kv_fp8: i32,
     pub vq_gemv: i32,
     pub attn_split_span: u32,

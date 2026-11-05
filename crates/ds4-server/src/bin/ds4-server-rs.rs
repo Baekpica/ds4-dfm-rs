@@ -1473,6 +1473,7 @@ Gemma-4: [--gemma4-attn-split-span 16..4096] [--gemma4-attn-split-mma on|off]\n\
          [--gemma4-cpu-moe on|off] [--gemma4-cpu-moe-threads 1..64]\n\
          [--gemma4-moe-host on|off] [--gemma4-moe-miss evict|cpu]\n\
          [--gemma4-moe-cpu-layers 0..999] [--gemma4-moe-cache-mib 0..12288]\n\
+         [--gemma4-moe-staging-mib 0 (default 256) | 64..2048]\n\
          [--gemma4-full-kv bf16|fp8] [--gemma4-prefill-chunk 1..8192]\n\
          and the rest of the typed surface; --check-config prints every value\n\
 Tool replay: [--disable-exact-dsml-tool-replay] [--tool-memory-max-ids N]\n\
