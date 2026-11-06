@@ -1389,12 +1389,10 @@ extern "C" int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu
     return cuda_ok(cudaGetLastError(), "MiniMax q/k/v tails");
 }
 
-/* E2M1 to F16: the hardware conversion (cvt.rn.f16x2.e2m1x2, exact) on the
- * Blackwell family that owns the instruction, and the constant table the
- * same comment records as bit-identical everywhere else (the instruction is
- * not part of sm_89, and the tree must build for it). The table is the
- * canonical E2M1 set {0, .5, 1, 1.5, 2, 3, 4, 6} with the sign in bit 3, the
- * same table cuda/mmq/common.cuh's float-to-E2M1 uses. */
+/* E2M1 to F16 in hardware (cvt.rn.f16x2.e2m1x2, exact): the constant table
+ * cost a dependent load per value, 256 per thread of a decode attention CTA
+ * (8.8 -> 6.6 us in isolation, the same bits). Targets without the
+ * instruction (sm_89) keep the table, low nibble first like it. */
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 __device__ __forceinline__ float2 mm_e2m1x2(uint32_t byte) {
     uint32_t h;

@@ -136,11 +136,9 @@ struct ds4_naive_pool : public ggml_cuda_pool {
         ggml_cuda_set_device(device);
         void * ptr = nullptr;
         cudaStream_t s = t_ds4_pool_stream;
-        /* Name the request and the device's own numbers on refusal: an OOM
-         * that reports only "out of memory" cannot tell a workspace that is
-         * too wide from a card that is full. The serving quote prices the
-         * graph's own totals (ds4_gemma4_bind.inc gemma4_session_memory); a
-         * pool request this large is the transient the quote does not see. */
+        /* Name the request and the device's numbers on refusal: "out of
+         * memory" alone cannot tell a request that is too wide from a card
+         * that is full. */
         const cudaError_t err = cudaMallocAsync(&ptr, size, s);
         if (err != cudaSuccess) {
             size_t free_b = 0, total_b = 0;
