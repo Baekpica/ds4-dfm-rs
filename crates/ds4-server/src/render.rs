@@ -2861,4 +2861,3 @@ pub fn render_k2_chat(
     }
     Ok(out)
 }
-

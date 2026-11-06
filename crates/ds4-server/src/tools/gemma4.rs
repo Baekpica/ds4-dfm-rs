@@ -145,13 +145,18 @@ impl Args<'_> {
         loop {
             self.ws();
             let start = self.i;
-            while self.peek().is_some_and(|c| !matches!(c, b':' | b'}' | b',')) {
+            while self
+                .peek()
+                .is_some_and(|c| !matches!(c, b':' | b'}' | b','))
+            {
                 self.i += 1;
             }
             if self.peek() != Some(b':') || self.i == start {
                 return None;
             }
-            let key = String::from_utf8_lossy(&self.s[start..self.i]).trim().to_owned();
+            let key = String::from_utf8_lossy(&self.s[start..self.i])
+                .trim()
+                .to_owned();
             self.i += 1;
             members.push((key, self.value(depth + 1)?));
             self.ws();
@@ -265,9 +270,11 @@ mod tests {
 
     #[test]
     fn nested_values_keep_their_types() {
-        let (_, args) =
-            call_body("call:f{o:{z:[1,true,null],a:<|\"|>x<|\"|>},e:{},l:[]}").unwrap();
-        assert_eq!(args, "{\"e\":{},\"l\":[],\"o\":{\"a\":\"x\",\"z\":[1,true,null]}}");
+        let (_, args) = call_body("call:f{o:{z:[1,true,null],a:<|\"|>x<|\"|>},e:{},l:[]}").unwrap();
+        assert_eq!(
+            args,
+            "{\"e\":{},\"l\":[],\"o\":{\"a\":\"x\",\"z\":[1,true,null]}}"
+        );
     }
 
     #[test]
