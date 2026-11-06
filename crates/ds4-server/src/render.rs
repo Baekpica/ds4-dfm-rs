@@ -3519,7 +3519,7 @@ impl<'a> G4Args<'a> {
                 loop {
                     self.ws();
                     let start = self.i;
-                    while !matches!(self.s.get(self.i), Some(b':' | b'}' | b',')) {
+                    while self.s.get(self.i).is_some_and(|c| !matches!(c, b':' | b'}' | b',')) {
                         self.i += 1;
                     }
                     if self.s.get(self.i) != Some(&b':') {
@@ -3643,7 +3643,7 @@ pub fn gemma4_call_body(body: &str) -> Option<(String, String)> {
             break;
         }
         let start = p.i;
-        while !matches!(p.s.get(p.i), Some(b':' | b'}' | b',')) {
+        while p.s.get(p.i).is_some_and(|c| !matches!(c, b':' | b'}' | b',')) {
             p.i += 1;
         }
         if p.s.get(p.i) != Some(&b':') {
@@ -3871,6 +3871,14 @@ mod gemma4_tests {
         assert!(text.contains(
             "<|tool>declaration:lookup{description:<|\"|>Find a fact.<|\"|>,parameters:{properties:{q:{description:<|\"|>Query.<|\"|>,type:<|\"|>STRING<|\"|>,nullable:false}},required:[<|\"|>q<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|>"
         ));
+    }
+
+    #[test]
+    fn malformed_call_bodies_end() {
+        // Each of these used to spin forever looking for a separator.
+        for body in ["call:f{a}", "call:f{<|\"|>a<|\"|>}", "call:f{a:1 b}", "call:f{a:{bc}"] {
+            assert!(gemma4_call_body(body).is_none(), "{body}");
+        }
     }
 
     #[test]
