@@ -29,18 +29,22 @@ static uint64_t gemma4_bank_bytes(uint32_t ctx, uint32_t cap) {
     return ds4_gemma4_kv_bytes(ctx, cap);
 }
 
-static uint64_t gemma4_bank_row_bytes(unsigned il) {
-    return (uint64_t)gemma4_kv_heads(il) * gemma4_head_dim(il) * sizeof(uint16_t);
-}
-
 /* Slots [0, min(pos, rows)) of every layer of `src` into `dst`. */
 static bool gemma4_rows_copy(ds4_gemma4_graph *dst, const ds4_gemma4_graph *src,
         uint32_t pos) {
     for (uint32_t il = 0; pos && il < G4_LAYERS; il++) {
         const uint32_t rows = ds4_gemma4_kv_rows(il, src->ctx, src->cap);
         const uint32_t n = pos < rows ? pos : rows;
-        const uint64_t bytes = (uint64_t)n * gemma4_bank_row_bytes(il);
         if (!n) { continue; }
+        /* An FP8 full layer keeps one combined K|V|scales row instead. */
+        if (src->fkcache[il]) {
+            const uint64_t bytes = (uint64_t)n * ds4_gemma4_full_kv_row();
+            if (!ds4_gpu_tensor_copy(dst->fkcache[il], 0, src->fkcache[il], 0, bytes)) {
+                return false;
+            }
+            continue;
+        }
+        const uint64_t bytes = (uint64_t)n * ds4_gemma4_kv_row(il);
         if (!ds4_gpu_tensor_copy(dst->kcache[il], 0, src->kcache[il], 0, bytes) ||
             !ds4_gpu_tensor_copy(dst->vcache[il], 0, src->vcache[il], 0, bytes)) {
             return false;
