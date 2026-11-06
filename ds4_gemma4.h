@@ -102,8 +102,7 @@ static inline uint32_t ds4_gemma4_kv_rows(unsigned layer, unsigned ctx, unsigned
  * mechanism is the one Beam and MiMo already ship: E4M3 K and V with one f16
  * scale per KV head, full layers only (ds4_beam_bind.inc:56-67 and
  * ds4_mimo2_plan.h:38-58). Off by default; DS4_GEMMA4_FULL_KV=fp8 turns it
- * on. The 25 sliding layers keep bf16 rows, which the ring already bounds.
- * The Rust host validates the format and carries it typed. */
+ * on. The 25 sliding layers keep bf16 rows, which the ring already bounds. */
 static inline bool gemma4_full_kv_fp8(void) {
     return ds4_gemma4_knob_full_kv_fp8() != 0;
 }

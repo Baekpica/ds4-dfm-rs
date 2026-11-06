@@ -971,10 +971,8 @@ __global__ static void g4_moe_scatter_ordered_kernel(float *dst, const float *sr
 /* Gemma-4 decode projection: one row reads the GVQ1 bytes directly
  * (cuda/gemma_vq_decode.cuh) instead of restoring the matrix to bf16 and
  * calling cuBLAS. The restore stays the fallback for every geometry the
- * kernel does not take. Variant and width are the per-GPU profile knobs
- * (variant 0 auto, 1 warp, 2 block; width 32..512 in steps of 32); the Rust
- * host validates them and carries them typed, and the legacy getenv path is
- * unchanged for the C hosts. */
+ * kernel does not take. Variant (0 auto, 1 warp, 2 block) and width (128,
+ * 256 or 512) are diagnostic switches. */
 static bool g4_vq_gemv_on(void) {
     static int on = -1;
     if (on < 0) {
