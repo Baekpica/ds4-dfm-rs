@@ -400,7 +400,7 @@ static bool gemma4_mtp_verify(ds4_gemma4_mtp_runtime *r, ds4_model *m, ds4_weigh
 /* MTP trial: the reference's draft round, then a batched verify. The caller
  * keeps the longest candidate prefix whose rows match the trunk's own
  * tokens and commits it. */
-int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
+static int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
         int *tokens, int *target, int capacity, char *err, size_t errlen) {
     if (!ds4_session_is_gemma4(s) || !tokens || !target || capacity < 1 ||
         first < 0 || (uint32_t)first >= DS4_N_VOCAB) {
@@ -476,7 +476,8 @@ int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
  * position-indexed, so only the frontier, the drafter's hidden and the
  * session's logits move. Every row past `keep` stays stale and is overwritten
  * before it is read (the session's own reuse rule). */
-int ds4_session_gemma4_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+static int ds4_session_gemma4_commit(ds4_session *s, int keep, char *err,
+                                     size_t errlen) {
     ds4_gemma4_mtp_runtime *r = s->gemma4_mtp;
     if (!ds4_session_is_gemma4(s) || !s->checkpoint_valid || !r || !r->trial_n ||
         keep < 1 || (uint32_t)keep > r->trial_n ||

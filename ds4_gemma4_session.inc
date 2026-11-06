@@ -84,7 +84,7 @@ static int gemma4_session_sync(ds4_session *s, const ds4_tokens *prompt,
         /* Only the final chunk's last row needs the tied-table head. */
         const bool head = start + n == end;
         if (!gemma4_forward(g, &s->engine->model, &s->engine->weights,
-                prompt->v + start, n, start, head)) {
+                (const uint32_t *)prompt->v + start, n, start, head)) {
             return gemma4_session_fail(s, err, errlen);
         }
         start += n;
@@ -109,8 +109,8 @@ static int gemma4_session_eval(ds4_session *s, int token, char *err,
                         "Gemma-4 decode needs a valid token and checkpoint");
         return 1;
     }
-    if (!gemma4_forward(g, &s->engine->model, &s->engine->weights, &token, 1u,
-            g->position, true) ||
+    if (!gemma4_forward(g, &s->engine->model, &s->engine->weights,
+            (const uint32_t *)&token, 1u, g->position, true) ||
         !gemma4_read_logits(s)) {
         return gemma4_session_fail(s, err, errlen);
     }

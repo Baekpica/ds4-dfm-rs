@@ -274,8 +274,8 @@ static uint32_t gemma4_prefill_cap(uint32_t ctx) {
 }
 
 /* The session's device footprint, term for term the graph's own allocation:
- * `gemma4_activation_bytes` (shared with gemma4_graph_bytes), the KV layout
- * from ds4_gemma4.h, the linear workspace and the routed-expert scratch. */
+ * `gemma4_activation_bytes`, the KV layout from ds4_gemma4.h, the linear
+ * workspace and the routed-expert scratch. */
 static ds4_context_memory gemma4_session_memory(uint32_t ctx, uint32_t cap) {
     ds4_context_memory m = {0};
     if (!ctx || !cap || cap > ctx || ctx > G4_CONTEXT || cap > G4_PREFILL_MAX) {

@@ -2860,7 +2860,7 @@ mod stream_failure_tests {
         let mut st = openai_stream_start(&r);
         let mut content = String::new();
         let mut reasoning = String::new();
-        let mut drain = |w: &mut Writer, content: &mut String, reasoning: &mut String| {
+        let drain = |w: &mut Writer, content: &mut String, reasoning: &mut String| {
             for line in std::str::from_utf8(&w.out).unwrap().lines() {
                 let Some(data) = line.strip_prefix("data: ") else {
                     continue;

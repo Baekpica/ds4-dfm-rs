@@ -190,10 +190,6 @@ pub(super) fn mtp_layouts() -> Vec<crate::LayoutSpec> {
     layout::mtp_layouts()
 }
 
-pub(super) fn asset(root: &std::path::Path, name: &str) -> Result<Vec<u8>> {
-    release::asset(root, name)
-}
-
 /// Bytes of the device-resident parts (the embedding stays on SSD; the MTP
 /// part only with `Gemma4VqFeature::Mtp`).
 pub(crate) fn resident_bytes(root: &std::path::Path, feature: Gemma4VqFeature) -> Result<u64> {

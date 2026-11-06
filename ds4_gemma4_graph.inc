@@ -230,15 +230,6 @@ static bool gemma4_scalars(ds4_gemma4_graph *g, const ds4_model *m, const ds4_we
 
 static bool gemma4_graph_reset(ds4_gemma4_graph *g);
 
-static uint64_t gemma4_graph_bytes(uint32_t ctx, uint32_t cap) {
-    const uint32_t rows = gemma4_token_rows(cap);
-    /* The MoE workspace follows the session chunk. It used to be capped at
-     * 512 rows, which silently made any wider chunk fail in the experts
-     * (items_cap overflow) after the graph had already opened. */
-    return gemma4_activation_bytes(cap) + ds4_gemma4_kv_bytes(ctx, cap) +
-        ds4_gpu_gvq_workspace_linear(rows) + ds4_gpu_g4_moe_bytes(rows);
-}
-
 /* Frees what the graph owns. A borrowed bank graph owns only its KV rows;
  * the rest is graph 0's and outlives it. */
 static void gemma4_graph_clear(ds4_gemma4_graph *g) {
