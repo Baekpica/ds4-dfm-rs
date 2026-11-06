@@ -28,7 +28,7 @@ name them too.
 | Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
 | Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
-| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
+| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [family contribution checklist](CONTRIBUTING.md#model-families-and-large-contributions), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
 | C sources, the native bridge or host logic still in C | [Architecture](docs/rust-migration/ARCHITECTURE.md), [FFI contract](docs/rust-migration/FFI_CONTRACT.md), [C continuation](docs/rust-migration/C_CONTINUATION.md): move host logic to Rust; never extend deprecated C |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
 
@@ -91,6 +91,9 @@ owns the tool loop.
 
 ## New model-family serving contract
 
+- Meet the [family contribution checklist](CONTRIBUTING.md#model-families-and-large-contributions)
+  before a PR: no one-off experiments, launcher scripts, host paths or
+  out-of-tree references; declarations, defaults and docs match evidence.
 - Keep serving commands, flags, and client-visible behavior common across
   families. A new MoE family must implement every applicable serving option:
   context length, `max_seqs`, continuous banks, partial prefix reuse, session
