@@ -8,6 +8,11 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds Gemma-4 26B A4B VQ (`gemma4_vq`), contributed by jlFN (PR #141):
+  the R13+8 release directory, sliding and full GQA with optional E4M3
+  full-layer rows, banks, partial reuse, disk KV and snapshots qualified by
+  `--serving-check`, the assistant drafter behind `--mtp-mode on`, and
+  expert placement for 12 GiB cards ([family page](docs/gemma4-vq.md)).
 - Removes the built-in coding agent (`ds4-agent`, `ds4-agent-c`, the
   `ds4-web` crate and their parity oracles). ds4 is a serving engine:
   agents and tool frameworks connect over HTTP and own their tool loop.
