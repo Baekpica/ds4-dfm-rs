@@ -7208,6 +7208,7 @@ mod disk_sync_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let ordinary = parse_request(
             WireSurface::OpenaiChat,

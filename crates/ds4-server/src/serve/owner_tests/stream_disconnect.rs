@@ -58,6 +58,7 @@ fn parse_env() -> ParseEnv {
         },
         live_ids: Vec::new(),
         engine_defaults: false,
+        think_on_request: false,
     }
 }
 

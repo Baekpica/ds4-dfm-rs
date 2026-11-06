@@ -50,6 +50,7 @@ fn env() -> ParseEnv {
         sampling: Default::default(),
         live_ids: Vec::new(),
         engine_defaults: false,
+        think_on_request: false,
     }
 }
 

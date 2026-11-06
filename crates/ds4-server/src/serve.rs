@@ -77,11 +77,10 @@ pub struct ServerConfig {
     /// chat_template.jinja:2, Beam's reasoning_effort 512): a request that
     /// names no level gets it. The bin sets it from the opened model.
     pub max_effort_default: bool,
-    /// The served model's template does not open a thought channel unless the
-    /// request asks (Gemma-4's chat_template.jinja: the `<|think|>` marker is
-    /// emitted only for an explicit thinking request). A request that names no
-    /// level gets no thinking. The bin sets it from the opened model.
-    pub no_think_default: bool,
+    /// The served template opens a thought channel only when the request
+    /// asks (Gemma-4's `<|think|>`): thinking stays off unless asked. The bin
+    /// sets it from the opened model.
+    pub think_on_request: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     /// Request-omitted sampling: server flags over the model's own values.
@@ -186,7 +185,7 @@ impl Default for ServerConfig {
             model_name: "ds4".into(),
             engine_defaults: false,
             max_effort_default: false,
-            no_think_default: false,
+            think_on_request: false,
             ctx: 8192,
             default_tokens: 393216,
             sampling: Default::default(),
@@ -1140,13 +1139,9 @@ pub fn handle_client_inner(
 }
 
 /// The level of a request that names none: the template's own default for
-/// GLM-5.3 and Beam (max), none for Gemma-4 (its template opens the thought
-/// channel only for an explicit thinking request), the port's low for every
-/// other family.
+/// GLM-5.3 and Beam (max), the port's low for every other family.
 fn default_effort(cfg: &ServerConfig) -> ThinkMode {
-    if cfg.no_think_default {
-        ThinkMode::None
-    } else if cfg.max_effort_default {
+    if cfg.max_effort_default {
         ThinkMode::Max
     } else {
         ThinkMode::Low
@@ -1277,6 +1272,7 @@ fn prepare_client(
                 sampling: cfg.sampling,
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
+                think_on_request: cfg.think_on_request,
             };
             let body = std::str::from_utf8(&req.body).unwrap_or("");
             match parse_request(surf, &env, body) {
@@ -2718,15 +2714,6 @@ mod owner_tests {
         assert_eq!(default_effort(&cfg), ThinkMode::Max);
     }
 
-    // Gemma-4's template opens the thought channel only for an explicit
-    // thinking request; an absent level is none, not the port's low.
-    #[test]
-    fn gemma4_requests_default_to_no_think() {
-        let mut cfg = ServerConfig::default();
-        cfg.no_think_default = true;
-        assert_eq!(default_effort(&cfg), ThinkMode::None);
-    }
-
     #[test]
     fn mimo_image_keeps_serial_lane() {
         let env = RouteEnv {
@@ -3826,6 +3813,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let mut parsed = parse_request(
             WireSurface::Anthropic,
@@ -3935,6 +3923,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let parsed = parse_request(
             WireSurface::Anthropic,
@@ -3993,6 +3982,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let body = format!(r#"{{"prompt":"{prompt}","max_tokens":0}}"#);
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();
