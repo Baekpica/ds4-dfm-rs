@@ -37,9 +37,9 @@
  * restoring the matrix to bf16 and calling cuBLAS, which is the decode cost
  * the port measured at 10.7 tok/s against the sibling families' 15-25.
  *
- * Variants and launch widths are selectable per geometry so a per-GPU tuning
- * profile can choose them (docs/profile-optimizer.md in VQ_tools). Variant 0
- * is the runtime's own heuristic, used when no profile entry applies. */
+ * Variants and launch widths are diagnostic switches
+ * (DS4_GEMMA4_VQ_GEMV_VARIANT, DS4_GEMMA4_VQ_GEMV_THREADS); variant 0 is the
+ * runtime's own heuristic. */
 
 enum g4_vq_variant { G4_VQ_AUTO = 0, G4_VQ_WARP = 1, G4_VQ_BLOCK = 2 };
 enum { G4_VQ_VECTOR = GLMVQ_VECTOR };
@@ -163,8 +163,7 @@ static int g4_vq_gemv(const glmvq_matrix &m, const float *x, float *y, int varia
     if (variant == G4_VQ_AUTO) {
         /* 704 columns is 88 vectors: one warp covers it in three passes and
          * keeps eight rows per block. 2816 columns is 352 vectors: a block
-         * per row avoids 32-way serialization on the wider row. This is a
-         * heuristic only; a profile entry replaces it. */
+         * per row avoids 32-way serialization on the wider row. */
         variant = m.cols <= 1024u ? G4_VQ_WARP : G4_VQ_BLOCK;
     }
     if (variant == G4_VQ_WARP) {

@@ -346,7 +346,7 @@ impl Header {
 
 /// GVR8: one index byte per 8-weight vector into a K=256 E4M3 book; the
 /// parent GVQ1 matrix supplies the row gain. 128-byte header, payload digest
-/// at 96..128, canonical offsets (crates/vq-gguf/src/gvr1.rs).
+/// at 96..128, canonical offsets (the converter's GVR1 writer).
 struct ResidualHeader {
     book: u32,
     size: u64,

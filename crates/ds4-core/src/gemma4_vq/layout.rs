@@ -108,7 +108,7 @@ fn dense_mlp(out: &mut Vec<LayoutSpec>, prefix: &str) {
 /// split gives that stack one book for both halves.
 ///
 /// `residual` is the R13+8 build: a second 256-entry book per stack and one
-/// GVR8 index plane per matrix, named `<matrix>.res` (crates/vq-gguf/src/gvr1.rs).
+/// GVR8 index plane per matrix, named `<matrix>.res`.
 fn experts(out: &mut Vec<LayoutSpec>, prefix: &str, residual: bool) {
     for stack in ["down_proj", "gate_up_proj"] {
         exact(
