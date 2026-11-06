@@ -6,13 +6,12 @@
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
 
-/* Gemma-4 tensor-core prefill attention (Phase 8).
+/* Gemma-4 tensor-core prefill attention.
  *
  * The scalar tile kernel (cuda/gemma4_attn_tile.cuh) is 72 percent of the
  * 13,447-token prefill on the GB10: 22.95 s of 43.2 s in the full-layer
  * geometry and 8.25 s in the sliding one, at about 171 G MAC/s. This header
- * is the tensor-core form the Phase 8 review specifies
- * (Agy_phase8_review.md, sections 2 and 3): one CTA per (KV head, row tile),
+ * is its tensor-core form: one CTA per (KV head, row tile),
  * 8 warps, 32-key tiles, Q kept in registers, online softmax in f32, P
  * rounded to bf16 for the P*V mma. The two specializations share the
  * per-warp inner engine:
@@ -26,8 +25,8 @@
  * The arithmetic is not the scalar kernel's: the QK dot is an m16n8k16
  * tensor-core tree, the softmax rescales once per 32-key tile, and P is
  * rounded to bf16 before P*V. The gate is therefore a parity gate, not cmp
- * (Agy_phase8_review.md section 4: max_abs <= 2.5e-3, relL2 <= 1.5e-3 on
- * synthetic shapes; greedy-token parity and frontier KL on the model).
+ * (max_abs <= 2.5e-3, relL2 <= 1.5e-3 on synthetic shapes; greedy-token
+ * parity and frontier KL on the model).
  * Q is already rounded to bf16 by g4_rms_rope_kernel, so converting the f32
  * query to bf16 here is 0 ULP.
  *
@@ -41,7 +40,7 @@ enum { G4_MMA_TK = 32u, G4_MMA_THREADS = 256u };
 __device__ __forceinline__ uint32_t g4_mma_swz(uint32_t key, uint32_t chunk, uint32_t dim) {
     /* 16-byte chunks: dim/8 per key row, XOR the low three chunk bits with
      * the key index so the eight rows one ldmatrix reads land on eight
-     * distinct bank groups (Agy_phase8_review.md section 2.4). */
+     * distinct bank groups. */
     return key * dim + ((chunk ^ (key & 7u)) << 3);
 }
 

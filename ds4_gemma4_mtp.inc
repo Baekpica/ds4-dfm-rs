@@ -1,4 +1,4 @@
-/* Gemma-4 drafter (`gemma4_assistant`): the P8 speculative part.
+/* Gemma-4 drafter (`gemma4_assistant`): the speculative part.
  *
  * The reference is transformers' `Gemma4AssistantForCausalLM` driving
  * `SinglePositionMultiTokenCandidateGenerator`; every step below cites it.

@@ -85,8 +85,7 @@ ds4_gpu_upload *ds4_gpu_upload_new(void);
 int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
                         uint64_t offset, const void *src, uint64_t bytes);
 void ds4_gpu_upload_free(ds4_gpu_upload *upload);
-/* Pinned host memory for a staging ring (UNIT 7 PHASE A in the Gemma-4
- * handoff).  cudaHostAlloc, so a record staged here can be submitted with
+/* Pinned host memory for a staging ring.  cudaHostAlloc, so a record staged here can be submitted with
  * cudaMemcpyAsync and the host is free to stage the next one; free with
  * ds4_gpu_host_pinned_free. */
 void *ds4_gpu_host_pinned_alloc(uint64_t bytes);

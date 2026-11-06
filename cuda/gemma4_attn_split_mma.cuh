@@ -16,7 +16,7 @@
  * m16n8k16: the eight query heads of a KV head sit in M rows 0-7, the key
  * tile in N, and head_dim = 512 in K. Q K^T and P V both run on tensor
  * cores, and the online softmax rescales once per 64-key tile instead of
- * once per key (Agy_review_decode_20261104.md, rank 2 item 3).
+ * once per key.
  *
  * Geometry: D = 512, group = 8, TK = 64 keys, 8 warps (256 threads).
  *   - Q is staged once as 16 rows x 512 bf16 (rows 8-15 zero) and read

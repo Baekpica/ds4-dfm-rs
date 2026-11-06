@@ -1,6 +1,5 @@
 #!/bin/sh
-# Gemma-4 VQ OpenAI serving gate (P9), reworked to the repository gate
-# standard: boot ds4-server on the R13+8 release, poll the listener with a
+# Gemma-4 VQ OpenAI serving gate, in the repository gate standard: boot ds4-server on the R13+8 release, poll the listener with a
 # dead-process check, drive the OpenAI surface end to end, and prove:
 #
 #   boot         the log carries "listening on" and the CUDA backend line
@@ -31,7 +30,7 @@
 #                ds4_gemma4_plan.h:71; values above six are refused,
 #                crates/ds4-core/src/lib.rs:341-363), and require its content,
 #                finish_reason and completion-token count to equal the no-MTP
-#                run. That is the P8 losslessness claim over the server route.
+#                run: drafting is lossless over the server route.
 #                Skipped, and said so in the PASS line, when no path is given.
 #
 # One server at a time: the engine's single-instance lock (DS4_LOCK_FILE)

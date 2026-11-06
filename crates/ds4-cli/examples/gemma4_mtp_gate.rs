@@ -1,4 +1,4 @@
-//! Gemma-4 MTP losslessness (P8): drafting changes acceptance and speed,
+//! Gemma-4 MTP losslessness: drafting changes acceptance and speed,
 //! never the target's token stream. The trial lives in
 //! `ds4_core::gemma4_mtp_gate` so `--serving-check` runs the same code:
 //! greedy off/on, the state after the first multi-token block against a

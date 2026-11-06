@@ -303,8 +303,8 @@ static void attn_case(const char *name,unsigned rows,unsigned first,unsigned hea
 }
 
 /* The tensor-core prefill kernel, sliding geometry <256, 2>. Same inputs
- * and reference as attn_case; the gate is the Phase 8 parity tolerance
- * (Agy_phase8_review.md section 4.3), not bit identity. */
+ * and reference as attn_case; the gate is the parity tolerance, not bit
+ * identity. */
 static void attn_mma_case(const char *name,unsigned rows,unsigned first,unsigned heads,
         unsigned kv_heads,unsigned dim,unsigned window,unsigned ring,unsigned keys=0u) {
     const unsigned capacity=ring?ring:first+rows;

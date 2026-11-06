@@ -76,7 +76,6 @@ enum {
     G4_HEAD_ROWS = 8,
     /* The session-graph admission floor (ds4.c gemma4_session_fit): a graph
      * is admitted only when at least this much VRAM stays free at peak. It
-     * is the serving bar (handoff PHASE B/B3, 384 MiB free at peak) and it
      * replaces a shared knob that the 4070 launcher sets to 0: at 0 the gate
      * admitted a 2.61 GiB graph into 2.75 GiB free and the first forward
      * then missed by 66,816 B (measured 2026-11-05). */

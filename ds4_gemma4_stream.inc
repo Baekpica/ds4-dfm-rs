@@ -120,10 +120,10 @@ static uint64_t gemma4_stream_round(uint64_t bytes, uint64_t align) {
 }
 
 /* Diagnostic switch for the queued path (DS4_GEMMA4_MOE_STAGING_QUEUED=0
- * restores the blocking ds4_gpu_tensor_write fill). PHASE A measures the two
- * against each other: from a file-backed source the driver's blocking copy
+ * restores the blocking ds4_gpu_tensor_write fill). Measured against each
+ * other: from a file-backed source the driver's blocking copy
  * is already as fast as an explicit memcpy plus a queued transfer, so the
- * ring only pays once the copies overlap compute (PHASE B2). Like the other
+ * ring only pays once the copies overlap compute. Like the other
  * diagnostics this stays an environment variable; it changes no arithmetic. */
 static bool gemma4_stream_queued_on(void) {
     static int on = -1;
@@ -521,9 +521,8 @@ static bool gemma4_stream_alloc(ds4_gemma4_stream *s, const ds4_model *m,
  * mapping is touched here, at open, and every request then reads warm pages.
  *
  * Touching does not pin anything: the pages stay file-backed page cache and
- * the kernel may still reclaim them, so this is not the host-expert pin the
- * handoff defers, and it needs no extra RAM beyond the page cache that the
- * fill would pull in anyway.
+ * the kernel may still reclaim them, so this is not a pin and needs no
+ * extra RAM beyond the page cache that the fill would pull in anyway.
  * DS4_GEMMA4_MOE_WARM=0 skips the warm. */
 static void gemma4_stream_warm(ds4_gemma4_stream *s, const ds4_weights *w) {
     if (!s || !s->model || !s->model->map || !w || !w->gemma4) { return; }
@@ -861,10 +860,8 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
         if (id < 0 || (uint32_t)id >= G4_EXPERTS) { return 0u; }
         if (!unique[id]) { s->stats.route_unique++; unique[id] = 1u; }
     }
-    /* The two admission walks below each resolve one slot per route id with
-     * a linear scan of the pool. At a 2,048-row chunk that is 16,384 ids x
-     * 2,189 slots x 2 walks per layer, so the cost is charged to scan_ns;
-     * PHASE C1 replaces it with a per-layer slot_map[128]. */
+    /* The two admission walks below resolve each route id through the
+     * per-layer slot map; their time is charged to scan_ns. */
     const uint64_t scan_start = gemma4_stream_ns();
     const uint64_t upload_before = s->stats.upload_ns;
     const uint64_t io_before = s->stats.io_ns;

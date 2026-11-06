@@ -566,7 +566,7 @@ extern "C" int ds4_gpu_g4_attn_tile(ds4_gpu_tensor *out, const ds4_gpu_tensor *q
     return cuda_ok(cudaGetLastError(), "Gemma-4 tiled prefill attention");
 }
 
-/* Tensor-core prefill attention (Phase 8): the two specializations of
+/* Tensor-core prefill attention: the two specializations of
  * cuda/gemma4_attn_mma.cuh. Only the trunk's prefill chunk (keys = 0) and
  * rows >= 16; the MTP verify widths (2..8) stay on the bit-exact tile
  * kernel, and the parity gate is the model's greedy/frontier check. */
