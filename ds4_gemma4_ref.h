@@ -2,10 +2,10 @@
 #define DS4_GEMMA4_REF_H
 
 /* Host reference for the Gemma-4 primitives, in double, transcribed from
- * docs/gemma4-reference-semantics.md (transformers cc1451df, cited there by
- * line). Every device kernel is gated against these functions, and each
- * function restates the reference's rounding order, because several of them
- * round more than once (a bf16 elementwise op per torch call).
+ * transformers cc1451df (modeling_gemma4.py). Every device kernel is gated
+ * against these functions, and each function restates the reference's
+ * rounding order, because several of them round more than once (a bf16
+ * elementwise op per torch call).
  *
  * Nothing here is a performance path: it is the golden-vector source. */
 

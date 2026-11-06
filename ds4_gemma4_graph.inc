@@ -1,11 +1,11 @@
 /* Gemma-4-26B-A4B VQ graph (host side). Included by ds4.c after the weight
  * bind and after the CUDA entry points in ds4_gemma4_gpu.cuh.
  *
- * The forward pass is docs/gemma4-reference-semantics.md section 3, layer by
+ * The forward pass is the reference's (transformers cc1451df), layer by
  * layer, with every rounding the reference makes: seven norms, the routed
  * experts with their float32 weights, the dense FFN, the tanh-30 vocabulary
- * cap and the block's layer_scalar. No fused kernels: this is the correctness
- * path, and the sibling families' fused forms are a later measurement. */
+ * cap and the block's layer_scalar. Fused and tensor-core kernels replace
+ * the per-op ones where measured; each keeps a DS4_GEMMA4_* kill switch. */
 
 #define G4_RMS_EPS 1e-6f
 #define G4_ROUTER_ROOT (1.0f / 53.065996645686f)

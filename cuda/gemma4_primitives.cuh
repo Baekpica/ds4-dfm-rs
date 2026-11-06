@@ -2,8 +2,8 @@
 #define DS4_GEMMA4_PRIMITIVES_CUH
 
 /* Gemma-4 primitives: the operations the shared GVQ runtime does not have.
- * Each one restates a section of docs/gemma4-reference-semantics.md and is
- * gated against the matching g4_ref_* function in ds4_gemma4_ref.h.
+ * Each one restates the reference (transformers cc1451df, modeling_gemma4.py)
+ * and is gated against the matching g4_ref_* function in ds4_gemma4_ref.h.
  *
  * Rounding is part of the contract here: the reference is a stack of bf16
  * elementwise torch ops, so a norm, a rope and the softcap each round more

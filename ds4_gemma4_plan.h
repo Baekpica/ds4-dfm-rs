@@ -60,8 +60,7 @@ enum {
      * producers are the last sliding layer (28) and the last full layer
      * (29). The pinned property returns early for a 0-sharing config, so the
      * file and its own comment disagree there; the port follows the stated
-     * rule (docs/gemma4-reference-semantics.md, "Which trunk layers must
-     * publish KV"). */
+     * rule. */
     G4_SHARED_SLIDING = 28,
     G4_SHARED_FULL = 29,
     /* Draft width the engine clamps `--mtp-draft` to. The assistant drafts

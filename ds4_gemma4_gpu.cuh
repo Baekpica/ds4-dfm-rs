@@ -7,8 +7,7 @@
  *
  * The shared GVQ runtime supplies the linear, the norm-free plumbing and the
  * allocator. Everything the runtime does not have lives here or in
- * cuda/gemma4_{primitives,attn,moe}.cuh, and every kernel cites
- * docs/gemma4-reference-semantics.md. */
+ * cuda/gemma4_{primitives,attn,moe}.cuh, gated against ds4_gemma4_ref.h. */
 
 #include "ds4_gemma4.h"
 #include "cuda/gemma4_primitives.cuh"
