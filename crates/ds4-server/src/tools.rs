@@ -2518,7 +2518,12 @@ impl SemAccum {
         };
         if !prompt.is_empty() {
             a.feed_thinking(prompt);
-        } else if think_enabled && !matches!(format, ChatFormat::Inkling | ChatFormat::Minimax) {
+        } else if think_enabled
+            && !matches!(
+                format,
+                ChatFormat::Inkling | ChatFormat::Minimax | ChatFormat::Gemma4
+            )
+        {
             a.thinking_inside = true;
         }
         // Harmony opens every reply with its analysis message.
@@ -2559,8 +2564,11 @@ impl SemAccum {
             }
             return;
         }
-        // Inkling and MiniMax open their think span in the generation.
-        if matches!(self.chat_format, ChatFormat::Inkling | ChatFormat::Minimax) {
+        // Inkling, MiniMax and Gemma-4 open their think span in the generation.
+        if matches!(
+            self.chat_format,
+            ChatFormat::Inkling | ChatFormat::Minimax | ChatFormat::Gemma4
+        ) {
             let start = think_start(self.chat_format).as_bytes();
             let end = think_end(self.chat_format).as_bytes();
             let keep = start.len().max(end.len());
@@ -2937,5 +2945,34 @@ mod gemma4_split_tests {
             String::from_utf8(parsed.reasoning.clone()).unwrap(),
             "most_recent_thought"
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma4_scan_tests {
+    use super::SemAccum;
+    use crate::stream::ChatFormat;
+
+    #[test]
+    fn the_scan_follows_the_channel_the_model_opens() {
+        let mut acc = SemAccum::init(true, true, true, ChatFormat::Gemma4, b"");
+        assert!(!acc.thinking_inside(), "Gemma opens its own channel");
+        acc.feed(b"<|channel>thought\n", &[]);
+        assert!(acc.thinking_inside());
+        acc.feed(b"plan", &[]);
+        acc.feed(b"<channel|>", &[]);
+        assert!(!acc.thinking_inside());
+    }
+
+    #[test]
+    fn a_prompt_ending_in_the_channel_starts_inside_it() {
+        let acc = SemAccum::init(
+            true,
+            true,
+            true,
+            ChatFormat::Gemma4,
+            b"<|turn>model\n<|channel>thought\n",
+        );
+        assert!(acc.thinking_inside());
     }
 }
