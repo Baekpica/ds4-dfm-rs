@@ -15,6 +15,7 @@ use crate::render::{
 };
 
 pub(crate) mod beam;
+pub(crate) mod gemma4;
 pub(crate) mod iquest;
 pub(crate) mod minimax;
 use crate::stream::{think_end, think_start, ChatFormat};
@@ -1175,80 +1176,6 @@ fn parse_dots3_invoke(body: &[u8]) -> Option<ToolCall> {
     Some(tc)
 }
 
-/// Gemma-4 output: reasoning in the `<|channel>thought` channel, then content,
-/// then zero or more `<|tool_call>call:NAME{args}<tool_call|>` blocks.
-///
-/// The channel is the reasoning field, so it is split off FIRST, with the same
-/// `split_reasoning_response` the no-tools path uses; the calls are then
-/// separated from what remains. This function used to leave the channel in the
-/// text, which put "<|channel>thought ..." in front of the answer of every
-/// tool-enabled turn (measured 2026-11-05: an open-grok tool turn displayed
-/// the raw markers and no call at all).
-///
-/// A close marker with no open (`<|tool_call|>` written on its own, or a
-/// `<turn|>` the stop list missed) is a degenerate emission, never content:
-/// both are removed from the text after the calls are taken.
-fn parse_gemma4_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
-    const START: &[u8] = b"<|tool_call>";
-    const END: &[u8] = b"<tool_call|>";
-    let (body, reasoning) =
-        split_reasoning_response(text, ChatFormat::Gemma4, require_thinking_closed);
-    let mut content = Vec::new();
-    let mut calls = Vec::new();
-    let mut pos = 0usize;
-    while let Some(at) = find_substr(&body[pos..], START) {
-        let start = pos + at;
-        let Some(close) = find_substr(&body[start + START.len()..], END) else {
-            // An unclosed call is not a call: keep the text and report not-ok.
-            content.extend_from_slice(&body[pos..]);
-            return Some(ParsedGenerated {
-                content: gemma4_drop_markers(&content),
-                reasoning,
-                ok: false,
-                raw_tool_text: String::from_utf8_lossy(&body[start..]).into_owned(),
-                ..Default::default()
-            });
-        };
-        content.extend_from_slice(&body[pos..start]);
-        let call = String::from_utf8_lossy(&body[start + START.len()..start + START.len() + close]);
-        let (name, arguments) = crate::render::gemma4_call_body(&call)?;
-        calls.push(ToolCall {
-            id: String::new(),
-            name,
-            arguments,
-        });
-        pos = start + START.len() + close + END.len();
-    }
-    content.extend_from_slice(&body[pos..]);
-    Some(ParsedGenerated {
-        content: gemma4_drop_markers(&content),
-        reasoning,
-        calls,
-        ok: true,
-        ..Default::default()
-    })
-}
-
-/// Remove the Gemma-4 template markers that can only be a degenerate
-/// emission: a call close with no open, and a turn close the stop list missed.
-/// The channel markers are already gone (see `split_reasoning_response`).
-fn gemma4_drop_markers(content: &[u8]) -> Vec<u8> {
-    let text = String::from_utf8_lossy(content);
-    let mut out = text.into_owned();
-    for marker in [
-        "<|tool_call|>",
-        "<tool_call|>",
-        "<|tool_call>",
-        "<turn|>",
-        "<|turn>",
-    ] {
-        if out.contains(marker) {
-            out = out.replace(marker, "");
-        }
-    }
-    out.into_bytes()
-}
-
 fn parse_dots3_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
     let tool_start = b"<dots_function_call>";
     let tool_end = b"</dots_function_call>";
@@ -2047,7 +1974,7 @@ pub fn parse_generated_message(
         ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
-        ModelSyntax::Gemma4 => parse_gemma4_generated(text, require_thinking_closed),
+        ModelSyntax::Gemma4 => Some(gemma4::parse(text, require_thinking_closed)),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -2234,7 +2161,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder])
         // `<|constrain|>` never occurs in prose; ` to=` may.
         ChatFormat::Beam => find_substr(s, beam::TOOL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_START.as_bytes()),
-        ChatFormat::Gemma4 => find_substr(s, b"<|tool_call>"),
+        ChatFormat::Gemma4 => find_substr(s, gemma4::CALL_OPEN.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -2282,7 +2209,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
         ChatFormat::Beam => find_substr(s, beam::CALL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_END.as_bytes()),
-        ChatFormat::Gemma4 => find_substr(s, b"<tool_call|>"),
+        ChatFormat::Gemma4 => find_substr(s, gemma4::CALL_CLOSE.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -2493,7 +2420,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
         ChatFormat::Beam => &[beam::TOOL.as_bytes()],
         ChatFormat::Minimax => &[minimax::TOOL_CALL_START.as_bytes()],
-        ChatFormat::Gemma4 => &[b"<|tool_call>"],
+        ChatFormat::Gemma4 => &[gemma4::CALL_OPEN.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
