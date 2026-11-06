@@ -40,6 +40,8 @@ const FILES: &str = "files.json";
 const FORMAT_VERSION: u64 = 1;
 const RESIDUAL_FORMAT_VERSION: u64 = 2;
 const CONTEXT: u64 = 262_144;
+/// A Q4_K header has two f16 scales; retain an incomplete four-byte header.
+const SCALE_TAIL: usize = 3;
 
 /// Device-inventory features: the MTP drafter joins the trunk on request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -450,28 +452,31 @@ fn part_digest(path: &Path, mapped: &[u8], mut scan: Scan) -> Result<Vec<u8>> {
 }
 
 /// Quant scale checks as a part streams by (spans in part offsets). A block's
-/// scale bytes may straddle two chunks; the previous chunk's last byte
-/// carries.
+/// scale bytes may straddle chunks; retain the last three bytes for Q4_K's
+/// two f16 scales, as the Ling-3.1 scanner does.
 struct Scan<'a> {
     blocks: &'a [(u64, u64, u64)],
-    tail: u8,
+    tail: [u8; SCALE_TAIL],
 }
 
 impl<'a> Scan<'a> {
     fn new(blocks: &'a [(u64, u64, u64)]) -> Self {
-        Self { blocks, tail: 0 }
+        Self {
+            blocks,
+            tail: [0; SCALE_TAIL],
+        }
     }
 
     fn feed(&mut self, pos: u64, chunk: &[u8]) -> Result<()> {
         let end = pos + chunk.len() as u64;
-        // A block starting at the previous chunk's last byte waited.
-        let from = pos.saturating_sub(1);
+        // A block waits until both scales fit; earlier bytes stay in tail.
+        let from = pos.saturating_sub(SCALE_TAIL as u64);
         let tail = self.tail;
         let byte = |at: u64| {
             if at >= pos {
                 chunk[(at - pos) as usize]
             } else {
-                tail
+                tail[SCALE_TAIL - (pos - at) as usize]
             }
         };
         for &(start, bytes, block) in self.blocks {
@@ -480,7 +485,8 @@ impl<'a> Scan<'a> {
                 continue;
             }
             let mut at = start + from.saturating_sub(start).div_ceil(block) * block;
-            while at < stop && at + 2 <= end {
+            let scale_bytes = if block == Q4_BYTES { 4 } else { 2 };
+            while at < stop && at + scale_bytes <= end {
                 let scale = [byte(at), byte(at + 1)];
                 if !q8_scale_finite(&scale) {
                     return Err(fail("nonfinite quant scale"));
@@ -494,9 +500,9 @@ impl<'a> Scan<'a> {
                 at += block;
             }
         }
-        if let Some(&last) = chunk.last() {
-            self.tail = last;
-        }
+        let take = chunk.len().min(SCALE_TAIL);
+        self.tail.copy_within(take.., 0);
+        self.tail[SCALE_TAIL - take..].copy_from_slice(&chunk[chunk.len() - take..]);
         Ok(())
     }
 }
@@ -658,10 +664,14 @@ mod tests {
         }
         // The Q4_K minimum scale sits two bytes after d; a NaN there counts.
         let q4 = [(1024, 2 * Q4_BYTES, Q4_BYTES)];
-        let mut bad = clean.clone();
-        bad[1024 + 3] = 0x7c;
-        assert!(scan(&clean, &q4, 1536).is_ok());
-        assert!(scan(&bad, &q4, 1536).is_err());
+        for byte in [1024 + 1, 1024 + 3, 1024 + Q4_BYTES as usize + 3] {
+            let mut bad = clean.clone();
+            bad[byte] = 0x7c;
+            for chunk in [1, 2, 3, 7, 144, 1025, 1026, 1027, 1536] {
+                assert!(scan(&clean, &q4, chunk).is_ok(), "chunk {chunk}");
+                assert!(scan(&bad, &q4, chunk).is_err(), "byte {byte} chunk {chunk}");
+            }
+        }
     }
 
     #[test]

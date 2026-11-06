@@ -230,6 +230,8 @@ const GEMMA4_WINDOW: u64 = 1024;
 /// `G4_MTP_DRAFTS` (ds4_gemma4_plan.h): one verify block is drafts + 1 rows,
 /// and the sliding ring must be that much wider than the window.
 const GEMMA4_MTP_DRAFTS: u32 = 6;
+const GEMMA4_MTP_EMBED: u64 = 1024;
+const GEMMA4_MTP_FFN: u64 = 8192;
 const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
 const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
 const GEMMA4_FULL_KV_HEADS: u64 = 2;
@@ -756,7 +758,12 @@ pub fn fill_quote_facts(
                 // because on a discrete card `available` is VRAM.
                 facts.gemma4_pool_bytes = Some(u64::from(pool_mib) << 20);
             }
-            (kv, gemma4_workspace_bytes(cap), 0, 0)
+            (
+                kv,
+                gemma4_workspace_bytes(cap),
+                if mtp_on { gemma4_mtp_bytes() } else { 0 },
+                0,
+            )
         }
         _ => (kv, 0, 0, 0),
     };
@@ -3392,18 +3399,17 @@ fn gemma4_workspace_bytes(cap: u32) -> u64 {
     let rows = u64::from(cap.max(GEMMA4_MTP_DRAFTS + 1));
     // gemma4_activation_bytes: five hidden rows (cur, norm, branch, tmp,
     // exp_acc), three dense-FF rows, the wide query and attention buffers at
-    // the full-layer width, both KV widths, the router scores and the top-8
-    // selection, plus the token and position rows and the tied logits.
+    // the full-layer width, two widest KV rows, the router scores and the
+    // top-8 selection, plus token/position rows, tied logits and rotary tables.
     let per_row = 5 * GEMMA4_EMBED
         + 3 * GEMMA4_DENSE
-        + GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
-        + GEMMA4_HEADS * GEMMA4_SLIDING_HEAD_DIM
+        + 2 * GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
         + 2 * GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM
-        + GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM
         + GEMMA4_EXPERTS
         + 2 * GEMMA4_USED;
-    let activation =
-        rows * per_row * SIZEOF_F32 + rows * (SIZEOF_I32 + SIZEOF_U32) + GEMMA4_VOCAB * SIZEOF_F32;
+    let activation = rows * per_row * SIZEOF_F32
+        + rows * (SIZEOF_I32 + SIZEOF_U32)
+        + (GEMMA4_VOCAB + GEMMA4_SLIDING_HEAD_DIM / 2 + GEMMA4_FULL_HEAD_DIM / 2) * SIZEOF_F32;
     let linear = GVQ_CUBLAS_WORKSPACE + rows * GVQ_USED * SIZEOF_U32;
     // ds4_gpu_g4_moe_bytes: one pair per (row, expert use) with in/out at the
     // hidden width, gate/up/mid at the expert FF width, order/routes/tokpair
@@ -3418,6 +3424,22 @@ fn gemma4_workspace_bytes(cap: u32) -> u64 {
         + u64::from(GEMMA4_LAYERS) * 3 * GEMMA4_EXPERTS * GLMVQ_MATRIX_BYTES
         + GEMMA4_USED * GEMMA4_FF * SIZEOF_U16;
     activation.saturating_add(linear).saturating_add(moe)
+}
+
+/// The native fit gate reserves a maximum-width draft block and its own
+/// one-row linear context, independent of the trunk's shared workspace.
+fn gemma4_mtp_bytes() -> u64 {
+    let rows = u64::from(GEMMA4_MTP_DRAFTS + 1);
+    let floats = 4 * GEMMA4_EMBED
+        + 3 * GEMMA4_MTP_EMBED
+        + 2 * GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
+        + 3 * GEMMA4_MTP_FFN
+        + (rows + 1) * GEMMA4_VOCAB;
+    floats * SIZEOF_F32
+        + 2 * rows * SIZEOF_I32
+        + SIZEOF_U32
+        + GVQ_CUBLAS_WORKSPACE
+        + GVQ_USED * SIZEOF_U32
 }
 
 /// Bonsai (qwen35) per-bank footprint.
@@ -7812,9 +7834,8 @@ exit 1
 
     /// The measured arm that passed --check-config and then OOM'd: chunk
     /// 4096, a 6,144 MiB slot pool, ctx 8192. The quote must carry the
-    /// graph's workspace and the pool; the session line at the first forward
-    /// printed workspace=1596.5 MiB (activation 594.3 + linear 32.1 + moe
-    /// 970.1) and KV=1.05 GiB.
+    /// graph's workspace and the pool. The original session log undercounted
+    /// activations; tests/test_gemma4_memory.py checks the actual allocator.
     #[test]
     fn gemma4_quote_prices_the_graph_workspace_and_the_slot_pool() {
         let _env = lock_test_env();
@@ -7838,7 +7859,7 @@ exit 1
         fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
         drop(pool);
         // gemma4_session_memory's scratch terms at rows 4096, byte for byte.
-        assert_eq!(facts.scratch_bytes, Some(1_674_046_464));
+        assert_eq!(facts.scratch_bytes, Some(1_724_379_648));
         assert_eq!(facts.gemma4_pool_bytes, Some(6144 * MIB));
         // The KV rows stay in the bank term.
         assert_eq!(facts.per_bank_bytes, Some(1_132_789_760));
@@ -7857,7 +7878,38 @@ exit 1
             host,
         );
         assert_eq!(facts.gemma4_pool_bytes, None);
-        assert_eq!(facts.scratch_bytes, Some(1_674_046_464));
+        assert_eq!(facts.scratch_bytes, Some(1_724_379_648));
+    }
+
+    #[test]
+    fn gemma4_quote_includes_mtp() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 0,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        for (mode, bytes) in [(MtpMode::On, 42_164_316), (MtpMode::Off, 0)] {
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                &ServingRequest {
+                    ctx: 8192,
+                    mtp_path: Some("drafter.gguf".into()),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                },
+                caps,
+                Some(crate::shape::SHAPE_GEMMA4_A4B_VQ),
+                host,
+            );
+            // The maximum draft block's allocations, including its own
+            // linear workspace (tests/test_gemma4_memory.py).
+            assert_eq!(facts.mtp_state_bytes, Some(bytes));
+        }
     }
 
     /// ds4.c:74380-74395: the slot-cache lane and CPU_MOE leave every layer

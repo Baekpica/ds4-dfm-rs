@@ -136,9 +136,9 @@ typedef struct {
 /* The graph's activation set for one `cap`-row chunk: five hidden rows
  * (cur, norm, branch, tmp, exp_acc), three dense-FF rows, the wide query and
  * attention buffers (allocated at the full-layer width for every layer), the
- * two KV row widths, the router scores and the top-8 selection, and the
- * tied-table logits. The graph allocates exactly this and the estimator
- * quotes the same number, so the two cannot drift.
+ * two widest KV rows, the router scores and the top-8 selection, the
+ * tied-table logits and both rotary tables. tests/test_gemma4_memory.py
+ * compares this quote with the graph's actual allocation block.
  *
  * The token and position rows are the LARGER of the chunk and one draft
  * round's verify block (G4_MTP_DRAFTS + 1): the drafter's verify forward runs
@@ -162,11 +162,11 @@ static inline bool gemma4_ring_keeps(uint32_t rows, uint32_t high,
 static inline uint64_t gemma4_activation_bytes(unsigned cap) {
     const uint64_t rows = gemma4_token_rows(cap);
     return rows * ((uint64_t)5u * G4_EMBED + 3u * G4_DENSE +
-        (uint64_t)G4_HEADS * G4_GLOBAL_HEAD_DIM + (uint64_t)G4_HEADS * G4_HEAD_DIM +
-        2u * G4_KV_HEADS * G4_HEAD_DIM + (uint64_t)G4_GLOBAL_KV_HEADS * G4_GLOBAL_HEAD_DIM +
+        (uint64_t)2u * G4_HEADS * G4_GLOBAL_HEAD_DIM +
+        2u * G4_KV_HEADS * G4_HEAD_DIM +
         G4_EXPERTS + 2u * G4_USED) * sizeof(float) +
-        (uint64_t)gemma4_token_rows(cap) * (sizeof(int32_t) + sizeof(uint32_t)) +
-        (uint64_t)G4_VOCAB * sizeof(float);
+        rows * (sizeof(int32_t) + sizeof(uint32_t)) +
+        ((uint64_t)G4_VOCAB + G4_HEAD_DIM / 2u + G4_GLOBAL_HEAD_DIM / 2u) * sizeof(float);
 }
 
 /* A sliding layer keeps window + prefill_cap rows (a ring, the same rule as
@@ -228,7 +228,7 @@ static inline uint64_t gemma4_mtp_scratch_bytes(void) {
         (uint64_t)G4_VOCAB +            /* the drafter's head, one row */
         (uint64_t)(G4_MTP_DRAFTS + 1u) * G4_VOCAB;  /* verify rows */
     return floats * sizeof(float) +
-        (G4_MTP_DRAFTS + 1u) * sizeof(int32_t) + sizeof(uint32_t);
+        2u * (G4_MTP_DRAFTS + 1u) * sizeof(int32_t) + sizeof(uint32_t);
 }
 
 #endif

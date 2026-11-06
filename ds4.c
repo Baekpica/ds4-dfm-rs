@@ -55037,10 +55037,11 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         /* The drafter is a second checkpoint (`--mtp`), so it arms only when
-         * its part is bound; the serial lane drafts (SpecLane::Serial). */
+         * its part is bound; the serial lane drafts (SpecLane::Serial).
+         * One draft already produces a two-row verify block. */
         const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
         return e->backend == DS4_BACKEND_CUDA && e->mtp_ready &&
-            e->mtp_weights.gemma4_mtp != NULL && e->mtp_draft_tokens > 1 &&
+            e->mtp_weights.gemma4_mtp != NULL && e->mtp_draft_tokens > 0 &&
             !(disable && disable[0] == '1' && disable[1] == '\0');
     }
     return e->mtp_ready;
@@ -75505,7 +75506,8 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
  * allocator all read this one function, so they cannot drift. */
 static uint64_t gemma4_session_bytes(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
     return gemma4_session_memory(ctx, cap).total_bytes +
-        (e && e->mtp_weights.gemma4_mtp ? gemma4_mtp_scratch_bytes() : 0u);
+        (e && e->mtp_weights.gemma4_mtp ? gemma4_mtp_scratch_bytes() +
+            ds4_gpu_gvq_workspace_linear(1u) : 0u);
 }
 
 /* Fails closed like every VQ family: a CUDA backend and the whole quote in

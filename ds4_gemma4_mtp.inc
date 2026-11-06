@@ -409,7 +409,7 @@ static int ds4_session_gemma4_trial(ds4_session *s, int first, int max_tokens,
     }
     ds4_gemma4_graph *g = s->gemma4_graph;
     ds4_gemma4_mtp_runtime *r = s->gemma4_mtp;
-    if (max_tokens < 2 || !s->gemma4_graph_ready || !g || !r || r->drafts < 2) { return 0; }
+    if (max_tokens < 2 || !s->gemma4_graph_ready || !g || !r || !r->drafts) { return 0; }
     /* Nothing to extrapolate from yet: a rewritten or restored session has the
      * KV rows but not the trunk row the drafter reads (it is republished by
      * the next forward), so this cycle decodes one token and drafts after. */

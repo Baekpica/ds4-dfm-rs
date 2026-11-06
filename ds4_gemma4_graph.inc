@@ -346,7 +346,6 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     }
     const uint64_t act = (uint64_t)rows * G4_EMBED * sizeof(float);
     const uint64_t wide = (uint64_t)rows * G4_HEADS * G4_GLOBAL_HEAD_DIM * sizeof(float);
-    const uint64_t narrow = (uint64_t)rows * G4_HEADS * G4_HEAD_DIM * sizeof(float);
     const uint64_t kvwidest = (uint64_t)rows * G4_KV_HEADS * G4_HEAD_DIM * sizeof(float);
 #define G4_ALLOC(field, bytes) do { \
         g->field = ds4_gpu_tensor_alloc(bytes); \
@@ -377,7 +376,6 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     G4_ALLOC(inv_sliding, G4_HEAD_DIM / 2u * sizeof(float));
     G4_ALLOC(inv_full, G4_GLOBAL_HEAD_DIM / 2u * sizeof(float));
 #undef G4_ALLOC
-    (void)narrow;
     float inv[G4_GLOBAL_HEAD_DIM / 2u];
     if (!gemma4_rope_table(G4_ROT, G4_HEAD_DIM, 10000.0, inv) ||
         !ds4_gpu_tensor_write(g->inv_sliding, 0, inv, G4_HEAD_DIM / 2u * sizeof(float))) {

@@ -2087,9 +2087,17 @@ pub fn parse_generated_for_response(
     } else {
         intern_finish(finish)
     };
+    // A malformed call still belongs to the answer channel. Falling back to
+    // the entire generation would expose Gemma's thought channel as content.
+    let (content, reasoning) = if syntax == ModelSyntax::Gemma4 {
+        split_reasoning_response(text, format, require_thinking_closed)
+    } else {
+        (text.to_vec(), Vec::new())
+    };
     (
         ParsedGenerated {
-            content: text.to_vec(),
+            content,
+            reasoning,
             ok: false,
             recovered,
             ..Default::default()
@@ -2917,6 +2925,35 @@ mod gemma4_split_tests {
             String::from_utf8(parsed.reasoning.clone()).unwrap(),
             "weigh the options\n"
         );
+    }
+
+    #[test]
+    fn malformed_calls_keep_reasoning_out_of_the_fallback() {
+        for call in [
+            "<|tool_call>call:lookup{q}<tool_call|>",
+            "<|tool_call>call:lookup{q:",
+        ] {
+            for finish in ["stop", "length", "error"] {
+                let body = format!("Answer.{call}");
+                let text = format!("<|channel>thought\nplan\n<channel|>{body}");
+                let (parsed, out_finish) = parse_generated_for_response(
+                    ModelSyntax::Gemma4,
+                    text.as_bytes(),
+                    true,
+                    true,
+                    false,
+                    ChatFormat::Gemma4,
+                    &[],
+                    finish,
+                );
+                assert!(!parsed.ok);
+                assert!(parsed.calls.is_empty());
+                assert_eq!(parsed.content, body.as_bytes());
+                assert_eq!(parsed.reasoning, b"plan\n");
+                assert_eq!(parsed.recovered, finish != "error");
+                assert_eq!(out_finish, finish);
+            }
+        }
     }
 
     #[test]

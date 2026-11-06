@@ -327,8 +327,8 @@ impl Header {
             return Err(fail("noncanonical GVQ1 offsets"));
         }
         let payload = span(data, tensor.abs_offset, size)?;
-        for gain in span(payload, HEADER, 2 * rows)?.chunks_exact(2) {
-            let bits = u16::from_le_bytes(gain.try_into().unwrap());
+        for gain in span(payload, HEADER, 2 * rows)?.as_chunks::<2>().0 {
+            let bits = u16::from_le_bytes(*gain);
             // +0 is the zero-row encoding; -0 and negatives are invalid.
             if bits & 0x8000 != 0 || bits & 0x7c00 == 0x7c00 {
                 return Err(fail("negative/nonfinite row gain"));
@@ -544,7 +544,7 @@ fn part_metadata(g: &GgufFile) -> Result<()> {
 
 /// Payload bytes of a block-quantized matrix: GGUF dim 0 is the input width.
 fn quant_bytes(t: &TensorInfo, block: u64, bytes: u64) -> Result<u64> {
-    if t.ndim != 2 || t.dim[0] % block != 0 {
+    if t.ndim != 2 || !t.dim[0].is_multiple_of(block) {
         return Err(fail("unsupported quant shape"));
     }
     t.elements
@@ -602,10 +602,20 @@ pub(super) fn validate_part(
             continue;
         }
         match t.typ {
-            Q8_0 if !bytes.chunks_exact(Q8_BYTES as usize).all(q8_scale_finite) => {
+            Q8_0 if !bytes
+                .as_chunks::<{ Q8_BYTES as usize }>()
+                .0
+                .iter()
+                .all(|block| q8_scale_finite(block)) =>
+            {
                 return Err(fail("nonfinite Q8_0 scale"));
             }
-            Q4_K if !bytes.chunks_exact(Q4_BYTES as usize).all(q4_scales_finite) => {
+            Q4_K if !bytes
+                .as_chunks::<{ Q4_BYTES as usize }>()
+                .0
+                .iter()
+                .all(|block| q4_scales_finite(block)) =>
+            {
                 return Err(fail("nonfinite Q4_K scale"));
             }
             _ => {}

@@ -1047,7 +1047,15 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
-gate-gemma4: test-gemma4-ring
+gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
+
+.PHONY: test-gemma4-memory
+test-gemma4-memory:
+	python3 tests/test_gemma4_memory.py
+
+.PHONY: test-gemma4-mtp-control
+test-gemma4-mtp-control:
+	python3 tests/test_gemma4_mtp_control.py
 
 ci-lint:
 	cargo fmt --all -- --check
