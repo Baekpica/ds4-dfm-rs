@@ -135,22 +135,6 @@ pub struct Vocab {
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
-    /// tokenizer.json's `decoder` stage, run per token when text is emitted:
-    /// `decode_space` is the codepoint its Replace stage maps to U+0020
-    /// (Gemma-4: U+2581, its SentencePiece marker), 0 without such a stage;
-    /// `byte_fallback` turns a `<0xNN>` token into the byte NN, as the
-    /// ByteFallback stage does. Both come from the pinned tokenizer.json
-    /// (tok/gemma4.rs), never from a guess.
-    pub decode_space: u32,
-    pub byte_fallback: bool,
-    /// The pieces hold real UTF-8 text, not GPT-2's byte-mapped alphabet.
-    /// Gemma-4's pinned tokenizer.json decoder is Replace(U+2581 -> " "),
-    /// ByteFallback, Fuse, with no ByteLevel stage, and its vocabulary stores
-    /// the character itself: id 41843 is "▁però" with U+00F2 in UTF-8, not
-    /// the two-codepoint byte mapping "Ã²". Mapping U+00F2 to the byte 0xF2
-    /// prints a byte the prompt never contained, so a re-render no longer
-    /// reproduces the prompt and the text-keyed KV identity misses.
-    pub utf8_piece_text: bool,
 }
 
 impl Vocab {
@@ -376,9 +360,6 @@ impl Vocab {
             dots3_endofsystem_id: -1,
             dots3_endofuser_id: -1,
             dots3_endoftext_id: -1,
-            decode_space: 0,
-            byte_fallback: false,
-            utf8_piece_text: false,
         };
         v.load_specials(g)?;
         Ok(v)
@@ -1302,8 +1283,7 @@ impl Vocab {
     /// follows, while a cut after `model\n` lets the reply's first character
     /// merge with the newline and the stored tokens stop being a prefix
     /// (measured: that cut missed, this one restores). Cutting at the
-    /// trim/align boundary instead discards up to 2,048 usable tokens
-    /// (tok/gemma4.rs pins 105 = `<|turn>`, 4368 = `model`, 107 = newline).
+    /// trim/align boundary instead discards up to 2,048 usable tokens.
     pub fn generation_anchor(&self, tokens: &[i32]) -> i32 {
         if self.family != ModelFamily::Gemma4Vq {
             return -1;
@@ -2851,62 +2831,17 @@ fn vocab_token_text(vocab: &Vocab, token: i32) -> Vec<u8> {
         return Vec::new();
     }
     let s = &vocab.tokens[token as usize];
+    if vocab.family == ModelFamily::Gemma4Vq {
+        return gemma4::piece_text(s);
+    }
     if vocab_token_is_literal_special(s) {
         return s.clone();
     }
-    /* ByteFallback: the tokenizer.json byte token "<0xNN>" is the byte NN. */
-    if vocab.byte_fallback && s.len() == 6 && s.starts_with(b"<0x") && s[5] == b'>' {
-        let hex = |c: u8| -> Option<u8> {
-            match c {
-                b'0'..=b'9' => Some(c - b'0'),
-                b'a'..=b'f' => Some(c - b'a' + 10),
-                b'A'..=b'F' => Some(c - b'A' + 10),
-                _ => None,
-            }
-        };
-        if let (Some(hi), Some(lo)) = (hex(s[3]), hex(s[4])) {
-            return vec![hi * 16 + lo];
-        }
-    }
-    piece_text(s, vocab.decode_space, vocab.utf8_piece_text)
-}
-
-/// The index of the last occurrence of `needle`, or -1. Used for the
-/// conversation anchor, where the last marker in the prompt is the one the
-/// next turn still shares.
-fn last_triple_start(tokens: &[i32], needle: &[i32; 3]) -> i32 {
-    let mut found = -1;
-    for i in 0..tokens.len().saturating_sub(2) {
-        if tokens[i] == needle[0] && tokens[i + 1] == needle[1] && tokens[i + 2] == needle[2] {
-            found = i as i32;
-        }
-    }
-    found
-}
-
-/// One vocabulary piece, printed the way the pinned tokenizer's `decoder`
-/// stage prints it: Replace(`decode_space` -> " "), then either the piece's
-/// own UTF-8 bytes (`utf8_piece_text`, a SentencePiece vocabulary such as
-/// Gemma-4) or GPT-2's byte-mapped alphabet (byte-level BPE vocabularies).
-/// Literal-special and `<0xNN>` pieces never reach here; they are returned
-/// whole or as their single byte by the caller.
-fn piece_text(s: &[u8], decode_space: u32, utf8_piece_text: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     let mut pos = 0usize;
     while pos < s.len() {
         let at = pos;
         let cp = utf8_decode_one(s, &mut pos);
-        /* Replace(U+2581 -> " "): the decoder's own space marker. */
-        if decode_space != 0 && cp == decode_space {
-            out.push(b' ');
-            continue;
-        }
-        if utf8_piece_text {
-            /* The vocabulary is not byte-mapped: print the piece's own
-             * UTF-8 bytes, as the decoder's ByteFallback/Fuse stages do. */
-            out.extend_from_slice(&s[at..pos]);
-            continue;
-        }
         if let Some(b) = gpt2_codepoint_to_byte(cp) {
             out.push(b);
         } else {
@@ -2914,6 +2849,16 @@ fn piece_text(s: &[u8], decode_space: u32, utf8_piece_text: bool) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The index of the last occurrence of `needle`, or -1. Used for the
+/// conversation anchor, where the last marker in the prompt is the one the
+/// next turn still shares.
+fn last_triple_start(tokens: &[i32], needle: &[i32; 3]) -> i32 {
+    tokens
+        .windows(3)
+        .rposition(|w| w == needle.as_slice())
+        .map_or(-1, |i| i as i32)
 }
 
 /// C oracle command dump.
@@ -3091,59 +3036,6 @@ pub fn dump_vocab_apply_tapes() -> String {
     ));
     out.push_str("ok-row n_vocab=2 n_merges=1 n_ud=1 max_ud=2 bos=0 eos=1 token0=61 token1=6262 merge0=612062 ud=1\n");
     out
-}
-
-#[cfg(test)]
-mod piece_text_tests {
-    use super::piece_text;
-
-    /// Gemma-4's pinned tokenizer.json decodes "▁però" (id 41843) with no
-    /// ByteLevel stage, so U+00F2 must print as its own UTF-8 bytes. The old
-    /// unconditional GPT-2 mapping printed 0xF2, which is not a byte of any
-    /// Italian prompt and broke the rendered-prefix identity.
-    #[test]
-    fn gemma_piece_keeps_its_utf8_bytes() {
-        assert_eq!(
-            piece_text("▁però".as_bytes(), 0x2581, true),
-            " però".as_bytes()
-        );
-        assert_eq!(piece_text("ò".as_bytes(), 0x2581, true), "ò".as_bytes());
-    }
-
-    /// The GPT-2 arm must not move: byte-level vocabularies still print the
-    /// mapped byte for the same codepoint.
-    #[test]
-    fn byte_level_piece_still_maps_the_gpt2_alphabet() {
-        assert_eq!(piece_text("Ġhello".as_bytes(), 0, false), b" hello");
-        assert_eq!(piece_text("ò".as_bytes(), 0, false), [0xF2]);
-    }
-
-    /// Both arms pass other alphabets through unchanged.
-    #[test]
-    fn other_alphabets_pass_through() {
-        assert_eq!(
-            piece_text("日本".as_bytes(), 0x2581, true),
-            "日本".as_bytes()
-        );
-        assert_eq!(
-            piece_text("日本".as_bytes(), 0x2581, false),
-            "日本".as_bytes()
-        );
-    }
-
-    /// ASCII is the same byte in both encodings (the GPT-2 table maps
-    /// 33..=126 to itself), so the fix cannot move an ASCII answer. The
-    /// space marker is part of both arms here; only the byte map differs.
-    #[test]
-    fn ascii_is_identical_in_both_arms() {
-        for piece in ["▁Hello", "hello", "a_b-c. 123", "\n\n  x"] {
-            assert_eq!(
-                piece_text(piece.as_bytes(), 0x2581, true),
-                piece_text(piece.as_bytes(), 0x2581, false),
-                "{piece}"
-            );
-        }
-    }
 }
 
 #[cfg(test)]
