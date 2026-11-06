@@ -34,6 +34,10 @@ typedef struct ds4_gemma4_graph {
      * activation row count, the wider of the chunk and one draft round's
      * verify block (gemma4_token_rows). */
     uint32_t ctx, cap, rows, position;
+    /* The highest position written since the last reset, and the position
+     * a restore brought back: a resume is exact only where the sliding
+     * ring still holds the window (gemma4_graph_keeps). */
+    uint32_t high, restored;
     ds4_gpu_tensor *cur, *norm, *branch, *tmp, *exp_acc;   /* [rows][2816] */
     ds4_gpu_tensor *q, *k, *v, *attn;                      /* [rows][heads*dim] */
     ds4_gpu_tensor *dense_g, *dense_u, *dense_mid;         /* [rows][2112] */
@@ -291,6 +295,7 @@ static bool gemma4_graph_bank(ds4_gemma4_graph *g, const ds4_gemma4_graph *owner
     g->ready = false;
     g->failed = false;
     g->position = 0;
+    g->high = g->restored = 0;
     g->kv_bytes = 0;
     /* The drafter belongs to graph 0: the serial lane drafts, the banked lane
      * does not, and a bank must not free the owner's runtime. */
@@ -491,10 +496,19 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
 
 static bool gemma4_graph_reset(ds4_gemma4_graph *g) {
     g->position = 0;
+    g->high = g->restored = 0;
     g->failed = false;
     /* The published hidden belongs to a forward this reset discards. */
     gemma4_mtp_drop_hidden(g);
     return true;
+}
+
+/* Whether `g` can resume at position k: the full layers keep every
+ * position, the sliding ring (layer 0 slides) must still hold the window
+ * under k. */
+static bool gemma4_graph_keeps(const ds4_gemma4_graph *g, uint32_t k) {
+    return gemma4_ring_keeps(ds4_gemma4_kv_rows(0u, g->ctx, g->cap),
+                             g->high, g->restored, k);
 }
 
 /* Development probe: with DS4_GEMMA4_DEBUG=1, print the leading values of a
@@ -1251,6 +1265,8 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
 static bool gemma4_forward(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         const uint32_t *tokens, uint32_t rows, uint32_t first, bool want_logits) {
     if (!g->ready || !rows || first + rows > g->ctx || rows > g->rows) { return false; }
+    /* Counted before any layer writes: a failed forward's rows count too. */
+    if (first + rows > g->high) { g->high = first + rows; }
     int32_t ids[G4_PREFILL_MAX];
     uint32_t pos[G4_PREFILL_MAX];
     if (rows > G4_PREFILL_MAX) { return false; }

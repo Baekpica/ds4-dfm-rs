@@ -120,7 +120,7 @@ static int gemma4_payload_restore(ds4_gemma4_graph *g, FILE *fp,
     if (!g || !fp || !left || !h || !tokens_out || !logits) { return 1; }
     /* A failed or partial restore can never be reused as a committed prefix. */
     g->failed = true;
-    g->position = 0;
+    g->position = g->high = g->restored = 0;
     *tokens_out = NULL;
     const uint32_t n = h[7];
     if (!g->ready || !n || n > g->ctx || h[0] != DS4_SESSION_PAYLOAD_MAGIC ||
@@ -175,7 +175,9 @@ static int gemma4_payload_restore(ds4_gemma4_graph *g, FILE *fp,
     }
     free(buf);
     if (rc) { free(tokens); return 1; }
-    g->position = n;
+    /* The rings come back whole, but rows past an abandoned branch may sit
+     * in them: no resume below the restored frontier. */
+    g->position = g->high = g->restored = n;
     g->failed = false;
     /* The KV rows and the logits are restored; the drafter's hidden row is
      * not in the payload, so it is republished by the next forward and this

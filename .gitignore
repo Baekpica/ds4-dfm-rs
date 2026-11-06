@@ -306,3 +306,4 @@ tests/naive_banks
 # Gemma-4 native bind gate (make test-gemma4-bind)
 /tests/gemma4_bind
 /tests/test_gemma4_primitives
+/tests/gemma4_ring

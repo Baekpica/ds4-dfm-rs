@@ -148,6 +148,18 @@ static inline uint32_t gemma4_token_rows(unsigned cap) {
     return cap < G4_MTP_DRAFTS + 1u ? G4_MTP_DRAFTS + 1u : cap;
 }
 
+/* Whether a sliding ring of `rows` slots, written up to position `high`,
+ * still holds the G4_WINDOW positions under `k` (ds4.c ring_holds). A slot
+ * keeps the newest position written to it, so a resume more than
+ * rows - G4_WINDOW below `high` would read rows an abandoned branch
+ * overwrote; a restored payload is trusted only from `restored` on. */
+static inline bool gemma4_ring_keeps(uint32_t rows, uint32_t high,
+                                     uint32_t restored, uint32_t k) {
+    if (k < restored) { return false; }
+    return high <= k || high <= rows ||
+           (rows > G4_WINDOW && high - k <= rows - G4_WINDOW);
+}
+
 static inline uint64_t gemma4_activation_bytes(unsigned cap) {
     const uint64_t rows = gemma4_token_rows(cap);
     return rows * ((uint64_t)5u * G4_EMBED + 3u * G4_DENSE +

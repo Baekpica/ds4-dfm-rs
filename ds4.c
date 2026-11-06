@@ -66121,7 +66121,8 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     }
 }
 
-/* Banks whose rows all stay at their positions fork at any prefix. */
+/* Banks whose rows all stay at their positions fork at any prefix; Gemma-4
+ * only where its sliding ring still holds the window. */
 static bool prefix_bank_fork(ds4_batch_ctx *ctx, uint32_t src, uint32_t dst, uint32_t pos) {
     if (ctx->minimax) { return minimax_bank_fork(ctx->minimax, src, dst, pos); }
     if (ctx->axk2) { return axk2_bank_fork(ctx->axk2, src, dst, pos); }
@@ -66864,12 +66865,15 @@ static int family_banked_engine_continuous_generate(
                            requested_cached < source_frontier &&
                            (ctx->minimax || ctx->axk2 || ctx->exaone || ctx->gemma4)) {
                     /* MiniMax, A.X-K2 and K2-Horizon caches are position-
-                     * indexed: any prefix of the source is exact. Keep one
-                     * prompt row to prefill so the bank produces the next
-                     * logits. */
+                     * indexed: any prefix of the source is exact. Gemma-4's
+                     * sliding ring forks only where it still holds the
+                     * window; deeper reuse misses and prefills from zero.
+                     * Keep one prompt row to prefill so the bank produces
+                     * the next logits. */
                     const uint32_t pos = requested_cached < (uint32_t)req.n
                         ? requested_cached : (uint32_t)req.n - 1u;
-                    if (!pos) {
+                    if (!pos || (ctx->gemma4 &&
+                                 !gemma4_bank_keeps(ctx->gemma4, (uint32_t)src, pos))) {
                         ctx->fork_rejects++;
                     } else if (!prefix_bank_fork(ctx, (uint32_t)src, b, pos)) {
                         ctx->bank_gen[b]++;

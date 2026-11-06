@@ -6,12 +6,12 @@
  * Every cache row is indexed by position -- a sliding layer writes slot
  * position % rows, a full layer slot position -- and the forward writes a
  * row before any query at or below it reads it. Copying the first
- * min(pos, rows) rows of each cache therefore copies exactly the slots the
- * positions [0, pos) occupy: below the ring that is every written slot, and
- * past it every slot is live. That makes any prefix of a bank exact on its
- * own: a fork copies the prefix (or rewinds in place) and partial reuse
- * needs no checkpoint slots (A.X-K2's rule, and the reason this file has no
- * slab). */
+ * min(pos, rows) rows of each cache copies the slots the positions [0, pos)
+ * occupy, but a ring slot keeps the newest position written to it: a fork
+ * more than rows - G4_WINDOW below the source's high-water mark would read
+ * rows a later branch overwrote. A fork (or an in-place rewind) is taken
+ * only where the ring still holds the window (gemma4_bank_keeps); deeper
+ * reuse prefills from zero, so this file needs no checkpoint slab. */
 
 enum { G4_BANK_MAX = DS4_MULTISEQ_MAX_SEQ };
 typedef enum { G4_MORE_ROWS, G4_FINAL_ROWS } gemma4_prefill_mode;
@@ -111,11 +111,19 @@ static bool gemma4_bank_copy(ds4_gemma4_batch_runtime *rt, uint32_t src,
     dg->failed = true;
     if (!gemma4_rows_copy(dg, sg, tokens) || !ds4_gpu_synchronize()) { return false; }
     dg->position = tokens;
+    dg->high = sg->high;
+    dg->restored = sg->restored;
     dg->failed = false;
     memcpy(rt->bank_logits + (size_t)dst * DS4_N_VOCAB,
            rt->bank_logits + (size_t)src * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
     rt->bank_logits_valid[dst] = rt->bank_logits_valid[src];
     return true;
+}
+
+/* Whether bank `src` can fork at `pos` (gemma4_graph_keeps). */
+static bool gemma4_bank_keeps(const ds4_gemma4_batch_runtime *rt, uint32_t src,
+        uint32_t pos) {
+    return rt && src < rt->max_seq && gemma4_graph_keeps(&rt->graph[src], pos);
 }
 
 /* Partial fork below the source's frontier: the prefix [0, pos) (in place
@@ -125,10 +133,15 @@ static bool gemma4_bank_fork(ds4_gemma4_batch_runtime *rt, uint32_t src,
         uint32_t dst, uint32_t pos) {
     if (!rt || src >= rt->max_seq || dst >= rt->max_seq || !pos) { return false; }
     ds4_gemma4_graph *sg = &rt->graph[src], *dg = &rt->graph[dst];
-    if (sg->failed || pos > sg->position || pos > dg->ctx) { return false; }
+    if (sg->failed || pos > sg->position || pos > dg->ctx || !gemma4_graph_keeps(sg, pos)) {
+        return false;
+    }
     dg->failed = true;
     rt->bank_logits_valid[dst] = 0;
     if (src != dst && (!gemma4_rows_copy(dg, sg, pos) || !ds4_gpu_synchronize())) { return false; }
+    /* The copied ring carries the source's rows, so it keeps its marks. */
+    dg->high = sg->high;
+    dg->restored = sg->restored;
     dg->position = pos;
     dg->failed = false;
     return true;

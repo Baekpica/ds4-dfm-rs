@@ -42,7 +42,9 @@ static uint32_t gemma4_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
         g->position != (uint32_t)s->checkpoint.len) {
         return 0;
     }
-    return session_keep_prefix(s, prompt);
+    const uint32_t keep = (uint32_t)session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    return gemma4_graph_keeps(g, keep) ? keep : 0;
 }
 
 static int gemma4_session_sync(ds4_session *s, const ds4_tokens *prompt,
@@ -70,8 +72,9 @@ static int gemma4_session_sync(ds4_session *s, const ds4_tokens *prompt,
         return 0;
     } else if (start < (uint32_t)s->checkpoint.len) {
         /* Rows at or beyond `start` are stale but harmless: attention only
-         * reads slots at or below the query's own position, and every slot
-         * the new rows use is overwritten before it is read. */
+         * reads slots at or below the query's own position, every slot the
+         * new rows use is overwritten before it is read, and
+         * gemma4_sync_keep resumed only where the ring holds the window. */
         g->position = start;
         session_rewound(s, start);
     }

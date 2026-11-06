@@ -513,6 +513,14 @@ tests/gemma4_q4_decode: tests/gemma4_q4_decode.cu cuda/gemma4_q4_decode.cuh cuda
 test-gemma4-q4-decode: tests/gemma4_q4_decode
 	./tests/gemma4_q4_decode
 
+# The sliding-ring resume rule the serial and bank lanes share, model-free.
+tests/gemma4_ring: tests/gemma4_ring.c ds4_gemma4_plan.h
+	$(CC) $(CFLAGS) -o $@ tests/gemma4_ring.c
+
+.PHONY: test-gemma4-ring
+test-gemma4-ring: tests/gemma4_ring
+	./tests/gemma4_ring
+
 # The CPU-expert deciding measurement. Build only: it needs a real R13+8
 # trunk and the record offsets are tied to that release, so the run line
 # names the path at the call site (tests/gemma4_cpu_expert_gemv.c).
@@ -1042,7 +1050,7 @@ CI_MODEL_FREE := test-model-registration test-vq-source-release \
 	test-family-cont-spec-finish
 
 .PHONY: ci ci-lint ci-rust ci-parity ci-model-free test-iquest-model-free \
-	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2
+	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2 gate-gemma4
 ci: ci-lint ci-rust ci-parity ci-model-free
 
 gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
@@ -1052,6 +1060,7 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
+gate-gemma4: test-gemma4-ring
 
 ci-lint:
 	cargo fmt --all -- --check
@@ -2713,7 +2722,7 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/gemma4_mtp_gate tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_mtp_gate tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
