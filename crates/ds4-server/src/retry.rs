@@ -64,7 +64,11 @@ fn count_marker(s: &[u8], marker: &[u8]) -> usize {
 pub fn syntax_skips_recovery(syntax: ModelSyntax) -> bool {
     matches!(
         syntax,
-        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Dots3 | ModelSyntax::Axk2Vq
+        ModelSyntax::Motif3
+            | ModelSyntax::Exaone
+            | ModelSyntax::Dots3
+            | ModelSyntax::Axk2Vq
+            | ModelSyntax::Gemma4
     )
 }
 
@@ -516,6 +520,27 @@ pub(crate) fn build_recovery_suffix(
         return crate::render::inkling::recovery(&acc.text, detail);
     }
     build_invalid_tool_error_suffix(format, think_mode, acc.thinking_inside(), prompt, detail)
+}
+
+#[cfg(test)]
+mod gemma4_recovery_tests {
+    use super::*;
+
+    /// The shared suffix is DeepSeek's (`<｜User｜><tool_result>`, "DSML"),
+    /// foreign text inside a Gemma-4 turn, so a malformed Gemma call is
+    /// returned as text instead of retried.
+    #[test]
+    fn gemma4_malformed_call_is_not_retried() {
+        assert!(!parse_failure_should_retry(
+            ModelSyntax::Gemma4,
+            false,
+            false,
+            "stop",
+            true,
+            true,
+            true,
+        ));
+    }
 }
 
 #[cfg(test)]
