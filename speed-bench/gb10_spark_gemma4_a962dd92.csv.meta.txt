@@ -4,12 +4,12 @@ mode boot
 server ./ds4-server sha256 a962dd926cbb3b71417f24ff9644f768440c854314b23897422aeb6a8c3a5afa
 full-kv bf16 (compiled default)
 ctx 2048 4096 6144 8192 10240 12288 14336 16384 18432 20480 22528 24576 26624 28672 30720 32768 34816 36864 38912 40960 43008 45056 47104 49152 51200 53248 55296 57344 59392 61440 63488 65536 ; gen 128; prefill chunk 2048; port extra args: <none>
-corpus /home/leandro/ds4-gemma4/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
-model /home/leandro/models/gguf-family-it-r8
+corpus $HOME/ds4-gemma4/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+model $HOME/models/gguf-family-it-r8
 part gemma4-vq8-embedding.gguf bytes 1476395648 sha256 2043b3362749e781ca47b567d24af70f5282db1c2b93904867f54980b1789636
 part gemma4-vq8-mtp.gguf bytes 621995136 sha256 f85b05b4b16204aff464c35ffce7b18d054748f7eecaffa5463e9cd3d1d3bb57
 part gemma4-vq8-trunk.gguf bytes 8588461824 sha256 0b25b7cb284be1fb59c1bed759e775b589bcae178a9faf18903657a7244d936e
-csv /home/leandro/ds4-gemma4/speed-bench/gb10_spark_gemma4_a962dd92.csv (31 rows)
+csv $HOME/ds4-gemma4/speed-bench/gb10_spark_gemma4_a962dd92.csv (31 rows)
 clock median over all samples 2444 MHz
 boot_s 46.1
 reuse: route default (on unless the boot line passed --no-kv-reuse);
