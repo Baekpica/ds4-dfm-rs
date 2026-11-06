@@ -267,12 +267,12 @@ extern "C" int ds4_gpu_g4_rms_rope(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
     return cuda_ok(cudaGetLastError(), "Gemma-4 RMS norm + rope");
 }
 
-/* Parallel top-k in the router selection, off by default
- * (DS4_GEMMA4_ROUTER_PAR=1); the serial scan stays the reference. */
+/* Parallel top-k in the router selection; DS4_GEMMA4_ROUTER_PAR=0 restores
+ * the serial scan. */
 static bool g4_router_par(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ROUTER_PAR");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ROUTER_PAR");
     }
     return on != 0;
 }
@@ -663,14 +663,14 @@ static bool g4_split_combine_ready(void) {
     return ready != 0;
 }
 
-/* Tensor-core full-layer decode attention (cuda/gemma4_attn_split_mma.cuh),
- * off by default (DS4_GEMMA4_ATTN_SPLIT_MMA=1). It replaces only the
+/* Tensor-core full-layer decode attention (cuda/gemma4_attn_split_mma.cuh);
+ * DS4_GEMMA4_ATTN_SPLIT_MMA=0 keeps the scalar kernel. It replaces only the
  * D = 512, group = 8 scalar split kernel; the split count and the combine
  * kernel are the same, so the two paths are directly comparable. */
 static bool g4_split_mma(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_SPLIT_MMA");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_SPLIT_MMA");
     }
     return on != 0;
 }
@@ -1046,14 +1046,14 @@ static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t g
         g4_vq_gemv_variant(), g4_vq_gemv_threads(), ds4_current_stream()) != 0;
 }
 
-/* Direct VQ prefill GEMM for the grouped expert path (tokens > 1). Off by
- * default; DS4_GEMMA4_VQ_PREFILL=1 turns it on, and the restore + cuBLAS
- * path stays the reference. One tile decodes both gate and up records and
+/* Direct VQ prefill GEMM for the grouped expert path (tokens > 1);
+ * DS4_GEMMA4_VQ_PREFILL=0 restores restore + cuBLAS. One tile decodes both
+ * gate and up records and
  * writes gelu(gate) * up, or one record for the down projection. */
 static bool g4_vq_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_VQ_PREFILL");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_VQ_PREFILL");
     }
     return on != 0;
 }

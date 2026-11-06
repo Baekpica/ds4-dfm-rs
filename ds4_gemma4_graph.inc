@@ -672,108 +672,106 @@ static bool gemma4_projection_rows(ds4_gemma4_graph *g, ds4_gpu_tensor *const *o
     return true;
 }
 
-/* Decode-only grouped-KV attention, off by default. */
+/* Decode-only grouped-KV attention; DS4_GEMMA4_ATTN_FAST=0 restores the
+ * oracle kernel. */
 static bool g4_attn_fast(void) {
     static int fast = -1;
     if (fast < 0) {
-        fast = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_FAST");
+        fast = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_FAST");
     }
     return fast != 0;
 }
 
-/* Prefill (rows > 1) grouped-KV attention with the shared K/V tile, off by
- * default. Separate from DS4_GEMMA4_ATTN_FAST so the two can be measured
- * apart; the oracle stays for both until they are folded together. */
+/* Prefill (rows > 1) grouped-KV attention with the shared K/V tile;
+ * DS4_GEMMA4_ATTN_PREFILL=0 restores the oracle. Separate from
+ * DS4_GEMMA4_ATTN_FAST so the two can be measured apart. */
 static bool g4_attn_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_PREFILL");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_PREFILL");
     }
     return on != 0;
 }
 
-/* Tensor-core prefill attention (cuda/gemma4_attn_mma.cuh), off by default
- * (DS4_GEMMA4_ATTN_MMA=1). It is the parity-gated path, not the bit-exact
- * one: the MTP verify widths stay on the tile kernel. */
+/* Tensor-core prefill attention (cuda/gemma4_attn_mma.cuh);
+ * DS4_GEMMA4_ATTN_MMA=0 restores the tile kernel. It is the parity-gated
+ * path, not the bit-exact one: the MTP verify widths stay on the tile. */
 static bool g4_attn_mma(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_MMA");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_MMA");
     }
     return on != 0;
 }
 
 /* Tensor-core split-K decode for the full layers
- * (cuda/gemma4_attn_split_mma.cuh), off by default
- * (DS4_GEMMA4_ATTN_SPLIT_MMA=1). The E4M3 lane reads it only when the scalar
- * split's knobs are on as well, so the deployed default is still the scalar
- * kernel it always was. */
+ * (cuda/gemma4_attn_split_mma.cuh); DS4_GEMMA4_ATTN_SPLIT_MMA=0 keeps the
+ * scalar split kernel. */
 static bool g4_attn_split_mma(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_SPLIT_MMA");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_SPLIT_MMA");
     }
     return on != 0;
 }
 
-/* Split-K decode attention (cuda/gemma4_attn_split.cuh), off by default
- * (DS4_GEMMA4_ATTN_SPLIT=1). The per-key arithmetic is the fast kernel's;
- * the combine order differs. */
+/* Split-K decode attention (cuda/gemma4_attn_split.cuh);
+ * DS4_GEMMA4_ATTN_SPLIT=0 keeps one CTA per KV head. The per-key arithmetic
+ * is the fast kernel's; the combine order differs. */
 static bool g4_attn_split(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_SPLIT");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ATTN_SPLIT");
     }
     return on != 0;
 }
 
-/* Fused RMSNorm + RoPE, off by default (DS4_GEMMA4_FUSE_ROPE=1). The
- * arithmetic is the two-kernel sequence's; the option exists to A/B it. */
+/* Fused RMSNorm + RoPE; DS4_GEMMA4_FUSE_ROPE=0 restores the two kernels,
+ * whose arithmetic it keeps. */
 static bool g4_fuse_rope(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_FUSE_ROPE");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_FUSE_ROPE");
     }
     return on != 0;
 }
 
-/* The family's own BF16 vocabulary head, off by default
- * (DS4_GEMMA4_HEAD_GEMV=1); the shared linear stays the fallback. */
+/* The family's own BF16 vocabulary head; DS4_GEMMA4_HEAD_GEMV=0 restores
+ * the shared linear. */
 static bool g4_head_gemv(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_HEAD_GEMV");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_HEAD_GEMV");
     }
     return on != 0;
 }
 
-/* The family's own router projection, off by default
- * (DS4_GEMMA4_ROUTER_DOT=1); the shared linear stays the fallback. */
+/* The family's own router projection; DS4_GEMMA4_ROUTER_DOT=0 restores the
+ * shared linear. */
 static bool g4_router_dot(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ROUTER_DOT");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_ROUTER_DOT");
     }
     return on != 0;
 }
 
-/* Dense down through the batch warp8 Q8_0 kernel, off by default
- * (DS4_GEMMA4_Q8_BATCH=1). */
+/* Dense down through the batch warp8 Q8_0 kernel; DS4_GEMMA4_Q8_BATCH=0
+ * restores the shared dispatcher. */
 static bool gemma4_q8_batch(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_Q8_BATCH");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_Q8_BATCH");
     }
     return on != 0;
 }
 
-/* Persistent layer-book MoE decode (cuda/gemma4_moe_persist.cuh), off by
- * default (DS4_GEMMA4_MOE_PERSIST=1). One token only; the per-expert loop
- * stays the reference and the fallback. */
+/* Persistent layer-book MoE decode (cuda/gemma4_moe_persist.cuh), one token
+ * only; DS4_GEMMA4_MOE_PERSIST=0 restores the per-expert loop. */
 static bool g4_moe_persist(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_MOE_PERSIST");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_MOE_PERSIST");
     }
     return on != 0;
 }
