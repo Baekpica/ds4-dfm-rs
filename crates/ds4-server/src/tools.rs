@@ -15,6 +15,7 @@ use crate::render::{
 };
 
 pub(crate) mod beam;
+pub(crate) mod gemma4;
 pub(crate) mod iquest;
 pub(crate) mod minimax;
 use crate::stream::{think_end, think_start, ChatFormat};
@@ -1973,6 +1974,7 @@ pub fn parse_generated_message(
         ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
+        ModelSyntax::Gemma4 => Some(gemma4::parse(text, require_thinking_closed)),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -2085,9 +2087,17 @@ pub fn parse_generated_for_response(
     } else {
         intern_finish(finish)
     };
+    // A malformed call still belongs to the answer channel. Falling back to
+    // the entire generation would expose Gemma's thought channel as content.
+    let (content, reasoning) = if syntax == ModelSyntax::Gemma4 {
+        split_reasoning_response(text, format, require_thinking_closed)
+    } else {
+        (text.to_vec(), Vec::new())
+    };
     (
         ParsedGenerated {
-            content: text.to_vec(),
+            content,
+            reasoning,
             ok: false,
             recovered,
             ..Default::default()
@@ -2159,6 +2169,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder])
         // `<|constrain|>` never occurs in prose; ` to=` may.
         ChatFormat::Beam => find_substr(s, beam::TOOL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_START.as_bytes()),
+        ChatFormat::Gemma4 => find_substr(s, gemma4::CALL_OPEN.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -2206,6 +2217,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
         ChatFormat::Beam => find_substr(s, beam::CALL.as_bytes()),
         ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_END.as_bytes()),
+        ChatFormat::Gemma4 => find_substr(s, gemma4::CALL_CLOSE.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -2416,6 +2428,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
         ChatFormat::Beam => &[beam::TOOL.as_bytes()],
         ChatFormat::Minimax => &[minimax::TOOL_CALL_START.as_bytes()],
+        ChatFormat::Gemma4 => &[gemma4::CALL_OPEN.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -2513,7 +2526,12 @@ impl SemAccum {
         };
         if !prompt.is_empty() {
             a.feed_thinking(prompt);
-        } else if think_enabled && !matches!(format, ChatFormat::Inkling | ChatFormat::Minimax) {
+        } else if think_enabled
+            && !matches!(
+                format,
+                ChatFormat::Inkling | ChatFormat::Minimax | ChatFormat::Gemma4
+            )
+        {
             a.thinking_inside = true;
         }
         // Harmony opens every reply with its analysis message.
@@ -2554,8 +2572,11 @@ impl SemAccum {
             }
             return;
         }
-        // Inkling and MiniMax open their think span in the generation.
-        if matches!(self.chat_format, ChatFormat::Inkling | ChatFormat::Minimax) {
+        // Inkling, MiniMax and Gemma-4 open their think span in the generation.
+        if matches!(
+            self.chat_format,
+            ChatFormat::Inkling | ChatFormat::Minimax | ChatFormat::Gemma4
+        ) {
             let start = think_start(self.chat_format).as_bytes();
             let end = think_end(self.chat_format).as_bytes();
             let keep = start.len().max(end.len());
@@ -2828,5 +2849,167 @@ mod tool_id_tests {
             mint_tool_id_from(&mut state, "call_"),
             "call_00000000000000000000000000000008"
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma4_split_tests {
+    use super::{parse_generated_for_response, split_reasoning_response};
+    use crate::render::ModelSyntax;
+    use crate::stream::ChatFormat;
+
+    #[test]
+    fn reasoning_channel_is_split_off_the_content() {
+        let (content, reasoning) = split_reasoning_response(
+            b"<|channel>thought\nthink here\n<channel|>Paris.",
+            ChatFormat::Gemma4,
+            false,
+        );
+        assert_eq!(String::from_utf8(content).unwrap(), "Paris.");
+        assert_eq!(String::from_utf8(reasoning).unwrap(), "think here\n");
+    }
+
+    #[test]
+    fn unclosed_reasoning_keeps_the_text_and_the_marker_off() {
+        let (content, reasoning) =
+            split_reasoning_response(b"<|channel>thought\nthink here", ChatFormat::Gemma4, true);
+        assert!(content.is_empty());
+        assert_eq!(String::from_utf8(reasoning).unwrap(), "think here");
+    }
+
+    #[test]
+    fn calls_are_extracted_from_the_answer() {
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nplan\n<channel|>Paris.<|tool_call>call:lookup{q:<|\"|>x<|\"|>}<tool_call|>",
+            true,
+            true,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert_eq!(parsed.calls.len(), 1);
+        assert_eq!(parsed.calls[0].name, "lookup");
+        assert_eq!(parsed.calls[0].arguments, "{\"q\":\"x\"}");
+        // The channel is the reasoning field, never content (2026-11-05: a
+        // tool-enabled turn displayed "<|channel>thought ..." in front of the
+        // answer because this content used to keep it).
+        assert_eq!(String::from_utf8(parsed.content.clone()).unwrap(), "Paris.");
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "plan\n"
+        );
+    }
+
+    #[test]
+    fn a_tool_turn_without_a_call_still_splits_the_channel() {
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nweigh the options\n<channel|>I need a tool for that.",
+            true,
+            false,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert!(parsed.calls.is_empty());
+        assert_eq!(
+            String::from_utf8(parsed.content.clone()).unwrap(),
+            "I need a tool for that."
+        );
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "weigh the options\n"
+        );
+    }
+
+    #[test]
+    fn malformed_calls_keep_reasoning_out_of_the_fallback() {
+        for call in [
+            "<|tool_call>call:lookup{q}<tool_call|>",
+            "<|tool_call>call:lookup{q:",
+        ] {
+            for finish in ["stop", "length", "error"] {
+                let body = format!("Answer.{call}");
+                let text = format!("<|channel>thought\nplan\n<channel|>{body}");
+                let (parsed, out_finish) = parse_generated_for_response(
+                    ModelSyntax::Gemma4,
+                    text.as_bytes(),
+                    true,
+                    true,
+                    false,
+                    ChatFormat::Gemma4,
+                    &[],
+                    finish,
+                );
+                assert!(!parsed.ok);
+                assert!(parsed.calls.is_empty());
+                assert_eq!(parsed.content, body.as_bytes());
+                assert_eq!(parsed.reasoning, b"plan\n");
+                assert_eq!(parsed.recovered, finish != "error");
+                assert_eq!(out_finish, finish);
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_markers_never_reach_the_answer() {
+        // The measured emission: "``<|tool_call|>" with no open, and a turn
+        // close the stop list missed.
+        let (parsed, _) = parse_generated_for_response(
+            ModelSyntax::Gemma4,
+            b"<|channel>thought\nmost_recent_thought<channel|>``<|tool_call|><turn|>",
+            true,
+            false,
+            false,
+            ChatFormat::Gemma4,
+            &[],
+            "stop",
+        );
+        assert!(parsed.ok);
+        assert!(parsed.calls.is_empty());
+        let content = String::from_utf8(parsed.content.clone()).unwrap();
+        assert_eq!(content, "``");
+        assert!(
+            !content.contains("<|"),
+            "special markers stayed in the answer"
+        );
+        assert_eq!(
+            String::from_utf8(parsed.reasoning.clone()).unwrap(),
+            "most_recent_thought"
+        );
+    }
+}
+
+#[cfg(test)]
+mod gemma4_scan_tests {
+    use super::SemAccum;
+    use crate::stream::ChatFormat;
+
+    #[test]
+    fn the_scan_follows_the_channel_the_model_opens() {
+        let mut acc = SemAccum::init(true, true, true, ChatFormat::Gemma4, b"");
+        assert!(!acc.thinking_inside(), "Gemma opens its own channel");
+        acc.feed(b"<|channel>thought\n", &[]);
+        assert!(acc.thinking_inside());
+        acc.feed(b"plan", &[]);
+        acc.feed(b"<channel|>", &[]);
+        assert!(!acc.thinking_inside());
+    }
+
+    #[test]
+    fn a_prompt_ending_in_the_channel_starts_inside_it() {
+        let acc = SemAccum::init(
+            true,
+            true,
+            true,
+            ChatFormat::Gemma4,
+            b"<|turn>model\n<|channel>thought\n",
+        );
+        assert!(acc.thinking_inside());
     }
 }

@@ -1391,7 +1391,9 @@ extern "C" int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu
 
 /* E2M1 to F16 in hardware (cvt.rn.f16x2.e2m1x2, exact): the constant table
  * cost a dependent load per value, 256 per thread of a decode attention CTA
- * (8.8 -> 6.6 us in isolation, the same bits). */
+ * (8.8 -> 6.6 us in isolation, the same bits). Targets without the
+ * instruction (sm_89) keep the table, low nibble first like it. */
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 __device__ __forceinline__ float2 mm_e2m1x2(uint32_t byte) {
     uint32_t h;
     asm("{ .reg .b8 lo, hi;\n mov.b16 {lo, hi}, %1;\n cvt.rn.f16x2.e2m1x2 %0, lo; }"
@@ -1406,6 +1408,26 @@ __device__ __forceinline__ void mm_e2m1x8(uint32_t word, uint32_t *h) {
         " cvt.rn.f16x2.e2m1x2 %2, b2;\n cvt.rn.f16x2.e2m1x2 %3, b3; }"
         : "=r"(h[0]), "=r"(h[1]), "=r"(h[2]), "=r"(h[3]) : "r"(word));
 }
+#else
+__device__ __forceinline__ float mm_e2m1_code(uint32_t code) {
+    const float table[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    const float magnitude = table[code & 7u];
+    return (code & 8u) ? -magnitude : magnitude;
+}
+
+__device__ __forceinline__ float2 mm_e2m1x2(uint32_t byte) {
+    return make_float2(mm_e2m1_code(byte & 0x0fu), mm_e2m1_code((byte >> 4u) & 0x0fu));
+}
+
+__device__ __forceinline__ void mm_e2m1x8(uint32_t word, uint32_t *h) {
+    for (uint32_t i = 0; i < 4u; i++) {
+        const uint32_t byte = (word >> (8u * i)) & 0xffu;
+        const __half2 pair = __floats2half2_rn(mm_e2m1_code(byte & 0x0fu),
+            mm_e2m1_code((byte >> 4u) & 0x0fu));
+        *reinterpret_cast<__half2 *>(&h[i]) = pair;
+    }
+}
+#endif
 
 // The E2M1 values of a byte's two nibbles times their group scale: exact in F32.
 __device__ __forceinline__ float2 mm_fp4_pair(uint8_t byte, float scale) {

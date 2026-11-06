@@ -117,10 +117,18 @@ __device__ __forceinline__ uint32_t glmvq_q4p_smem(const void *p) {
     return (uint32_t)__cvta_generic_to_shared(p);
 }
 
+/* try_wait is sm_90+; below that the loop tests the barrier each iteration
+ * (test_wait, sm_80), the same protocol without the park hint. */
 __device__ __forceinline__ void glmvq_q4p_wait(const uint64_t *bar, uint32_t parity) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
     asm volatile("{\n .reg .pred done;\n Q4P_WAIT%=:\n"
         " mbarrier.try_wait.parity.shared.b64 done, [%0], %1;\n"
         " @!done bra Q4P_WAIT%=;\n}" :: "r"(glmvq_q4p_smem(bar)), "r"(parity) : "memory");
+#else
+    asm volatile("{\n .reg .pred done;\n Q4P_WAIT%=:\n"
+        " mbarrier.test_wait.parity.shared.b64 done, [%0], %1;\n"
+        " @!done bra Q4P_WAIT%=;\n}" :: "r"(glmvq_q4p_smem(bar)), "r"(parity) : "memory");
+#endif
 }
 
 __device__ __forceinline__ void glmvq_q4p_arrive(uint64_t *bar) {

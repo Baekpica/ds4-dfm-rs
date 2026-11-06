@@ -712,6 +712,12 @@ fn main() {
                         ds4_server::syntax_for_model_id(m.model_id()),
                         ds4_server::ModelSyntax::Glm53 | ds4_server::ModelSyntax::BeamVq
                     );
+                    // Gemma-4's template opens the thought channel only for
+                    // an explicit thinking request.
+                    cfg.think_on_request = matches!(
+                        ds4_server::syntax_for_model_id(m.model_id()),
+                        ds4_server::ModelSyntax::Gemma4
+                    );
                     cfg.have_engine = true;
                     Some(m)
                 }
@@ -796,6 +802,33 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
+                    // Gemma-4's serial lane allocates its graph at the first
+                    // request, and a graph that does not fit aborts the
+                    // process in the allocator (cudaMallocAsync). The engine
+                    // answers the exact question at boot, after the open has
+                    // installed the expert pool and the device-resident
+                    // spans, with the family's 384 MiB floor
+                    // (G4_SESSION_FIT_MARGIN): refuse to listen rather than
+                    // boot a server that cannot serve its own context.
+                    // Other families right-size or halve the serial graph
+                    // per request, so this gate is Gemma-4's alone.
+                    if plan.family == Some(ds4_core::ModelFamily::Gemma4Vq) {
+                        if let Some(fit) = model.session_graph_fit_quote(cfg.ctx as i32) {
+                            if !fit.fits && !fit.fail_open {
+                                cli_error(&format!(
+                                    "ds4-server-rs: no Gemma-4 session graph fits at ctx {}: \
+                                     need {:.2} GiB (KV and workspace, named by the engine line \
+                                     above) + {:.0} MiB margin > free {:.2} GiB, deficit {:.1} MiB; \
+                                     lower -c, --native-chunk or DS4_GEMMA4_MOE_CACHE_MIB",
+                                    cfg.ctx,
+                                    fit.need_bytes as f64 / 1073741824.0,
+                                    fit.headroom_bytes as f64 / 1048576.0,
+                                    fit.avail_bytes as f64 / 1073741824.0,
+                                    fit.deficit_bytes as f64 / 1048576.0
+                                ));
+                            }
+                        }
+                    }
                     // cont_lane=false also limits resident credit to model
                     // mappings: the failed batch left no live runtime.
                     let mut facts = EngineFacts {

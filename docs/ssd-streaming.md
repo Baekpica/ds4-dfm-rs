@@ -38,6 +38,11 @@ coherent pageable-memory hardware such as the DGX Spark/GB10. The native
 mapping driver rejects devices that cannot preserve unpinned file mappings.
 Distributed loading, weight-server IPC, full-weight warming and anonymous/full
 model-copy modes conflict with this residency contract and are rejected.
+
+Gemma-4 VQ has its own driver for the same option: its GVQ1 expert records
+stream through a slot pool on GB10 and on discrete cards, where the
+non-expert spans are copied to the device instead
+([Gemma-4 VQ](gemma4-vq.md#execution)).
 Other families need their own validated native integration.
 
 ## Memory policy

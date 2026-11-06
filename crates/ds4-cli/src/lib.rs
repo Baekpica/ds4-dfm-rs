@@ -1456,7 +1456,7 @@ Usage:
 
 C-compatible flags (same names as `ds4 --help`):
   -m, --model FILE        GGUF model path. Default: ds4flash.gguf
-  --ssd-streaming         Stream GLM CUDA routed experts from SSD
+  --ssd-streaming         Stream GLM-5.3 or Gemma-4 CUDA routed experts from SSD
   --ssd-streaming-cache-experts auto|N|GB  Auto budget, slots or GiB
   --ssd-streaming-cold    Advise eviction of read expert pages
   --mtp FILE              Optional MTP support GGUF

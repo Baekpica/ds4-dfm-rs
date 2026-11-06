@@ -132,6 +132,10 @@ pub struct ParseEnv {
     /// other families keep the port's own wire vocabulary (their references
     /// are their own stacks, not this engine).
     pub engine_defaults: bool,
+    /// The served template opens its thought channel only when asked
+    /// (Gemma-4): thinking stays off unless the request turns it on, at the
+    /// default effort when it names no level.
+    pub think_on_request: bool,
 }
 
 impl Default for ParseEnv {
@@ -143,6 +147,7 @@ impl Default for ParseEnv {
             sampling: Default::default(),
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         }
     }
 }
@@ -3179,7 +3184,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && !env.think_on_request;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3396,7 +3401,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && !env.think_on_request;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3555,7 +3560,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && !env.think_on_request;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -3752,7 +3757,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // the other parsers' same pair): thinking OFF unless a flag asks, effort
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
-    let mut thinking_enabled = !env.engine_defaults;
+    let mut thinking_enabled = !env.engine_defaults && !env.think_on_request;
     let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
@@ -4012,5 +4017,43 @@ mod eos_policy_tests {
             EosPolicy::Global.excluded(EOS, acc.thinking_inside()),
             Some(EOS)
         );
+    }
+}
+
+#[cfg(test)]
+mod gemma_default_tests {
+    use super::{parse_anthropic_request, parse_chat_request, ParseEnv};
+    use crate::route::ThinkMode;
+
+    // Gemma-4's template opens the thought channel only for an explicit
+    // thinking request. A request that names no level gets none; an explicit
+    // level is still honored.
+    #[test]
+    fn gemma4_default_none_disables_thinking() {
+        let env = ParseEnv {
+            think_on_request: true,
+            ..ParseEnv::default()
+        };
+        let parsed =
+            parse_chat_request(&env, r#"{"messages":[{"role":"user","content":"1+2"}]}"#).unwrap();
+        assert_eq!(parsed.think_mode, ThinkMode::None);
+        let parsed = parse_chat_request(
+            &env,
+            r#"{"messages":[{"role":"user","content":"1+2"}],"reasoning_effort":"low"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.think_mode, ThinkMode::Low);
+    }
+
+    // A bare thinking switch names no level; it still turns thinking on.
+    #[test]
+    fn gemma4_honors_a_bare_thinking_request() {
+        let env = ParseEnv {
+            think_on_request: true,
+            ..ParseEnv::default()
+        };
+        let body = r#"{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"1+2"}],"thinking":{"type":"enabled","budget_tokens":1024}}"#;
+        let parsed = parse_anthropic_request(&env, body).unwrap();
+        assert_eq!(parsed.think_mode, ThinkMode::Low);
     }
 }

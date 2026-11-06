@@ -85,6 +85,28 @@ ds4_gpu_upload *ds4_gpu_upload_new(void);
 int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
                         uint64_t offset, const void *src, uint64_t bytes);
 void ds4_gpu_upload_free(ds4_gpu_upload *upload);
+/* Pinned host memory for a staging ring.  cudaHostAlloc, so a record staged here can be submitted with
+ * cudaMemcpyAsync and the host is free to stage the next one; free with
+ * ds4_gpu_host_pinned_free. */
+void *ds4_gpu_host_pinned_alloc(uint64_t bytes);
+void ds4_gpu_host_pinned_free(void *host);
+/* Queued copy path over ds4_gpu_upload.  begin() orders the upload stream
+ * after everything already queued on the caller's stream (a slot must not be
+ * overwritten while a kernel still reads it), enqueue() submits one
+ * host-to-device copy without waiting, publish() orders the caller's stream
+ * after the copies (the next kernel sees the data), and sync() blocks until
+ * they land, which is what makes reusing a ring slot safe.  The trio is
+ * unusable while a CUDA graph capture is active: begin() then returns 0 and
+ * the caller keeps the blocking ds4_gpu_tensor_write path. */
+int ds4_gpu_upload_begin(ds4_gpu_upload *upload);
+/* 1 while a CUDA graph capture is open on this thread; the queued upload
+ * path and every blocking copy are illegal inside one, so callers consult
+ * this before choosing the path. */
+int ds4_gpu_capture_active(void);
+int ds4_gpu_upload_enqueue(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+                           uint64_t offset, const void *src, uint64_t bytes);
+int ds4_gpu_upload_publish(ds4_gpu_upload *upload);
+int ds4_gpu_upload_sync(ds4_gpu_upload *upload);
 int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes);
 int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
                           const ds4_gpu_tensor *src, uint64_t src_offset,
@@ -591,6 +613,24 @@ int ds4_gpu_set_model_map_spans(const void *model_map, uint64_t model_size, cons
  * registers/copies the full mmap; the unit plan keeps routed experts cold. */
 int ds4_gpu_set_stream_map(const void *model_map, uint64_t model_size,
         const uint64_t *offsets, const uint64_t *sizes, uint32_t count);
+/* Gemma-4 arm of the same call (ds4_gemma4_map.inc). Coherent CUDA host page
+ * tables take the shared function unchanged; a discrete card installs the
+ * same stream state without the coherence gate and makes the mandatory
+ * resident spans device-resident through the unit materializer, so the
+ * resident tensors no longer need host mapping. */
+int ds4_gpu_set_stream_map_gemma(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *sizes, uint32_t count);
+/* True when that call installed the discrete plan (the Gemma binder then
+ * presents the cold expert records header-sized for the bind). */
+int ds4_gpu_g4_stream_discrete_plan(void);
+/* The 128-byte GVQ header of every cold expert record, published as one
+ * device range per record so the bind-time header gather can read it without
+ * host mapping; `headers` is count * header_bytes, record order. */
+int ds4_gpu_g4_stream_plan_cold(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *bytes, uint32_t count,
+        const uint8_t *headers, uint64_t header_bytes);
+/* Free the cold-header device ranges' backing buffer at engine close. */
+void ds4_gpu_g4_stream_plan_release(void);
 /* Retire the host registration for one mapping BEFORE its owner frees it.
    Required for map-swapping callers (kernel unit tests); a registration that
    outlives its allocation poisons later cudaMemcpy calls whose host buffers
@@ -900,6 +940,19 @@ int ds4_gpu_dsv4_topk_mask_tensor(
  */
 
 int ds4_gpu_matmul_q8_0_tensor(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
+
+/* The batch warp8 Q8_0 path for a K the shared dispatcher will not take
+ * (Gemma's dense down, K = 2112). Same result class; the token sequence is
+ * the gate. */
+int ds4_gpu_matmul_q8_0_dense_batch(
         ds4_gpu_tensor       *out,
         const void             *model_map,
         uint64_t                model_size,

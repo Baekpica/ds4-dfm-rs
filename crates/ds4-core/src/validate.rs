@@ -1994,6 +1994,9 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Axk2Vq => Err(ValidateError::Token(
             "A.X-K2 VQ requires a complete release directory",
         )),
+        ModelFamily::Gemma4Vq => Err(ValidateError::Token(
+            "Gemma-4 VQ requires a complete release directory",
+        )),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::Qwen35 => validate_qwen35(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -2041,6 +2044,13 @@ pub fn validate_gguf(path: &std::path::Path) -> Result<Shape, ValidateError> {
         let inventory = TensorInventory::open(path)
             .map_err(|e| ValidateError::TokenKey("Ling-3.1 VQ inventory", e.token()))?;
         crate::ling31_vq::validate_inventory(&inventory)?;
+        return Ok(id.shape);
+    }
+    if path.is_dir() && crate::gemma4_vq::is_release(path) {
+        let id = crate::gemma4_vq::identify(path)?;
+        let inventory = TensorInventory::open(path)
+            .map_err(|e| ValidateError::TokenKey("Gemma-4 VQ inventory", e.token()))?;
+        crate::gemma4_vq::validate_inventory(&inventory, crate::Gemma4VqFeature::Trunk)?;
         return Ok(id.shape);
     }
     if path.is_dir() {
@@ -2104,6 +2114,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::BeamVq => crate::shape::SHAPE_BEAM_VQ,
                         Variant::MinimaxVq => crate::shape::SHAPE_MINIMAX_VQ,
                         Variant::Axk2Vq => crate::shape::SHAPE_AXK2_VQ,
+                        Variant::Gemma4A4bVq => crate::shape::SHAPE_GEMMA4_A4B_VQ,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,

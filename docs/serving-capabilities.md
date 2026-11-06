@@ -43,6 +43,7 @@ The request's effective and qualified plan remains authoritative.
 | Beam-1.0-501B-A23B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
 | MiniMax-M3.1-Flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
 | A.X-K2-VQ | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
+| Gemma-4-26B-A4B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
 
 ## Bounds and allocator controls
 
@@ -74,6 +75,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Beam-1.0-501B-A23B-VQ | 1048576 | — | — | — | `DS4_BEAM_PREFILL_CHUNK` |
 | MiniMax-M3.1-Flash-VQ | 1048576 | — | — | — | `DS4_MINIMAX_PREFILL_CHUNK` |
 | A.X-K2-VQ | 262144 | — | — | — | `DS4_AXK2_PREFILL_CHUNK` |
+| Gemma-4-26B-A4B-VQ | 262144 | — | — | — | `DS4_GEMMA4_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no

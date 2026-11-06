@@ -426,6 +426,13 @@ trait SerialKvIo {
     fn chat_token_ids(&self) -> (i32, i32) {
         (-1, -1)
     }
+    /// The token index a parked conversation should be cut at so the next
+    /// turn still shares it; -1 falls back to the user/assistant scan. A
+    /// family whose template marks a model turn without distinct role tokens
+    /// uses this instead (Gemma-4: the `<|turn>model\n` triple).
+    fn chat_anchor(&self, _tokens: &[i32]) -> i32 {
+        -1
+    }
     fn live_len(&self) -> i32;
     fn live_tokens(&self) -> Vec<i32>;
     /// The native plan may replay part or all of a matching token prefix.
@@ -735,8 +742,15 @@ fn cold_sync_and_store(
         )?;
         return Ok(0);
     }
-    let (user_id, assistant_id) = io.chat_token_ids();
-    let anchor = kv_chat_anchor_pos(&store.opt, tokens, user_id, assistant_id);
+    let anchor = {
+        let own = io.chat_anchor(tokens);
+        if own > 0 {
+            own
+        } else {
+            let (user_id, assistant_id) = io.chat_token_ids();
+            kv_chat_anchor_pos(&store.opt, tokens, user_id, assistant_id)
+        }
+    };
     let target = if anchor >= store.opt.min_tokens {
         anchor
     } else {
@@ -1322,6 +1336,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
         ModelSyntax::BeamVq => ChatFormat::Beam,
         ModelSyntax::MinimaxVq => ChatFormat::Minimax,
+        ModelSyntax::Gemma4 => ChatFormat::Gemma4,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -4110,6 +4125,10 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 
     fn chat_token_ids(&self) -> (i32, i32) {
         (self.vocab.user_id, self.vocab.assistant_id)
+    }
+
+    fn chat_anchor(&self, tokens: &[i32]) -> i32 {
+        self.vocab.generation_anchor(tokens)
     }
 
     fn live_len(&self) -> i32 {
@@ -7189,6 +7208,7 @@ mod disk_sync_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let ordinary = parse_request(
             WireSurface::OpenaiChat,

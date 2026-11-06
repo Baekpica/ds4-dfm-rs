@@ -383,7 +383,8 @@ fn write_family(family: ModelFamily) -> PathBuf {
         | ModelFamily::Glm53Vq
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
-        | ModelFamily::Axk2Vq => {
+        | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::Glm53 => {
@@ -632,7 +633,8 @@ fn family_cases(family: ModelFamily) {
         | ModelFamily::Glm53Vq
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
-        | ModelFamily::Axk2Vq => {
+        | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::Glm53 => {
@@ -754,7 +756,8 @@ fn family_cases(family: ModelFamily) {
         | ModelFamily::Glm53Vq
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
-        | ModelFamily::Axk2Vq => {
+        | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::SolarOpen2 => {

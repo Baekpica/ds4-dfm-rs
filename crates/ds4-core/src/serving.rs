@@ -248,6 +248,10 @@ pub struct EngineFacts {
     pub ssd_cache_bytes: Option<u64>,
     pub ssd_staging_bytes: Option<u64>,
     pub ssd_metadata_bytes: Option<u64>,
+    /// Gemma-4's routing-driven slot pool (DS4_GEMMA4_MOE_CACHE_MIB): device
+    /// VRAM the native open allocates before any session exists
+    /// (gemma4_stream_alloc). Charged through the quote's expert_cache term.
+    pub gemma4_pool_bytes: Option<u64>,
     pub per_bank_bytes: Option<u64>,
     pub mtp_state_bytes: Option<u64>,
     pub scratch_bytes: Option<u64>,
@@ -665,7 +669,8 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         ModelFamily::Glm53Vq
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
-        | ModelFamily::Axk2Vq => caps.ctx_max,
+        | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
@@ -970,6 +975,42 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
+        // gemma4_vq serves both lanes. The serial session runs one row per
+        // forward with a kept prefix checkpoint; the banked lane owns each
+        // bank's KV caches of both layouts over graph 0's scratch
+        // (ds4_gemma4_batch.inc). Every cache row is position-indexed, so any
+        // prefix of a bank is exact and partial reuse needs no checkpoint
+        // slots; the session payload carries both layouts and restores
+        // exactly, and a bank serializes through it. Its MTP drafter is a
+        // second checkpoint, hence Sidecar.
+        ModelFamily::Gemma4Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            // The session payload carries both KV layouts (the sliding ring
+            // and the full context) and restores exactly.
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            // The drafter is the family's own `mtp` part (`--mtp`), and it
+            // executes on the serial lane only: the bank driver has no
+            // draft/verify round for this family. Present, not qualified:
+            // tests/gemma4_mtp_gate holds the token stream, but draft 6
+            // loses to plain decode at 13K (docs/gemma4-vq.md), so drafting
+            // stays opt-in with `--mtp-mode on`.
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(262_144),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         // Banks own their MSA index keys and NVFP4 K/V over graph 0's
         // scratch; the native 1M context leaves room for one. The release's
         // DSpark part (mapped only when drafting, as Ling-3.1's MTP part)
@@ -1251,7 +1292,9 @@ pub fn resolve_plan(
         caps
     };
 
-    let ssd_supported = caps.family == ModelFamily::Glm53
+    // Gemma-4's discrete stream is opt-in and its cache is native-owned
+    // (ssd.rs resolve_budget returns early); GLM-5.3 keeps the full quote.
+    let ssd_supported = matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq)
         && req.backend == Backend::Cuda
         && req.distribution == Distribution::Single;
     let unqualified_artifact =
@@ -1277,7 +1320,7 @@ pub fn resolve_plan(
         if !ssd_supported {
             issues.push(error(
                 "ssd_unsupported",
-                "SSD streaming requires one full GLM-5.3 CUDA model",
+                "SSD streaming requires one CUDA model of a supported family (GLM-5.3 or Gemma-4)",
             ));
         }
         if facts.ssd_cache_experts.is_none() {
@@ -1644,6 +1687,7 @@ impl ServingCaps {
             Variant::BeamVq => "beam_vq",
             Variant::MinimaxVq => "minimax_m3_vq",
             Variant::Axk2Vq => "axk2_vq",
+            Variant::Gemma4A4bVq => "gemma4_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1842,6 +1886,7 @@ impl ResolvedPlan {
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
+            Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
             _ => None,
         }
     }
@@ -2328,7 +2373,10 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
     let available = facts.host_available_bytes?;
     let mut quote = ServingQuote {
         shared_weights: facts.shared_weights_bytes.unwrap_or(0),
-        expert_cache: facts.ssd_cache_bytes.unwrap_or(0),
+        expert_cache: facts
+            .ssd_cache_bytes
+            .unwrap_or(0)
+            .saturating_add(facts.gemma4_pool_bytes.unwrap_or(0)),
         expert_staging: facts.ssd_staging_bytes.unwrap_or(0),
         expert_metadata: facts.ssd_metadata_bytes.unwrap_or(0),
         per_bank: facts.per_bank_bytes.unwrap_or(0),
@@ -3629,6 +3677,12 @@ mod tests {
         assert_eq!(native_ctx_default(vq), Some(1_048_576));
         let mixed = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
         assert_eq!(native_ctx_default(mixed), None);
+    }
+
+    #[test]
+    fn gemma4_context_defaults_to_native() {
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(native_ctx_default(caps), Some(262_144));
     }
 
     #[test]

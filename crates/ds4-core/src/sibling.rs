@@ -409,7 +409,7 @@ pub(crate) fn attach_siblings(
     let dspark_path = nonempty(paths.dspark);
     let mtp_supported = matches!(
         family,
-        ModelFamily::DeepSeek4 | ModelFamily::Inkling | ModelFamily::Step37
+        ModelFamily::DeepSeek4 | ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Gemma4Vq
     );
     let dspark_supported = matches!(family, ModelFamily::DeepSeek4 | ModelFamily::NaiveN05);
     if (mtp_path.is_some() && !mtp_supported) || (dspark_path.is_some() && !dspark_supported) {

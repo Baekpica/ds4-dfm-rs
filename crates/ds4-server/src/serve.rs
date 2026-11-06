@@ -77,6 +77,10 @@ pub struct ServerConfig {
     /// chat_template.jinja:2, Beam's reasoning_effort 512): a request that
     /// names no level gets it. The bin sets it from the opened model.
     pub max_effort_default: bool,
+    /// The served template opens a thought channel only when the request
+    /// asks (Gemma-4's `<|think|>`): thinking stays off unless asked. The bin
+    /// sets it from the opened model.
+    pub think_on_request: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     /// Request-omitted sampling: server flags over the model's own values.
@@ -181,6 +185,7 @@ impl Default for ServerConfig {
             model_name: "ds4".into(),
             engine_defaults: false,
             max_effort_default: false,
+            think_on_request: false,
             ctx: 8192,
             default_tokens: 393216,
             sampling: Default::default(),
@@ -1267,6 +1272,7 @@ fn prepare_client(
                 sampling: cfg.sampling,
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
+                think_on_request: cfg.think_on_request,
             };
             let body = std::str::from_utf8(&req.body).unwrap_or("");
             match parse_request(surf, &env, body) {
@@ -3807,6 +3813,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let mut parsed = parse_request(
             WireSurface::Anthropic,
@@ -3916,6 +3923,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let parsed = parse_request(
             WireSurface::Anthropic,
@@ -3974,6 +3982,7 @@ mod owner_tests {
             },
             live_ids: Vec::new(),
             engine_defaults: false,
+            think_on_request: false,
         };
         let body = format!(r#"{{"prompt":"{prompt}","max_tokens":0}}"#);
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();

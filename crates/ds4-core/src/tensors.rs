@@ -27,6 +27,7 @@ pub enum TensorError {
     MinimaxVq(&'static str),
     Axk2Vq(&'static str),
     Mimo2Vq(&'static str),
+    Gemma4Vq(&'static str),
 }
 
 impl TensorError {
@@ -47,6 +48,7 @@ impl TensorError {
             TensorError::MinimaxVq(reason) => format!("minimax-vq {reason}"),
             TensorError::Axk2Vq(reason) => format!("axk2-vq {reason}"),
             TensorError::Mimo2Vq(reason) => format!("mimo2-vq {reason}"),
+            TensorError::Gemma4Vq(reason) => format!("gemma4-vq {reason}"),
         }
     }
 }
@@ -318,7 +320,9 @@ fn parse_one(
     }
     // MiMo, A.X-K2, MiniMax and Beam parts carry GVQ1 tensors GLM's
     // validator would claim.
-    if crate::mimo2_vq::requested(g) {
+    if crate::gemma4_vq::requested(g) {
+        crate::gemma4_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::mimo2_vq::requested(g) {
         crate::mimo2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::axk2_vq::requested(g) {
         crate::axk2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -400,6 +404,11 @@ impl TensorInventory {
             if crate::ling31_vq::is_release(path) {
                 return crate::ling31_vq::open_dir(path, crate::Ling31Feature::Trunk);
             }
+            // Gemma releases open their trunk; the drafter asks for
+            // `open_gemma4_vq` with the MTP feature.
+            if crate::gemma4_vq::is_release(path) {
+                return crate::gemma4_vq::open_dir(path, crate::Gemma4VqFeature::Trunk);
+            }
             return crate::glm_vq::open_dir(path);
         }
         let g = GgufFile::open(path)?;
@@ -419,6 +428,14 @@ impl TensorInventory {
     /// A MiniMax VQ release with the parts `feature` selects.
     pub fn open_minimax(path: &Path, feature: crate::MinimaxFeature) -> Result<Self, TensorError> {
         crate::minimax_vq::open_dir(path, feature)
+    }
+
+    /// A Gemma-4 VQ release with the parts `feature` selects.
+    pub fn open_gemma4_vq(
+        path: &Path,
+        feature: crate::Gemma4VqFeature,
+    ) -> Result<Self, TensorError> {
+        crate::gemma4_vq::open_dir(path, feature)
     }
 
     pub fn from_file(path: &Path, g: &GgufFile) -> Result<Self, TensorError> {

@@ -16,6 +16,7 @@ mod bind;
 pub mod chat_template;
 mod dots3_mtp;
 mod engram;
+mod gemma4_vq;
 mod gguf;
 mod glm_mtp;
 mod glm_vq;
@@ -98,6 +99,7 @@ pub use layout::{
 };
 pub use ling31_vq::Feature as Ling31Feature;
 
+pub use gemma4_vq::Gemma4VqFeature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -137,7 +139,10 @@ pub use serving::{
     ServingCaps, ServingQuote, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
     DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
 };
-pub use serving_check::{checklist_ctx, serving_check, serving_check_v41, Checklist};
+pub use serving_check::{
+    checklist_ctx, gemma4_mtp_gate, serving_check, serving_check_v41, Checklist, MtpBlock,
+    MtpReport,
+};
 pub use serving_host::{
     attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
     host_available_bytes, QuoteHost, WeightSlice,
@@ -325,6 +330,10 @@ impl Default for OpenTuning {
 /// Validate common draft controls before metadata validation or GPU allocation.
 /// Native L31_MTP_DRAFTS: each draft adds one 276 MiB KDA journal slot.
 const LING31_MTP_DRAFTS: i32 = 3;
+/// Native G4_MTP_DRAFTS: the Gemma-4 drafter's four layers, up to six draft
+/// steps (`G4_MTP_DRAFTS` in ds4_gemma4_plan.h; the checkpoint's
+/// num_assistant_tokens is 6).
+const GEMMA4_MTP_DRAFTS: i32 = 6;
 
 /// DSpark's seven block rows each propose one token (anchor-first).
 const MINIMAX_MTP_DRAFTS: i32 = 7;
@@ -340,6 +349,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "GLM-5.3 accepts at most three recursive draft tokens"
     } else if family == ModelFamily::Ling31Vq && draft > LING31_MTP_DRAFTS {
         "Ling-3.1 accepts at most three recursive draft tokens"
+    } else if family == ModelFamily::Gemma4Vq && draft > GEMMA4_MTP_DRAFTS {
+        "Gemma-4 accepts at most six recursive draft tokens"
     } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
         "MiniMax DSpark drafts at most seven tokens per block"
     } else {
@@ -1413,6 +1424,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Gemma4Vq {
+        let g = gemma4_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else if shape.variant == Variant::Mimo26FlashVq {
         let g = mimo2_vq::metadata(path).map_err(|e| Error {
             code: 1,
@@ -1477,6 +1494,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => Mimo2VqFeature::Mtp,
         };
         TensorInventory::open_mimo2_vq(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::Gemma4Vq {
+        let feature = match parts {
+            ProbeParts::Trunk => Gemma4VqFeature::Trunk,
+            ProbeParts::WithMtp => Gemma4VqFeature::Mtp,
+        };
+        TensorInventory::open_gemma4_vq(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }

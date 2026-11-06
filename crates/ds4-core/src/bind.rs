@@ -983,6 +983,11 @@ fn mtp_names(shape: &Shape) -> Vec<BindName> {
     if shape.family == ModelFamily::Inkling {
         return inkling_names(crate::inkling::mtp_layouts());
     }
+    // Gemma-4's drafter is its own release part (`gemma4-vq8-mtp.gguf`), so
+    // the sibling plan is exactly that part's layout.
+    if shape.family == ModelFamily::Gemma4Vq {
+        return layout_names(crate::gemma4_vq::mtp_layouts());
+    }
     bind_mtp_names()
 }
 
@@ -998,6 +1003,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::BeamVq => return layout_names(crate::beam_vq::layouts()),
         ModelFamily::MinimaxVq => return layout_names(crate::minimax_vq::layouts()),
         ModelFamily::Axk2Vq => return layout_names(crate::axk2_vq::layouts()),
+        ModelFamily::Gemma4Vq => return layout_names(crate::gemma4_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");
@@ -1235,6 +1241,11 @@ impl BindPlan {
                 ModelFamily::MinimaxVq => {
                     slot.name.contains(".block_sparse_moe.experts.")
                         && slot.name.ends_with(".w1.weight")
+                }
+                // Gemma-4 VQ keeps the release's own names and no `.weight`
+                // suffix: model.layers.N.experts.M.gate_proj.
+                ModelFamily::Gemma4Vq => {
+                    slot.name.contains(".experts.") && slot.name.ends_with(".gate_proj")
                 }
                 _ => slot.name.contains("ffn_gate_exps"),
             };
@@ -1737,6 +1748,19 @@ mod tests {
             0x4756_5138,
         )]);
         p.shape = crate::shape::SHAPE_LING31_VQ;
+        assert_eq!(p.routed_quant_bits(), 2);
+    }
+
+    #[test]
+    fn gemma4_kv_quant_identity() {
+        // The release names its routed experts model.layers.N.experts.M.gate_proj
+        // with no .weight suffix and no ffn_gate_exps alias, so the default
+        // arm found nothing and read 0 (no disk KV identity at all).
+        let mut p = plan(vec![gate(
+            "model.layers.4.experts.0.gate_proj",
+            0x4756_5138,
+        )]);
+        p.shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
         assert_eq!(p.routed_quant_bits(), 2);
     }
 

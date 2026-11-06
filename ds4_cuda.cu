@@ -5401,6 +5401,11 @@ extern "C" int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, con
 struct ds4_gpu_upload {
     cudaStream_t stream;
     int device;
+    /* Ordering anchors for the queued path (ds4_gpu_upload_begin /
+     * _publish / _sync).  Both are disable-timing: only their position in a
+     * stream matters, never how long the copy took. */
+    cudaEvent_t ready;
+    cudaEvent_t done;
 };
 
 extern "C" ds4_gpu_upload *ds4_gpu_upload_new(void) {
@@ -5408,7 +5413,14 @@ extern "C" ds4_gpu_upload *ds4_gpu_upload_new(void) {
     if (!upload) { return NULL; }
     if (!cuda_ok(cudaGetDevice(&upload->device), "SSD upload device") ||
         !cuda_ok(cudaStreamCreateWithFlags(&upload->stream, cudaStreamNonBlocking),
-                 "SSD upload stream")) {
+                 "SSD upload stream") ||
+        !cuda_ok(cudaEventCreateWithFlags(&upload->ready, cudaEventDisableTiming),
+                 "SSD upload ready event") ||
+        !cuda_ok(cudaEventCreateWithFlags(&upload->done, cudaEventDisableTiming),
+                 "SSD upload done event")) {
+        if (upload->stream) { (void)cudaStreamDestroy(upload->stream); }
+        if (upload->ready) { (void)cudaEventDestroy(upload->ready); }
+        if (upload->done) { (void)cudaEventDestroy(upload->done); }
         delete upload;
         return NULL;
     }
@@ -5432,8 +5444,78 @@ extern "C" void ds4_gpu_upload_free(ds4_gpu_upload *upload) {
     if (!upload) { return; }
     (void)cudaSetDevice(upload->device);
     (void)cudaStreamSynchronize(upload->stream);
+    (void)cudaEventDestroy(upload->ready);
+    (void)cudaEventDestroy(upload->done);
     (void)cudaStreamDestroy(upload->stream);
     delete upload;
+}
+
+/* ---- Pinned staging ring and the queued upload path (UNIT 7 PHASE A) ----
+ * The pool's fill is six records per expert (gate/up/down and their resi-
+ * duals).  With ds4_gpu_tensor_write each is a blocking cudaMemcpy from the
+ * pageable model mmap: the driver stages the bytes itself, the caller waits
+ * for the device to go idle first, and the next record cannot be staged
+ * while the copy runs.  The queued path replaces that with an explicit copy
+ * from the mmap into a pinned ring slice and one cudaMemcpyAsync on the
+ * upload stream, ordering the two streams with events. */
+
+extern "C" void *ds4_gpu_host_pinned_alloc(uint64_t bytes) {
+    if (!bytes) { return NULL; }
+    void *host = NULL;
+    if (!cuda_ok(cudaHostAlloc(&host, (size_t)bytes, cudaHostAllocDefault),
+                 "pinned staging ring")) {
+        return NULL;
+    }
+    return host;
+}
+
+extern "C" void ds4_gpu_host_pinned_free(void *host) {
+    if (!host) { return; }
+    (void)cudaFreeHost(host);
+}
+
+extern "C" int ds4_gpu_capture_active(void) {
+    return ds4_capture_active();
+}
+
+extern "C" int ds4_gpu_upload_begin(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    /* A capture cannot wait on an event recorded outside it, and a blocking
+     * sync would invalidate it: the caller keeps the blocking path. */
+    if (ds4_capture_active()) { return 0; }
+    if (!cuda_ok(cudaSetDevice(upload->device), "upload device")) { return 0; }
+    if (!cuda_ok(cudaEventRecord(upload->ready, ds4_current_stream()),
+                 "upload ready event")) {
+        return 0;
+    }
+    return cuda_ok(cudaStreamWaitEvent(upload->stream, upload->ready, 0),
+                   "upload ready wait");
+}
+
+extern "C" int ds4_gpu_upload_enqueue(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+        uint64_t offset, const void *src, uint64_t bytes) {
+    if (!upload || !dst || !src || offset > dst->bytes ||
+        bytes > dst->bytes - offset) { return 0; }
+    if (!cuda_ok(cudaSetDevice(upload->device), "upload device")) { return 0; }
+    return cuda_ok(cudaMemcpyAsync((char *)dst->ptr + offset, src, (size_t)bytes,
+                                   cudaMemcpyHostToDevice, upload->stream),
+                   "upload copy");
+}
+
+extern "C" int ds4_gpu_upload_publish(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    if (ds4_capture_active()) { return 0; }
+    if (!cuda_ok(cudaEventRecord(upload->done, upload->stream),
+                 "upload done event")) {
+        return 0;
+    }
+    return cuda_ok(cudaStreamWaitEvent(ds4_current_stream(), upload->done, 0),
+                   "upload done wait");
+}
+
+extern "C" int ds4_gpu_upload_sync(ds4_gpu_upload *upload) {
+    if (!upload) { return 0; }
+    return cuda_ok(cudaEventSynchronize(upload->done), "upload completion");
 }
 
 extern "C" int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes) {
@@ -9248,6 +9330,68 @@ __global__ static void matmul_q8_0_preq_batch_warp8_kernel(
     for (uint32_t offset = group_width / 2u; offset > 0u; offset >>= 1u)
         acc += __shfl_down_sync(0xffffffffu, acc, offset, group_width);
     if (lane == 0) out[tok * out_stride + row] = acc;
+}
+
+/* The batch warp8 kernel with a token tile: each weight block is loaded once
+ * and dotted against TOK tokens. The per-token sum structure is the kernel
+ * above's own -- same b order, same acc/acc_hi split at group_width, same
+ * 16-thread reduction -- but the compiler schedules the four independent
+ * accumulators differently, so the two kernels are NOT bit-identical in
+ * practice: at ctx 256 the frontier logits move relL2 3.9e-2 while the eight
+ * greedy tokens stay identical (the same class the batch kernel itself has
+ * against the preq kernel, 5.1e-2). What changes is the number of weight
+ * reads: once per TOK tokens instead of once per token. Gemma's dense down
+ * re-read each weight row 256 times per chunk at ctx 256, which is what made
+ * it 2.17 ms per layer at 1.4 TFLOP/s. TOK 4 measured 1.72 ms per layer;
+ * TOK 8 was worse (1.88), so the compute, not the traffic, is the limit
+ * beyond 4. */
+template <uint32_t TOK>
+__global__ static void matmul_q8_0_preq_batch_warp8_tok_kernel(
+        float *out,
+        const unsigned char *w,
+        const int8_t *xq,
+        const float *xscale,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        uint64_t out_stride,
+        uint64_t n_tok,
+        uint64_t blocks,
+        int use_dp4a) {
+    constexpr uint32_t group_width = 16u;
+    const uint64_t row = (uint64_t)blockIdx.x * (256u / group_width) +
+                         threadIdx.x / group_width;
+    const uint64_t tok0 = (uint64_t)blockIdx.y * TOK;
+    const uint32_t lane = threadIdx.x & (group_width - 1u);
+    if (row >= out_dim || tok0 >= n_tok) return;
+
+    const unsigned char *wr = w + row * blocks * 34;
+    float acc[TOK], acc_hi[TOK];
+    #pragma unroll
+    for (uint32_t j = 0; j < TOK; j++) { acc[j] = 0.0f; acc_hi[j] = 0.0f; }
+    for (uint64_t b = lane; b < blocks; b += group_width) {
+        const uint64_t i0 = b * 32;
+        const uint64_t bn = in_dim - i0 < 32 ? in_dim - i0 : 32;
+        const __half *scale_h = (const __half *)(wr + b * 34);
+        const int8_t *qs = (const int8_t *)(wr + b * 34 + 2);
+        const float ws = __half2float(*scale_h);
+        #pragma unroll
+        for (uint32_t j = 0; j < TOK; j++) {
+            if (tok0 + j >= n_tok) break;
+            const int8_t *xqb = xq + (tok0 + j) * blocks * 32 + b * 32;
+            const int dot = dot_i8_block(qs, xqb, bn, use_dp4a);
+            const float term = ws * xscale[(tok0 + j) * blocks + b] * (float)dot;
+            if (b < group_width) acc[j] += term;
+            else acc_hi[j] += term;
+        }
+    }
+    #pragma unroll
+    for (uint32_t j = 0; j < TOK; j++) {
+        if (tok0 + j >= n_tok) break;
+        float v = acc[j] + acc_hi[j];
+        for (uint32_t offset = group_width / 2u; offset > 0u; offset >>= 1u)
+            v += __shfl_down_sync(0xffffffffu, v, offset, group_width);
+        if (lane == 0) out[(tok0 + j) * out_stride + row] = v;
+    }
 }
 
 __global__ static void matmul_q8_0_preq_n2_warp8_kernel(
@@ -25797,6 +25941,45 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
                                            in_dim, out_dim, n_tok, blocks,
                                            use_dp4a);
     return cuda_ok(cudaGetLastError(), "matmul_q8_0 launch");
+}
+
+/* Gemma dense down: Q8_0 with K = 8*256 + 64 (2112). The tile-based MMQ path
+ * refuses a K that is not a multiple of 256, and the per-element preq kernel
+ * that remains runs one block per (row, token) with only K/32 of its 256
+ * threads active. This entry runs the batch warp8 kernel instead: 16 output
+ * rows per block, 16 threads per row, one token per block, so all 256
+ * threads are busy and the 16 rows share the token's quantized activations.
+ * Same per-block int8 dot and fp32 scale product as the preq kernel; the
+ * fp32 sum order differs, so the gate is the token sequence. */
+extern "C" int ds4_gpu_matmul_q8_0_dense_batch(ds4_gpu_tensor *out, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
+        const ds4_gpu_tensor *x, uint64_t n_tok) {
+    if (!out || !x || !model_map || !in_dim || !out_dim || !n_tok) return 0;
+    const uint64_t blocks = (in_dim + 31u) / 32u;
+    if (weight_offset > model_size || out_dim > UINT64_MAX / (blocks * 34u)) return 0;
+    const uint64_t weight_bytes = out_dim * blocks * 34u;
+    if (weight_bytes > model_size - weight_offset) return 0;
+    if (x->bytes < n_tok * in_dim * sizeof(float) ||
+        out->bytes < n_tok * out_dim * sizeof(float)) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, "q8_0");
+    if (!wptr) return 0;
+    const uint64_t xq_bytes = n_tok * blocks * 32u;
+    const uint64_t scale_offset = (xq_bytes + 15u) & ~15ull;
+    const uint64_t tmp_bytes = scale_offset + n_tok * blocks * sizeof(float);
+    void *tmp = cuda_tmp_alloc(tmp_bytes, "q8_0 dense batch");
+    if (!tmp) return 0;
+    int8_t *xq = (int8_t *)tmp;
+    float *xscale = (float *)((char *)tmp + scale_offset);
+    const int use_dp4a = cuda_q8_use_dp4a();
+    dim3 qgrid((unsigned)blocks, (unsigned)n_tok, 1);
+    quantize_q8_0_f32_kernel<<<qgrid, 32, 0, ds4_current_stream()>>>(xq, xscale,
+        (const float *)x->ptr, in_dim, blocks);
+    if (!cuda_ok(cudaGetLastError(), "q8_0 dense batch quantize")) return 0;
+    dim3 bgrid(((unsigned)out_dim + 15u) / 16u, (unsigned)((n_tok + 3u) / 4u), 1);
+    matmul_q8_0_preq_batch_warp8_tok_kernel<4u><<<bgrid, 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, reinterpret_cast<const unsigned char *>(wptr), xq, xscale,
+        in_dim, out_dim, out_dim, n_tok, blocks, use_dp4a);
+    return cuda_ok(cudaGetLastError(), "q8_0 dense batch launch");
 }
 
 extern "C" int ds4_gpu_matmul_q8_0_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint64_t n_tok) {
@@ -49528,6 +49711,11 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_glm53_compact_gpu.cuh"
 #include "ds4_glmvq_gpu.cuh"
+#include "ds4_gemma4_gpu.cuh"
+/* Gemma-4 discrete SSD stream map: the Gemma-owned counterpart of the shared
+ * ds4_glm53_map.inc (included above, never edited). Needs the map statics and
+ * the unit materializer, so it is included here, after both. */
+#include "ds4_gemma4_map.inc"
 #include "ds4_inkling_gpu.cuh"
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_ling31_gpu.cuh"

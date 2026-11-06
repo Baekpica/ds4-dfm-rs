@@ -199,6 +199,7 @@ pub enum ModelSyntax {
     BeamVq = 19,
     MinimaxVq = 20,
     Axk2Vq = 21,
+    Gemma4 = 23,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -224,6 +225,8 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         19 => ModelSyntax::BeamVq,
         20 => ModelSyntax::MinimaxVq,
         21 => ModelSyntax::Axk2Vq,
+        // 23: Gemma-4 renders through its Jinja template only.
+        23 => ModelSyntax::Gemma4,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -246,6 +249,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         // `=` merges into the recipient's first token.
         ModelSyntax::BeamVq => "<|start|>assistant to",
         ModelSyntax::MinimaxVq => crate::tools::minimax::TOOL_CALL_START,
+        ModelSyntax::Gemma4 => crate::tools::gemma4::FORCED_CALL,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -2482,6 +2486,9 @@ pub fn render_chat_choice_ex(
         ModelSyntax::Axk2Vq => Err(RenderError(
             "A.X-K2 input requires its official Jinja template",
         )),
+        ModelSyntax::Gemma4 => Err(RenderError(
+            "Gemma-4 input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -2574,6 +2581,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::MinimaxVq => {
             return Err(RenderError(
                 "MiniMax tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::Gemma4 => {
+            return Err(RenderError(
+                "Gemma-4 tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Axk2Vq => {

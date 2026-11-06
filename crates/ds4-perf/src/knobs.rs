@@ -76,6 +76,21 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_MMQ_Q5_PAIR"
             | "DS4_MMQ_VEC_SANITIZE"
             | "DS4_CUDA_LAYER_GRAPHS"
+            | "DS4_GEMMA4_ATTN_FAST"
+            | "DS4_GEMMA4_ATTN_PREFILL"
+            | "DS4_GEMMA4_VQ_PREFILL"
+            | "DS4_GEMMA4_Q8_BATCH"
+            | "DS4_GEMMA4_FUSE_ROPE"
+            | "DS4_GEMMA4_ROUTER_PAR"
+            | "DS4_GEMMA4_HEAD_GEMV"
+            | "DS4_GEMMA4_ROUTER_DOT"
+            | "DS4_GEMMA4_ATTN_MMA"
+            | "DS4_GEMMA4_ATTN_SPLIT"
+            | "DS4_GEMMA4_ATTN_SPLIT_MMA"
+            | "DS4_GEMMA4_MOE_PERSIST"
+            | "DS4_GEMMA4_VQ_GEMV"
+            | "DS4_GEMMA4_ATTN_SPLIT_SPAN"
+            | "DS4_GEMMA4_PREFILL_CHUNK"
     )
 }
 
@@ -172,6 +187,21 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
             (family.starts_with("step") || family.starts_with("exaone") || family.starts_with("k2"))
                 && value == "0"
         }
+        "DS4_GEMMA4_ATTN_FAST"
+        | "DS4_GEMMA4_ATTN_PREFILL"
+        | "DS4_GEMMA4_VQ_PREFILL"
+        | "DS4_GEMMA4_Q8_BATCH"
+        | "DS4_GEMMA4_FUSE_ROPE"
+        | "DS4_GEMMA4_ROUTER_PAR"
+        | "DS4_GEMMA4_HEAD_GEMV"
+        | "DS4_GEMMA4_ROUTER_DOT"
+        | "DS4_GEMMA4_ATTN_MMA"
+        | "DS4_GEMMA4_ATTN_SPLIT"
+        | "DS4_GEMMA4_ATTN_SPLIT_MMA"
+        | "DS4_GEMMA4_MOE_PERSIST"
+        | "DS4_GEMMA4_VQ_GEMV" => family == "gemma4_vq" && matches!(value, "0" | "1"),
+        "DS4_GEMMA4_ATTN_SPLIT_SPAN" => family == "gemma4_vq" && (16..=4096).contains(&n),
+        "DS4_GEMMA4_PREFILL_CHUNK" => family == "gemma4_vq" && (1..=8192).contains(&n),
         _ => false,
     };
     if !valid {
@@ -184,6 +214,22 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemma4_switches_are_scoped_and_residency_stays_fixed() {
+        assert!(super::tunable("DS4_GEMMA4_ATTN_SPLIT_SPAN"));
+        assert!(super::validate("DS4_GEMMA4_ATTN_SPLIT_SPAN", "64", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_ATTN_SPLIT_SPAN", "8", "gemma4_vq").is_err());
+        assert!(super::validate("DS4_GEMMA4_MOE_PERSIST", "0", "gemma4_vq").is_ok());
+        assert!(super::validate("DS4_GEMMA4_MOE_PERSIST", "0", "glm5_next").is_err());
+        for key in [
+            "DS4_GEMMA4_MOE_CACHE_MIB",
+            "DS4_GEMMA4_CPU_MOE",
+            "DS4_GEMMA4_FULL_KV",
+        ] {
+            assert!(!super::tunable(key), "{key}");
+        }
+    }
+
     #[test]
     fn iquest_chunk_is_scoped_and_bounded() {
         assert!(super::tunable("DS4_IQUEST_PREFILL_CHUNK"));

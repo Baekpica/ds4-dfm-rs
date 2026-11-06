@@ -42,9 +42,16 @@ struct __align__(16) beam_w_item { uint32_t offset, tokens; const __half *gain; 
 __device__ __forceinline__ uint32_t beam_w_smem(const void *p) { return (uint32_t)__cvta_generic_to_shared(p); }
 
 // The suspend-time hint parks a waiting warp instead of spinning on try_wait.
+// try_wait is sm_90+; below that the loop tests the barrier each iteration
+// (test_wait, sm_80), which is the same protocol without the park hint.
 __device__ __forceinline__ void beam_w_wait(const uint64_t *bar, uint32_t parity) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
     asm volatile("{\n .reg .pred done;\n BEAM_W_WAIT%=:\n mbarrier.try_wait.parity.shared.b64 done, [%0], %1, %2;\n"
         " @!done bra BEAM_W_WAIT%=;\n}" :: "r"(beam_w_smem(bar)), "r"(parity), "r"(0x989680u) : "memory");
+#else
+    asm volatile("{\n .reg .pred done;\n BEAM_W_WAIT%=:\n mbarrier.test_wait.parity.shared.b64 done, [%0], %1;\n"
+        " @!done bra BEAM_W_WAIT%=;\n}" :: "r"(beam_w_smem(bar)), "r"(parity) : "memory");
+#endif
 }
 
 __device__ __forceinline__ void beam_w_arrive(uint64_t *bar) {

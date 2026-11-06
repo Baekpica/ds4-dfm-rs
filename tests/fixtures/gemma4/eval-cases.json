@@ -1,0 +1,406 @@
+{
+ "source": "tokenizers 0.23.3 + jinja2 3.1.6 on gemma-4-26B-A4B-it-hf",
+ "cases": [
+  {
+   "id": "ascii",
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "ids": [
+    818,
+    3823,
+    8864,
+    37423,
+    38167,
+    1024,
+    506,
+    31770,
+    4799,
+    236761
+   ]
+  },
+  {
+   "id": "leading_space",
+   "text": " leading space and  double  spaces",
+   "ids": [
+    5830,
+    2557,
+    532,
+    138,
+    7902,
+    138,
+    35220
+   ]
+  },
+  {
+   "id": "newlines",
+   "text": "line one\nline two\n\nline four",
+   "ids": [
+    1257,
+    886,
+    107,
+    1257,
+    1156,
+    108,
+    1257,
+    2390
+   ]
+  },
+  {
+   "id": "tabs",
+   "text": "a\tb\t\tc",
+   "ids": [
+    236746,
+    255968,
+    236763,
+    255969,
+    236755
+   ]
+  },
+  {
+   "id": "digits",
+   "text": "1234567890 3.14159 1,000,000",
+   "ids": [
+    236770,
+    236778,
+    236800,
+    236812,
+    236810,
+    236825,
+    236832,
+    236828,
+    236819,
+    236771,
+    236743,
+    236800,
+    236761,
+    236770,
+    236812,
+    236770,
+    236810,
+    236819,
+    236743,
+    236770,
+    236764,
+    236771,
+    236771,
+    236771,
+    236764,
+    236771,
+    236771,
+    236771
+   ]
+  },
+  {
+   "id": "code",
+   "text": "fn main() { println!(\"hi\"); } // é",
+   "ids": [
+    15059,
+    1689,
+    825,
+    642,
+    32374,
+    36492,
+    2202,
+    1443,
+    682,
+    973,
+    1559
+   ]
+  },
+  {
+   "id": "unicode",
+   "text": "café naïve Ångström ß",
+   "ids": [
+    123125,
+    236859,
+    120362,
+    44667,
+    829,
+    80406,
+    114881
+   ]
+  },
+  {
+   "id": "cjk",
+   "text": "你好世界",
+   "ids": [
+    144626,
+    12811
+   ]
+  },
+  {
+   "id": "emoji",
+   "text": "ok 😀🚀 done",
+   "ids": [
+    680,
+    163543,
+    242015,
+    3028
+   ]
+  },
+  {
+   "id": "controls",
+   "text": "<|turn>user\nhi<turn|>\n<|think|><|channel>thought\n<channel|>",
+   "ids": [
+    105,
+    2364,
+    107,
+    2202,
+    106,
+    107,
+    98,
+    100,
+    45518,
+    107,
+    101
+   ]
+  },
+  {
+   "id": "punct",
+   "text": "!@#$%^&*()[]{}<>?/\\|~`",
+   "ids": [
+    236888,
+    236940,
+    190494,
+    236884,
+    202079,
+    825,
+    3805,
+    16454,
+    52715,
+    219958,
+    5011,
+    236995,
+    236929
+   ]
+  },
+  {
+   "id": "long",
+   "text": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+   "ids": [
+    3017,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    3658,
+    236743
+   ]
+  },
+  {
+   "id": "en_single",
+   "context": {
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one word."
+     }
+    ],
+    "add_generation_prompt": true,
+    "enable_thinking": true
+   },
+   "text": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nWhat is the capital of France? Answer in one word.<turn|>\n<|turn>model\n",
+   "ids": [
+    2,
+    105,
+    9731,
+    107,
+    98,
+    107,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    3689,
+    563,
+    506,
+    5279,
+    529,
+    7001,
+    236881,
+    25685,
+    528,
+    886,
+    3658,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107
+   ]
+  },
+  {
+   "id": "system_no_think",
+   "context": {
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a terse assistant."
+     },
+     {
+      "role": "user",
+      "content": "Name three prime numbers."
+     }
+    ],
+    "add_generation_prompt": true,
+    "enable_thinking": false
+   },
+   "text": "<bos><|turn>system\nYou are a terse assistant.<turn|>\n<|turn>user\nName three prime numbers.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "ids": [
+    2,
+    105,
+    9731,
+    107,
+    3048,
+    659,
+    496,
+    17514,
+    16326,
+    236761,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    1567,
+    1806,
+    8355,
+    4945,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ]
+  },
+  {
+   "id": "multi_turn",
+   "context": {
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hi"
+     },
+     {
+      "role": "assistant",
+      "content": "Hello! How can I help?"
+     },
+     {
+      "role": "user",
+      "content": "Write one line of Rust that prints 42."
+     }
+    ],
+    "add_generation_prompt": true,
+    "enable_thinking": true
+   },
+   "text": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\nHello! How can I help?<turn|>\n<|turn>user\nWrite one line of Rust that prints 42.<turn|>\n<|turn>model\n",
+   "ids": [
+    2,
+    105,
+    9731,
+    107,
+    98,
+    107,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    10979,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    9259,
+    236888,
+    2088,
+    740,
+    564,
+    1601,
+    236881,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    6974,
+    886,
+    1757,
+    529,
+    43999,
+    600,
+    24482,
+    236743,
+    236812,
+    236778,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107
+   ]
+  }
+ ]
+}

@@ -27,9 +27,11 @@
 //! on the prefill grid a kept prefix repeats the fresh arithmetic, so a
 //! difference points at reuse, not at chunking. Where reuse changes the
 //! arithmetic, a second reference without reuse carries the same change:
-//! continue keeps rows decode wrote (U fed by decode), and a rewind kept off
-//! the grid re-prefills from there (T synced in two parts split at the kept
-//! row). A row agrees when its top-1 is a reference's. Two references set a
+//! continue keeps rows decode wrote (U fed by decode), a prefix kept off
+//! the grid compares against the same split with its tail fed one token at
+//! a time, and a rewind kept off the grid re-prefills from there (T synced
+//! in two parts split at the kept row). A row agrees when its top-1 is a
+//! reference's. Two references set a
 //! noise floor, the most they move a row's top-1 lead over its runner-up;
 //! a pick a reference ranks within it is a near tie, any other flip reuse.
 //! Session items compare the top-1 at the frontier and after each forced
@@ -38,14 +40,19 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::serving::{bank_opt_in_env, caps_from_shape, ReuseKind, ServingCaps, Support};
 use crate::{
-    v41_kvreuse_last_reused, BatchCtx, ContAdmit, ContDone, ContDriver, Error, Model, Result,
-    Session, SessionSnapshot, TokenBuffer, V41KvClass, V41KvDisk, V41KvHit, V41RunOptions,
+    v41_kvreuse_last_reused, BatchCtx, ContAdmit, ContDone, ContDriver, Error, Model, ModelFamily,
+    Result, Session, SessionSnapshot, TokenBuffer, V41KvClass, V41KvDisk, V41KvHit, V41RunOptions,
     V41Sampling,
 };
+
+mod gemma4_mtp;
+pub use gemma4_mtp::{gemma4_mtp_gate, MtpBlock, MtpReport};
+use gemma4_mtp::{MTP_BLOCK_MIN, MTP_TEMPERATURE};
 
 /// Tokens decoded past each frontier.
 const DECODE_TOKENS: usize = 16;
@@ -68,6 +75,9 @@ enum Item {
     BankPartial,
     BankDisk,
     BankWidth,
+    /// The drafter's losslessness: drafting may change acceptance and
+    /// speed, never the target's stream.
+    Mtp,
 }
 
 impl Item {
@@ -98,6 +108,7 @@ impl Item {
             Self::BankPartial => ("banks", "partial"),
             Self::BankDisk => ("banks", "disk"),
             Self::BankWidth => ("banks", "width"),
+            Self::Mtp => ("mtp", "lossless"),
         }
     }
 
@@ -129,6 +140,7 @@ impl Item {
             Self::BankPartial => bank(partial),
             Self::BankDisk => bank(caps.disk),
             Self::BankWidth => caps.bank_support,
+            Self::Mtp => caps.mtp_support,
         }
     }
 
@@ -192,6 +204,9 @@ pub struct Checklist {
     split: usize,
     /// The session's prefill cap; 0 when no session opened.
     grid: u32,
+    /// The mtp row ran against a bound drafter, so the unchecked list drops
+    /// its placeholder.
+    mtp_bound: bool,
     rows: Vec<(Item, Measured)>,
 }
 
@@ -221,13 +236,16 @@ fn limit(v: Option<u32>) -> String {
 }
 
 /// Categories the checklist lists but cannot run yet, with their declaration.
-fn unchecked(c: &ServingCaps) -> [(&'static str, &'static str, String); 4] {
-    [
-        (
+fn unchecked(c: &ServingCaps, mtp_bound: bool) -> Vec<(&'static str, &'static str, String)> {
+    let mut rows = Vec::with_capacity(4);
+    if !mtp_bound {
+        rows.push((
             "mtp",
             "lossless",
             format!("{:?} {} {:?}", c.mtp, support(c.mtp_support), c.spec_lane),
-        ),
+        ));
+    }
+    rows.extend([
         (
             "context",
             "limit",
@@ -247,7 +265,8 @@ fn unchecked(c: &ServingCaps) -> [(&'static str, &'static str, String); 4] {
             "lane",
             (if c.media_serial { "serial" } else { "banks" }).into(),
         ),
-    ]
+    ]);
+    rows
 }
 
 impl fmt::Display for Checklist {
@@ -282,7 +301,7 @@ impl fmt::Display for Checklist {
                 Verdict::of(declared, measured).label()
             )?;
         }
-        for (category, name, declared) in unchecked(c) {
+        for (category, name, declared) in unchecked(c, self.mtp_bound) {
             writeln!(
                 f,
                 "  {category:<9} {name:<9} {:<10} {:<18} declared {declared}",
@@ -531,8 +550,9 @@ fn fed(s: &mut Session<'_>, p: &Prompts, forced: &[i32], vocab: usize) -> Result
     decode(s, vocab, forced)
 }
 
-/// T prefilled in two syncs split at `k`: a rewind's chunking when it kept
-/// `k` off the grid, from an extension the prefix item checks.
+/// T prefilled in two syncs split at `k`: the chunking a kept prefix uses.
+/// This is also the prefix item's own execution path, so it is only a
+/// reference for a rewind, whose first sync is a different width.
 fn extended(
     s: &mut Session<'_>,
     t: &[i32],
@@ -543,6 +563,24 @@ fn extended(
     s.invalidate();
     sync(s, &t[..k])?;
     sync(s, t)?;
+    decode(s, vocab, forced)
+}
+
+/// T[..k] prefilled cold, then T[k..] fed one token at a time: the same
+/// chunk boundary as a prefix kept at `k`, without reusing the second
+/// sync. A prefix kept off the grid continues in a narrower chunk than the
+/// fresh one-chunk prefill, so this is the reuse-free arithmetic to
+/// compare against; `extended` cannot serve that role because it repeats
+/// the prefix item's own two-sync path and would compare the item to
+/// itself.
+fn fed_from(
+    s: &mut Session<'_>,
+    t: &[i32],
+    k: usize,
+    forced: &[i32],
+    vocab: usize,
+) -> Result<Rows> {
+    decoded(s, &t[..k], &t[k..])?;
     decode(s, vocab, forced)
 }
 
@@ -640,20 +678,29 @@ fn session_items(
             Ok(Some(kept_rows)) => kept_rows,
         };
 
-        // A rewind kept off the grid re-prefills from there: its chunking.
-        let off_grid = match item {
-            Item::Rewind if kept as usize != p.m => {
-                Some(extended(s, &p.t, kept as usize, forced, vocab)?)
+        // A kept prefix off the prefill grid continues in a narrower chunk
+        // than the fresh one-chunk prefill, so the two arithmetics differ.
+        // The prefix item gets a reuse-free reference at the same split
+        // (the tail fed one token at a time); the rewind item, whose own
+        // first sync is a different width, gets the two-sync path.
+        let k = kept as usize;
+        let on_grid = list.grid == 0 || k % list.grid as usize == 0;
+        let extra = if !on_grid {
+            match item {
+                Item::Prefix => Some(("decode-fed", fed_from(s, &p.t, k, forced, vocab)?)),
+                Item::Rewind => Some(("split", extended(s, &p.t, k, forced, vocab)?)),
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
         let mut refs: Vec<Reference<'_>> = match (item, &live) {
             (Item::Prefix | Item::Rewind, _) => vec![("prefill", &fresh_t)],
             (Item::SessionDisk | Item::Snapshot, Some(rows)) => vec![("live", rows)],
             _ => vec![("prefill", &fresh_u), ("decode-fed", &fed_u)],
         };
-        if let Some(rows) = &off_grid {
-            refs.push(("split", rows));
+        if let Some((name, rows)) = &extra {
+            refs.push((name, rows));
         }
         list.rows.push((item, compare(&refs, &got, kept)));
 
@@ -882,6 +929,7 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
         prompt: prompt.len(),
         split: 0,
         grid: 0,
+        mtp_bound: false,
         rows: Vec::new(),
     };
     let p = match model.session(ctx) {
@@ -895,6 +943,41 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
         }
     };
     list.rows.extend(bank_items(model, &p, ctx));
+    // The MTP row runs only when the drafter is bound: a model served
+    // without its sidecar keeps the unchecked placeholder, and a bound one
+    // must prove the stream, not just the declaration.
+    if model.family() == ModelFamily::Gemma4Vq && model.mtp().is_some() {
+        list.mtp_bound = true;
+        let measured = match gemma4_mtp_gate(model, prompt, ctx, DECODE_TOKENS) {
+            Ok(report) => {
+                let detail = match &report.block {
+                    Some(block) => format!(
+                        "streams equal, {} tokens, max accepted {}, prefix {}, snapshot, stop {}, temp {:.1} (max_abs {:.3e})",
+                        report.ids.len(),
+                        report.max_accepted(),
+                        if report.prefix_reuse == Some(true) {
+                            "equal"
+                        } else {
+                            "skipped"
+                        },
+                        block.stop_accepted.len(),
+                        MTP_TEMPERATURE,
+                        block.max_abs
+                    ),
+                    None => format!(
+                        "streams equal, {} tokens, max accepted {}; no block of {} in {}",
+                        report.ids.len(),
+                        report.max_accepted(),
+                        MTP_BLOCK_MIN,
+                        DECODE_TOKENS
+                    ),
+                };
+                Measured::Works(detail)
+            }
+            Err(e) => Measured::Wrong(e.message),
+        };
+        list.rows.push((Item::Mtp, measured));
+    }
     Ok(list)
 }
 
@@ -1006,6 +1089,7 @@ pub fn serving_check_v41(
         prompt: prompt.len(),
         split: split_point(prompt.len(), 0),
         grid: 0,
+        mtp_bound: false,
         rows: Vec::new(),
     };
     let k = DECODE_TOKENS;
@@ -1085,6 +1169,8 @@ mod tests {
             Variant::Axk2Vq,
             Variant::Mimo26FlashVq,
         ];
+        // Gemma-4 VQ has no forward in this tree yet and declares no serving
+        // lane; it joins this sweep when the engine lands.
         for v in &all {
             match v {
                 Variant::Flash
@@ -1109,7 +1195,8 @@ mod tests {
                 | Variant::BeamVq
                 | Variant::MinimaxVq
                 | Variant::Axk2Vq
-                | Variant::Mimo26FlashVq => {}
+                | Variant::Mimo26FlashVq
+                | Variant::Gemma4A4bVq => {}
             }
         }
         all
@@ -1157,6 +1244,18 @@ mod tests {
         assert_eq!(Verdict::of(Support::None, &wrong), Verdict::Wrong);
         assert!(Verdict::Wrong.failed() && Verdict::Fail.failed());
         assert!(!Verdict::No.failed() && !Verdict::Undeclared.failed());
+    }
+
+    #[test]
+    fn a_bound_drafter_drops_the_mtp_placeholder() {
+        let caps = caps_from_shape(shape_for_variant(Variant::Gemma4A4bVq));
+        let unbound = unchecked(&caps, false);
+        assert!(unbound
+            .iter()
+            .any(|(c, n, _)| *c == "mtp" && *n == "lossless"));
+        let bound = unchecked(&caps, true);
+        assert!(!bound.iter().any(|(c, _, _)| *c == "mtp"));
+        assert_eq!(bound.len(), 3);
     }
 
     #[test]

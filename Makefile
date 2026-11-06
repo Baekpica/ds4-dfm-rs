@@ -1,5 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
+GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_stream.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc ds4_gemma4_mtp.inc ds4_gemma4_payload.inc ds4_gemma4_batch.inc ds4_gemma4_bank_payload.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
@@ -320,7 +321,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc ds4_ds41_vision.inc
+ds4.o: ds4.c $(GEMMA4_NATIVE_INCS) $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc ds4_ds41_vision.inc
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -466,6 +467,52 @@ tests/weight_mapping_probe: tests/test_weight_mapping.cu
 
 tests/weight_mapping_policy: tests/test_weight_mapping_policy.cu $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -DDS4_USE_CUDA -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_gemma4_primitives: tests/test_gemma4_primitives.cu cuda/gemma4_primitives.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
+
+.PHONY: test-gemma4-primitives
+test-gemma4-primitives: tests/test_gemma4_primitives
+	./tests/test_gemma4_primitives
+
+# The fused verify head against the one-row head, byte for byte. Production
+# flags on purpose: the claim is about the production arithmetic, so no
+# --fmad=false here.
+tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemma4_primitives.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-gemma4-head-rows
+test-gemma4-head-rows: tests/gemma4_head_rows
+	./tests/gemma4_head_rows
+
+# The persistent layer-book MoE decode against the per-expert kernels it
+# replaces, on one synthetic R13+8 layer at the artifact's geometry. The
+# gate/up pass is expected near-exact (the row sum's FP32 order changes);
+# the down pass is expected bit-identical.
+tests/gemma4_moe_persist: tests/gemma4_moe_persist.cu cuda/gemma4_moe_persist.cuh cuda/gemma_vq_decode.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_primitives.cuh cuda/glm_vq.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-gemma4-moe-persist
+test-gemma4-moe-persist: tests/gemma4_moe_persist
+	./tests/gemma4_moe_persist
+
+# The Gemma Q4_K decode against the shared dispatcher it replaces, at the
+# artifact's matrix shapes. The row sum's FP32 order differs (the scalar
+# fallback's lane sets); the gate measures the distance.
+tests/gemma4_q4_decode: tests/gemma4_q4_decode.cu cuda/gemma4_q4_decode.cuh cuda/gemma4_primitives.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-gemma4-q4-decode
+test-gemma4-q4-decode: tests/gemma4_q4_decode
+	./tests/gemma4_q4_decode
+
+# The sliding-ring resume rule the serial and bank lanes share, model-free.
+tests/gemma4_ring: tests/gemma4_ring.c ds4_gemma4_plan.h
+	$(CC) $(CFLAGS) -o $@ tests/gemma4_ring.c
+
+.PHONY: test-gemma4-ring
+test-gemma4-ring: tests/gemma4_ring
+	./tests/gemma4_ring
 
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
@@ -826,7 +873,7 @@ rax.o: rax.c rax.h rax_malloc.h
 linenoise.o: linenoise.c linenoise.h
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ linenoise.c
 
-ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
+ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) $(GEMMA4_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4.c
 
 # Native checkpoint changes must reach incremental production/test builds.
@@ -861,7 +908,7 @@ ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(META
 # MB, 20 MB without; identical SASS); loading it costs 143 MiB of host
 # memory against 62. CUDA_LINEINFO=-lineinfo restores it for profiling.
 CUDA_LINEINFO ?=
-ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
+ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_gemma4_gpu.cuh ds4_gemma4_map.inc ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h cuda/gemma4_primitives.cuh cuda/gemma4_head.cuh cuda/gemma4_router.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_fp8.cuh cuda/gemma4_attn_fast.cuh cuda/gemma4_attn_tile.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh cuda/gemma_vq_decode.cuh cuda/gemma_vq_prefill.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_moe_persist.cuh cuda/gemma4_q4_decode.cuh cuda/gemma4_cpu_moe.cuh ds4_gemma4_ref.h ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
 	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(CUDA_LINEINFO) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) $(DEPFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -990,7 +1037,7 @@ CI_MODEL_FREE := test-model-registration test-vq-source-release \
 	test-family-cont-spec-finish
 
 .PHONY: ci ci-lint ci-rust ci-parity ci-model-free test-iquest-model-free \
-	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2
+	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2 gate-gemma4
 ci: ci-lint ci-rust ci-parity ci-model-free
 
 gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
@@ -1000,6 +1047,15 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
+gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
+
+.PHONY: test-gemma4-memory
+test-gemma4-memory:
+	python3 tests/test_gemma4_memory.py
+
+.PHONY: test-gemma4-mtp-control
+test-gemma4-mtp-control:
+	python3 tests/test_gemma4_mtp_control.py
 
 ci-lint:
 	cargo fmt --all -- --check
@@ -1921,6 +1977,16 @@ test-glm-vq-mtp-mode: tests/test_glm_vq_mtp_mode
 test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
 
+# The Gemma-4 MTP losslessness gate: plain against drafting greedy streams,
+# the block state against a one-row replay, prefix reuse, snapshot restore,
+# a stop inside an accepted block, and sample-and-match at temp 0.8.
+tests/gemma4_mtp_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example gemma4_mtp_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/gemma4_mtp_gate" $@
+
 tests/test_glm_vq_quote.o: tests/test_glm_vq_quote.c ds4.c
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
@@ -2641,7 +2707,8 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_head_rows tests/gemma4_moe_persist tests/gemma4_mtp_gate tests/gemma4_q4_decode \
+    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
@@ -2683,7 +2750,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_moe tests/test_inkling_mtp tests/test_inkling_mtp_shared \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
-    tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
+    tests/test_gemma4_primitives tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
     tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \

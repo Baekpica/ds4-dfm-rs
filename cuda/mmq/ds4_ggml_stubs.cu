@@ -136,7 +136,21 @@ struct ds4_naive_pool : public ggml_cuda_pool {
         ggml_cuda_set_device(device);
         void * ptr = nullptr;
         cudaStream_t s = t_ds4_pool_stream;
-        CUDA_CHECK(cudaMallocAsync(&ptr, size, s));
+        /* Name the request and the device's numbers on refusal: "out of
+         * memory" alone cannot tell a request that is too wide from a card
+         * that is full. */
+        const cudaError_t err = cudaMallocAsync(&ptr, size, s);
+        if (err != cudaSuccess) {
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            fprintf(stderr,
+                "ds4: pool alloc refused %zu B (%.2f MiB): %s; device free %.2f MiB of %.2f MiB\n",
+                size, (double)size / 1048576.0, cudaGetErrorString(err),
+                (double)free_b / 1048576.0, (double)total_b / 1048576.0);
+            fflush(stderr);
+            ggml_cuda_error("cudaMallocAsync(&ptr, size, s)", __func__, __FILE__, __LINE__,
+                cudaGetErrorString(err));
+        }
         if (actual_size) *actual_size = size;
         {
             std::lock_guard<std::mutex> lk(mu);

@@ -171,6 +171,12 @@ const GLM_MTP_SAVES: u64 = 5;
 const GLM_CHECKPOINT_SLOTS: u64 = 8;
 // Match the reference host's existing admission/watchdog reserve.
 const GLM_SSD_RESERVE_BYTES: u64 = 12 * GIB;
+/// Gemma-4's native default bounded cache (ds4_gemma4_stream.inc).
+const G4_SSD_DEFAULT_BYTES: u64 = 4 * GIB;
+/// One record plus its residual plane is under 1 MiB; keep a rounded host
+/// staging term rather than the GLM 2 MiB/4 MiB contract.
+const G4_SSD_STAGING_BYTES: u64 = 1 << 20;
+const G4_SSD_METADATA_BYTES: u64 = 1 << 20;
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const CGROUP_MEMBERSHIP: &str = "/proc/self/cgroup";
 const CGROUP_CURRENT: &str = "memory.current";
@@ -205,6 +211,52 @@ const DOTS3_NATIVE_MAX: u32 = 8192;
 const MIMO_PREFILL_CHUNK_ENV: &str = "DS4_MIMO2_PREFILL_CHUNK";
 const MIMO_NATIVE_DEFAULT: u32 = crate::mimo2::PREFILL_CAP;
 const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_MAX;
+// ds4_gemma4_plan.h: the engine's own prefill bound and its KV layout.
+// The default is the native bind's own (gemma4_prefill_cap: min(ctx, 512)),
+// the same shape the sibling VQ families serve: one chunk per forward, the
+// grouped projections and expert routes over all its rows. A one-row default
+// here made an 8.5K-token prompt 8,500 serial forwards and no chunk reached
+// the client inside the 600 s idle timeout (Spark, 2026-11-04: chunk 1,
+// 295 tokens 13.03 s; chunk 512, 295 tokens 0.447 s, 2,115 tokens 3.57 s).
+const GEMMA4_PREFILL_CHUNK_ENV: &str = "DS4_GEMMA4_PREFILL_CHUNK";
+/// The placement switches the native engine reads (ds4_gemma4.h).
+const GEMMA4_CPU_MOE_ENV: &str = "DS4_GEMMA4_CPU_MOE";
+const GEMMA4_CPU_LAYERS_ENV: &str = "DS4_GEMMA4_MOE_CPU_LAYERS";
+const GEMMA4_CACHE_MIB_ENV: &str = "DS4_GEMMA4_MOE_CACHE_MIB";
+const GEMMA4_NATIVE_DEFAULT: u32 = 512;
+const GEMMA4_NATIVE_MAX: u32 = 8192;
+const GEMMA4_LAYERS: u32 = 30;
+const GEMMA4_WINDOW: u64 = 1024;
+/// `G4_MTP_DRAFTS` (ds4_gemma4_plan.h): one verify block is drafts + 1 rows,
+/// and the sliding ring must be that much wider than the window.
+const GEMMA4_MTP_DRAFTS: u32 = 6;
+const GEMMA4_MTP_EMBED: u64 = 1024;
+const GEMMA4_MTP_FFN: u64 = 8192;
+const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
+const GEMMA4_SLIDING_HEAD_DIM: u64 = 256;
+const GEMMA4_FULL_KV_HEADS: u64 = 2;
+const GEMMA4_FULL_HEAD_DIM: u64 = 512;
+// The session graph's other half: the activation set (ds4_gemma4_plan.h
+// gemma4_activation_bytes), the linear workspace and the routed-expert
+// scratch (ds4_gemma4_bind.inc:283-290 gemma4_session_memory). The quote
+// priced the KV rows and left these at zero, which is how a chunk-4096 arm
+// with a 6,144 MiB pool passed --check-config and then failed the first
+// forward by 66,816 B with 31.75 MiB free (measured 2026-11-05).
+const GEMMA4_EMBED: u64 = 2816;
+const GEMMA4_VOCAB: u64 = 262_144;
+const GEMMA4_DENSE: u64 = 2112;
+const GEMMA4_HEADS: u64 = 16;
+const GEMMA4_EXPERTS: u64 = 128;
+const GEMMA4_USED: u64 = 8;
+const GEMMA4_FF: u64 = 704;
+/// `GVQ_CUBLAS_WORKSPACE` (ds4_glmvq_gpu.cuh:22) and `GVQ_USED`
+/// (ds4_glmvq_gpu.cuh:21): the linear workspace is the cuBLAS scratch plus
+/// one u32 per (row, expert-use) pair.
+const GVQ_CUBLAS_WORKSPACE: u64 = 32 << 20;
+const GVQ_USED: u64 = 8;
+/// `sizeof(glmvq_matrix)` on a 64-bit host (cuda/glm_vq.cuh:18): four
+/// pointers, two u32, the padded precision enum and two residual pointers.
+const GLMVQ_MATRIX_BYTES: u64 = 64;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
@@ -277,6 +329,44 @@ pub fn fill_quote_facts(
         native =
             crate::ssd_quote::prefill_rows(req, slots, shape.map(|s| s.n_expert_used).unwrap_or(8))
                 .unwrap_or(0);
+    }
+    if caps.family == ModelFamily::Gemma4Vq && req.ssd_streaming {
+        // Native owns the bounded cache; this mirrors its default and the
+        // R13+8 record size so the host quote charges the same order. A plain
+        // 13-bit artifact has no residual plane, so the estimate is
+        // conservative there, never an undercount.
+        let bytes = req
+            .ssd_streaming_cache_bytes
+            .unwrap_or(G4_SSD_DEFAULT_BYTES);
+        facts.ssd_cache_bytes = Some(bytes);
+        facts.ssd_staging_bytes = Some(G4_SSD_STAGING_BYTES);
+        facts.ssd_metadata_bytes = Some(G4_SSD_METADATA_BYTES);
+        if let Some(s) = shape {
+            let elements = u64::from(s.n_embd).saturating_mul(u64::from(s.n_ff_exp));
+            let record = 128u64
+                .saturating_add(u64::from(s.n_ff_exp) * 2)
+                .saturating_add(elements.saturating_mul(3) / 16)
+                .saturating_add(elements / 64);
+            let residual = 128u64.saturating_add(elements / 8);
+            let per_expert = 3u64.saturating_mul(record.saturating_add(residual));
+            if req.ssd_streaming_cache_experts.is_none() {
+                facts.ssd_cache_experts = Some(
+                    (bytes / per_expert.max(1))
+                        .min(u64::from(s.n_layer).saturating_mul(u64::from(s.n_expert)))
+                        as u32,
+                );
+            } else {
+                facts.ssd_cache_experts = req.ssd_streaming_cache_experts;
+                if req.ssd_streaming_cache_bytes.is_none() {
+                    facts.ssd_cache_bytes =
+                        Some(per_expert.saturating_mul(u64::from(
+                            req.ssd_streaming_cache_experts.unwrap_or(0),
+                        )));
+                }
+            }
+        } else if req.ssd_streaming_cache_experts.is_some() {
+            facts.ssd_cache_experts = req.ssd_streaming_cache_experts;
+        }
     }
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx, native)).unwrap_or(0);
@@ -652,6 +742,29 @@ pub fn fill_quote_facts(
                 },
             )
         }
+        (ModelFamily::Gemma4Vq, _) => {
+            // ds4_gemma4_bind.inc:283-290 gemma4_session_memory: the session
+            // is activation set + KV rows + linear workspace + routed-expert
+            // scratch, and gemma4_graph_bytes allocates exactly that. The KV
+            // rows are `kv` (bank_kv_bytes); the other three are the graph's
+            // workspace and used to be priced at zero.
+            let cap = native.min(ctx_tokens).max(1);
+            let pool_mib = gemma4_env_count(GEMMA4_CACHE_MIB_ENV);
+            if !req.ssd_streaming && pool_mib > 0 {
+                // The slot pool's device slots (gemma4_stream_alloc,
+                // ds4_gemma4_stream.inc:383-396): capacity * per, rounded
+                // down to whole experts, so the knob is the ceiling. Its
+                // pinned staging ring is host memory and is not charged here,
+                // because on a discrete card `available` is VRAM.
+                facts.gemma4_pool_bytes = Some(u64::from(pool_mib) << 20);
+            }
+            (
+                kv,
+                gemma4_workspace_bytes(cap),
+                if mtp_on { gemma4_mtp_bytes() } else { 0 },
+                0,
+            )
+        }
         _ => (kv, 0, 0, 0),
     };
     let mut media_extra = 0;
@@ -854,6 +967,24 @@ pub fn attach_host_quote(
             })
             .unwrap_or(0)
     };
+    // A Gemma-4 host-cold lane does not put the mapping on the device: the
+    // map install promotes every non-cold tensor and leaves each cold record
+    // a GVQ header (ds4: "152 resident spans, 2.35 GiB device-resident,
+    // experts host-cold"). Charging the whole 9.37 GiB mapping against VRAM
+    // over-stated the lane by 7 GiB while the expert slots were missing
+    // entirely; the two errors nearly cancelled at chunk 4096 and let an arm
+    // through that died in the first forward. Unreadable artifact: keep the
+    // whole span, which over-charges but never under-charges.
+    if !req.ssd_streaming && caps.family == ModelFamily::Gemma4Vq {
+        let cold = gemma4_host_cold_layers();
+        if cold > 0 {
+            if let Some(bytes) =
+                model_path.and_then(|path| crate::gemma4_vq::resident_span_bytes(path, cold))
+            {
+                weights_bytes = bytes;
+            }
+        }
+    }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
     // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
     if let (ModelFamily::Ling31Vq, MtpMode::On, Some(path)) =
@@ -932,6 +1063,11 @@ pub fn attach_host_quote(
         .saturating_add(facts.ssd_cache_bytes.unwrap_or(0))
         .saturating_add(facts.ssd_staging_bytes.unwrap_or(0))
         .saturating_add(facts.ssd_metadata_bytes.unwrap_or(0))
+        // The Gemma-4 slot pool is allocated by the open itself
+        // (gemma4_stream_alloc), like the SSD cache above: by the time the
+        // post-open quote runs it is inside `live` already, so it must be
+        // credited or the total would charge it twice.
+        .saturating_add(facts.gemma4_pool_bytes.unwrap_or(0))
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
@@ -941,7 +1077,7 @@ pub fn attach_host_quote(
         0
     } else {
         let avail = host_available_bytes(req.backend);
-        if caps.family == ModelFamily::Glm53 && req.ssd_streaming {
+        if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Gemma4Vq) && req.ssd_streaming {
             ssd_available(avail)
         } else {
             avail
@@ -1068,6 +1204,18 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     // A GVQ1 release directory maps its named parts; an unreadable listing
     // prices 0 here and fails validation when the model opens.
     if path.is_dir() {
+        // Gemma-4's release keeps the MTP sidecar as a part, but the base
+        // open maps only the trunk and the embedding; the drafter is a
+        // separate --mtp file, priced through artifact_span_bytes. Charging
+        // the 622 MB part here rejects a no-MTP boot that fits (the same
+        // rule Ling-3.1 applies to its embedded MTP part).
+        if crate::gemma4_vq::is_release(path) {
+            let all = crate::glm_vq::part_bytes(path).unwrap_or(0);
+            let part = |feature| crate::gemma4_vq::resident_bytes(path, feature).unwrap_or(0);
+            let embedded_mtp = part(crate::Gemma4VqFeature::Mtp)
+                .saturating_sub(part(crate::Gemma4VqFeature::Trunk));
+            return all.saturating_sub(embedded_mtp);
+        }
         // Beam's embedding part stays on SSD: only the trunk is resident.
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
@@ -1270,6 +1418,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
+        ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1358,6 +1507,16 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             AXK2_NATIVE_DEFAULT,
             1,
             AXK2_NATIVE_MAX,
+        ),
+        // Same env as ds4_gemma4_bind.inc's gemma4_prefill_cap, which defaults
+        // to min(ctx, 512). The graph groups the Q4 projections and the expert
+        // routes over the chunk; DS4_GEMMA4_EXACT_PREFILL=1 restores the
+        // one-row-per-route path for the byte-exactness gate.
+        ModelFamily::Gemma4Vq => env_u32(
+            GEMMA4_PREFILL_CHUNK_ENV,
+            GEMMA4_NATIVE_DEFAULT,
+            1,
+            GEMMA4_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
@@ -3146,6 +3305,36 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
             .saturating_mul(solar_kv_row_bytes(shape))
             .saturating_add(solar_checkpoint_slot_bytes(shape));
     }
+    if shape.family == ModelFamily::Gemma4Vq {
+        // ds4_gemma4_plan.h (gemma4_is_full) and ds4_gemma4.h
+        // (ds4_gemma4_kv_rows): 25 sliding layers hold window + the widest
+        // block one forward writes in a ring (the prefill chunk or one draft
+        // round's verify block), the five full layers hold the whole context.
+        // The generic 30 x ctx charge prices layers the engine never
+        // allocates at that width.
+        // ds4_gemma4.h (ds4_gemma4_full_kv_row): the five full layers may
+        // keep E4M3 K | E4M3 V | one f16 scale per KV head each under
+        // DS4_GEMMA4_FULL_KV=fp8; the sliding rings stay bf16.
+        let fp8 = std::env::var("DS4_GEMMA4_FULL_KV").ok().as_deref() == Some("fp8");
+        let full_row = if fp8 {
+            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 + GEMMA4_FULL_KV_HEADS * 2 * 2
+        } else {
+            GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 * 2
+        };
+        let sliding_row = GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM * 2 * 2;
+        let block = u64::from(native).max(GEMMA4_MTP_DRAFTS as u64 + 1);
+        let sliding = ctx.min(GEMMA4_WINDOW + block);
+        let mut rows = 0u64;
+        for il in 0..GEMMA4_LAYERS {
+            let is_full = matches!(il, 5 | 11 | 17 | 23 | 29);
+            rows = rows.saturating_add(if is_full {
+                ctx.saturating_mul(full_row)
+            } else {
+                sliding.saturating_mul(sliding_row)
+            });
+        }
+        return rows;
+    }
     if shape.family == ModelFamily::Motif3 {
         // Native reserves an extra MTP window even when speculation is off.
         let sliding = ctx.min(u64::from(shape.n_swa) + 1 + u64::from(native));
@@ -3171,6 +3360,86 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         _ => u64::from(shape.n_layer).saturating_mul(ctx),
     };
     tokens.saturating_mul(row)
+}
+
+/// How many layers of a Gemma-4 artifact keep their routed experts host-cold
+/// on the lane this request selects. The native rule
+/// (ds4.c:74380-74395): DS4_GEMMA4_CPU_MOE and the slot-cache lane leave
+/// every layer cold, the per-layer host split leaves the first N cold, and
+/// the all-GPU lanes leave none cold.
+fn gemma4_host_cold_layers() -> u32 {
+    let cpu_moe = matches!(
+        std::env::var(GEMMA4_CPU_MOE_ENV).as_deref(),
+        Ok("1" | "true" | "on")
+    );
+    if cpu_moe || gemma4_env_count(GEMMA4_CACHE_MIB_ENV) > 0 {
+        return GEMMA4_LAYERS;
+    }
+    gemma4_env_count(GEMMA4_CPU_LAYERS_ENV).min(GEMMA4_LAYERS)
+}
+
+/// A non-negative count the engine parses with strtol; anything else is 0.
+fn gemma4_env_count(name: &str) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// The Gemma-4 session graph's non-KV half, term for term
+/// `gemma4_session_memory` (ds4_gemma4_bind.inc:283-290): the activation set
+/// `gemma4_activation_bytes` (ds4_gemma4_plan.h), the linear workspace
+/// `ds4_gpu_gvq_workspace_linear` (ds4_glmvq_gpu.cuh:311) and the
+/// routed-expert scratch `ds4_gpu_g4_moe_bytes` (ds4_gemma4_gpu.cuh:818).
+/// The KV rows are priced by `bank_kv_bytes`.
+///
+/// The rows are `gemma4_token_rows(cap)`: a draft round's verify block is
+/// seven rows even when the prefill chunk is narrower.
+fn gemma4_workspace_bytes(cap: u32) -> u64 {
+    let rows = u64::from(cap.max(GEMMA4_MTP_DRAFTS + 1));
+    // gemma4_activation_bytes: five hidden rows (cur, norm, branch, tmp,
+    // exp_acc), three dense-FF rows, the wide query and attention buffers at
+    // the full-layer width, two widest KV rows, the router scores and the
+    // top-8 selection, plus token/position rows, tied logits and rotary tables.
+    let per_row = 5 * GEMMA4_EMBED
+        + 3 * GEMMA4_DENSE
+        + 2 * GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
+        + 2 * GEMMA4_SLIDING_KV_HEADS * GEMMA4_SLIDING_HEAD_DIM
+        + GEMMA4_EXPERTS
+        + 2 * GEMMA4_USED;
+    let activation = rows * per_row * SIZEOF_F32
+        + rows * (SIZEOF_I32 + SIZEOF_U32)
+        + (GEMMA4_VOCAB + GEMMA4_SLIDING_HEAD_DIM / 2 + GEMMA4_FULL_HEAD_DIM / 2) * SIZEOF_F32;
+    let linear = GVQ_CUBLAS_WORKSPACE + rows * GVQ_USED * SIZEOF_U32;
+    // ds4_gpu_g4_moe_bytes: one pair per (row, expert use) with in/out at the
+    // hidden width, gate/up/mid at the expert FF width, order/routes/tokpair
+    // index rows, the layer book of glmvq_matrix, and the bf16 staging row.
+    let pairs = rows * GEMMA4_USED;
+    let moe = pairs * GEMMA4_EMBED * SIZEOF_F32 * 2
+        + pairs * GEMMA4_FF * SIZEOF_F32 * 3
+        + pairs * SIZEOF_U32
+        + pairs * GEMMA4_USED * SIZEOF_U32
+        + pairs * SIZEOF_I32
+        + pairs * SIZEOF_F32
+        + u64::from(GEMMA4_LAYERS) * 3 * GEMMA4_EXPERTS * GLMVQ_MATRIX_BYTES
+        + GEMMA4_USED * GEMMA4_FF * SIZEOF_U16;
+    activation.saturating_add(linear).saturating_add(moe)
+}
+
+/// The native fit gate reserves a maximum-width draft block and its own
+/// one-row linear context, independent of the trunk's shared workspace.
+fn gemma4_mtp_bytes() -> u64 {
+    let rows = u64::from(GEMMA4_MTP_DRAFTS + 1);
+    let floats = 4 * GEMMA4_EMBED
+        + 3 * GEMMA4_MTP_EMBED
+        + 2 * GEMMA4_HEADS * GEMMA4_FULL_HEAD_DIM
+        + 3 * GEMMA4_MTP_FFN
+        + (rows + 1) * GEMMA4_VOCAB;
+    floats * SIZEOF_F32
+        + 2 * rows * SIZEOF_I32
+        + SIZEOF_U32
+        + GVQ_CUBLAS_WORKSPACE
+        + GVQ_USED * SIZEOF_U32
 }
 
 /// Bonsai (qwen35) per-bank footprint.
@@ -7499,5 +7768,210 @@ exit 1
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ds4_gemma4.h (ds4_gemma4_kv_rows): 25 sliding layers at window + the
+    /// widest block one forward writes (here one draft round's seven verify
+    /// rows), five full layers at the whole context, f16 key and value. At
+    /// ctx 2048 that is 253,091,840 bytes.
+    #[test]
+    fn gemma4_bank_kv_prices_the_hybrid_layout() {
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        assert_eq!(bank_kv_bytes(shape, 2048, 1), 253_091_840);
+        // Charging every layer at the full context is what refused the plan.
+        let generic = 30 * 2048 * 2 * 8 * 256 * 2;
+        assert!(bank_kv_bytes(shape, 2048, 1) < generic);
+    }
+
+    /// The SSD option is opt-in and its cache is charged in the quote; the
+    /// GLM auto-budget reserve is not applied to Gemma.
+    #[test]
+    fn gemma4_ssd_quote_charges_the_bounded_cache() {
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 7_200_000_000,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            ctx: 2048,
+            ssd_streaming: true,
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        assert_eq!(facts.ssd_cache_bytes, Some(G4_SSD_DEFAULT_BYTES));
+        assert!(facts.ssd_cache_experts.unwrap_or(0) > 0);
+
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            ctx: 2048,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(128),
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        assert!(facts.ssd_cache_bytes.unwrap() >= 128 * 1_000_000);
+        assert_eq!(facts.ssd_cache_experts, Some(128));
+
+        // Without the option nothing is charged.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                ctx: 2048,
+                ..ServingRequest::default()
+            },
+            caps,
+            Some(shape),
+            host,
+        );
+        assert_eq!(facts.ssd_cache_bytes, None);
+    }
+
+    /// The measured arm that passed --check-config and then OOM'd: chunk
+    /// 4096, a 6,144 MiB slot pool, ctx 8192. The quote must carry the
+    /// graph's workspace and the pool. The original session log undercounted
+    /// activations; tests/test_gemma4_memory.py checks the actual allocator.
+    #[test]
+    fn gemma4_quote_prices_the_graph_workspace_and_the_slot_pool() {
+        let _env = lock_test_env();
+        let _kv = EnvGuard::set("DS4_GEMMA4_FULL_KV", "fp8");
+        let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 2_518_251_580,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        let req = ServingRequest {
+            ctx: 8192,
+            native_chunk: Some(4096),
+            ..ServingRequest::default()
+        };
+        let pool = EnvGuard::set(GEMMA4_CACHE_MIB_ENV, "6144");
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        drop(pool);
+        // gemma4_session_memory's scratch terms at rows 4096, byte for byte.
+        assert_eq!(facts.scratch_bytes, Some(1_724_379_648));
+        assert_eq!(facts.gemma4_pool_bytes, Some(6144 * MIB));
+        // The KV rows stay in the bank term.
+        assert_eq!(facts.per_bank_bytes, Some(1_132_789_760));
+
+        // With no pool the lane allocates no slots, so nothing is charged.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                ctx: 8192,
+                native_chunk: Some(4096),
+                ..ServingRequest::default()
+            },
+            caps,
+            Some(shape),
+            host,
+        );
+        assert_eq!(facts.gemma4_pool_bytes, None);
+        assert_eq!(facts.scratch_bytes, Some(1_724_379_648));
+    }
+
+    #[test]
+    fn gemma4_quote_includes_mtp() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        let host = QuoteHost {
+            weights_bytes: 0,
+            mtp_bytes: 0,
+            available_bytes: 11 * 1024 * MIB,
+            native_chunk: None,
+            vision: false,
+        };
+        for (mode, bytes) in [(MtpMode::On, 42_164_316), (MtpMode::Off, 0)] {
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                &ServingRequest {
+                    ctx: 8192,
+                    mtp_path: Some("drafter.gguf".into()),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                },
+                caps,
+                Some(crate::shape::SHAPE_GEMMA4_A4B_VQ),
+                host,
+            );
+            // The maximum draft block's allocations, including its own
+            // linear workspace (tests/test_gemma4_memory.py).
+            assert_eq!(facts.mtp_state_bytes, Some(bytes));
+        }
+    }
+
+    /// ds4.c:74380-74395: the slot-cache lane and CPU_MOE leave every layer
+    /// cold; the per-layer split leaves the first N; the resident lane none.
+    #[test]
+    fn gemma4_host_cold_layers_follow_the_native_rule() {
+        let _env = lock_test_env();
+        let _cpu = EnvGuard::unset(GEMMA4_CPU_MOE_ENV);
+        let _layers = EnvGuard::unset(GEMMA4_CPU_LAYERS_ENV);
+        let _pool = EnvGuard::unset(GEMMA4_CACHE_MIB_ENV);
+        assert_eq!(gemma4_host_cold_layers(), 0);
+        for (name, value, cold) in [
+            (GEMMA4_CACHE_MIB_ENV, "4096", 30),
+            (GEMMA4_CPU_LAYERS_ENV, "12", 12),
+            (GEMMA4_CPU_MOE_ENV, "1", 30),
+            // The native knob clamps at 30, so the quote must too.
+            (GEMMA4_CPU_LAYERS_ENV, "99", 30),
+        ] {
+            let _set = EnvGuard::set(name, value);
+            assert_eq!(gemma4_host_cold_layers(), cold, "{name}={value}");
+        }
+    }
+
+    /// The graph groups its Q4 projections and expert routes over a prefill
+    /// chunk, so the native cap is the family chunk (512), not one row; the
+    /// scheduler's verified widths must not fence it.
+    #[test]
+    fn gemma4_declares_the_serial_chunk() {
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(family_native_chunk(caps, 2048), GEMMA4_NATIVE_DEFAULT);
+        let req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Auto,
+            mem_floor_gb: 2,
+            native_chunk: Some(GEMMA4_NATIVE_DEFAULT),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        facts.host_available_bytes = Some(11 * 1024 * MIB);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(crate::shape::SHAPE_GEMMA4_A4B_VQ),
+            QuoteHost {
+                weights_bytes: 7_200_000_000,
+                mtp_bytes: 0,
+                available_bytes: 11 * 1024 * MIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "chunk_unverified"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            plan.issues
+        );
     }
 }

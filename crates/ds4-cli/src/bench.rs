@@ -854,7 +854,7 @@ fn help_text() -> &'static str {
      --cuda|--metal|--cpu   Select backend\n\
      --backend NAME         metal, cuda, or cpu\n\
      -t, --threads N        CPU helper threads\n\
-     --ssd-streaming         Stream GLM CUDA routed experts from SSD\n\
+     --ssd-streaming         Stream GLM-5.3 or Gemma-4 CUDA routed experts from SSD\n\
      --ssd-streaming-cache-experts N|GB  Global slots or GiB budget\n\
      --ssd-streaming-cold    Advise eviction of read expert pages\n\
      --quality              Prefer exact kernels where applicable\n\

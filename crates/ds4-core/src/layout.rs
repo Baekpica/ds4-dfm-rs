@@ -3637,6 +3637,12 @@ pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     if shape.family == ModelFamily::Inkling {
         return crate::inkling::mtp_layouts();
     }
+    // The Gemma-4 drafter is a part of its own release: four dense layers at
+    // hidden 1024 with no k/v projection, and the two projections across the
+    // backbone width (crates/ds4-core/src/gemma4_vq/layout.rs, mtp_layouts).
+    if shape.family == ModelFamily::Gemma4Vq {
+        return crate::gemma4_vq::mtp_layouts();
+    }
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -3796,6 +3802,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::BeamVq => crate::beam_vq::layouts(),
         ModelFamily::MinimaxVq => crate::minimax_vq::layouts(),
         ModelFamily::Axk2Vq => crate::axk2_vq::layouts(),
+        ModelFamily::Gemma4Vq => crate::gemma4_vq::layouts(),
         ModelFamily::Qwen35 => expected_qwen35(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
@@ -3988,6 +3995,10 @@ pub fn validate_mtp_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
     let by_name = plan_by_name(plan);
     expect_specs(&expected_mtp_layouts(&plan.shape), &by_name)?;
     if plan.shape.family == ModelFamily::Step37 {
+        return Ok(());
+    }
+    // Gemma-4's drafter has no fused gate/up expert stack: its MLP is dense.
+    if plan.shape.family == ModelFamily::Gemma4Vq {
         return Ok(());
     }
     expect_gate_up(

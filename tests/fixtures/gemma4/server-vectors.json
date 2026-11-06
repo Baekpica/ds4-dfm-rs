@@ -1,0 +1,541 @@
+{
+  "oracle": "Python Jinja2 with the Hugging Face rendering environment",
+  "python_version": "3.13.5",
+  "jinja2_version": "3.1.6",
+  "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+  "clock_unix_seconds": 0,
+  "scope": "Template bytes only; media placeholders do not qualify model media support.",
+  "vectors": [
+    {
+      "name": "user_thinking_off",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "user_thinking_on",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "system_multiturn",
+      "context": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise. 한국어로 답해."
+          },
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          },
+          {
+            "role": "user",
+            "content": "두 곳만 골라 줘."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\nBe concise. 한국어로 답해.<turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n서울에서 찾을 수 있어요.<turn|>\n<|turn>user\n두 곳만 골라 줘.<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "tool_schema",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\n<|tool>declaration:lookup{description:<|\"|>Find places: 서울, café, 漢字.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},location:{properties:{active:{type:<|\"|>BOOLEAN<|\"|>},city:{type:<|\"|>STRING<|\"|>},labels:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>},scale:{type:<|\"|>NUMBER<|\"|>}},required:[<|\"|>location<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "tool_result",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "서울",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\n<|tool>declaration:lookup{description:<|\"|>Find places: 서울, café, 漢字.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},location:{properties:{active:{type:<|\"|>BOOLEAN<|\"|>},city:{type:<|\"|>STRING<|\"|>},labels:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>},scale:{type:<|\"|>NUMBER<|\"|>}},required:[<|\"|>location<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n<|channel>thought\n도구로 위치를 확인한다.\n<channel|><|tool_call>call:lookup{limit:2,location:{active:true,city:<|\"|>서울<|\"|>,labels:[<|\"|>중구<|\"|>,<|\"|>café<|\"|>]},scale:1e-05}<tool_call|><|tool_response>response:lookup{value:<|\"|>{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}<|\"|>}<tool_response|><|channel>thought\n"
+    },
+    {
+      "name": "no_generation",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": false,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n<|channel>thought\n질문의 장소를 확인한다.\n<channel|>서울에서 찾을 수 있어요.<turn|>\n"
+    },
+    {
+      "name": "preserve_tool_thinking",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "서울",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": true,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|think|>\n<|tool>declaration:lookup{description:<|\"|>Find places: 서울, café, 漢字.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},location:{properties:{active:{type:<|\"|>BOOLEAN<|\"|>},city:{type:<|\"|>STRING<|\"|>},labels:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>},scale:{type:<|\"|>NUMBER<|\"|>}},required:[<|\"|>location<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n<|channel>thought\n도구로 위치를 확인한다.\n<channel|><|tool_call>call:lookup{limit:2,location:{active:true,city:<|\"|>서울<|\"|>,labels:[<|\"|>중구<|\"|>,<|\"|>café<|\"|>]},scale:1e-05}<tool_call|><|tool_response>response:lookup{value:<|\"|>{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}<|\"|>}<tool_response|><|channel>thought\n"
+    },
+    {
+      "name": "media_placeholders",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "입력을 설명해 줘."
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "audio"
+              },
+              {
+                "type": "video"
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>user\n입력을 설명해 줘.<|image|><|audio|><|video|><turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "tool_thinking_off",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "서울",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ],
+        "add_generation_prompt": true,
+        "enable_thinking": false,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "expected": "<bos><|turn>system\n<|tool>declaration:lookup{description:<|\"|>Find places: 서울, café, 漢字.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},location:{properties:{active:{type:<|\"|>BOOLEAN<|\"|>},city:{type:<|\"|>STRING<|\"|>},labels:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>},scale:{type:<|\"|>NUMBER<|\"|>}},required:[<|\"|>location<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\n서울의 장소를 알려 줘. café도 좋아.<turn|>\n<|turn>model\n<|channel>thought\n도구로 위치를 확인한다.\n<channel|><|tool_call>call:lookup{limit:2,location:{active:true,city:<|\"|>서울<|\"|>,labels:[<|\"|>중구<|\"|>,<|\"|>café<|\"|>]},scale:1e-05}<tool_call|><|tool_response>response:lookup{value:<|\"|>{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}<|\"|>}<tool_response|>"
+    },
+    {
+      "name": "reject_string_arguments",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": "{\"location\": {\"city\": \"서울\", \"labels\": [\"중구\", \"café\"], \"active\": true}, \"scale\": 1e-05, \"limit\": 2}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ],
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "preserve_thinking": false,
+        "bos_token": "<bos>"
+      },
+      "error_type": "TemplateError",
+      "error_message": "chat_template: tool_calls[].function.arguments must be a JSON object (mapping), not a string. Deserialize arguments before passing to the template."
+    }
+  ]
+}

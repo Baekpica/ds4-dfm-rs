@@ -302,3 +302,11 @@ tests/naive_banks
 
 # Compiler-generated header dependencies.
 *.o.d
+
+# Gemma-4 model-free and CUDA gates
+/tests/test_gemma4_primitives
+/tests/gemma4_head_rows
+/tests/gemma4_moe_persist
+/tests/gemma4_q4_decode
+/tests/gemma4_mtp_gate
+/tests/gemma4_ring

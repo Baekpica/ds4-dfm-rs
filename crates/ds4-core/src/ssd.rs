@@ -62,10 +62,15 @@ pub(super) fn check_tuning(
     if !tuning.ssd_streaming {
         return Ok(());
     }
-    if family != Some(ModelFamily::Glm53) || backend != Backend::Cuda || distributed.is_some() {
+    if !matches!(
+        family,
+        Some(ModelFamily::Glm53) | Some(ModelFamily::Gemma4Vq)
+    ) || backend != Backend::Cuda
+        || distributed.is_some()
+    {
         return Err(Error {
             code: 1,
-            message: "--ssd-streaming requires one full GLM-5.3 CUDA model".into(),
+            message: "--ssd-streaming requires one full GLM-5.3 or Gemma-4 CUDA model".into(),
         });
     }
     // These native modes materialize/import the full model before streaming.
@@ -81,7 +86,13 @@ pub(super) fn check_tuning(
                     .into(),
         });
     }
-    check_budget(tuning)
+    // Gemma-4's native default is a bounded cache with no host quote; an
+    // explicit fixed cache passes through. GLM-5.3 keeps the auto-budget
+    // admission because its quote drives prefill rows and staging.
+    if family == Some(ModelFamily::Glm53) {
+        check_budget(tuning)?;
+    }
+    Ok(())
 }
 
 fn check_budget(tuning: &OpenTuning) -> Result<()> {
@@ -106,6 +117,13 @@ pub(super) fn resolve_budget(
     backend: Backend,
 ) -> Result<()> {
     if !tuning.ssd_streaming {
+        return Ok(());
+    }
+    if id.shape.family == ModelFamily::Gemma4Vq {
+        // The Gemma stream cache is native-owned: a fixed expert count or
+        // byte budget is passed through, and the default stays bounded. The
+        // GLM auto quote (prefill rows, staging banks, 12 GiB reserve) is not
+        // a Gemma contract and must not be applied to it.
         return Ok(());
     }
     check_budget(tuning)?;
@@ -290,6 +308,36 @@ mod tests {
     }
 
     #[test]
+    fn gemma_ssd_is_opt_in_and_needs_no_glm_budget() {
+        // The option is accepted for Gemma-4 without the GLM serving budget;
+        // native owns the bounded default. It is never implied by the family.
+        assert!(check_ssd_options(
+            &[ModelOpenOption::SsdStreaming],
+            Some(ModelFamily::Gemma4Vq),
+            Backend::Cuda,
+            None,
+        )
+        .is_ok());
+        assert!(check_ssd_options(
+            &[
+                ModelOpenOption::SsdStreaming,
+                ModelOpenOption::SsdCacheExperts(128)
+            ],
+            Some(ModelFamily::Gemma4Vq),
+            Backend::Cuda,
+            None,
+        )
+        .is_ok());
+        assert!(check_ssd_options(
+            &[ModelOpenOption::SsdStreaming],
+            Some(ModelFamily::Gemma4Vq),
+            Backend::Cpu,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn auto_fails_before_tensor_probe() {
         let id = crate::Identified {
             shape: crate::SHAPE_GLM53_FLASH,
@@ -353,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn admission_is_glm_cuda_only() {
+    fn admission_is_glm_or_gemma_cuda() {
         let options = [
             ModelOpenOption::SsdStreaming,
             ModelOpenOption::SsdCacheExperts(8),

@@ -14,6 +14,7 @@ use crate::TokenBuffer;
 
 mod axk2;
 mod beam;
+mod gemma4;
 mod glm_vq;
 mod inkling;
 mod ling31;
@@ -282,6 +283,7 @@ impl Vocab {
                                     | ModelFamily::Mimo2
                                     | ModelFamily::NaiveN05
                                     | ModelFamily::IQuestQ1
+                                    | ModelFamily::Gemma4Vq
                             );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
@@ -372,6 +374,7 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
+            ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -693,6 +696,13 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("MiMo release metadata"))?;
             return Self::load_tables(&g, family, Some(mimo2::tables(path)?));
         }
+        // Gemma-4 carries its vocabulary in the trunk part, so a release
+        // directory is read for that part's metadata only.
+        if family == ModelFamily::Gemma4Vq && crate::gemma4_vq::is_release(path) {
+            let g = crate::gemma4_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Gemma-4 release metadata"))?;
+            return Self::load_tables(&g, family, None);
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -711,6 +721,7 @@ impl Vocab {
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Gemma4Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -763,6 +774,9 @@ impl Vocab {
             )),
             ModelFamily::Axk2Vq => Some(TokError::InvalidTokenizer(
                 "A.X-K2 VQ chat requires official Jinja",
+            )),
+            ModelFamily::Gemma4Vq => Some(TokError::InvalidTokenizer(
+                "Gemma-4 VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -889,7 +903,8 @@ impl Vocab {
             | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
-            | ModelFamily::IQuestQ1 => {
+            | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1092,7 +1107,8 @@ impl Vocab {
             | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
-            | ModelFamily::IQuestQ1 => {
+            | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1256,6 +1272,31 @@ impl Vocab {
         vocab_token_text(self, token)
     }
 
+    /// The token index to park a conversation's cache at: the start of the
+    /// last `<|turn>model\n` marker, or -1 when the family has no such
+    /// marker. Gemma-4's template renders the generation prompt as that
+    /// marker plus the thinking pair (`<|channel>thought\n<|channel|>`), and
+    /// the next turn keeps everything through the marker while replacing the
+    /// pair with its reply (chat_template.jinja, add_generation_prompt).
+    /// The cut is placed at the `<|turn>` special token because it splits the
+    /// encoder's input: the text before it tokenizes the same whatever
+    /// follows, while a cut after `model\n` lets the reply's first character
+    /// merge with the newline and the stored tokens stop being a prefix
+    /// (measured: that cut missed, this one restores). Cutting at the
+    /// trim/align boundary instead discards up to 2,048 usable tokens.
+    pub fn generation_anchor(&self, tokens: &[i32]) -> i32 {
+        if self.family != ModelFamily::Gemma4Vq {
+            return -1;
+        }
+        let Ok(model) = self.lookup("model") else {
+            return -1;
+        };
+        let Ok(newline) = self.lookup("\n") else {
+            return -1;
+        };
+        last_triple_start(tokens, &[self.im_start_id, model, newline])
+    }
+
     pub fn is_stop(&self, token: i32) -> bool {
         if token < 0 {
             return false;
@@ -1298,6 +1339,13 @@ impl Vocab {
             }
             ModelFamily::Dots3Note => {
                 self.dots3_endoftext_id >= 0 && token == self.dots3_endoftext_id
+            }
+            // generation_config.json eos_token_id is [1, 106, 50]:
+            // <eos>, <turn|> and <|tool_response>, the last handing the turn
+            // to the result the client returns.
+            ModelFamily::Gemma4Vq => {
+                (self.eot_id >= 0 && token == self.eot_id)
+                    || (self.tool_response_start_id >= 0 && token == self.tool_response_start_id)
             }
             _ => false,
         }
@@ -2411,6 +2459,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
+        ModelFamily::Gemma4Vq => gemma4::encode(vocab, text, out),
     }
 }
 
@@ -2428,6 +2477,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
+            | ModelFamily::Gemma4Vq
     ) {
         return user_defined_at(vocab, p, 0);
     }
@@ -2781,6 +2831,9 @@ fn vocab_token_text(vocab: &Vocab, token: i32) -> Vec<u8> {
         return Vec::new();
     }
     let s = &vocab.tokens[token as usize];
+    if vocab.family == ModelFamily::Gemma4Vq {
+        return gemma4::piece_text(s);
+    }
     if vocab_token_is_literal_special(s) {
         return s.clone();
     }
@@ -2796,6 +2849,16 @@ fn vocab_token_text(vocab: &Vocab, token: i32) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The index of the last occurrence of `needle`, or -1. Used for the
+/// conversation anchor, where the last marker in the prompt is the one the
+/// next turn still shares.
+fn last_triple_start(tokens: &[i32], needle: &[i32; 3]) -> i32 {
+    tokens
+        .windows(3)
+        .rposition(|w| w == needle.as_slice())
+        .map_or(-1, |i| i as i32)
 }
 
 /// C oracle command dump.
@@ -2973,4 +3036,33 @@ pub fn dump_vocab_apply_tapes() -> String {
     ));
     out.push_str("ok-row n_vocab=2 n_merges=1 n_ud=1 max_ud=2 bos=0 eos=1 token0=61 token1=6262 merge0=612062 ud=1\n");
     out
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::last_triple_start;
+
+    /// Gemma-4's generation prompt, tokenized by the pinned tokenizer:
+    /// [<|turn> 105, model 4368, newline 107, <|channel> 100, thought 45518,
+    /// newline 107, <channel|> 101]. The anchor is the marker's first token,
+    /// the special token that splits the encoder's input, so the stored
+    /// tokens stay a prefix whatever the reply begins with.
+    #[test]
+    fn anchor_is_the_marker_start() {
+        let prompt = [2, 105, 4368, 107, 100, 45518, 107, 101];
+        assert_eq!(last_triple_start(&prompt, &[105, 4368, 107]), 1);
+    }
+
+    #[test]
+    fn anchor_takes_the_last_marker() {
+        let prompt = [105, 4368, 107, 9, 9, 105, 4368, 107, 100, 45518, 107, 101];
+        assert_eq!(last_triple_start(&prompt, &[105, 4368, 107]), 5);
+    }
+
+    #[test]
+    fn anchor_absent_is_minus_one() {
+        assert_eq!(last_triple_start(&[105, 4368], &[105, 4368, 107]), -1);
+        assert_eq!(last_triple_start(&[], &[105, 4368, 107]), -1);
+        assert_eq!(last_triple_start(&[9, 9, 9], &[105, 4368, 107]), -1);
+    }
 }
