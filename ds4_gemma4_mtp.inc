@@ -328,9 +328,9 @@ static bool gemma4_mtp_step(ds4_gemma4_mtp_runtime *r, const ds4_model *m,
 
 /* The trunk's verdict for every candidate row: one forward over the block,
  * then the tied head on each row. `target[i]` is the token the trunk would
- * have emitted at candidate i, exactly as its own single-row decode would
- * (the graph keeps one-row call shapes per row, so the block forward is
- * bit-identical to decoding the rows one at a time - P6a's measured rule). */
+ * have emitted at candidate i. The block takes the grouped prefill path, so
+ * its rows match a one-row decode within cross-width FP noise, not bit for
+ * bit; sample-and-match keeps the committed tokens lossless. */
 static bool gemma4_mtp_verify(ds4_gemma4_mtp_runtime *r, ds4_model *m, ds4_weights *w,
         const int *tokens, uint32_t n, uint32_t pos, int *target) {
     ds4_gemma4_graph *g = r->g;

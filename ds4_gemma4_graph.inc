@@ -429,9 +429,8 @@ static ds4_gemma4_graph *gemma4_graph_create(ds4_model *m, ds4_weights *w,
     g->ready = true;
     if (getenv("DS4_GEMMA4_DEBUG")) {
         /* The norm weight the graph will read, straight from the map, so a bad
-         * pointer or a bad type cannot masquerade as a kernel fault. This is
-         * the check that pinned the P6 nan: the map held 1.70..30.6 and the
-         * kernel was reading it as float32. */
+         * pointer or a bad type cannot masquerade as a kernel fault: a BF16
+         * table read as float32 once turned 1.70..30.6 into NaN. */
         const ds4_tensor *t = w->gemma4[0].norm[0];
         if (t && m->map && t->abs_offset + t->bytes <= m->size && t->bytes >= 2u * G4_EMBED) {
             const uint16_t *bits = (const uint16_t *)((const uint8_t *)m->map + t->abs_offset);
@@ -615,8 +614,8 @@ static bool gemma4_hash_layers(void) {
     return value && !strcmp(value, "all");
 }
 
-/* P6a kept a grouped prefill bit-identical to the one-row path by repeating
- * the one-row call per row. That makes prefill read every weight once per
+/* A grouped prefill bit-identical to the one-row path repeats the one-row
+ * call per row. That makes prefill read every weight once per
  * token. The sibling VQ families batch instead (Ling-3.1's l31_mm_many,
  * A.X-K2's axk2_mm_many: one ds4_gpu_gvq_linear_many over all rows), so the
  * weight is restored once per chunk and the GEMM amortizes it. The grouped
@@ -1133,7 +1132,7 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         dense_ok = ds4_gpu_matmul_q8_0_tensor(g->branch, m->map, m->size,
             l->dense_down->abs_offset, G4_DENSE, G4_EMBED, g->dense_mid, rows) != 0;
     } else if (dense_ok) {
-        /* Exactness gate: the one-row call per row, as P6a measured. */
+        /* Exactness gate: the one-row call per row. */
         for (uint32_t r = 0; r < rows; r++) {
             ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(g->dense_mid,
                 (uint64_t)r * G4_DENSE * sizeof(float), (uint64_t)G4_DENSE * sizeof(float));
@@ -1208,21 +1207,6 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
         return false;
     }
     gemma4_probe_at(g->exp_acc, il, "expert acc raw");
-    if (getenv("DS4_GEMMA4_GPU_MOE_DUMP") && il == 0) {
-        static int dumped;
-        if (!dumped) {
-            dumped = 1;
-            float *h = (float *)malloc((size_t)G4_EMBED * sizeof(float));
-            if (h && ds4_gpu_tensor_read(g->exp_acc, 0, h, (size_t)G4_EMBED * sizeof(float))) {
-                FILE *fp = fopen("/tmp/g4-gpu-out.bin", "wb");
-                if (fp) {
-                    fwrite(h, sizeof(float), G4_EMBED, fp);
-                    fclose(fp);
-                }
-            }
-            free(h);
-        }
-    }
     if (!ds4_gpu_g4_rms(g->gvq, g->exp_acc, g->exp_acc, gemma4_index(m, l->norm[6]), rows, G4_EMBED, G4_RMS_EPS)) {
         fprintf(stderr, "ds4: Gemma-4 experts failed at layer %u\n", il);
         return false;

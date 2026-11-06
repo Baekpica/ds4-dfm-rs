@@ -26,7 +26,8 @@ template<class T> static T *device(const std::vector<T>& x) {
 
 /* The container stores every norm/router weight as BF16, so the device arrays
  * here are BF16 too and the reference sees the same rounded values: a float32
- * array would test a shape the artifact never has (this is the P6 nan). */
+ * array would test a shape the artifact never has (and read as float32 the
+ * BF16 weights give NaN). */
 static __nv_bfloat16 *bf16_device(const std::vector<float>& x) {
     std::vector<__nv_bfloat16> packed(x.size());
     for (unsigned i=0;i<x.size();i++) { packed[i]=__float2bfloat16_rn(x[i]); }

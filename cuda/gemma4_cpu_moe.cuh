@@ -562,30 +562,6 @@ static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
             return 0;
         }
     }
-    if (getenv("DS4_GEMMA4_CPU_MOE_DEBUG")) {
-        static int reported;        if (!reported) {
-            reported = 1;
-            const ds4_gvq_record &rg = model->records[matrices[(uint32_t)routes[0]]];
-            fprintf(stderr, "ds4: Gemma-4 CPU MoE active: rows %u threads %d "
-                "route0 %d w0 %.4f gate off %llu bytes %llu rows %u cols %u "
-                "x %.4f %.4f %.4f out %.4f %.4f %.4f\n",
-                rows, g4_cpu_pool.threads, routes[0], (double)wbuf[0],
-                (unsigned long long)rg.offset, (unsigned long long)rg.bytes,
-                rg.rows, rg.cols, (double)xin[0], (double)xin[1], (double)xin[2],
-                (double)xout[0], (double)xout[1], (double)xout[2]);
-        }
-    }
-    if (getenv("DS4_GEMMA4_CPU_MOE_DUMP")) {
-        static int dumped;
-        if (!dumped) {
-            dumped = 1;
-            FILE *fp = fopen("/tmp/g4-cpu-out.bin", "wb");
-            if (fp) {
-                fwrite(xout, sizeof(float), G4_EMBED, fp);
-                fclose(fp);
-            }
-        }
-    }
     if (cudaMemcpyAsync(out->ptr, xout, (size_t)in_bytes, cudaMemcpyHostToDevice, s) !=
         cudaSuccess) {
         return 0;

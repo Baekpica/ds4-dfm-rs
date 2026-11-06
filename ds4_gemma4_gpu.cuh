@@ -1263,7 +1263,7 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
     }
     if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
     if (rows > 1 && g4_exact_prefill()) {
-        /* P6a's chunk-size exactness gate: run each route as its own one-row
+        /* The chunk-size exactness gate: run each route as its own one-row
          * projection, so the grouped prefill equals the one-row path bit for
          * bit. This is the fallback for the gate, not the default: it
          * restores every expert matrix once per route (measured at 72.7% of

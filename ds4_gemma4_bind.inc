@@ -262,7 +262,7 @@ static void gemma4_mtp_bind(ds4_gemma4_mtp *w, const ds4_model *m) {
  * ring at 1536 rows per sliding layer: 0.63 GiB of KV at ctx 2048, which
  * leaves room for the 9.37 GiB artifact on a 12 GiB card.
  *
- * P6a's chunk-size exactness gate runs with DS4_GEMMA4_EXACT_PREFILL=1,
+ * The chunk-size exactness gate runs with DS4_GEMMA4_EXACT_PREFILL=1,
  * which selects the one-row calls and is byte-identical at chunks 1..22. */
 static uint32_t gemma4_prefill_cap(uint32_t ctx) {
     uint32_t cap = ctx < 512u ? ctx : 512u;

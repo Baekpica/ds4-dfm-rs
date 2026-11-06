@@ -42,7 +42,7 @@ __device__ __forceinline__ static float g4_gelu(float x) {
  *
  * The weight is the container's BF16 tensor (input_layernorm.weight is
  * type 30 in the artifact), so the kernel widens it per element. Reading it
- * as float32 was the P6 nan: the first half of the row then looks plausible
+ * as float32 gives NaN: the first half of the row then looks plausible
  * (a float whose high half is the bf16 weight) and the rest reads past the
  * tensor into its neighbours. */
 template <unsigned BLOCK>
