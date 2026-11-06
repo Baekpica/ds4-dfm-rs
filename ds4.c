@@ -74459,16 +74459,6 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             }
             fprintf(stderr, "ds4: SSD mandatory resident tensor spans: %.2f GiB\n",
                     (double)resident / 1073741824.0);
-            if (!model_map_ok) {
-                if (gemma) {
-                    fprintf(stderr, "ds4: Gemma-4 SSD streaming could not install "
-                                    "the model map (see the line above); run "
-                                    "without --ssd-streaming for the resident path\n");
-                }
-                ds4_engine_close(e);
-                *out = NULL;
-                return 1;
-            }
         } else if (load_slice) {
             char load_end[32];
             if (load_output && load_layer_end == UINT32_MAX) {
