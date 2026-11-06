@@ -43,7 +43,7 @@ The request's effective and qualified plan remains authoritative.
 | Beam-1.0-501B-A23B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
 | MiniMax-M3.1-Flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
 | A.X-K2-VQ | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
-| Gemma-4-26B-A4B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / qualified |
+| Gemma-4-26B-A4B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
 
 ## Bounds and allocator controls
 

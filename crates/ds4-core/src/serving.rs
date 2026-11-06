@@ -669,7 +669,8 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         ModelFamily::Glm53Vq
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
-        | ModelFamily::Axk2Vq => caps.ctx_max,
+        | ModelFamily::Axk2Vq
+        | ModelFamily::Gemma4Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
@@ -995,12 +996,12 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             // The drafter is the family's own `mtp` part (`--mtp`), and it
             // executes on the serial lane only: the bank driver has no
-            // draft/verify round for this family. Qualified on the gate that
-            // proved it (greedy output identical with drafting on and off,
-            // the verify rows equal to the trunk's own, a deterministic
-            // repeat, `--serving-check` still passing).
+            // draft/verify round for this family. Present, not qualified:
+            // tests/gemma4_mtp_gate holds the token stream, but draft 6
+            // loses to plain decode at 13K (docs/gemma4-vq.md), so drafting
+            // stays opt-in with `--mtp-mode on`.
             mtp: MtpKind::Sidecar,
-            mtp_support: Support::Qualified,
+            mtp_support: Support::Present,
             spec_lane: SpecLane::Serial,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
@@ -3676,6 +3677,12 @@ mod tests {
         assert_eq!(native_ctx_default(vq), Some(1_048_576));
         let mixed = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
         assert_eq!(native_ctx_default(mixed), None);
+    }
+
+    #[test]
+    fn gemma4_context_defaults_to_native() {
+        let caps = serving_caps(ModelFamily::Gemma4Vq, Variant::Gemma4A4bVq);
+        assert_eq!(native_ctx_default(caps), Some(262_144));
     }
 
     #[test]
