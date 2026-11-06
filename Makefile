@@ -1,6 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
-GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_stream.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc ds4_gemma4_mtp.inc
+GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_stream.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc ds4_gemma4_mtp.inc ds4_gemma4_payload.inc ds4_gemma4_batch.inc ds4_gemma4_bank_payload.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
@@ -468,7 +468,7 @@ tests/weight_mapping_probe: tests/test_weight_mapping.cu
 tests/weight_mapping_policy: tests/test_weight_mapping_policy.cu $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -DDS4_USE_CUDA -o $@ $^ $(CUDA_LDLIBS)
 
-tests/test_gemma4_primitives: tests/test_gemma4_primitives.cu cuda/gemma4_primitives.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh ds4_gemma4_ref.h
+tests/test_gemma4_primitives: tests/test_gemma4_primitives.cu cuda/gemma4_primitives.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
 
 .PHONY: test-gemma4-primitives
@@ -478,7 +478,7 @@ test-gemma4-primitives: tests/test_gemma4_primitives
 # The fused verify head against the one-row head, byte for byte. Production
 # flags on purpose: the claim is about the production arithmetic, so no
 # --fmad=false here.
-tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemma4_primitives.cuh ds4_gemma4_plan.h
+tests/gemma4_head_rows: tests/gemma4_head_rows.cu cuda/gemma4_head.cuh cuda/gemma4_primitives.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-gemma4-head-rows
@@ -489,7 +489,7 @@ test-gemma4-head-rows: tests/gemma4_head_rows
 # replaces, on one synthetic R13+8 layer at the artifact's geometry. The
 # gate/up pass is expected near-exact (the row sum's FP32 order changes);
 # the down pass is expected bit-identical.
-tests/gemma4_moe_persist: tests/gemma4_moe_persist.cu cuda/gemma4_moe_persist.cuh cuda/gemma_vq_decode.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_primitives.cuh ds4_gemma4_plan.h
+tests/gemma4_moe_persist: tests/gemma4_moe_persist.cu cuda/gemma4_moe_persist.cuh cuda/gemma_vq_decode.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_primitives.cuh cuda/glm_vq.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-gemma4-moe-persist
@@ -499,7 +499,7 @@ test-gemma4-moe-persist: tests/gemma4_moe_persist
 # The Gemma Q4_K decode against the shared dispatcher it replaces, at the
 # artifact's matrix shapes. The row sum's FP32 order differs (the scalar
 # fallback's lane sets); the gate measures the distance.
-tests/gemma4_q4_decode: tests/gemma4_q4_decode.cu cuda/gemma4_q4_decode.cuh cuda/gemma4_primitives.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_gemma4_plan.h
+tests/gemma4_q4_decode: tests/gemma4_q4_decode.cu cuda/gemma4_q4_decode.cuh cuda/gemma4_primitives.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_gemma4_ref.h ds4_gemma4_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-gemma4-q4-decode
@@ -513,12 +513,6 @@ tests/gemma4_ring: tests/gemma4_ring.c ds4_gemma4_plan.h
 .PHONY: test-gemma4-ring
 test-gemma4-ring: tests/gemma4_ring
 	./tests/gemma4_ring
-
-# The CPU-expert deciding measurement. Build only: it needs a real R13+8
-# trunk and the record offsets are tied to that release, so the run line
-# names the path at the call site (tests/gemma4_cpu_expert_gemv.c).
-tests/gemma4_cpu_expert_gemv: tests/gemma4_cpu_expert_gemv.c
-	$(CC) -O3 -mavx2 -mfma -mf16c -pthread -o $@ $< -lm
 
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
@@ -1975,16 +1969,6 @@ test-glm-vq-mtp-mode: tests/test_glm_vq_mtp_mode
 test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
 
-# The Gemma-4 bind gate reads the artifact's own tensor directory: one
-# `name type dim0 [dim1 ...]` line per tensor, exactly what
-# `vq-gguf list --file <part>` prints, over every part of the release.
-tests/gemma4_bind: tests/gemma4_bind.c ds4_gemma4_bind.inc ds4_gemma4_plan.h
-	$(CC) $(CFLAGS) -o $@ tests/gemma4_bind.c $(LDLIBS)
-
-.PHONY: test-gemma4-bind
-test-gemma4-bind: tests/gemma4_bind
-	./tests/gemma4_bind "$(GEMMA4_INVENTORY)"
-
 # The Gemma-4 MTP losslessness gate: plain against drafting greedy streams,
 # the block state against a one-row replay, prefix reuse, snapshot restore,
 # a stop inside an accepted block, and sample-and-match at temp 0.8.
@@ -2715,7 +2699,8 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/gemma4_mtp_gate tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_head_rows tests/gemma4_moe_persist tests/gemma4_mtp_gate tests/gemma4_q4_decode \
+    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
@@ -2757,7 +2742,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_moe tests/test_inkling_mtp tests/test_inkling_mtp_shared \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
-    tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
+    tests/test_gemma4_primitives tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
     tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \

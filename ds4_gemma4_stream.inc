@@ -319,8 +319,7 @@ static bool gemma4_stream_alloc(ds4_gemma4_stream *s, const ds4_model *m,
     s->model = m;
     s->cold = opt->ssd_streaming_cold;
     /* Fill from the model mapping, which is the page cache: once the pages
-     * are touched (gemma4_stream_warm) the copy runs at 8.26 GiB/s, the rate
-     * tests/bench_gemma4_staging measures for the same records, and the
+     * are touched (gemma4_stream_warm) the copy runs at 8.26 GiB/s and the
      * device side needs 43 ms to submit and 1.5 ms to drain 6.5 GiB. Without
      * the warm the same copy measured 1.36 GiB/s (pread 1.88), because the
      * first touch of every page faults (2026-11-05).
@@ -422,9 +421,7 @@ static bool gemma4_stream_alloc(ds4_gemma4_stream *s, const ds4_model *m,
 
     /* Diagnostic (DS4_GEMMA4_MOE_STAGING_TRACE=1): how fast this process can
      * read its own model mapping. The fill copies every expert record out of
-     * it, so the rate here bounds the whole upload path; measured against the
-     * standalone tests/bench_gemma4_staging, which reads the same file from a
-     * small process. */
+     * it, so the rate here bounds the whole upload path. */
     if (s->model->map && s->model->size > (128u << 20) &&
         getenv("DS4_GEMMA4_MOE_STAGING_TRACE")) {
         const uint64_t probe = 64u << 20;
