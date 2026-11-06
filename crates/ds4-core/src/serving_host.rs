@@ -3372,7 +3372,7 @@ fn gemma4_host_cold_layers(req: &ServingRequest) -> u32 {
 ///
 /// The rows are `gemma4_token_rows(cap)`: a draft round's verify block is
 /// seven rows even when the prefill chunk is narrower.
-pub fn gemma4_workspace_bytes(cap: u32) -> u64 {
+fn gemma4_workspace_bytes(cap: u32) -> u64 {
     let rows = u64::from(cap.max(GEMMA4_MTP_DRAFTS + 1));
     // gemma4_activation_bytes: five hidden rows (cur, norm, branch, tmp,
     // exp_acc), three dense-FF rows, the wide query and attention buffers at
