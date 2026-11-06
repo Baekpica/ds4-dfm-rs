@@ -75,10 +75,10 @@ enum {
      * the 48 KiB static shared-memory limit. */
     G4_HEAD_ROWS = 8,
     /* The session-graph admission floor (ds4.c gemma4_session_fit): a graph
-     * is admitted only when at least this much VRAM stays free at peak. It
-     * replaces a shared knob that the 4070 launcher sets to 0: at 0 the gate
-     * admitted a 2.61 GiB graph into 2.75 GiB free and the first forward
-     * then missed by 66,816 B (measured 2026-11-05). */
+     * is admitted only when at least this much VRAM stays free at peak. The
+     * shared headroom knob may be 0, and at 0 the gate admitted a 2.61 GiB
+     * graph into 2.75 GiB free; the first forward then missed by 66,816 B
+     * (12 GiB card, 2026-11-05). */
     G4_SESSION_FIT_MARGIN = 384 * 1024 * 1024
 };
 

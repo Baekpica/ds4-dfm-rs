@@ -640,12 +640,11 @@ extern "C" int ds4_gpu_g4_attn_mma_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor
     return cuda_ok(cudaGetLastError(), "Gemma-4 MMA attention (E4M3 rows)");
 }
 
-/* Key span per split CTA (DS4_GEMMA4_ATTN_SPLIT_SPAN, default 128). The
- * split count is ceil(visible keys / span); 512 was the pre-knob value.
- * Measured on the GB10 (2026-11-04): 128 beats 512 at ctx 256 (35.8 vs
- * 29.1 tok/s), 1,024 (34.2 vs 24.7) and 13,447 (30.7 vs 23.0); 64, 32 and
- * 16 measured still better at 256 and 1,024 but are unmeasured at 13,447,
- * so 128 is the default until that point is taken. Clamped to [16, 4096]. */
+/* Key span per split CTA (DS4_GEMMA4_ATTN_SPLIT_SPAN, default 64). The
+ * split count is ceil(visible keys / span). Measured on the GB10
+ * (2026-11-04): 128 beats 512 at ctx 256 (35.8 vs 29.1 tok/s), 1,024 (34.2
+ * vs 24.7) and 13,447 (30.7 vs 23.0), and 64 beats 128 by 3.7, 3.8 and
+ * 5.2%. Clamped to [16, 4096]. */
 static uint32_t g4_split_span(void) {
     static uint32_t span;
     if (span == 0u) { span = ds4_gemma4_knob_split_span(); }
@@ -691,11 +690,6 @@ static bool g4_split_mma_ready(uint32_t dim) {
     return ready != 0;
 }
 
-/* Split-K decode attention (cuda/gemma4_attn_split.cuh): the fast kernel's
- * per-key arithmetic over `splits` key ranges, joined by a combine kernel.
- * One row only; the drafter's keys=start case is included. The scratch is
- * one process-wide buffer, grown to the largest geometry the session asks
- * for (the engine serializes calls). */
 /* Split scratch: one process-wide buffer, grown to the largest geometry the
  * session asks for (the engine serializes calls). Shared by the bf16 split
  * and the E4M3 full-layer split, which use the same partial/stats layout. */
@@ -713,6 +707,9 @@ static float *g4_split_scratch(uint64_t partial_count, uint64_t stats_count) {
     return scratch;
 }
 
+/* Split-K decode attention (cuda/gemma4_attn_split.cuh): the fast kernel's
+ * per-key arithmetic over `splits` key ranges, joined by a combine kernel.
+ * One row only; the drafter's keys=start case is included. */
 extern "C" int ds4_gpu_g4_attn_split(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
         const ds4_gpu_tensor *key, const ds4_gpu_tensor *value,
         const ds4_gpu_tensor *positions, uint32_t rows, uint32_t first,

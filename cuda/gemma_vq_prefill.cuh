@@ -105,7 +105,7 @@ __device__ __forceinline__ uint32_t g4_vqp_pair_f16(const __half *c1, const uint
 
 /* Decode BM rows x BK columns of one matrix into shared bf16.
  *
- * Mapping (both advisors flagged the old one): two threads per weight row,
+ * Mapping: two threads per weight row,
  * four contiguous vectors each, so the four 12-bit indices of a thread are
  * adjacent in the main stream and the four residual indices are one 32-bit
  * load. The codeword is fetched as one 8-byte uint2 from the main book; the

@@ -75560,14 +75560,12 @@ static bool gemma4_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     }
     const uint64_t substrate = ds4_gpu_substrate_outstanding();
     available = available > substrate ? available - substrate : 0;
-    /* This family's own floor. The shared knob is 0 on the 4070 launcher
-     * (DS4_SESSION_GRAPH_HEADROOM_MB=0: the resident lane needs that
-     * headroom for the 65K graph), and with 0 the gate admits a graph that
-     * leaves 32 MiB free and then dies in the first forward's workspace
-     * (measured 2026-11-05, chunk 4096 with a 6,144 MiB expert pool: the
-     * graph allocated 2.61 GiB of a 2.75 GiB free, a 66,816 B request then
-     * failed). The floor is the serving bar itself: a graph is admitted only
-     * when at least 384 MiB stays free at peak (handoff PHASE B/B3). */
+    /* This family's own floor. With the shared knob
+     * (DS4_SESSION_GRAPH_HEADROOM_MB) at 0 the gate admitted a graph that
+     * left 32 MiB free, and the first forward's workspace then failed
+     * (2026-11-05, chunk 4096 with a 6,144 MiB expert pool: 2.61 GiB of
+     * 2.75 GiB free, then a 66,816 B request). A graph is admitted only
+     * when at least 384 MiB stays free at peak. */
     const uint64_t knob = ds4_session_graph_headroom_bytes();
     const uint64_t margin = knob > G4_SESSION_FIT_MARGIN ? knob : G4_SESSION_FIT_MARGIN;
     const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;

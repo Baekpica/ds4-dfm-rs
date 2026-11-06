@@ -26,7 +26,7 @@
  * the fast kernel on the model.
  *
  * The key span per CTA is a host knob (DS4_GEMMA4_ATTN_SPLIT_SPAN, default
- * 128): the host divides the visible range by it and passes the resulting
+ * 64): the host divides the visible range by it and passes the resulting
  * `splits`. There is no fixed ceiling on that count: the combine kernel's
  * weight array is dynamic shared memory sized by the launch, and the host
  * asks for the larger dynamic-shared limit when the count needs it. */

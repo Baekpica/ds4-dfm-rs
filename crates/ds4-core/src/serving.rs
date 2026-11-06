@@ -990,7 +990,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse: ReuseKind::Partial,
             reuse_support: Support::Qualified,
             // The session payload carries both KV layouts (the sliding ring
-            // and the full context) and restores exactly (P7 slice 1).
+            // and the full context) and restores exactly.
             disk: Support::Qualified,
             snapshot: Support::Qualified,
             // The drafter is the family's own `mtp` part (`--mtp`), and it

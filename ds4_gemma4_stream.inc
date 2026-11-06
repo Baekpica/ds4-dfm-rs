@@ -3,9 +3,9 @@
  * miss admission, pread from the model fd and the same stats vocabulary.
  * The GLM module is read as the contract, never edited.
  *
- * The option is opt-in: ds4_engine_open only reaches this file when
- * --ssd-streaming was given and the family gate admitted Gemma-4. Nothing in
- * the Gemma launcher or session path turns it on by itself.
+ * The option is opt-in: ds4_engine_open reaches this file only after
+ * --ssd-streaming or DS4_GEMMA4_MOE_CACHE_MIB; nothing turns it on by
+ * itself.
  *
  * A streamed VQ1 record is copied byte for byte into a device slot. Its
  * header stores gain/main/plane as offsets relative to the record's data
