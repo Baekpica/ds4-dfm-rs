@@ -63,6 +63,20 @@ fn qwen_tool_head(r: &StreamReq, raw: &[u8], flush: Flush) -> ToolHead {
     ToolHead::Absent
 }
 
+/// Gemma-4 opens its own thought channel, also on a turn that did not ask
+/// for thinking (after a tool result the template renders no empty one), so
+/// a Gemma text stream first checks whether its head is that opener.
+fn gemma4_thought_head(raw: &[u8], flush: Flush) -> ToolHead {
+    let marker = crate::tools::gemma4::THOUGHT_OPEN.as_bytes();
+    if raw.starts_with(marker) {
+        return ToolHead::Present;
+    }
+    if flush == Flush::More && marker.starts_with(raw) {
+        return ToolHead::Wait;
+    }
+    ToolHead::Absent
+}
+
 pub fn think_start(fmt: ChatFormat) -> &'static str {
     match fmt {
         ChatFormat::SolarOpen2 => "<|think:start|>",
@@ -938,25 +952,17 @@ pub fn openai_sse_stream_update(
         }
         return true;
     }
-    // Gemma-4 opens its own thought channel, and the template only opens an
-    // empty one when thinking is off, so a model that opens one anyway used to
-    // stream "<|channel>thought" as answer text: this machine only looked for
-    // the opener when the request asked for thinking, and a tool turn can
-    // reach a round where it did not (measured 2026-11-05, open-grok tool
-    // turn: the opener leaked into the final answer while the calls arrived
-    // fine). Hold the head while it can still be that opener, and switch the
-    // stream to the reasoning field when it is.
     if r.chat_format == ChatFormat::Gemma4
         && st.mode == OpenaiMode::Text
         && !st.checked_think_prefix
     {
-        let open = think_start(r.chat_format).as_bytes();
-        if raw.len() < open.len() && raw == &open[..raw.len()] && !final_ {
-            return true;
-        }
-        if raw.len() >= open.len() && raw.starts_with(open) {
-            st.mode = OpenaiMode::Thinking;
-            st.emit_pos = open.len();
+        match gemma4_thought_head(raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => {
+                st.mode = OpenaiMode::Thinking;
+                st.emit_pos = think_start(r.chat_format).len();
+            }
+            ToolHead::Absent => {}
         }
         st.checked_think_prefix = true;
     }
@@ -1358,6 +1364,18 @@ pub fn anthropic_sse_stream_update(
             return false;
         }
         return true;
+    }
+    if r.chat_format == ChatFormat::Gemma4 && st.mode == AnthMode::Text && !st.checked_think_prefix
+    {
+        match gemma4_thought_head(raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => {
+                st.mode = AnthMode::Thinking;
+                st.emit_pos = think_start(r.chat_format).len();
+            }
+            ToolHead::Absent => {}
+        }
+        st.checked_think_prefix = true;
     }
     if st.mode == AnthMode::Thinking && !st.checked_think_prefix {
         match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
@@ -2269,6 +2287,18 @@ pub fn responses_sse_stream_update(
         }
         return true;
     }
+    if r.chat_format == ChatFormat::Gemma4 && st.mode == RespMode::Text && !st.checked_think_prefix
+    {
+        match gemma4_thought_head(raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => {
+                st.mode = RespMode::Thinking;
+                st.emit_pos = think_start(r.chat_format).len();
+            }
+            ToolHead::Absent => {}
+        }
+        st.checked_think_prefix = true;
+    }
     if st.mode == RespMode::Thinking && !st.checked_think_prefix {
         match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
             ToolHead::Wait => return true,
@@ -2860,6 +2890,47 @@ mod stream_failure_tests {
         assert_eq!(reasoning, "plan");
         assert_eq!(content, "Paris.");
         assert!(!content.contains("<|channel>") && !content.contains("thought"));
+    }
+
+    /// Anthropic and Responses streams split off a channel the model opened
+    /// on a turn without thinking, as the OpenAI stream does.
+    #[test]
+    fn gemma4_channel_opener_stays_out_of_every_api_stream() {
+        let raw: &[u8] = b"<|channel>thought\nplan<channel|>Paris.";
+        let head = &raw[..13];
+        let mut r = StreamReq {
+            syntax: ModelSyntax::Gemma4,
+            chat_format: ChatFormat::Gemma4,
+            think_mode: ThinkMode::None,
+            stream: true,
+            api: Api::Anthropic,
+            ..StreamReq::default()
+        };
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = anthropic_sse_start_live(&mut w, &r, "msg_test", 7);
+        anthropic_sse_stream_update(&mut w, &r, "msg_test", &mut st, head, false);
+        anthropic_sse_stream_update(&mut w, &r, "msg_test", &mut st, raw, false);
+        anthropic_sse_finish_live(&mut w, &r, "msg_test", &mut st, raw, "stop", None, 4, &[]);
+        let out = String::from_utf8(w.out).unwrap();
+        assert!(
+            out.contains("Paris.") && !out.contains("<|channel>"),
+            "{out}"
+        );
+
+        r.api = Api::Responses;
+        r.reasoning_summary_emit = true;
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = responses_stream_init(&r, TEST_RESP_ID, TEST_RS_ID, TEST_MSG_ID);
+        st.active = true;
+        responses_sse_created(&mut w, &r, &mut st, CREATED_TEST);
+        responses_sse_stream_update(&mut w, &r, &mut st, head, false);
+        responses_sse_stream_update(&mut w, &r, &mut st, raw, false);
+        responses_sse_finish_live(&mut w, &r, &mut st, raw, "stop", 7, 4, 1, CREATED_TEST, &[]);
+        let out = String::from_utf8(w.out).unwrap();
+        assert!(
+            out.contains("Paris.") && !out.contains("<|channel>"),
+            "{out}"
+        );
     }
 
     #[test]
