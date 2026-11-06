@@ -28,7 +28,7 @@ embed × √2816 ─▶ [ rms ─▶ GQA (sliding 1,024 or full) ─▶ +h
 |---|---|---|
 | Attention | 25 sliding layers: 16 query and 8 KV heads × 256, window 1,024, RoPE θ 1e4 on all 128 pairs. 5 full layers (5, 11, 17, 23, 29): 16 query and 2 KV heads × 512, proportional RoPE θ 1e6 on 64 of 256 pairs, `attention_k_eq_v` (V is the key projection). Per-head q/k RMSNorm; no attention sink | Q4_K q/k/v/o, BF16 norms |
 | Dense FFN | 2,112 wide, tanh-GELU, in every layer beside the experts | Q4_K gate/up, Q8_0 down |
-| Routed experts | 128 × top-8, FF 704, tanh-GELU; F32 router weights | GVQ1 R13+8: a 13-bit index per 8 weights into an 8,192-word E4M3 book (gate/up share one per layer, down one), plus an 8-bit GVR8 index into a 256-word residual book; 2.64 bits per weight |
+| Routed experts | 128 × top-8, FF 704, tanh-GELU; F32 router weights | GVQ1 R13+8: a 13-bit index per 8 weights into an 8,192-word E4M3 book (gate/up share one per layer, down one), plus an 8-bit GVR8 index into a 256-word residual book; 2.65 bits per weight |
 | Router | 128 × 2,816 with a per-dimension and a per-expert scale | BF16 |
 | Norms and scalars | seven RMSNorms per layer (eps 1e-6) and one layer scalar | BF16 |
 | Embedding and head | 262,144 × 2,816, tied | BF16 `embedding` part, device-mapped: the gather and the head read one table |
@@ -139,16 +139,25 @@ at 13K, see the limits):
 ./ds4-server --cuda -m gemma-4-26b-a4b-vq-gguf --native-chunk 2048 --kv-disk-dir /var/lib/ds4/kv --mtp gemma-4-26b-a4b-vq-gguf/gemma4-vq8-mtp-Q4_K.gguf --mtp-mode on --mtp-draft 2
 ```
 
-A 12 GiB card at 64K, with E4M3 full-layer rows and the shared session
-headroom off (the family keeps its own 384 MiB floor):
+A 12 GiB card at 128K: E4M3 full-layer rows, a 5,856 MiB expert pool
+(3,130 of the 3,840 expert records) and the shared session headroom off;
+the family keeps its own 384 MiB floor:
+
+```bash
+DS4_GEMMA4_FULL_KV=fp8 DS4_GEMMA4_MOE_CACHE_MIB=5856 DS4_SESSION_GRAPH_HEADROOM_MB=0 ./ds4-server --cuda -m gemma-4-26b-a4b-vq-gguf -c 131072
+```
+
+Device-resident at 64K, the faster decode where the card has the room:
 
 ```bash
 DS4_GEMMA4_FULL_KV=fp8 DS4_SESSION_GRAPH_HEADROOM_MB=0 ./ds4-server --cuda -m gemma-4-26b-a4b-vq-gguf -c 65536
 ```
 
-**Memory.** On a 12 GiB RTX 4070 SUPER these settings booted with 10.12 GiB
-in use and 11.45 GiB with the session graph (833 MiB free); 32,768 and
-49,152 used 11.11 and 11.28 GiB, and 98,304 is refused by the plan. The plan
+**Memory.** On a 12 GiB RTX 4070 SUPER the pool arm peaks at 10,916 MiB of
+12,282. The resident arm booted with 10.12 GiB in use and 11.45 GiB with the
+session graph (833 MiB free); 32,768 and 49,152 used 11.11 and 11.28 GiB,
+98,304 is refused by the plan, and with a desktop compositor resident the
+65,536 arm is refused at boot (94.2 MiB short). The plan
 prices the weights, the slot pool, the KV and the graph workspace; the
 engine then checks the session graph against the memory actually free and
 the server refuses to listen, naming the terms, when it would leave less
@@ -200,6 +209,22 @@ with those rows; only ratios measured in one session are.
 Each row prefills the next ~2,048 tokens over the cached prefix. The 65,536
 frontier is missing: the byte-estimated prompt landed a few tokens over the
 booted context and was refused.
+
+Whole cold prompts through `/v1/chat/completions` (build `8137cb52`, 32
+greedy tokens, the response's `timings`): the GB10 with BF16 rows and
+2,048-row chunks at 2,398 MHz, again outside the policy; the 4070 SUPER with
+the 128K pool arm above (512-row chunks):
+
+| Host | Prompt tokens | TTFT | Prefill tok/s | Decode tok/s |
+|---|---:|---:|---:|---:|
+| GB10 | 8,725 | 7.95 s | 1,098.5 | 35.2 |
+| GB10 | 35,547 | 34.24 s | 1,039.7 | 31.5 |
+| GB10 | 63,832 | 65.44 s | 976.9 | 28.0 |
+| GB10 | 137,101 | 160.99 s | 853.0 | 22.1 |
+| 4070 SUPER | 8,725 | 8.86 s | 989.4 | 36.6 |
+| 4070 SUPER | 35,547 | 35.09 s | 1,014.9 | 34.4 |
+| 4070 SUPER | 63,832 | 68.19 s | 937.6 | 31.9 |
+| 4070 SUPER | 125,666 | 161.79 s | 777.7 | 32.9 |
 
 On the 12 GiB card (ctx 8,192–65,536, default chunk, a cold server per
 arm, 32 greedy tokens) the device-resident lane decodes 51.8–54.8 tok/s and
@@ -273,8 +298,9 @@ Set diagnostic switches before starting a fresh process.
   the tile attention kernel, and its exact-path byte gate fails because the
   exact switch does not cover every batched piece of the verify forward.
   The final build's plain decode has no matched MTP run.
-- The qualified context is unset: servers booted at 262,144, but no prompt
-  past 64K was served or measured.
+- The qualified context is unset: servers booted at 262,144 and answered
+  prompts to 137K (GB10) and 126K (12 GiB card), but no gate covers the
+  range past the 64K sweep.
 - With `DS4_GEMMA4_MOE_CPU_LAYERS` between 1 and 29, or a slot pool, at ctx
   8,192, a 7,555-token prompt was refused as exceeding the context while
   N = 0 and N = 30 accepted it: the session context is right-sized below the
