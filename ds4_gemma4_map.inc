@@ -102,6 +102,9 @@ extern "C" int ds4_gpu_g4_stream_plan_cold(const void *model_map,
         r.offset = offsets[i];
         r.bytes = bytes[i];
         r.device_ptr = (char *)t->ptr + (uint64_t)i * header_bytes;
+        /* The stream owns `t` and frees it once; cleanup must not free these
+         * aliases into it. */
+        r.borrowed = 1;
         if (!cuda_model_range_publish(r)) {
             fprintf(stderr, "ds4: Gemma-4 SSD cold header range %u at %llu "
                             "was refused\n", i, (unsigned long long)offsets[i]);
