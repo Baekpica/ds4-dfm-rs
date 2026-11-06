@@ -323,8 +323,8 @@ static bool gemma4_stream_alloc(ds4_gemma4_stream *s, const ds4_model *m,
      * tests/bench_gemma4_staging measures for the same records, and the
      * device side needs 43 ms to submit and 1.5 ms to drain 6.5 GiB. Without
      * the warm the same copy measured 1.36 GiB/s (pread 1.88), because the
-     * first touch of every page faults (2026-11-05). DS4_GEMMA4_MOE_HOST=0
-     * keeps pread as the alternative source. */
+     * first touch of every page faults (2026-11-05).
+     * DS4_GEMMA4_MOE_STAGING_PREAD=1 keeps pread as the alternative source. */
     s->host_source = true;
     /* Reconstruct model_open_split's page-aligned shard bases. The combined
      * map is one reserved range; a tensor's abs_offset is relative to it, so
@@ -654,16 +654,6 @@ static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,
         t->bytes > s->staging_slot || t->bytes < G4_STREAM_HEADER) {
         return false;
     }
-    /* Host-source slots (DS4_GEMMA4_MOE_HOST=1): the expert records are read
-     * from the model's own mapping instead of the shard fds. The mmap pages
-     * are the page cache, so a warm record is a RAM copy, not an O_DIRECT
-     * disk read; the VRAM slot cache and the GPU expert kernels are
-     * unchanged. */
-    static int host_source = -1;
-    if (host_source < 0) {
-        host_source = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_host,
-            "DS4_GEMMA4_MOE_HOST");
-    }
     /* Diagnostic (DS4_GEMMA4_MOE_STAGING_PREAD=1): fill through pread from
      * the shard fds instead of the mapping. Reading the mapping costs a page
      * fault per 4 KiB page (measured 1.4 GiB/s, cold and warm alike), while
@@ -674,7 +664,7 @@ static bool gemma4_stream_read(ds4_gemma4_stream *s, const ds4_tensor *t,
         const char *v = getenv("DS4_GEMMA4_MOE_STAGING_PREAD");
         force_pread = (v && v[0] != '0') ? 1 : 0;
     }
-    if (!force_pread && (host_source || s->host_source) && s->model->map) {
+    if (!force_pread && s->host_source && s->model->map) {
         const uint8_t *src = (const uint8_t *)s->model->map + t->abs_offset;
         if (header) { memcpy(header, src, G4_STREAM_HEADER); }
         const uint64_t upload_start = gemma4_stream_ns();

@@ -15,12 +15,9 @@
 /* Host routed-expert path (DS4_GEMMA4_CPU_MOE=1): the expert records stay
  * host-cold in the model mmap and their projections run on the CPU, so a
  * discrete card does not need the SSD slot pool. Read by the engine (map
- * install), the binder (cold records) and the MoE dispatch. The value is the
- * host-validated typed field when the Rust host supplied one. */
+ * install), the binder (cold records) and the MoE dispatch. */
 static inline int gemma4_cpu_moe_on(void) {
-    if (ds4_gemma4_knobs()->present) { return ds4_gemma4_knobs()->cpu_moe != 0; }
-    const char *v = getenv("DS4_GEMMA4_CPU_MOE");
-    return v && v[0] == '1' && !v[1];
+    return ds4_gemma4_knob_bool("DS4_GEMMA4_CPU_MOE");
 }
 
 /* Per-layer host placement (DS4_GEMMA4_MOE_CPU_LAYERS=N): layers below N
@@ -41,10 +38,6 @@ static inline int gemma4_cpu_moe_on(void) {
  * mean "every layer" there. So 30, 99 and 999 all mean the whole model. */
 static inline uint32_t gemma4_moe_cpu_layers(void) {
     if (gemma4_cpu_moe_on()) { return (uint32_t)G4_LAYERS; }
-    if (ds4_gemma4_knobs()->present) {
-        const uint32_t n = ds4_gemma4_knobs()->moe_cpu_layers;
-        return n > (uint32_t)G4_LAYERS ? (uint32_t)G4_LAYERS : n;
-    }
     const char *v = getenv("DS4_GEMMA4_MOE_CPU_LAYERS");
     long n = v ? strtol(v, NULL, 10) : 0;
     if (n <= 0) { return 0u; }
@@ -58,29 +51,23 @@ static inline uint32_t gemma4_moe_cpu_layers(void) {
  * hot expert runs on the GPU and a cold one misses. 0 means off, which is the
  * default and what every earlier lane measured. */
 static inline uint64_t gemma4_moe_cache_bytes(void) {
-    if (ds4_gemma4_knobs()->present) {
-        return (uint64_t)ds4_gemma4_knobs()->moe_cache_mib << 20;
-    }
+    enum { MAX_MIB = 1 << 20 }; /* 1 TiB: past any card, never a wrap */
     const char *v = getenv("DS4_GEMMA4_MOE_CACHE_MIB");
     long mib = v ? strtol(v, NULL, 10) : 0;
     if (mib <= 0) { return 0u; }
+    if (mib > MAX_MIB) { mib = MAX_MIB; }
     return (uint64_t)mib << 20;
 }
 
 /* The pinned staging ring the pool's slot fills are copied through
  * (DS4_GEMMA4_MOE_STAGING_MIB): 0 selects the 256 MiB default, anything else
- * is clamped to 64..2048 MiB, the range the typed surface accepts.  The ring
+ * is clamped to 64..2048 MiB.  The ring
  * bounds how many expert records can be in flight: 256 MiB holds 655 of the
  * 0.39 MiB records, well past one layer's 128 experts. */
 static inline uint64_t gemma4_moe_staging_bytes(void) {
-    uint32_t mib;
-    if (ds4_gemma4_knobs()->present) {
-        mib = ds4_gemma4_knobs()->moe_staging_mib;
-    } else {
-        const char *v = getenv("DS4_GEMMA4_MOE_STAGING_MIB");
-        const long n = v ? strtol(v, NULL, 10) : 0;
-        mib = n > 0 ? (uint32_t)n : 0u;
-    }
+    const char *v = getenv("DS4_GEMMA4_MOE_STAGING_MIB");
+    const long n = v ? strtol(v, NULL, 10) : 0;
+    uint32_t mib = n > 0 && n < 4096 ? (uint32_t)n : 0u;
     if (mib == 0u) { mib = 256u; }
     if (mib < 64u) { mib = 64u; }
     if (mib > 2048u) { mib = 2048u; }

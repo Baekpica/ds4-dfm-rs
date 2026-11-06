@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "ds4_gemma4_knobs.h"
 #include "ds4_host_load.h"
 
 #ifdef __cplusplus
@@ -103,9 +102,6 @@ typedef struct {
     int32_t ssd_streaming_cold;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
-    /* Gemma-4 tuning surface, already validated by the Rust host.  When
-     * `gemma4.present` is zero the engine keeps the legacy getenv path. */
-    ds4_gemma4_options gemma4;
     const ds4_bridge_bind_plan *plan; /* optional; borrowed for the call */
     const ds4_host_tensor_dir *tensors; /* optional full inventory; borrowed */
     const ds4_host_shape *shape; /* optional; skip C validate when set */

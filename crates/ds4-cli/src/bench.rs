@@ -33,7 +33,6 @@ pub struct BenchArgs {
     output_head_bench_iters: i32,
     dump_frontier_logits_dir: Option<String>,
     ssd_options: Vec<ds4_core::ModelOpenOption>,
-    gemma4: ds4_core::Gemma4Options,
     dist: ds4_dist::Options,
     help: bool,
 }
@@ -64,7 +63,6 @@ impl Default for BenchArgs {
             output_head_bench_iters: 0,
             dump_frontier_logits_dir: None,
             ssd_options: Vec::new(),
-            gemma4: ds4_core::Gemma4Options::default(),
             dist: ds4_dist::Options::default(),
             help: false,
         }
@@ -100,9 +98,6 @@ impl BenchRow {
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, String> {
     let mut parsed = BenchArgs::default();
-    // The typed Gemma surface reads the environment strictly, so a typo
-    // fails here instead of silently taking the engine's zero branch.
-    parsed.gemma4 = ds4_core::Gemma4Options::from_env()?;
     let mut iter = args.into_iter();
     let _argv0 = iter.next();
 
@@ -184,17 +179,6 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, S
             }
             "--dump-frontier-logits-dir" => {
                 parsed.dump_frontier_logits_dir = Some(require_value(&arg, iter.next())?);
-            }
-            // The typed Gemma-4 knobs; the value is validated here, with the
-            // flag named in the error, and the engine reads the resolved
-            // struct from the open options.
-            other if other.starts_with("--gemma4-") => {
-                let value = require_value(other, iter.next())?;
-                // The binary's main prints the "ds4-bench-rs: " prefix once;
-                // the knob error already names the flag the user typed.
-                if !parsed.gemma4.set_flag(other, &value)? {
-                    return Err(format!("unsupported ds4-bench-rs option: {other}"));
-                }
             }
             _ => match ds4_dist::parse_cli_arg(&arg, &mut iter, &mut parsed.dist)? {
                 ds4_dist::CliResult::Matched => {}
@@ -480,7 +464,6 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
     open_options.push(ModelOpenOption::PowerPercent(args.power_percent as u8));
     open_options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
     open_options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
-    open_options.push(ModelOpenOption::Gemma4(args.gemma4.clone()));
     if open_options.contains(&ModelOpenOption::SsdStreaming) {
         open_options.push(ModelOpenOption::ServingBudget(ds4_core::ServingRequest {
             ctx: args.ctx_alloc,
@@ -892,10 +875,6 @@ fn help_text() -> &'static str {
      --output-head-bench N  CUDA output-head verifier at --ctx-start, then exit\n\
      --dump-frontier-logits-dir DIR\n\
                              Write full logits and greedy token IDs per frontier\n\
-     --gemma4-* VALUE       Gemma-4 arithmetic knobs (attn-split-span,\n\
-                             attn-*-mma, cpu-moe[-threads], moe-host|miss,\n\
-                             full-kv, prefill-chunk, ...); the same values the\n\
-                             DS4_GEMMA4_* variables take, validated strictly\n\
      -h, --help             Show this help\n"
 }
 

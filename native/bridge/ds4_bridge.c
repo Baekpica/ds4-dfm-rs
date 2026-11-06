@@ -164,7 +164,6 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.ssd_streaming_cold = opt->ssd_streaming_cold != 0;
     eopt.ssd_streaming_cache_experts = opt->ssd_streaming_cache_experts;
     eopt.ssd_streaming_cache_bytes = opt->ssd_streaming_cache_bytes;
-    eopt.gemma4 = opt->gemma4;
     eopt.mtp_path = opt->mtp_path;
     eopt.dspark_path = opt->dspark_path;
     eopt.mtp_draft_tokens = opt->mtp_draft_tokens > 0 ? opt->mtp_draft_tokens : 1;

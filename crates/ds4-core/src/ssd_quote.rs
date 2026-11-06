@@ -135,6 +135,11 @@ pub fn probe_ssd_quote(
     shape: Shape,
     inventory: &TensorInventory,
 ) -> Result<()> {
+    // Gemma-4 streams only its routed expert records; the rest stays resident.
+    if shape.family == ModelFamily::Gemma4Vq {
+        facts.ssd_mandatory_bytes = Some(crate::gemma4_vq::ssd_resident_bytes(&inventory.tensors));
+        return Ok(());
+    }
     if shape.family != ModelFamily::Glm53 || inventory.shards.len() != 1 {
         return Err(invalid("SSD streaming requires one GLM-5.3 GGUF shard"));
     }

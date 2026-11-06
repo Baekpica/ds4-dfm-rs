@@ -157,6 +157,15 @@ pub fn expert_layer(name: &str) -> Option<u32> {
     fields[2].parse::<u32>().ok()
 }
 
+/// The bytes `--ssd-streaming` keeps resident: every tensor but the routed
+/// expert records the slot cache streams (ds4_gemma4_stream.inc).
+pub(crate) fn ssd_resident_bytes(tensors: &[crate::tensors::TensorInfo]) -> u64 {
+    tensors
+        .iter()
+        .filter(|t| expert_layer(&t.name).is_none())
+        .fold(0u64, |total, t| total.saturating_add(t.bytes))
+}
+
 fn resident_span_of(tensors: &[crate::tensors::TensorInfo], cold_layers: u32) -> u64 {
     tensors.iter().fold(0u64, |total, t| {
         let cold = expert_layer(&t.name).is_some_and(|il| il < cold_layers);

@@ -219,6 +219,10 @@ const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_MAX;
 // the client inside the 600 s idle timeout (Spark, 2026-11-04: chunk 1,
 // 295 tokens 13.03 s; chunk 512, 295 tokens 0.447 s, 2,115 tokens 3.57 s).
 const GEMMA4_PREFILL_CHUNK_ENV: &str = "DS4_GEMMA4_PREFILL_CHUNK";
+/// The placement switches the native engine reads (ds4_gemma4.h).
+const GEMMA4_CPU_MOE_ENV: &str = "DS4_GEMMA4_CPU_MOE";
+const GEMMA4_CPU_LAYERS_ENV: &str = "DS4_GEMMA4_MOE_CPU_LAYERS";
+const GEMMA4_CACHE_MIB_ENV: &str = "DS4_GEMMA4_MOE_CACHE_MIB";
 const GEMMA4_NATIVE_DEFAULT: u32 = 512;
 const GEMMA4_NATIVE_MAX: u32 = 8192;
 const GEMMA4_LAYERS: u32 = 30;
@@ -743,13 +747,14 @@ pub fn fill_quote_facts(
             // rows are `kv` (bank_kv_bytes); the other three are the graph's
             // workspace and used to be priced at zero.
             let cap = native.min(ctx_tokens).max(1);
-            if !req.ssd_streaming && req.gemma4.moe_cache_mib > 0 {
+            let pool_mib = gemma4_env_count(GEMMA4_CACHE_MIB_ENV);
+            if !req.ssd_streaming && pool_mib > 0 {
                 // The slot pool's device slots (gemma4_stream_alloc,
                 // ds4_gemma4_stream.inc:383-396): capacity * per, rounded
                 // down to whole experts, so the knob is the ceiling. Its
                 // pinned staging ring is host memory and is not charged here,
                 // because on a discrete card `available` is VRAM.
-                facts.gemma4_pool_bytes = Some(u64::from(req.gemma4.moe_cache_mib) << 20);
+                facts.gemma4_pool_bytes = Some(u64::from(pool_mib) << 20);
             }
             (kv, gemma4_workspace_bytes(cap), 0, 0)
         }
@@ -964,7 +969,7 @@ pub fn attach_host_quote(
     // through that died in the first forward. Unreadable artifact: keep the
     // whole span, which over-charges but never under-charges.
     if !req.ssd_streaming && caps.family == ModelFamily::Gemma4Vq {
-        let cold = gemma4_host_cold_layers(req);
+        let cold = gemma4_host_cold_layers();
         if cold > 0 {
             if let Some(bytes) =
                 model_path.and_then(|path| crate::gemma4_vq::resident_span_bytes(path, cold))
@@ -3355,12 +3360,23 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
 /// (ds4.c:74380-74395): DS4_GEMMA4_CPU_MOE and the slot-cache lane leave
 /// every layer cold, the per-layer host split leaves the first N cold, and
 /// the all-GPU lanes leave none cold.
-fn gemma4_host_cold_layers(req: &ServingRequest) -> u32 {
-    let g = &req.gemma4;
-    if g.cpu_moe.is_on() || g.moe_cache_mib > 0 {
+fn gemma4_host_cold_layers() -> u32 {
+    let cpu_moe = matches!(
+        std::env::var(GEMMA4_CPU_MOE_ENV).as_deref(),
+        Ok("1" | "true" | "on")
+    );
+    if cpu_moe || gemma4_env_count(GEMMA4_CACHE_MIB_ENV) > 0 {
         return GEMMA4_LAYERS;
     }
-    g.moe_cpu_layers.min(GEMMA4_LAYERS)
+    gemma4_env_count(GEMMA4_CPU_LAYERS_ENV).min(GEMMA4_LAYERS)
+}
+
+/// A non-negative count the engine parses with strtol; anything else is 0.
+fn gemma4_env_count(name: &str) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// The Gemma-4 session graph's non-KV half, term for term
@@ -7815,14 +7831,12 @@ exit 1
         let req = ServingRequest {
             ctx: 8192,
             native_chunk: Some(4096),
-            gemma4: crate::Gemma4Options {
-                moe_cache_mib: 6144,
-                ..crate::Gemma4Options::default()
-            },
             ..ServingRequest::default()
         };
+        let pool = EnvGuard::set(GEMMA4_CACHE_MIB_ENV, "6144");
         let mut facts = EngineFacts::default();
         fill_quote_facts(&mut facts, &req, caps, Some(shape), host);
+        drop(pool);
         // gemma4_session_memory's scratch terms at rows 4096, byte for byte.
         assert_eq!(facts.scratch_bytes, Some(1_674_046_464));
         assert_eq!(facts.gemma4_pool_bytes, Some(6144 * MIB));
@@ -7850,40 +7864,21 @@ exit 1
     /// cold; the per-layer split leaves the first N; the resident lane none.
     #[test]
     fn gemma4_host_cold_layers_follow_the_native_rule() {
-        let lane = |g: crate::Gemma4Options| ServingRequest {
-            gemma4: g,
-            ..ServingRequest::default()
-        };
-        assert_eq!(gemma4_host_cold_layers(&lane(Default::default())), 0);
-        assert_eq!(
-            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
-                moe_cache_mib: 4096,
-                ..Default::default()
-            })),
-            30
-        );
-        assert_eq!(
-            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
-                moe_cpu_layers: 12,
-                ..Default::default()
-            })),
-            12
-        );
-        assert_eq!(
-            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
-                cpu_moe: crate::gemma4_knobs::Toggle::On,
-                ..Default::default()
-            })),
-            30
-        );
-        // The native knob clamps at 30, so the quote must too.
-        assert_eq!(
-            gemma4_host_cold_layers(&lane(crate::Gemma4Options {
-                moe_cpu_layers: 99,
-                ..Default::default()
-            })),
-            30
-        );
+        let _env = lock_test_env();
+        let _cpu = EnvGuard::unset(GEMMA4_CPU_MOE_ENV);
+        let _layers = EnvGuard::unset(GEMMA4_CPU_LAYERS_ENV);
+        let _pool = EnvGuard::unset(GEMMA4_CACHE_MIB_ENV);
+        assert_eq!(gemma4_host_cold_layers(), 0);
+        for (name, value, cold) in [
+            (GEMMA4_CACHE_MIB_ENV, "4096", 30),
+            (GEMMA4_CPU_LAYERS_ENV, "12", 12),
+            (GEMMA4_CPU_MOE_ENV, "1", 30),
+            // The native knob clamps at 30, so the quote must too.
+            (GEMMA4_CPU_LAYERS_ENV, "99", 30),
+        ] {
+            let _set = EnvGuard::set(name, value);
+            assert_eq!(gemma4_host_cold_layers(), cold, "{name}={value}");
+        }
     }
 
     /// The graph groups its Q4 projections and expert routes over a prefill

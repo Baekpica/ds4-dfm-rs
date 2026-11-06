@@ -1256,7 +1256,11 @@ pub fn gemma4_mtp_gate(model: &Model, prompt: &[i32], ctx: i32, n: usize) -> Res
     let buf = TokenBuffer::from_tokens(prompt.to_vec());
     let vocab = usize::try_from(model.vocab().n_vocab()).unwrap_or(0);
     let eos = model.token_eos();
-    let exact = std::env::var_os("DS4_GEMMA4_EXACT_PREFILL").is_some();
+    // The engine's switch reading (ds4_gemma4_knob_bool): 1, true or on.
+    let exact = matches!(
+        std::env::var("DS4_GEMMA4_EXACT_PREFILL").as_deref(),
+        Ok("1" | "true" | "on")
+    );
 
     let plain = mtp_plain_greedy(model, &buf, ctx, n)?;
     let cap = mtp_capture(model, &buf, ctx, n, eos)?;

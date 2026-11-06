@@ -272,8 +272,7 @@ extern "C" int ds4_gpu_g4_rms_rope(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
 static bool g4_router_par(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->router_par,
-            "DS4_GEMMA4_ROUTER_PAR");
+        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ROUTER_PAR");
     }
     return on != 0;
 }
@@ -671,8 +670,7 @@ static bool g4_split_combine_ready(void) {
 static bool g4_split_mma(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->attn_split_mma,
-            "DS4_GEMMA4_ATTN_SPLIT_MMA");
+        on = ds4_gemma4_knob_bool("DS4_GEMMA4_ATTN_SPLIT_MMA");
     }
     return on != 0;
 }
@@ -984,13 +982,7 @@ __global__ static void g4_moe_scatter_ordered_kernel(float *dst, const float *sr
 static bool g4_vq_gemv_on(void) {
     static int on = -1;
     if (on < 0) {
-        if (ds4_gemma4_knobs()->present) {
-            on = ds4_gemma4_knobs()->vq_gemv != 0;
-        } else {
-            /* Legacy: the direct path is on unless the switch is exactly 0. */
-            const char *v = getenv("DS4_GEMMA4_VQ_GEMV");
-            on = !(v && v[0] == '0' && !v[1]);
-        }
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_VQ_GEMV");
     }
     return on != 0;
 }
@@ -998,12 +990,9 @@ static bool g4_vq_gemv_on(void) {
 static int g4_vq_gemv_variant(void) {
     static int variant = -1;
     if (variant < 0) {
-        if (ds4_gemma4_knobs()->present) {
-            variant = (int)ds4_gemma4_knobs()->vq_gemv_variant;
-        } else {
-            const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
-            variant = v && *v ? atoi(v) : G4_VQ_AUTO;
-        }
+        const char *v = getenv("DS4_GEMMA4_VQ_GEMV_VARIANT");
+        const long n = v ? strtol(v, NULL, 10) : G4_VQ_AUTO;
+        variant = n >= G4_VQ_AUTO && n <= G4_VQ_BLOCK ? (int)n : G4_VQ_AUTO;
     }
     return variant;
 }
@@ -1011,12 +1000,11 @@ static int g4_vq_gemv_variant(void) {
 static int g4_vq_gemv_threads(void) {
     static int threads = -1;
     if (threads < 0) {
-        if (ds4_gemma4_knobs()->present) {
-            threads = (int)ds4_gemma4_knobs()->vq_gemv_threads;
-        } else {
-            const char *v = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
-            threads = v && *v ? atoi(v) : 256;
-        }
+        /* Only these widths are instantiated (g4_vq_gemv's launch switch);
+         * any other would fall back to restore + cuBLAS. */
+        const char *v = getenv("DS4_GEMMA4_VQ_GEMV_THREADS");
+        const long n = v ? strtol(v, NULL, 10) : 256;
+        threads = n == 128 || n == 256 || n == 512 ? (int)n : 256;
     }
     return threads;
 }
@@ -1036,8 +1024,7 @@ static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index
 static bool g4_moe_fused(void) {
     static int fused = -1;
     if (fused < 0) {
-        fused = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->moe_fused,
-            "DS4_GEMMA4_MOE_FUSED");
+        fused = ds4_gemma4_knob_bool("DS4_GEMMA4_MOE_FUSED");
     }
     return fused != 0;
 }
@@ -1066,24 +1053,17 @@ static bool g4_moe_linear_glu_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t g
 static bool g4_vq_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool(ds4_gemma4_knobs()->vq_prefill,
-            "DS4_GEMMA4_VQ_PREFILL");
+        on = ds4_gemma4_knob_bool("DS4_GEMMA4_VQ_PREFILL");
     }
     return on != 0;
 }
 
 /* One-row calls for every route of a chunk, the chunk-size exactness gate.
- * The legacy switch is presence-only (even DS4_GEMMA4_EXACT_PREFILL=0 meant
- * on, because the old helper tested getenv() != NULL); the typed path is a
- * strict boolean. */
+ */
 static bool g4_exact_prefill(void) {
     static int on = -1;
     if (on < 0) {
-        if (ds4_gemma4_knobs()->present) {
-            on = ds4_gemma4_knobs()->exact_prefill != 0;
-        } else {
-            on = getenv("DS4_GEMMA4_EXACT_PREFILL") != NULL;
-        }
+        on = ds4_gemma4_knob_bool("DS4_GEMMA4_EXACT_PREFILL");
     }
     return on != 0;
 }

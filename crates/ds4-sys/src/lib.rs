@@ -381,42 +381,6 @@ pub struct ds4_bridge_bind_plan {
     pub page: u64,
 }
 
-/// Mirrors `ds4_gemma4_options` in ds4_gemma4_knobs.h. Field order and widths
-/// are the ABI; `present` clear means the engine keeps the legacy getenv path.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ds4_gemma4_options {
-    pub present: i32,
-    pub attn_split_mma: i32,
-    pub attn_split: i32,
-    pub attn_fast: i32,
-    pub attn_prefill: i32,
-    pub attn_mma: i32,
-    pub fuse_rope: i32,
-    pub head_gemv: i32,
-    pub router_dot: i32,
-    pub router_par: i32,
-    pub q8_batch: i32,
-    pub moe_persist: i32,
-    pub moe_fused: i32,
-    pub vq_prefill: i32,
-    pub exact_prefill: i32,
-    pub q4_decode: i32,
-    pub cpu_moe: i32,
-    pub moe_host: i32,
-    pub moe_miss_cpu: i32,
-    pub moe_cpu_layers: u32,
-    pub moe_cache_mib: u32,
-    pub moe_staging_mib: u32,
-    pub full_kv_fp8: i32,
-    pub vq_gemv: i32,
-    pub attn_split_span: u32,
-    pub cpu_moe_threads: u32,
-    pub prefill_chunk: u32,
-    pub vq_gemv_variant: u32,
-    pub vq_gemv_threads: u32,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ds4_bridge_model_open_options {
@@ -432,7 +396,6 @@ pub struct ds4_bridge_model_open_options {
     pub ssd_streaming_cold: i32,
     pub ssd_streaming_cache_experts: u32,
     pub ssd_streaming_cache_bytes: u64,
-    pub gemma4: ds4_gemma4_options,
     pub plan: *const ds4_bridge_bind_plan,
     pub tensors: *const ds4_host_tensor_dir,
     pub shape: *const ds4_host_shape,

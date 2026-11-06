@@ -60,7 +60,11 @@ fn main() -> Fallible<()> {
     let prompt = model.tokenize_text(&text)?;
     let need = prompt.len() + output + 64;
     let ctx = i32::try_from((need + 255) / 256 * 256)?.max(1024);
-    let exact = std::env::var_os("DS4_GEMMA4_EXACT_PREFILL").is_some();
+    // The engine's switch reading (ds4_gemma4_knob_bool): 1, true or on.
+    let exact = matches!(
+        std::env::var("DS4_GEMMA4_EXACT_PREFILL").as_deref(),
+        Ok("1" | "true" | "on")
+    );
 
     eprintln!(
         "gemma4 mtp gate: prompt {} tokens, ctx {ctx}, drafts {drafts}, exact {exact}",

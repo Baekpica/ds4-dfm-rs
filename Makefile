@@ -328,7 +328,7 @@ ds4.o: ds4.c $(GEMMA4_NATIVE_INCS) $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds
 # Not linked into the C oracles. Phase 3 shadows link this object plus CORE_OBJS.
 rust-bridge: native/bridge/ds4_bridge.o
 
-native/bridge/ds4_bridge.o: native/bridge/ds4_bridge.c native/bridge/ds4_bridge.h native/bridge/ds4_host_load.h ds4.h ds4_gemma4_knobs.h ds4_distributed.h ds41_forward.h
+native/bridge/ds4_bridge.o: native/bridge/ds4_bridge.c native/bridge/ds4_bridge.h native/bridge/ds4_host_load.h ds4.h ds4_distributed.h ds41_forward.h
 	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ native/bridge/ds4_bridge.c
 
 # Phase 9: Rust host is the default name. Cargo [[bin]] stays *-rs;

@@ -104,8 +104,7 @@ fn main() {
     let mut mtp_path: Option<String> = None;
     let mut backend = Backend::Cuda;
     let mut n_threads = 0i32;
-    let mut serve_req = ServingRequest::from_env()
-        .unwrap_or_else(|error| cli_error(&format!("ds4-server-rs: {error}")));
+    let mut serve_req = ServingRequest::from_env();
     let mut model_options = Vec::new();
     let mut vision_path: Option<String> = None;
     let mut kv = DiskKvArgs::default();
@@ -355,18 +354,6 @@ fn main() {
             "--posttrain" => {
                 v41_flags.posttrain = Some(args.next().unwrap_or_else(|| usage()));
             }
-            // Typed Gemma-4 knobs: --gemma4-attn-split-span 64,
-            // --gemma4-moe-miss cpu, ... The value is validated here and the
-            // resolved surface reaches the engine through the open options.
-            other if other.starts_with("--gemma4-") => {
-                let value = args
-                    .next()
-                    .unwrap_or_else(|| cli_error(&format!("ds4-server-rs: {other} needs a value")));
-                serve_req
-                    .gemma4
-                    .set_flag(other, &value)
-                    .unwrap_or_else(|error| cli_error(&format!("ds4-server-rs: {error}")));
-            }
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ds4-server-rs: unknown argument {other}");
@@ -501,32 +488,8 @@ fn main() {
             .unwrap_or_else(|| cli_error("SSD streaming model is not identified"));
         let inventory = ds4_core::TensorInventory::open(Path::new(model_path.as_deref().unwrap()))
             .unwrap_or_else(|error| cli_error(&format!("SSD inventory: {error}")));
-        if identified.shape.family == ds4_core::ModelFamily::Gemma4Vq {
-            // The Gemma-4 stream map keeps every tensor except the routed
-            // expert matrices and their residual planes
-            // (ds4_gemma4_stream.inc:281-315). Expert tensor names carry a
-            // numeric index right after ".experts."; books and dense tensors
-            // do not. The native open validates the cache itself, so the GLM
-            // shard quote is not applied; this is the resident charge the
-            // host quote needs.
-            let streamed = |name: &str| {
-                let mut parts = name.split(".experts.");
-                parts.next();
-                parts
-                    .next()
-                    .and_then(|rest| rest.split('.').next())
-                    .is_some_and(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
-            };
-            let bytes = inventory
-                .tensors
-                .iter()
-                .filter(|tensor| !streamed(&tensor.name))
-                .fold(0u64, |total, tensor| total.saturating_add(tensor.bytes));
-            facts.ssd_mandatory_bytes = Some(bytes);
-        } else {
-            ds4_core::probe_ssd_quote(&mut facts, &serve_req, identified.shape, &inventory)
-                .unwrap_or_else(|error| cli_error(&error.message));
-        }
+        ds4_core::probe_ssd_quote(&mut facts, &serve_req, identified.shape, &inventory)
+            .unwrap_or_else(|error| cli_error(&error.message));
     }
     let dist_probe = distributed_config(&dist.opt);
     if let Some(path) = vision_path.as_deref() {
@@ -609,17 +572,6 @@ fn main() {
             }
         }
     }
-    // The family's own prefill knob is the same number as --native-chunk.
-    // Fold it into the request before the host quote, so the quote, the plan
-    // JSON and the engine all price the chunk that will run.
-    if ident
-        .as_ref()
-        .is_some_and(|id| id.shape.family == ds4_core::ModelFamily::Gemma4Vq)
-        && serve_req.native_chunk.is_none()
-        && serve_req.gemma4.prefill_chunk > 0
-    {
-        serve_req.native_chunk = Some(serve_req.gemma4.prefill_chunk);
-    }
     apply_host_quote(
         &mut facts,
         &serve_req,
@@ -661,11 +613,6 @@ fn main() {
     }
     model_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
     model_options.push(ModelOpenOption::MemFloorGb(plan.effective.mem_floor_gb));
-    // The Gemma-4 arithmetic surface the plan echoed; the engine reads these
-    // fields instead of the DS4_GEMMA4_* strings.
-    if plan.family == Some(ds4_core::ModelFamily::Gemma4Vq) {
-        model_options.push(ModelOpenOption::Gemma4(plan.gemma4.clone()));
-    }
     // A family whose caps refuse banks has no multi-sequence graph to open;
     // asking native for one only reports the refusal. Bonsai (qwen35) is the
     // resident case: its session is the trunk state itself.
@@ -872,8 +819,7 @@ fn main() {
                                     "ds4-server-rs: no Gemma-4 session graph fits at ctx {}: \
                                      need {:.2} GiB (KV and workspace, named by the engine line \
                                      above) + {:.0} MiB margin > free {:.2} GiB, deficit {:.1} MiB; \
-                                     lower DS4_GEMMA4_CTX, DS4_GEMMA4_PREFILL or \
-                                     DS4_GEMMA4_MOE_CACHE_MIB",
+                                     lower -c, --native-chunk or DS4_GEMMA4_MOE_CACHE_MIB",
                                     cfg.ctx,
                                     fit.need_bytes as f64 / 1073741824.0,
                                     fit.headroom_bytes as f64 / 1048576.0,
@@ -1496,13 +1442,6 @@ Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-
          [--kv-cache-boundary-trim-tokens N]\n\
          [--kv-cache-boundary-align-tokens N]\n\
          [--kv-cache-reject-different-quant]\n\
-Gemma-4: [--gemma4-attn-split-span 16..4096] [--gemma4-attn-split-mma on|off]\n\
-         [--gemma4-cpu-moe on|off] [--gemma4-cpu-moe-threads 1..64]\n\
-         [--gemma4-moe-host on|off] [--gemma4-moe-miss evict|cpu]\n\
-         [--gemma4-moe-cpu-layers 0..999] [--gemma4-moe-cache-mib 0..12288]\n\
-         [--gemma4-moe-staging-mib 0 (default 256) | 64..2048]\n\
-         [--gemma4-full-kv bf16|fp8] [--gemma4-prefill-chunk 1..8192]\n\
-         and the rest of the typed surface; --check-config prints every value\n\
 Tool replay: [--disable-exact-dsml-tool-replay] [--tool-memory-max-ids N]\n\
          [--trace FILE]\n\
          V4.1 (ds41): --zchain DIR [--posttrain DIR] [--engram-dir DIR] [--v41-no-engram]\n\
