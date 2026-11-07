@@ -1,6 +1,6 @@
 {
   "source_model": "Spark-X2.6-4B-Base",
-  "checkpoint_dir": "/data/Spark-X2.6-4B-Base/models/hf",
+  "checkpoint_dir": "<hf-dir>",
   "reference_stack": "tokenizers 0.23.3 + transformers 5.22.2 + jinja2 3.1.6",
   "template_file": "chat_template.jinja",
   "template_sha256": "480576bd2ef80726a0dba6406d72ca37f4f4f9ca747c7f1c8d159dbdf40f6929",

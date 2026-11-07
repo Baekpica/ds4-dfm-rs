@@ -5,7 +5,7 @@
 
 /* Spark-X2.6-4B VQ (`spark2_5`): a dense, 36-layer GQA transformer over the
  * same R13+8 container Gemma-4 uses, with no routed experts and no drafter.
- * Topology and rope schedule: /data/Spark-X2.6-4B-Base/models/hf/config.json
+ * Topology and rope schedule: config.json in the Spark-X2.6-4B-Base checkpoint (<hf-dir>)
  * and modeling_spark.py; the artifact is documented in docs/spark-x2.6-vq.md.
  *
  * Two graph-specific kernels live in cuda/spark2_5.cuh; every other step is

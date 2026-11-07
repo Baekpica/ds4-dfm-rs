@@ -5,7 +5,7 @@ The graph's gate compares top-k ids and logits against this file, so it must
 come from the reference implementation, never from this tree's Rust/native
 code:
 
-  python make_logits_reference.py /data/Spark-X2.6-4B-Base/models/hf \
+  python make_logits_reference.py <hf-dir> \
       logits-reference.json
 
 The environment is recorded in provenance.json. The model is loaded in F32 on

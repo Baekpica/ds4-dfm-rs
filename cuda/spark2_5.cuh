@@ -11,7 +11,7 @@
  * head unchanged. step37_attn_gate is not that kernel: it hard-codes 128
  * (cuda/step37_primitives.cuh:20-25).
  *
- * Reference: /data/Spark-X2.6-4B-Base/models/hf/modeling_spark.py
+ * Reference: modeling_spark.py in the Spark-X2.6-4B-Base checkpoint (<hf-dir>)
  *   compute_rope_cos_sin  :31-40
  *   apply_rotary_pos_emb  :43-56 (rotate_half :27-30)
  *   Spark2_5MLP.forward   :126-127 (ACT2FN["gelu"], the exact-erf GELU)

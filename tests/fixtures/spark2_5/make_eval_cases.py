@@ -2,10 +2,10 @@
 """Regenerate eval-cases.json for the Spark-X2.6-4B-Base input adapter.
 
 Reference stack (the one the other family fixtures record):
-  python3 -m venv /data/tmp/spark-ref-venv
-  /data/tmp/spark-ref-venv/bin/pip install tokenizers transformers jinja2
-  /data/tmp/spark-ref-venv/bin/python tests/fixtures/spark2_5/make_eval_cases.py \
-      /data/Spark-X2.6-4B-Base/models/hf
+  python3 -m venv <venv>
+  <venv>/bin/pip install tokenizers transformers jinja2
+  <venv>/bin/python tests/fixtures/spark2_5/make_eval_cases.py \
+      <hf-dir>
 
 `tokenizers` reads tokenizer.json exactly as Hugging Face ships it: the
 normalizer Sequence (empty), the three Split stages, Digits(individual_digits)
@@ -24,7 +24,9 @@ from pathlib import Path
 from tokenizers import Tokenizer
 from transformers.utils.chat_template_utils import _compile_jinja_template
 
-MODEL = Path(sys.argv[1] if len(sys.argv) > 1 else "/data/Spark-X2.6-4B-Base/models/hf")
+if len(sys.argv) < 2:
+    raise SystemExit("usage: make_eval_cases.py <hf-dir> [fuzz-cases]")
+MODEL = Path(sys.argv[1])
 FUZZ = int(sys.argv[2]) if len(sys.argv) > 2 else 120
 OUT = Path(__file__).with_name("eval-cases.json")
 TEMPLATE = Path(__file__).with_name("chat_template.jinja")

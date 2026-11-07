@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the checkpoint's per-stage hidden states for the parity walk.
 
-  python make_hidden_reference.py /data/Spark-X2.6-4B-Base/models/hf OUTDIR
+  python make_hidden_reference.py <hf-dir> OUTDIR
 
 Each file is the LAST row of the stage as float32, named like the engine's
 DS4_SPARK2_5_DUMP_HIDDEN output:
