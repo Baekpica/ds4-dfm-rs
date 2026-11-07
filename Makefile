@@ -1038,7 +1038,7 @@ CI_MODEL_FREE := test-model-registration test-vq-source-release \
 	test-family-cont-spec-finish
 
 .PHONY: ci ci-lint ci-rust ci-parity ci-model-free test-iquest-model-free \
-	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2 gate-gemma4
+	gate-ds41 gate-iquest gate-qwen gate-glm53 gate-mimo2 gate-gemma4 gate-spark2_5
 ci: ci-lint ci-rust ci-parity ci-model-free
 
 gate-ds41: test-ds41-bridge-lifetime test-ds41-kv-import test-ds41-moe-fork \
@@ -1049,6 +1049,8 @@ gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
+gate-spark2_5:
+	cargo test -p ds4-core --test spark2_5_forward --test spark2_5_tokenizer
 
 .PHONY: test-gemma4-memory
 test-gemma4-memory:

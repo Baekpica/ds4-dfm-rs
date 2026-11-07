@@ -232,7 +232,7 @@ they answer different questions:
    vector does not: the checkpoint's top-1 is -1.65, the release's 2.59. This
    gate proves the graph reads the prompt and ranks the right token; it does
    not prove numerical agreement.
-2. Release vs a reference run on the **dequantized** weights (VQ_tools'
+2. Release vs a reference run on the **dequantized** weights (
    `vq-gguf decode` reconstructs each GVQ1+GVR8 pair; the dequantized
    checkpoint feeds modeling_spark.py; fixture
    `logits-reference-dequantized.json`): same argmax, top-64 relRMS 7.6e-3,
@@ -298,9 +298,9 @@ plumbed (render, parse, replay) but this checkpoint does not emit calls. The
 7.03 GiB restored image is allocated before the serving plan is quoted, so the
 default 4 GiB floor no longer fits on a 12 GiB card; start that card with
 `--mem-floor-gb 1`. Both belong in the scheduler accounting, not only in the
-log (handoff Unit 4).
+log.
 
-## Not in this unit
+## Serving capabilities and future work
 
 Capability parity with Gemma-4 VQ is five lanes plus a qualified context, and
 each is absent rather than promised. Gemma-4 declares banks Persistent with

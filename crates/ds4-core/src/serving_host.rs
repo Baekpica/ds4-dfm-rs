@@ -1021,8 +1021,7 @@ pub fn attach_host_quote(
             && crate::serving_cuda::device().is_some_and(|d| !d.integrated);
         if spark2_5_codes_on() {
             if !discrete {
-                weights_bytes =
-                    weights_bytes.saturating_add(artifact_span_bytes(model_path));
+                weights_bytes = weights_bytes.saturating_add(artifact_span_bytes(model_path));
             }
         } else if spark2_5_restore_on() {
             if let Some(shape) = shape {

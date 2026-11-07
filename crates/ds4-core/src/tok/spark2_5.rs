@@ -1,6 +1,5 @@
-//! Spark-X2.6-4B-Base input adapter. The source `tokenizer.json` (pinned in
-//! `/data/VQ_tools/template/examples/spark-x2.6-4b/token-check.json`) declares
-//! exactly:
+//! Spark-X2.6-4B-Base input adapter. The source `tokenizer.json` in the
+//! checkpoint declares exactly:
 //!
 //!   normalizer     Sequence with no normalizers
 //!   pre_tokenizer  Split(\p{N}{1,3}), Split([\u4e00-\u9fa5\u3040-\u309f

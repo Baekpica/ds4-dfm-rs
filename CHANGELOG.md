@@ -8,6 +8,12 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds Spark-X2.6-4B VQ (`spark2_5`), contributed by jlFN:
+  the two-stage VQ release directory, 36 dense layers on a 3:1 sliding-512/full schedule
+  with dual RoPE and per-head sigmoid gates, 100% GPU-resident FP8 weights
+  (3.89 GiB), Tensor Core GEMM prefill (4,889 tok/s) and decode (84.4 tok/s),
+  E4M3 full-layer KV, 830-entry generated layout, and official-input Jinja chat
+  template ([family page](docs/spark-x2.6-vq.md)).
 - Adds Gemma-4 26B A4B VQ (`gemma4_vq`), contributed by jlFN (PR #141):
   the R13+8 release directory, sliding and full GQA with optional E4M3
   full-layer rows, banks, partial reuse, disk KV and snapshots qualified by

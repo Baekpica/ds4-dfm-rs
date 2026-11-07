@@ -281,5 +281,5 @@
   ],
   "logit_sum": -2174907.5,
   "logit_abs_sum": 2174916.75,
-  "provenance": "reference on the release's dequantized weights: each GVQ1+GVR8 matrix decoded with VQ_tools `vq-gguf decode`, stored BF16, all other tensors copied from the checkpoint; Transformers 4.57.1, F32 CPU"
+  "provenance": "reference on the release's dequantized weights: each GVQ1+GVR8 matrix decoded with `vq-gguf decode`, stored BF16, all other tensors copied from the checkpoint; Transformers 4.57.1, F32 CPU"
 }

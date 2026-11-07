@@ -36,7 +36,7 @@
     "checkpoint_reference": "logits-reference.json",
     "checkpoint_reference_stack": "transformers 4.57.1 + torch 2.15.0+cpu, F32 on CPU",
     "dequantized_reference": "logits-reference-dequantized.json",
-    "dequantized_reference_stack": "VQ_tools vq-gguf decode (GVQ1+GVR8 to f32, stored BF16) + transformers 4.57.1 + torch 2.15.0+cpu, F32 on CPU",
+    "dequantized_reference_stack": "vq-gguf decode (GVQ1+GVR8 to f32, stored BF16) + transformers 4.57.1 + torch 2.15.0+cpu, F32 on CPU",
     "regenerator": "make_logits_reference.py <model-dir> <out.json>"
   }
 }
