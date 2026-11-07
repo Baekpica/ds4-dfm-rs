@@ -1,10 +1,9 @@
 /* Spark-X2.6 serial session: one graph owns every layer's KV. A sliding
  * layer keeps window + chunk rows indexed by position, a full layer the whole
  * context; both are written before any query at or below them reads, so a
- * prompt that extends the checkpoint resumes where it stopped. A prompt that
- * rewinds (agent clients re-render the last answer) rebuilds from zero: the
- * ring keeps the newest rows only, and Phase A declares no reuse capability
- * until a gate measures it. */
+ * prompt that extends the checkpoint resumes where it stopped, and a prompt
+ * that rewinds resumes at the common prefix while the ring still holds the
+ * window (spark2_5_graph_keeps), the serial rule the other families use. */
 
 #ifndef DS4_NO_GPU
 
@@ -35,6 +34,17 @@ static int spark2_5_session_fail(ds4_session *s, char *err, size_t errlen) {
     return 1;
 }
 
+static uint32_t spark2_5_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    const ds4_spark2_5_graph *g = s->spark_graph;
+    if (!g || !s->checkpoint_valid || g->failed ||
+        g->position != (uint32_t)s->checkpoint.len) {
+        return 0;
+    }
+    const uint32_t keep = (uint32_t)session_keep_prefix(s, prompt);
+    if (keep == g->position) { return keep; }
+    return spark2_5_graph_keeps(g, keep) ? keep : 0;
+}
+
 static int spark2_5_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                  char *err, size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
@@ -49,19 +59,22 @@ static int spark2_5_session_sync(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     ds4_spark2_5_graph *g = s->spark_graph;
-    uint32_t start = 0;
-    if (s->checkpoint_valid && !g->failed &&
-        g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len &&
-        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-        start = (uint32_t)s->checkpoint.len;
-        if (start == (uint32_t)prompt->len) { return 0; }
-    } else {
+    uint32_t start = spark2_5_sync_keep(s, prompt);
+    if (!start) {
         ds4_session_invalidate(s);
         if (g->failed && !spark2_5_graph_reset(g)) {
             payload_set_err(err, errlen, "Spark-X2.6 graph reset failed");
             return 1;
         }
+    } else if (start == (uint32_t)prompt->len) {
+        return 0;
+    } else if (start < (uint32_t)s->checkpoint.len) {
+        /* Rows at or beyond `start` are stale but harmless: attention only
+         * reads slots at or below the query's own position, every slot the
+         * new rows use is overwritten before it is read, and
+         * spark2_5_sync_keep resumed only where the ring holds the window. */
+        g->position = start;
+        session_rewound(s, start);
     }
     const uint32_t end = (uint32_t)prompt->len;
     while (start < end) {

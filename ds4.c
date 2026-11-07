@@ -5755,12 +5755,16 @@ typedef struct {
     ds4_tensor *stage2, *stage2_book;
     /* Byte offset of this matrix in the engine's BF16 image. */
     uint64_t image_off;
+    /* Device pointers for the fused decode path (DS4_SPARK2_5_CODES=1),
+     * resolved once at bind from the artifact arena. */
+    ds4_spark_vq_ref vq;
 } ds4_spark2_5_matrix;
 
 typedef struct {
     ds4_spark2_5_matrix qkv, out, ffn_gate, ffn_up, ffn_down;
     ds4_tensor *attn_norm, *ffn_norm;
     ds4_tensor *g_proj;
+    uint64_t attn_norm_off, ffn_norm_off, g_proj_off;
 } ds4_spark2_5_layer;
 
 /* The Gemma-4 drafter, `gemma4_assistant`, bound from its own part (a sidecar
@@ -5820,6 +5824,13 @@ typedef struct {
      * (7 GiB of restored weights must not be duplicated per graph). NULL when
      * DS4_SPARK2_5_RESTORE=0 keeps the per-call restore path. */
     ds4_gpu_tensor *spark_image;
+    uint64_t spark_output_norm_off;
+    uint64_t spark_output_off;
+    /* The artifact's own bytes on the device, for the fused decode-and-
+     * multiply path (cuda/spark2_5_vq_gemm.cuh): a codeword read costs PCIe
+     * when it comes from the host-registered map, so the map is copied once
+     * and every stream pointer is a map offset into this arena. */
+    ds4_gpu_tensor *spark_codes;
 #endif
     /* The official checkpoint carries one dense MTP block in the same GGUF.
      * It is bound separately from the 53 executable target-model layers. */
@@ -11251,6 +11262,8 @@ static void weights_free(ds4_weights *w) {
     ds4_gpu_gvq_unbind(w->glmvq_gpu);
     ds4_gpu_tensor_free(w->spark_image);
     w->spark_image = NULL;
+    ds4_gpu_tensor_free(w->spark_codes);
+    w->spark_codes = NULL;
 #endif
     free(w->glmvq);
     free(w->ling31);
@@ -53245,6 +53258,7 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_iquest_payload.inc"
 #include "ds4_ling31_payload.inc"
 #include "ds4_gemma4_payload.inc"
+#include "ds4_spark2_5_payload.inc"
 #include "ds4_beam_payload.inc"
 #include "ds4_minimax_payload.inc"
 #include "ds4_axk2_payload.inc"
@@ -53252,6 +53266,7 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_minimax_batch.inc"
 #include "ds4_axk2_batch.inc"
 #include "ds4_gemma4_batch.inc"
+#include "ds4_spark2_5_batch.inc"
 
 static uint64_t step37_payload_bytes_for_graph(const ds4_step37_graph *g,
                                                const ds4_step37_spec *spec, uint32_t n) {
@@ -56387,9 +56402,14 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
         return s->checkpoint_valid && s->gemma4_graph_ready && s->gemma4_graph
             ? gemma4_payload_bytes(s->gemma4_graph, (uint32_t)s->checkpoint.len) : 0;
     }
-    /* Phase A declares no disk or snapshot capability; a payload word would
-     * be a format with no writer. */
-    if (ds4_session_is_spark2_5(s)) { return 0; }
+    /* The payload is the token ids, the logits and every KV row whole
+     * (ds4_spark2_5_payload.inc), so a checkpoint is saveable only at the
+     * graph's own frontier. */
+    if (ds4_session_is_spark2_5(s)) {
+        return s->checkpoint_valid && s->spark_graph_ready && s->spark_graph
+            ? spark2_5_payload_bytes(s->spark_graph,
+                                     (uint32_t)s->checkpoint.len) : 0;
+    }
     if (ds4_session_is_iquest(s)) {
         return s->checkpoint_valid && s->iquest_graph_ready ? iquest_payload_bytes(&s->iquest_graph, (unsigned)s->checkpoint.len) : 0;
     }
@@ -56629,8 +56649,13 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
             (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
     if (ds4_session_is_spark2_5(s)) {
-        payload_set_err(err, errlen, "Spark-X2.6 has no session snapshot");
-        return 1;
+        if (!ds4_session_payload_bytes(s)) {
+            payload_set_err(err, errlen,
+                            "Spark-X2.6 has no snapshot-ready checkpoint");
+            return 1;
+        }
+        return spark2_5_payload_save(s->spark_graph, s->checkpoint.v,
+            (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
     if (ds4_session_is_iquest(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "IQuest-Q1 has no snapshot-ready checkpoint"); return 1; }
@@ -57283,10 +57308,6 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
 #ifndef DS4_NO_GPU
 
     if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
-    if (ds4_session_is_spark2_5(s)) {
-        payload_set_err(err, errlen, "Spark-X2.6 has no session snapshot");
-        return 1;
-    }
     if (ds4_session_is_solar(s)) {
         return session_solar_load_payload(
             s, fp, &remaining, h, err, errlen);
@@ -57319,6 +57340,9 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             ? mimo2_payload_restore(&s->mimo2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_gemma4(s)
             ? gemma4_payload_restore(s->gemma4_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_spark2_5(s)
+            ? spark2_5_payload_restore(s->spark_graph, fp, &remaining, h,
+                  &tokens, new_logits, err, errlen)
             : ds4_session_is_qwen4exp(s)
             ? qwen4exp_payload_restore_graph(
                   &s->qwen_graph, s->engine->qwen_ple_store,
@@ -59046,6 +59070,7 @@ struct ds4_batch_ctx {
     ds4_minimax_batch_runtime *minimax; /* shared scratch, bank-owned index keys and K/V pages */
     ds4_axk2_batch_runtime *axk2; /* shared scratch, bank-owned latent and index-key rows */
     ds4_gemma4_batch_runtime *gemma4; /* shared scratch, bank-owned KV of both layouts */
+    ds4_spark2_5_batch_runtime *spark2_5; /* shared scratch, bank-owned KV of both layouts */
     ds4_glm53_batch_runtime *glm53; /* shared scratch, private compact frontiers */
     ds4_naive_batch_runtime *naive; /* full DSA KV plus indexer history per bank */
     ds4_dots3_batch_runtime *dots3; /* independent latent/DSA text banks */
@@ -59819,6 +59844,7 @@ static int ling3vl_cont_bank_restore_payload(
 #include "ds4_minimax_bank_payload.inc"
 #include "ds4_axk2_bank_payload.inc"
 #include "ds4_gemma4_bank_payload.inc"
+#include "ds4_spark2_5_bank_payload.inc"
 #define GLM53_BATCH_API
 #include "ds4_glm53_batch.inc"
 #undef GLM53_BATCH_API
@@ -59973,6 +59999,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->minimax) return minimax_bank_payload_bytes(ctx, bank);
     if (ctx->axk2) return axk2_bank_payload_bytes(ctx, bank);
     if (ctx->gemma4) return gemma4_bank_payload_bytes(ctx, bank);
+    if (ctx->spark2_5) return spark2_5_bank_payload_bytes(ctx, bank);
     if (ctx->glm53) { return glm53_bank_payload_bytes(ctx, bank); }
     if (ctx->naive) return naive_bank_payload_bytes(ctx, bank);
     if (ctx->mimo2) return mimo2_bank_payload_bytes(ctx, bank);
@@ -60046,6 +60073,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return axk2_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->gemma4)
         return gemma4_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->spark2_5)
+        return spark2_5_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->glm53) { return glm53_bank_save_payload(ctx, bank, fp, err, errlen); }
     if (ctx->naive)
         return naive_bank_save_payload(ctx, bank, fp, err, errlen);
@@ -60161,6 +60190,9 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return axk2_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->gemma4)
         return gemma4_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->spark2_5)
+        return spark2_5_bank_load_payload(ctx, bank, fp, payload_bytes, err,
+            errlen);
     if (ctx->glm53) { return glm53_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen); }
     if (ctx->naive)
         return naive_bank_load_payload(
@@ -61754,9 +61786,9 @@ uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
      * allocation and cannot be partially unmapped; never fall through to the
      * unrelated DeepSeek slab trimmer. */
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen) return 0;
-    /* Gemma-4 banks keep their caches for their whole life and hold no
-     * checkpoint slab to trim. */
-    if (ctx->gemma4) return 0;
+    /* Gemma-4 and Spark-X2.6 banks keep their caches for their whole life and
+     * hold no checkpoint slab to trim. */
+    if (ctx->gemma4 || ctx->spark2_5) return 0;
     if (ctx->solar) {
         /* ds4_gpu_tensor_trim unmaps VMM pages.  gen_mu prevents new server
          * launches but does not drain work already queued on the device; match
@@ -62010,7 +62042,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl ||
         ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->axk2 ||
-        ctx->gemma4 || ctx->glm53) {
+        ctx->gemma4 || ctx->glm53 || ctx->spark2_5) {
         return DS4_RECLAIM_UNSUPPORTED;
     }
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
@@ -62996,6 +63028,93 @@ static int gemma4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq
 #undef G4BC_ERR
 }
 
+static int spark2_5_batch_ctx_create_impl(ds4_engine *e, int ctx_size,
+        int max_seq, spark2_5_fit_mode mode, ds4_batch_ctx **out,
+        char *err, size_t errlen) {
+#define S25BC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    if (!e || ctx_size <= 0) {
+        S25BC_ERR("batch_ctx_create: Spark-X2.6 needs a valid context");
+        return 1;
+    }
+    const uint32_t ctx = (uint32_t)ctx_size;
+    const uint32_t cap = spark2_5_prefill_cap(ctx);
+    const ds4_context_memory mem = spark2_5_session_memory(ctx, cap);
+    if (!mem.total_bytes) {
+        S25BC_ERR("batch_ctx_create: Spark-X2.6 needs a valid context (ctx=%d)",
+                  ctx_size);
+        return 1;
+    }
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > SPARK25_BANK_MAX) {
+        if (mode == SPARK25_STRICT_BANKS) {
+            S25BC_ERR("batch_ctx_create: Spark-X2.6 supports at most %d banks",
+                      SPARK25_BANK_MAX);
+            return 1;
+        }
+        chosen = SPARK25_BANK_MAX;
+    }
+    uint64_t free_b = 0, total_b = 0;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        const uint64_t per_bank = spark2_5_bank_bytes(ctx, cap);
+        while (chosen &&
+               mem.total_bytes + (uint64_t)(chosen - 1u) * per_bank + headroom >
+                   free_b) {
+            chosen--;
+        }
+        if (!chosen || (mode == SPARK25_STRICT_BANKS &&
+                        chosen < (uint32_t)max_seq)) {
+            S25BC_ERR("batch_ctx_create: Spark-X2.6 banks and headroom exceed"
+                      " free memory (ctx=%d max_seq=%d free=%.2f GiB)",
+                      ctx_size, max_seq, (double)free_b / 1073741824.0);
+            return 1;
+        }
+        fprintf(stderr, "ds4: Spark-X2.6 banks=%u (%.2f GiB spare)\n", chosen,
+                (double)(free_b - (mem.total_bytes +
+                    (uint64_t)(chosen - 1u) * per_bank + headroom)) /
+                    1073741824.0);
+    }
+    ds4_batch_ctx *bc = xcalloc(1, sizeof(*bc));
+    bc->e = e;
+    bc->ctx_size = ctx;
+    bc->prefill_cap = cap;
+    bc->raw_cap = ctx;
+    bc->seq_cap = ctx;
+    bc->max_seq = chosen;
+    for (;;) {
+        bc->spark2_5 = spark2_5_batch_create(&e->weights, ctx, bc->max_seq, cap);
+        if (bc->spark2_5) { break; }
+        if (mode == SPARK25_STRICT_BANKS || bc->max_seq <= 1u) {
+            S25BC_ERR("batch_ctx_create: Spark-X2.6 bank allocation failed"
+                      " (ctx=%d max_seq=%u)", ctx_size, bc->max_seq);
+            free(bc);
+            return 1;
+        }
+        bc->max_seq--;
+    }
+    if ((uint64_t)bc->max_seq * bc->seq_cap > SIZE_MAX / sizeof(*bc->bank_hist)) {
+        S25BC_ERR("batch_ctx_create: Spark-X2.6 bank history size overflow");
+        spark2_5_batch_free(bc->spark2_5);
+        free(bc);
+        return 1;
+    }
+    bc->bank_hist = xmalloc((size_t)bc->max_seq * bc->seq_cap * sizeof(int));
+    bc->bank_hist_len = xcalloc(bc->max_seq, sizeof(*bc->bank_hist_len));
+    bc->bank_hist_valid = xcalloc(bc->max_seq, sizeof(*bc->bank_hist_valid));
+    bc->bank_gen = xmalloc(bc->max_seq * sizeof(*bc->bank_gen));
+    for (uint32_t b = 0; b < bc->max_seq; b++) { bc->bank_gen[b] = 1u; }
+    bc->bank_last_use = xcalloc(bc->max_seq, sizeof(*bc->bank_last_use));
+    // Position-indexed caches: any prefix of a bank is exact while the
+    // sliding ring holds the window, so no checkpoint slots are needed.
+    bc->supports_partial_reuse = true;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, bc->max_seq);
+    *out = bc;
+    return 0;
+#undef S25BC_ERR
+}
+
 static int iquest_batch_ctx_create_impl(
         ds4_engine *e, int ctx_size, int max_seq, iquest_fit_mode mode,
         ds4_batch_ctx **out, char *err, size_t errlen) {
@@ -63379,6 +63498,10 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         return gemma4_batch_ctx_create_impl(e, ctx_size, max_seq,
             fit ? G4_FIT_BANKS : G4_STRICT_BANKS, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5) {
+        return spark2_5_batch_ctx_create_impl(e, ctx_size, max_seq,
+            fit ? SPARK25_FIT_BANKS : SPARK25_STRICT_BANKS, out, err, errlen);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return naive_batch_ctx_create_impl(
@@ -64048,12 +64171,13 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         return;
     }
     if (ctx->step37 || ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam ||
-        ctx->minimax || ctx->axk2 || ctx->gemma4 || ctx->glm53) {
+        ctx->minimax || ctx->axk2 || ctx->gemma4 || ctx->spark2_5 || ctx->glm53) {
         ling31_batch_free(ctx->ling31);
         beam_batch_free(ctx->beam);
         minimax_batch_free(ctx->minimax);
         axk2_batch_free(ctx->axk2);
         gemma4_batch_free(ctx->gemma4);
+        spark2_5_batch_free(ctx->spark2_5);
         step37_batch_runtime_free(ctx->step37);
         ling3vl_batch_runtime_free(ctx->ling3vl);
         mimo2_batch_free(ctx->mimo2);
@@ -64621,7 +64745,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         const uint32_t L = (uint32_t)prompts[i].len;
         if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
              ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-             ctx->axk2 || ctx->gemma4 || ctx->glm53) &&
+             ctx->axk2 || ctx->gemma4 || ctx->spark2_5 || ctx->glm53) &&
             L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
@@ -64636,7 +64760,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
         ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-        ctx->axk2 || ctx->gemma4 || ctx->glm53) {
+        ctx->axk2 || ctx->gemma4 || ctx->spark2_5 || ctx->glm53) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -66070,6 +66194,7 @@ static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->minimax) return ctx->minimax->prefill_cap;
     if (ctx->axk2) return ctx->axk2->prefill_cap;
     if (ctx->gemma4) return ctx->gemma4->prefill_cap;
+    if (ctx->spark2_5) return ctx->spark2_5->prefill_cap;
     if (ctx->naive) return ctx->naive->prefill_cap;
     if (ctx->mimo2) return ctx->mimo2->prefill_cap;
     return ctx->motif3 ? ctx->motif3->prefill_cap
@@ -66101,6 +66226,7 @@ static bool family_banked_logits_valid(
     if (ctx->minimax) return ctx->minimax->bank_logits_valid[bank] != 0u;
     if (ctx->axk2) return ctx->axk2->bank_logits_valid[bank] != 0u;
     if (ctx->gemma4) return ctx->gemma4->bank_logits_valid[bank] != 0u;
+    if (ctx->spark2_5) return ctx->spark2_5->bank_logits_valid[bank] != 0u;
     if (ctx->naive) return ctx->naive->bank_logits_valid[bank] != 0u;
     if (ctx->mimo2) return ctx->mimo2->bank_logits_valid[bank] != 0u;
     return ctx->motif3 ? ctx->motif3->bank_logits_valid[bank] != 0u
@@ -66128,6 +66254,8 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
         return ctx->axk2->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->gemma4)
         return ctx->gemma4->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->spark2_5)
+        return ctx->spark2_5->bank_logits + (size_t)bank * SPARK_VOCAB;
     if (ctx->naive)
         return ctx->naive->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->mimo2)
@@ -66146,6 +66274,7 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->minimax) { minimax_bank_reset(ctx->minimax, bank); return; }
     if (ctx->axk2) { axk2_bank_reset(ctx->axk2, bank); return; }
     if (ctx->gemma4) { gemma4_bank_reset(ctx->gemma4, bank); return; }
+    if (ctx->spark2_5) { spark2_5_bank_reset(ctx->spark2_5, bank); return; }
     if (ctx->naive) { naive_bank_reset(ctx->naive, bank); return; }
     if (ctx->mimo2) { mimo2_bank_reset(ctx->mimo2, bank); return; }
     if (ctx->qwen) {
@@ -66171,6 +66300,7 @@ static bool prefix_bank_fork(ds4_batch_ctx *ctx, uint32_t src, uint32_t dst, uin
     if (ctx->minimax) { return minimax_bank_fork(ctx->minimax, src, dst, pos); }
     if (ctx->axk2) { return axk2_bank_fork(ctx->axk2, src, dst, pos); }
     if (ctx->gemma4) { return gemma4_bank_fork(ctx->gemma4, src, dst, pos); }
+    if (ctx->spark2_5) { return spark2_5_bank_fork(ctx->spark2_5, src, dst, pos); }
     return exaone_bank_fork(ctx->exaone, src, dst, pos);
 }
 
@@ -66185,6 +66315,9 @@ static bool family_banked_copy(
     if (ctx->minimax) { return minimax_bank_copy(ctx->minimax, src, dst, tokens); }
     if (ctx->axk2) { return axk2_bank_copy(ctx->axk2, src, dst, tokens); }
     if (ctx->gemma4) { return gemma4_bank_copy(ctx->gemma4, src, dst, tokens); }
+    if (ctx->spark2_5) {
+        return spark2_5_bank_copy(ctx->spark2_5, src, dst, tokens);
+    }
     if (ctx->naive) { return naive_bank_copy(ctx->naive, src, dst, tokens); }
     if (ctx->mimo2) { return mimo2_bank_copy(ctx->mimo2, src, dst, tokens); }
     if (ctx->qwen) {
@@ -66243,6 +66376,11 @@ static bool family_banked_prefill(
     if (ctx->gemma4) {
         return gemma4_bank_prefill(ctx->gemma4, ctx->e, bank, tokens, rows, pos,
                                    final ? G4_FINAL_ROWS : G4_MORE_ROWS);
+    }
+    if (ctx->spark2_5) {
+        return spark2_5_bank_prefill(ctx->spark2_5, ctx->e, bank, tokens, rows,
+                                     pos, final ? SPARK25_FINAL_ROWS
+                                                : SPARK25_MORE_ROWS);
     }
     if (ctx->naive) {
         return naive_bank_prefill(ctx->naive, ctx->e, bank, tokens, rows, pos,
@@ -66312,6 +66450,10 @@ static bool family_banked_decode(
     }
     if (ctx->gemma4) {
         return gemma4_bank_decode(ctx->gemma4, ctx->e, banks, tokens, positions, rows);
+    }
+    if (ctx->spark2_5) {
+        return spark2_5_bank_decode(ctx->spark2_5, ctx->e, banks, tokens,
+                                    positions, rows);
     }
     if (ctx->naive) {
         return naive_bank_decode(ctx->naive, ctx->e, banks, tokens, positions, rows);
@@ -66641,7 +66783,7 @@ static int family_banked_engine_continuous_generate(
               ctx->ling3vl != NULL || ctx->mimo2 != NULL || ctx->naive != NULL ||
               ctx->iquest != NULL || ctx->ling31 != NULL || ctx->beam != NULL || ctx->minimax != NULL ||
               ctx->axk2 != NULL || ctx->gemma4 != NULL ||
-              ctx->glm53 != NULL;
+              ctx->spark2_5 != NULL || ctx->glm53 != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
     ds4_metric_set(&ds4_metrics_get()->banks_live, 0u);
@@ -66907,7 +67049,8 @@ static int family_banked_engine_continuous_generate(
                     }
                 } else if (source_prefix &&
                            requested_cached < source_frontier &&
-                           (ctx->minimax || ctx->axk2 || ctx->exaone || ctx->gemma4)) {
+                           (ctx->minimax || ctx->axk2 || ctx->exaone ||
+                            ctx->gemma4 || ctx->spark2_5)) {
                     /* MiniMax, A.X-K2 and K2-Horizon caches are position-
                      * indexed: any prefix of the source is exact. Gemma-4's
                      * sliding ring forks only where it still holds the
@@ -66917,7 +67060,9 @@ static int family_banked_engine_continuous_generate(
                     const uint32_t pos = requested_cached < (uint32_t)req.n
                         ? requested_cached : (uint32_t)req.n - 1u;
                     if (!pos || (ctx->gemma4 &&
-                                 !gemma4_bank_keeps(ctx->gemma4, (uint32_t)src, pos))) {
+                                 !gemma4_bank_keeps(ctx->gemma4, (uint32_t)src, pos)) ||
+                        (ctx->spark2_5 &&
+                         !spark2_5_bank_keeps(ctx->spark2_5, (uint32_t)src, pos))) {
                         ctx->fork_rejects++;
                     } else if (!prefix_bank_fork(ctx, (uint32_t)src, b, pos)) {
                         ctx->bank_gen[b]++;
@@ -67622,7 +67767,7 @@ static int family_engine_batched_generate_ctx(
     };
     const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
                     ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-                    ctx->axk2 || ctx->gemma4 || ctx->glm53)
+                    ctx->axk2 || ctx->gemma4 || ctx->spark2_5 || ctx->glm53)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -67685,7 +67830,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
         ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->axk2 ||
-        ctx->gemma4 || ctx->glm53) {
+        ctx->gemma4 || ctx->spark2_5 || ctx->glm53) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -73556,7 +73701,7 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
     // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) { return; }
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5) { return; }
     /* MiniMax's first prefill paid ~0.13 s of first-use module loads (MMQ,
      * cuBLAS) and its first decode its own kernels: warm a 300-row q4p chunk,
      * a 100-row MMQ chunk and two one-row steps in a throwaway session (the
@@ -74338,6 +74483,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 ||
+             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5 ||
              DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) &&
             res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
             fprintf(stderr, "ds4: VQ source pointer plans require eager weight residency\n");
@@ -75198,7 +75344,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -75219,7 +75366,8 @@ int ds4_engine_n_hc(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5) {
         return 1;
     }
     return (int)DS4_N_HC;
@@ -75257,10 +75405,11 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         return e && e->backend == DS4_BACKEND_CUDA;
     }
-    /* Spark-X2.6 Phase A is the serial lane: bank state, prefix forks and
-     * snapshots are not implemented, so the scheduler must not build one. */
+    /* Spark-X2.6's banked lane (ds4_spark2_5_batch.inc): banks own their KV
+     * caches of both layouts over graph 0's scratch, exact prefix forks
+     * included, and no drafter exists for this release. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SPARK2_5) {
-        return false;
+        return e && e->backend == DS4_BACKEND_CUDA;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         const char *enabled = getenv("DS4_DOTS3_BATCH");
@@ -78836,10 +78985,9 @@ int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
     if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_gemma4(s)) { return s->gemma4_graph_ready ? (int)gemma4_sync_keep(s, &prompt) : 0; }
-    /* Phase A declares no reuse capability (ServingCaps.reuse_support None),
-     * so the host plans a rebuild; the session still resumes an exact
-     * extension in spark2_5_session_sync. */
-    if (ds4_session_is_spark2_5(s)) { return 0; }
+    if (ds4_session_is_spark2_5(s)) {
+        return s->spark_graph_ready ? (int)spark2_5_sync_keep(s, &prompt) : 0;
+    }
     if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
 #endif
     return -1;

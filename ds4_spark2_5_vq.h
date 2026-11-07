@@ -50,6 +50,8 @@ enum {
     /* GVQ1/GVBC/GVR8 headers are 128 bytes (FORMAT.md). */
     SPARK_HEADER = 128,
     SPARK_RES_WORDS = 256,
+    /* Block width for FP8 E4M3 restored weights (one f16 scale per 128 inputs). */
+    SPARK_FP8_BLOCK = 128,
 };
 
 #define SPARK_RMS_EPS 1e-6f
@@ -70,27 +72,52 @@ static inline uint32_t spark2_5_rot(uint32_t il) {
     return spark2_5_layer_full(il) ? SPARK_ROT_FULL : SPARK_ROT_SLIDING;
 }
 
-/* The nine full layers may keep their KV as E4M3 instead of BF16, the lane
- * Beam, MiMo and Gemma-4 already ship (ds4_gemma4.h:100-110,
- * ds4_beam_bind.inc:56-67): E4M3 K and V with one f16 scale per KV head,
- * full layers only. At the native 1M context the BF16 row costs 36 GiB and
- * 128K costs 4.5 GiB for these layers; E4M3 halves that to 2.27 GiB, which
- * is what fits a 12 GiB card beside the 7.03 GiB restored image. The 27
- * sliding layers keep BF16 rows, which their window already bounds. Off by
- * default; DS4_SPARK2_5_FULL_KV=fp8 turns it on. */
+/* All 36 layers (the 9 full layers and the 27 sliding layers) keep their KV
+ * as E4M3 K and V with one f16 scale per KV head by default: at 128K context
+ * the 9 full layers cost 2.27 GiB (vs 4.5 GiB BF16) and the 27 sliding rings
+ * cost 54.4 MiB (vs 108.8 MiB BF16), 2.32 GiB total.
+ * DS4_SPARK2_5_FULL_KV=bf16 (or 0) restores BF16 KV across all layers;
+ * DS4_SPARK2_5_FULL_KV=full_only keeps BF16 on the 27 sliding layers. */
 static inline int spark2_5_full_kv_fp8(void) {
     const char *v = getenv("DS4_SPARK2_5_FULL_KV");
-    return v && strcmp(v, "fp8") == 0;
+    return !(v && (strcmp(v, "bf16") == 0 || strcmp(v, "0") == 0));
 }
 
-/* One combined FP8 full-layer row: E4M3 K | E4M3 V | one f16 scale per KV
- * head for each (cuda/gemma4_attn_fp8.cuh:1-23). 2,064 bytes against 4,096
- * BF16 for this geometry. */
+static inline int spark2_5_sliding_kv_fp8(void) {
+    const char *v = getenv("DS4_SPARK2_5_FULL_KV");
+    if (!spark2_5_full_kv_fp8()) { return 0; }
+    return !(v && strcmp(v, "full_only") == 0);
+}
+
+static inline int spark2_5_layer_kv_fp8(unsigned il) {
+    return spark2_5_layer_full(il)
+        ? spark2_5_full_kv_fp8()
+        : spark2_5_sliding_kv_fp8();
+}
+
+/* By default, restore the 180 VQ matrices once per engine into an FP8 E4M3
+ * image with one f16 scale per 128 input columns (3.57 GiB vs 7.03 GiB BF16).
+ * DS4_SPARK2_5_WEIGHTS=bf16 (or 0) keeps the BF16 restored image. */
+static inline int spark2_5_weights_fp8(void) {
+    const char *v = getenv("DS4_SPARK2_5_WEIGHTS");
+    return !(v && (strcmp(v, "bf16") == 0 || strcmp(v, "0") == 0));
+}
+
+static inline uint64_t spark2_5_fp8_matrix_bytes(uint32_t in_dim,
+                                                 uint32_t out_dim) {
+    const uint64_t weights = (uint64_t)out_dim * in_dim;
+    const uint64_t scales =
+        (uint64_t)out_dim * (in_dim / SPARK_FP8_BLOCK) * sizeof(uint16_t);
+    return weights + scales;
+}
+
+/* One combined FP8 KV row: E4M3 K | E4M3 V | one f16 scale per KV
+ * head for each. 2,064 bytes against 4,096 BF16 for this geometry. */
 static inline uint64_t spark2_5_fp8_row_bytes(void) {
     return 2ull * SPARK_KV_DIM + 2ull * SPARK_KV_HEADS * sizeof(uint16_t);
 }
 
-/* The three graph-specific entries (cuda/spark2_5.cuh). */
+/* Spark-specific CUDA entries (cuda/spark2_5.cuh, ds4_spark2_5_gpu.cuh). */
 int ds4_gpu_spark_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
     const ds4_gpu_tensor *inv, uint32_t rows, uint32_t heads, uint32_t dim,
     uint32_t pairs);
@@ -104,6 +131,55 @@ int ds4_gpu_spark_restore(ds4_gpu_tensor *out,
     const void *vq, uint64_t vq_bytes, const void *vq2, uint64_t vq2_bytes,
     const void *book, const void *book2, const void *res, uint64_t res_bytes,
     const void *res_book, uint32_t rows, uint32_t cols);
+/* Restore one GVQ1 matrix into FP8 E4M3 rows + one f16 scale per 128 cols. */
+int ds4_gpu_spark_restore_fp8(ds4_gpu_tensor *out,
+    const void *vq, uint64_t vq_bytes, const void *vq2, uint64_t vq2_bytes,
+    const void *book, const void *book2, const void *res, uint64_t res_bytes,
+    const void *res_book, uint32_t rows, uint32_t cols);
+/* Multiply x [n_tok][in_dim] F32 by an FP8 E4M3 + block-128 scale matrix
+ * [out_dim][in_dim] -> out [n_tok][out_dim] F32. */
+int ds4_gpu_spark_matmul_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *w_fp8,
+    uint32_t in_dim, uint32_t out_dim, const ds4_gpu_tensor *x, uint32_t n_tok);
+/* Quantize a BF16 matrix [rows][cols] from host/mapped memory into an FP8 E4M3
+ * + block-128 f16 scale tensor on the device. */
+int ds4_gpu_spark_bf16_to_fp8(ds4_gpu_tensor *dst, const void *src_bf16,
+    uint32_t rows, uint32_t cols);
+/* Gather and dequantize `n_tokens` rows from an FP8 E4M3 + block-128 scale
+ * embedding table [n_vocab][n_embd] into `out` [n_tokens][n_embd] F32. */
+int ds4_gpu_spark_embed_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *tokens,
+    const ds4_gpu_tensor *table_fp8, uint32_t n_vocab, uint32_t n_tokens,
+    uint32_t n_embd);
+/* Spark's own FP8 E4M3 KV store and causal GQA attention (sliding and full). */
+int ds4_gpu_spark_kv_store_fp8(ds4_gpu_tensor *dst, const ds4_gpu_tensor *k,
+    const ds4_gpu_tensor *v, const ds4_gpu_tensor *positions, uint32_t rows,
+    uint32_t width, uint32_t kv_heads, uint32_t head_dim, uint32_t ring,
+    uint32_t capacity);
+int ds4_gpu_spark_attn_fp8(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+    const ds4_gpu_tensor *kv, const ds4_gpu_tensor *positions, uint32_t rows,
+    uint32_t first, uint32_t heads, uint32_t kv_heads, uint32_t dim,
+    uint32_t window, uint32_t ring, uint32_t keys, uint64_t row_bytes);
+/* Decode one GVQ1 matrix inside the GEMM, so no BF16 copy of W exists
+ * (cuda/spark2_5_vq_gemm.cuh). The stream pointers are resolved once at bind
+ * from the artifact arena; `out` is [n_tok][rows] F32, `x` [n_tok][cols]. */
+typedef struct {
+    const void *gain, *main, *plane;             /* stage 1 */
+    const void *gain2, *main2, *plane2;          /* stage 2, NULL on v2 */
+    const void *book, *book2, *res, *res_book;
+    uint32_t rows, cols;
+} ds4_spark_vq_ref;
+
+int ds4_gpu_spark_vq_resolve(ds4_spark_vq_ref *ref, const void *map,
+    const void *arena, const void *vq, uint64_t vq_bytes, const void *vq2,
+    uint64_t vq2_bytes, const void *book, const void *book2, const void *res,
+    uint64_t res_bytes, const void *res_book, uint32_t rows, uint32_t cols);
+int ds4_gpu_spark_vq_linear(ds4_gpu_tensor *out, const ds4_spark_vq_ref *w,
+    const ds4_gpu_tensor *x, uint32_t n_tok);
+/* The artifact arena the fused path decodes from, and its one-shot fill. */
+int ds4_gpu_spark_codes_copy(ds4_gpu_tensor *dst, const void *src,
+    uint64_t bytes);
+const void *ds4_gpu_spark_codes_base(const ds4_gpu_tensor *codes);
+/* Diagnostic: the fused path's decode into a BF16 matrix. */
+int ds4_gpu_spark_vq_probe(ds4_gpu_tensor *out, const ds4_spark_vq_ref *w);
 
 #ifdef __cplusplus
 }

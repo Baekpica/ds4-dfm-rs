@@ -1011,21 +1011,24 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
-        // Spark-X2.6 Phase A runs the forward on the serial lane with its own
-        // graph and position-indexed KV; only that forward is measured (the
-        // logits gate in docs/spark-x2.6-vq.md). Exact prefix reuse is what
-        // the caches can offer, but nothing is marked Qualified until its
-        // gate runs. Banks, disk restore, snapshots and a drafter are not
-        // implemented, so they are declared absent rather than promised.
+        // Spark-X2.6 runs the forward on the serial lane with its own graph
+        // and position-indexed KV, and the banked lane over the same graph 0
+        // scratch with bank-owned caches of both layouts
+        // (ds4_spark2_5_batch.inc). Reuse resumes at the common prefix while
+        // the sliding ring holds the window (spark2_5_graph_keeps), and the
+        // payload carries the token ids, the logits and every KV row whole
+        // (ds4_spark2_5_payload.inc), so disk and snapshot share one writer
+        // per bank and per session. All are Present until their gates are
+        // recorded in docs/spark-x2.6-vq.md; a drafter does not exist.
         ModelFamily::Spark2_5Vq => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::Exact,
-            reuse_support: Support::None,
-            disk: Support::None,
-            snapshot: Support::None,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
@@ -1914,6 +1917,7 @@ impl ResolvedPlan {
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
             Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
+            Some(ModelFamily::Spark2_5Vq) => Some("DS4_SPARK2_5_PREFILL_CHUNK"),
             _ => None,
         }
     }

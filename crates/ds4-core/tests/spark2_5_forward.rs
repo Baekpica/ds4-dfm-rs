@@ -44,11 +44,15 @@ fn shape_matches_the_published_config() {
 #[test]
 fn caps_stay_conservative() {
     let caps = ds4_core::caps_from_shape(shape_for_variant(Variant::SparkX26_4bVq));
-    // Phase A: the serial forward exists; nothing else is measured, so every
-    // optional capability stays unqualified and undeclared.
-    assert_eq!(caps.banks, ds4_core::BankLane::Serial);
-    assert_eq!(caps.disk, ds4_core::Support::None);
-    assert_eq!(caps.snapshot, ds4_core::Support::None);
+    // The serial forward, the exact-prefix rewind, the session payload and the
+    // banked lane are implemented but not yet gated, so they are Present,
+    // never Qualified. A drafter does not exist.
+    assert_eq!(caps.banks, ds4_core::BankLane::Persistent);
+    assert_eq!(caps.bank_support, ds4_core::Support::Present);
+    assert_eq!(caps.reuse, ds4_core::ReuseKind::Partial);
+    assert_eq!(caps.reuse_support, ds4_core::Support::Present);
+    assert_eq!(caps.disk, ds4_core::Support::Present);
+    assert_eq!(caps.snapshot, ds4_core::Support::Present);
     assert_eq!(caps.mtp, ds4_core::MtpKind::None);
     assert_eq!(caps.qualified_ctx, None);
     assert_eq!(caps.qualified_banks, None);

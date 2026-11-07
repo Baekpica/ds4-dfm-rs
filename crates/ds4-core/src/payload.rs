@@ -46,6 +46,8 @@ const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
 // Gemma-4 carries two KV layouts: word 8 is the sliding-ring size and words
 // 9/10 are the per-layout row counts, so word 12 stays zero.
 const LAYOUT_GEMMA4: u32 = u32::from_le_bytes(*b"GVK4");
+// Spark-X2.6 uses the same two-layout header (ds4_spark2_5_payload.inc).
+const LAYOUT_SPARK25: u32 = u32::from_le_bytes(*b"SVK2");
 const MINIMAX_DRAFT_WINDOW: u32 = 4096;
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
@@ -70,6 +72,7 @@ pub enum PayloadLayout {
     MinimaxVq,
     Axk2Vq,
     Gemma4Vq,
+    Spark2_5Vq,
 }
 
 impl PayloadLayout {
@@ -96,11 +99,9 @@ impl PayloadLayout {
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
-            // Spark-X2.6 VQ stays unmapped on purpose: the native graph has
-            // no payload writer (disk and snapshot are declared absent), so a
-            // layout word here would be a constant with no producer. The
-            // native writer defines the word when it lands
-            // (docs/spark-x2.6-vq.md).
+            LAYOUT_SPARK25 => Self::Spark2_5Vq,
+            // Spark-X2.6's native writer defines SVK2
+            // (ds4_spark2_5_payload.inc); an unknown word stays DeepSeek.
             _ => Self::DeepSeek,
         }
     }
@@ -126,6 +127,7 @@ impl PayloadLayout {
             Self::MinimaxVq => ModelFamily::MinimaxVq,
             Self::Axk2Vq => ModelFamily::Axk2Vq,
             Self::Gemma4Vq => ModelFamily::Gemma4Vq,
+            Self::Spark2_5Vq => ModelFamily::Spark2_5Vq,
         }
     }
 
@@ -146,6 +148,7 @@ impl PayloadLayout {
                         | Self::MinimaxVq
                         | Self::Axk2Vq
                         | Self::Gemma4Vq
+                        | Self::Spark2_5Vq
                 ))
     }
 
@@ -410,6 +413,26 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
             {
                 return Err(err("invalid Gemma-4 session payload token"));
+            }
+        }
+        // Spark-X2.6 word 12 is reserved (zero). Words 8/9/10 describe the two
+        // KV layouts and the native reader re-derives them from its geometry
+        // (ds4_spark2_5_payload.inc), so the host validates the timeline only.
+        PayloadLayout::Spark2_5Vq => {
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+                || p.fields[12] != 0
+            {
+                return Err(err("invalid Spark-X2.6 session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid Spark-X2.6 session payload token"));
             }
         }
         // QWN3 word 12 is the PLE convolution byte count, not live rows.

@@ -3,7 +3,7 @@ UNAME_S := $(shell uname -s)
 GEMMA4_NATIVE_INCS := ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h ds4_gemma4_bind.inc ds4_gemma4_stream.inc ds4_gemma4_graph.inc ds4_gemma4_session.inc ds4_gemma4_mtp.inc ds4_gemma4_payload.inc ds4_gemma4_batch.inc ds4_gemma4_bank_payload.inc
 IQUEST_NATIVE_INCS := ds4_iquest_ref.h ds4_iquest_bind.inc ds4_iquest_graph.inc ds4_iquest_session.inc ds4_iquest_payload.inc ds4_iquest_batch.inc ds4_iquest_bank_payload.inc
 NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
-SPARK25_NATIVE_INCS := ds4_spark2_5_vq.h ds4_spark2_5_bind.inc ds4_spark2_5_graph.inc ds4_spark2_5_session.inc
+SPARK25_NATIVE_INCS := ds4_spark2_5_vq.h ds4_spark2_5_bind.inc ds4_spark2_5_graph.inc ds4_spark2_5_session.inc ds4_spark2_5_payload.inc ds4_spark2_5_batch.inc ds4_spark2_5_bank_payload.inc
 
 ifeq ($(UNAME_S),Darwin)
 NATIVE_CPU_FLAG ?= -mcpu=native
@@ -2223,7 +2223,7 @@ LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_l
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh cuda/l31_swiglu.cuh
-ds4_cuda.o ds4_cuda_range_test.o: ds4_spark2_5_vq.h ds4_spark2_5_gpu.cuh cuda/spark2_5.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_spark2_5_vq.h ds4_spark2_5_gpu.cuh cuda/spark2_5_vq_gemm.cuh cuda/spark2_5.cuh
 BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payload.inc ds4_beam_session.inc ds4_beam_draft.inc \
 	ds4_beam_batch.inc ds4_beam_bank_payload.inc
 ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)

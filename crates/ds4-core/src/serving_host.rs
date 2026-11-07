@@ -232,9 +232,9 @@ const GEMMA4_WINDOW: u64 = 1024;
 const GEMMA4_MTP_DRAFTS: u32 = 6;
 
 /// Spark-X2.6 (`ds4_spark2_5_graph.inc` spark2_5_prefill_cap): the native
-/// default is min(ctx, 512), the family env up to 1024.
+/// default is min(ctx, 1024), the family env up to 1024.
 const SPARK_PREFILL_CHUNK_ENV: &str = "DS4_SPARK2_5_PREFILL_CHUNK";
-const SPARK_NATIVE_DEFAULT: u32 = 512;
+const SPARK_NATIVE_DEFAULT: u32 = 1024;
 const SPARK_NATIVE_MAX: u32 = 1024;
 /// config.json sliding_window: the 27 sliding layers keep window + chunk rows
 /// (ds4_spark2_5_kv_rows), the nine full layers the whole context.
@@ -1010,13 +1010,29 @@ pub fn attach_host_quote(
         }
     }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
-    // Spark-X2.6 materialises a BF16 copy of every encoded matrix once per
-    // engine (ds4_gpu_gvq_restore_device): 7.03 GiB the 0.78 GiB artifact
-    // span does not carry. Charge it as resident weights so the admission
-    // quote describes what the open already allocated.
-    if caps.family == ModelFamily::Spark2_5Vq && spark2_5_restore_on() {
-        if let Some(shape) = shape {
-            weights_bytes = weights_bytes.saturating_add(spark2_5_restored_bytes(shape));
+    // Spark-X2.6 keeps one decoded form of the weights per engine. The fused
+    // path (DS4_SPARK2_5_CODES=1) copies the artifact's own bytes to the
+    // device -- 2.5 GiB of codewords, charged on top of the mapping -- and
+    // builds no image; the image path materialises every encoded matrix as
+    // BF16 (7.03 GiB, spark2_5_restored_bytes). The quote must describe the
+    // one that was actually allocated.
+    if caps.family == ModelFamily::Spark2_5Vq {
+        let discrete = req.backend == Backend::Cuda
+            && crate::serving_cuda::device().is_some_and(|d| !d.integrated);
+        if spark2_5_codes_on() {
+            if !discrete {
+                weights_bytes =
+                    weights_bytes.saturating_add(artifact_span_bytes(model_path));
+            }
+        } else if spark2_5_restore_on() {
+            if let Some(shape) = shape {
+                let restored = spark2_5_restored_bytes(shape);
+                weights_bytes = if discrete && spark2_5_weights_fp8() {
+                    restored
+                } else {
+                    weights_bytes.saturating_add(restored)
+                };
+            }
         }
     }
     // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
@@ -1457,10 +1473,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
         ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
-        // No engine exists for this family yet (Unit 3), so the planner
-        // prices the serial one-row floor instead of a graph that is not
-        // built; the measured chunk replaces this with the engine.
-        ModelFamily::Spark2_5Vq => 1,
+        ModelFamily::Spark2_5Vq => SPARK_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -3264,6 +3277,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Spark2_5Vq
         )
     {
         return serial;
@@ -3348,11 +3362,18 @@ fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
 
 /// ds4_spark2_5_graph.inc spark2_5_kv_bytes, mirrored: the nine full layers
 /// (il % 4 == 3) hold `ctx` rows, the 27 sliding layers `min(ctx, window +
-/// chunk)`. A full layer's row is BF16 K|V, or E4M3 K|V plus one f16 scale
-/// per KV head each under DS4_SPARK2_5_FULL_KV=fp8
-/// (cuda/gemma4_attn_fp8.cuh:14-20, ds4_spark2_5_vq.h spark2_5_fp8_row_bytes).
+/// chunk)`. By default all 36 layers keep E4M3 K|V plus one f16 scale per KV
+/// head each (cuda/spark2_5.cuh, ds4_spark2_5_vq.h spark2_5_fp8_row_bytes);
+/// DS4_SPARK2_5_FULL_KV=bf16/0 switches to BF16, and =full_only restricts FP8
+/// to the 9 full layers.
 fn spark2_5_kv_bytes(shape: Shape, ctx: u64, cap: u32) -> u64 {
-    let fp8 = std::env::var("DS4_SPARK2_5_FULL_KV").ok().as_deref() == Some("fp8");
+    let kv_env = std::env::var("DS4_SPARK2_5_FULL_KV").ok();
+    let full_fp8 = match kv_env.as_deref() {
+        Some("bf16" | "0") => false,
+        Some(_) => true,
+        None => std::env::var("DS4_CUDA_FP8_KV").ok().as_deref() != Some("0"),
+    };
+    let sliding_fp8 = full_fp8 && kv_env.as_deref() != Some("full_only");
     let kv_heads = u64::from(shape.n_head_kv);
     let kv_dim = kv_heads * u64::from(shape.n_head_dim);
     let bf16_row = 2 * kv_dim * 2;
@@ -3362,16 +3383,16 @@ fn spark2_5_kv_bytes(shape: Shape, ctx: u64, cap: u32) -> u64 {
         .map(|il| {
             let full = il % 4 == 3;
             let rows = if full { ctx } else { sliding };
-            rows * if full && fp8 { fp8_row } else { bf16_row }
+            let layer_fp8 = if full { full_fp8 } else { sliding_fp8 };
+            rows * if layer_fp8 { fp8_row } else { bf16_row }
         })
         .sum()
 }
 
 /// ds4_spark2_5_graph.inc spark2_5_activation_bytes plus
 /// spark2_5_linear_workspace, mirrored: the F32 row buffers, the token and
-/// position rows, the logits and the two rope tables, then the GVQ linear
-/// scratch (cuda/glm_vq_linear.cuh:22-28) sized by the widest matrix, the
-/// 10,240 x 2,560 FFN pair.
+/// position rows, the logits and the two rope tables, then the optional
+/// per-call restore scratch when DS4_SPARK2_5_RESTORE=0.
 fn spark2_5_scratch_bytes(shape: Shape, cap: u32) -> u64 {
     const CUBLAS_WORKSPACE: u64 = 32 << 20;
     let rows = u64::from(cap);
@@ -3389,16 +3410,20 @@ fn spark2_5_scratch_bytes(shape: Shape, cap: u32) -> u64 {
         // (SPARK_ROT_SLIDING + SPARK_ROT_FULL) / 2 f32 entries.
         + (256 + 64) / 2 * 4;
     let linear = CUBLAS_WORKSPACE + rows * 8 * 4;
-    // glmvq_linear_bytes with FP8 storage: the whole matrix restored to BF16
-    // plus the row and column copies the GEMM stages.
-    let widest = (ff * embd + rows * (ff + embd)) * 2;
+    let widest = if spark2_5_restore_on() {
+        0
+    } else if spark2_5_weights_fp8() {
+        ff * embd + ff * (embd / 128) * 2
+    } else {
+        (ff * embd + rows * (ff + embd)) * 2
+    };
     acts + linear.max(widest)
 }
 
-/// The BF16 image ds4_gpu_gvq_restore_device materialises once per engine
-/// (ds4_glmvq_gpu.cuh): every encoded matrix at rows * cols * 2 bytes. The
-/// artifact's own 0.78 GiB span does not carry it, and the 7.03 GiB image is
-/// what makes a 128K session need the FP8 KV lane on a 12 GiB card.
+/// The weight image ds4_gpu_spark_restore_fp8 / ds4_gpu_spark_restore
+/// materialises once per engine (cuda/spark2_5.cuh): E4M3 + block-128 f16
+/// scales by default (3.57 GiB), or BF16 under DS4_SPARK2_5_WEIGHTS=bf16
+/// (7.03 GiB).
 fn spark2_5_restored_bytes(shape: Shape) -> u64 {
     let embd = u64::from(shape.n_embd);
     let heads = u64::from(shape.n_head);
@@ -3407,14 +3432,44 @@ fn spark2_5_restored_bytes(shape: Shape) -> u64 {
     let qkv = (heads + 2 * kv_heads) * head_dim;
     let q = heads * head_dim;
     let ff = u64::from(shape.n_ff_dense);
+    let layers = u64::from(shape.n_layer);
+    let vocab = u64::from(shape.n_vocab);
     // qkv + out + gate + up + down, each rows * cols.
-    let per_layer = qkv * embd + q * embd + 2 * embd * ff + ff * embd;
-    per_layer * u64::from(shape.n_layer) * 2
+    let per_layer_elems = qkv * embd + q * embd + 2 * embd * ff + ff * embd;
+    let total_elems = per_layer_elems * layers;
+    if spark2_5_weights_fp8() {
+        // 1 byte per E4M3 weight + 2 bytes per 128-element block scale, plus
+        // per-layer FP8 g_proj, all F32 RMSNorm vectors, and the tied FP8 output head.
+        let vq_fp8 = total_elems + (total_elems / 128) * 2;
+        let g_elems = layers * heads * embd;
+        let g_fp8 = g_elems + (g_elems / 128) * 2;
+        let norms_f32 = (2 * layers + 1) * embd * 4;
+        let out_elems = vocab * embd;
+        let out_fp8 = out_elems + (out_elems / 128) * 2;
+        vq_fp8 + g_fp8 + norms_f32 + out_fp8
+    } else {
+        total_elems * 2
+    }
+}
+
+/// DS4_SPARK2_5_WEIGHTS=bf16 or 0 restores a BF16 image; FP8 E4M3 is default.
+fn spark2_5_weights_fp8() -> bool {
+    !matches!(
+        std::env::var("DS4_SPARK2_5_WEIGHTS").ok().as_deref(),
+        Some("bf16" | "0")
+    )
 }
 
 /// DS4_SPARK2_5_RESTORE=0 keeps the per-call restore (ds4_spark2_5_graph.inc).
 fn spark2_5_restore_on() -> bool {
     std::env::var("DS4_SPARK2_5_RESTORE").ok().as_deref() != Some("0")
+}
+
+/// DS4_SPARK2_5_CODES=1 decodes the codewords inside the projection
+/// (cuda/spark2_5_vq_gemm.cuh) over a device copy of the artifact and builds
+/// no BF16 image (ds4_spark2_5_graph.inc spark2_5_gpu_bind).
+fn spark2_5_codes_on() -> bool {
+    std::env::var("DS4_SPARK2_5_CODES").ok().as_deref() == Some("1")
 }
 
 fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
