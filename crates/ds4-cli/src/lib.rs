@@ -1394,6 +1394,14 @@ fn run_logits_dump(
     prompt_text: &str,
 ) -> Result<i32, String> {
     let prompt = chat_prompt(model, args, prompt_text)?;
+    run_logits_dump_tokens(model, args, prompt)
+}
+
+fn run_logits_dump_tokens(
+    model: &ds4_core::Model,
+    args: &ShadowArgs,
+    prompt: ds4_core::TokenBuffer,
+) -> Result<i32, String> {
     let n_prompt = prompt.len() as i32;
     let ctx = args.ctx;
     let mut session = session_ready(model, args, ctx)?;
@@ -1482,7 +1490,8 @@ GLM-5.3 uses embedded MTP: --cuda --mtp-draft 2..3 --temp 0, with no --mtp file.
 the engine, argmax decode, host stop set); ctx grows to fit prompt+n
 unless -c is explicit. On the V4.1 route (--gen-ids) the dump carries the
 selected ids with top_k 0: that bridge hands the run no logits.
---dump-logits writes full next-token logits as JSON after prompt prefill.
+--dump-logits writes full next-token logits as JSON after prompt prefill;
+--token-ids feeds the ids directly, with no chat template in between.
 --dump-tokens tokenizes -p/--prompt-file exactly as written, then exits
 without inference.
 --serving-check runs every ServingCaps checklist item (reuse, disk, snapshot,
@@ -1655,8 +1664,9 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     {
         validate_one_shot_args(&args)?;
     }
-    if !worker && args.dump_logits.is_some() && generation_text.is_none() {
-        return Err("--dump-logits requires -p or --prompt-file".into());
+    if !worker && args.dump_logits.is_some() && generation_text.is_none() && args.tokens.is_empty()
+    {
+        return Err("--dump-logits requires -p, --prompt-file or --token-ids".into());
     }
     if !worker && args.serving_check && generation_text.is_none() {
         return Err("--serving-check requires -p or --prompt-file".into());
@@ -1754,13 +1764,20 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     }
 
     if args.dump_logits.is_some() {
-        return run_logits_dump(
-            &model,
-            &args,
-            generation_text
-                .as_deref()
-                .ok_or_else(|| "--dump-logits requires -p or --prompt-file".to_string())?,
-        );
+        // Raw ids skip the chat template: a parity dump compares the graph
+        // against a reference fed the same ids, with no rendering in between.
+        let prompt = if !args.tokens.is_empty() {
+            ds4_core::TokenBuffer::from_tokens(args.tokens.clone())
+        } else {
+            return run_logits_dump(
+                &model,
+                &args,
+                generation_text
+                    .as_deref()
+                    .ok_or_else(|| "--dump-logits requires -p or --prompt-file".to_string())?,
+            );
+        };
+        return run_logits_dump_tokens(&model, &args, prompt);
     }
 
     if args.dump_logprobs.is_some() {

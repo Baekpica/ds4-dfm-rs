@@ -11,16 +11,32 @@
   "bos_token_id": 0,
   "pad_token_id": 2,
   "special_tokens": {
-    "bos_token": "<｜start▁of▁sentence｜>",
-    "eos_token": "<｜end▁of▁sentence｜>",
+    "bos_token": "<\uff5cstart\u2581of\u2581sentence\uff5c>",
+    "eos_token": "<\uff5cend\u2581of\u2581sentence\uff5c>",
     "unk_token": "<unk>",
-    "pad_token": "<｜▁pad▁｜>"
+    "pad_token": "<\uff5c\u2581pad\u2581\uff5c>"
   },
   "notes": [
     "Ids come from tokenizers reading the checkpoint's tokenizer.json: empty normalizer, three Split stages, Digits(individual_digits), ByteLevel(add_prefix_space=false), then BPE with 130716 merges and 113 added tokens.",
     "Rendered bytes come from Transformers' _compile_jinja_template (trim_blocks, lstrip_blocks, loopcontrols, Python tojson, namespace, raise_exception), the engine apply_chat_template drives.",
     "The artifact's trunk GGUF carries this template verbatim under tokenizer.chat_template; crates/ds4-core/src/spark2_5.rs verifies that copy against template_sha256 at load.",
-    "generation_config.json eos_token_id is 1 (<｜end▁of▁sentence｜>); <｜end▁of▁text｜> (7) is a different token and is not a stop.",
-    "make_eval_cases.py takes an optional fuzz-case count for a wider differential run; the committed corpus uses the default 120."
-  ]
+    "generation_config.json eos_token_id is 1 (<\uff5cend\u2581of\u2581sentence\uff5c>); <\uff5cend\u2581of\u2581text\uff5c> (7) is a different token and is not a stop.",
+    "make_eval_cases.py takes an optional fuzz-case count for a wider differential run; the committed corpus uses the default 120.",
+    "The release's matrices are VQ-encoded (artifact/manifest.txt: mean per-matrix relL2 about 23%), so the checkpoint reference can only gate the argmax; the dequantized reference gates the graph numerically (top-64 relRMS 7.6e-3 on this host)."
+  ],
+  "logits": {
+    "prompt": "The capital of France is",
+    "token_ids": [
+      1046,
+      11862,
+      314,
+      17349,
+      390
+    ],
+    "checkpoint_reference": "logits-reference.json",
+    "checkpoint_reference_stack": "transformers 4.57.1 + torch 2.15.0+cpu, F32 on CPU",
+    "dequantized_reference": "logits-reference-dequantized.json",
+    "dequantized_reference_stack": "VQ_tools vq-gguf decode (GVQ1+GVR8 to f32, stored BF16) + transformers 4.57.1 + torch 2.15.0+cpu, F32 on CPU",
+    "regenerator": "make_logits_reference.py <model-dir> <out.json>"
+  }
 }

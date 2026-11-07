@@ -134,11 +134,12 @@ pub use progress::PrefillCheckpoint;
 pub use sample::Sampler;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, native_ctx_default, open_draft_tokens,
-    parse_disk_space, resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView,
-    EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
-    QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ReuseMiss, ReuseTaken,
-    ServingCaps, ServingQuote, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
-    DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
+    parse_disk_space, resolve_plan, serving_caps, BankLane, ChunkFence, Distribution,
+    EffectiveView, EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs, MtpKind, MtpMode,
+    PlanIssue, PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind,
+    ReuseMiss, ReuseTaken, ServingCaps, ServingQuote, ServingRequest, SpecLane, Support,
+    DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
+    VERIFIED_PREFILL_CHUNKS,
 };
 pub use serving_check::{
     checklist_ctx, gemma4_mtp_gate, serving_check, serving_check_v41, Checklist, MtpBlock,

@@ -17,7 +17,8 @@ implementation of the graph is the checkpoint's
 | Layout table (830 entries, generated from the runtime pack) | implemented, `spark2_5/layout.rs` |
 | Inventory check (type and shape per tensor, GVQ1/GVR8 headers, book and residual links) | implemented |
 | Tokenizer and chat adapter | implemented, `crates/ds4-core/src/tok/spark2_5.rs` |
-| Forward pass, KV layouts, serving lane | not implemented |
+| Forward pass (36 layers, fused qkv, dual rope, serial KV) | implemented, `ds4_spark2_5_graph.inc`, `cuda/spark2_5.cuh` |
+| Serving lane (banks, disk KV, snapshots, drafter) | not implemented, declared absent |
 
 Nothing in the serving capability table is qualified for this family: banks,
 disk restore, snapshots and a drafter are declared absent, and prefix reuse is
@@ -128,14 +129,94 @@ envelope and `<think>`/`</think>` channel that the GLM path already implements,
 which is the grammar pinned in `token-check.json`; it stays unqualified until
 a live batch measures it.
 
+## Forward pass
+
+`ds4_spark2_5_graph.inc` runs the reference's graph layer by layer; the host
+arms it only on one full CUDA release with no sidecar (the artifact has no
+MTP part). The facts that are easy to get wrong, with their source:
+
+- The fused `q_k_v_proj` is one 6,144-wide output sliced q `[0, 4096)`,
+  k `[4096, 5120)`, v `[5120, 6144)` (modeling_spark.py:170-176). A split
+  kernel distributes it per row; the attention wants the three contiguous.
+- `g_proj` produces one score per query head, and `sigmoid(score.float())`
+  multiplies the head's 256 values before `out_proj`
+  (modeling_spark.py:194-205). The multiply is the shared dots3 headwise gate
+  (`ds4_gpu_dots3_gate_mul_tensor`, ds4_cuda.cu:42100), which takes the head
+  width as an argument; step37's gate is not it (it hard-codes 128).
+- The attention scale `1/sqrt(256)` (modeling_spark.py:146, applied at :84)
+  is folded into q once after the rope. `g4_attn` takes no scale because
+  Gemma's attention has none; 2^-4 is exact, so `(q * 2^-4) · k` equals
+  `(q · k) * 2^-4` bit for bit.
+- Both rotary geometries come from `compute_rope_cos_sin`
+  (modeling_spark.py:31-40): the first `2 * pairs` dims of a head rotate
+  against the offset `pairs`, with `pairs = 32` on the nine full layers
+  (64 rotary dims, theta 5e6) and `pairs = 128` on the twenty-seven sliding
+  layers (all 256 dims, theta 1e4). `cuda/spark2_5.cuh` implements that
+  prefix pairing; the gemma kernel's `i + head_dim/2` offset is a different
+  geometry and is not reused.
+- 4:1 GQA, sliding window 512 with the query included on 27 layers, full
+  causal on 9; exact-erf GELU in the 10,240-wide dense FFN; tied head over the
+  BF16 token table; F32 residual stream.
+
+KV rows are BF16 like the reference's cache: a sliding layer keeps
+`window + chunk` rows indexed by position, a full layer keeps the session
+context. `DS4_SPARK2_5_PREFILL_CHUNK` sets the chunk (default 512, max 1024).
+
+## Gates: what was measured, and against what
+
+The release's matrices are VQ-encoded. `artifact/manifest.txt` records a mean
+per-matrix relL2 around 23% (layer 0: qkv 23.71%, down 22.44%), so the
+artifact and the unquantized checkpoint are **not** the same weights and no
+tight logit comparison between them can pass. Two different gates exist and
+they answer different questions:
+
+1. Release vs the checkpoint (the committed fixture
+   `tests/fixtures/spark2_5/logits-reference.json`, a 5-token prompt, F32 CPU,
+   Transformers 4.57.1): the argmax matches (`19500`, " Paris"). The logit
+   vector does not: the checkpoint's top-1 is -1.65, the release's 2.59. This
+   gate proves the graph reads the prompt and ranks the right token; it does
+   not prove numerical agreement.
+2. Release vs a reference run on the **dequantized** weights (VQ_tools'
+   `vq-gguf decode` reconstructs each GVQ1+GVR8 pair; the dequantized
+   checkpoint feeds modeling_spark.py; fixture
+   `logits-reference-dequantized.json`): same argmax, top-64 relRMS 7.6e-3,
+   63 of 64 ids shared, top-1 logit 2.59 against 2.56.
+
+A per-stage walk (`make_hidden_reference.py`, `compare_hidden.py`, driven by
+`DS4_SPARK2_5_DUMP_HIDDEN=<prefix>`) pins the shape of the error:
+
+| Stage | vs checkpoint | vs dequantized weights |
+|---|---|---|
+| `embed` | 0 | 0 |
+| `norm_attn0` (copied BF16 norm) | 0 | 0 |
+| `layer1` | 2.70e-1 | 3.23e-3 |
+| `layer18` | 6.33e-1 | 6.12e-3 |
+| `layer36` | 7.14e-1 | 7.94e-3 |
+| `final` (norm output) | 7.68e-1 | 8.01e-3 |
+
+The controls are the two exact zeros: the embedding table and the first RMS
+norm are copied BF16, not encoded, so a nonzero there would be a graph defect
+upstream of attention. The checkpoint column starts at the first encoded
+projection and compounds smoothly — that is the codebook, not the graph. The
+dequantized column stays under 1e-2 through 36 layers; the residual is BF16
+rounding and accumulation order (this graph keeps F32 scores, gate and
+residual operands where the reference's tensor ops round, as the deviation
+list in `ds4_spark2_5_graph.inc` names).
+
+That second column is the numerical gate, and it is the one to quote. The
+first is an argmax gate. Reporting the first as "matches the reference" would
+be false at any tight tolerance; reporting the second as bit identity would be
+false too (1e-2, not 0).
+
 ## Not in this unit
 
-The forward pass with its fused qkv slicing, per-head output gate and two
-rotary geometries; KV layouts; and any serving lane. `--serving-check`
-therefore reports no qualified item for this family.
+Banks, prefix forks, disk KV, snapshots and any drafter: the family declares
+them absent, `--serving-check` has nothing qualified to run, and the scheduler
+refuses a multi-sequence graph for it. `ServingCaps` reports `banks: serial`,
+`reuse: exact` with support `None`, and every optional capability `None`.
 
-The session payload has no layout word either: `PayloadLayout` in
+The session payload has no layout word: `PayloadLayout` in
 `crates/ds4-core/src/payload.rs` maps tags that the native engine writes, and
-nothing in this tree can write a `spark2_5` payload yet, so the family stays
-off that table rather than claiming an unreachable constant. The word is
-defined natively, together with the engine, and mapped here at that point.
+the graph has no payload writer yet, so the family stays off that table rather
+than claiming a reachable constant. Native save/restore refuse with a named
+error.

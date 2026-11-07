@@ -1011,11 +1011,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
-        // Spark-X2.6 loads and identifies; it has no engine yet (Unit 3), so
-        // every capability stays at what the loader proves. Exact prefix
-        // reuse is what the family's position-indexed caches can offer, but
-        // nothing is marked Qualified: a capability is marked only when
-        // measured. Banks, disk restore, snapshots and a drafter are not
+        // Spark-X2.6 Phase A runs the forward on the serial lane with its own
+        // graph and position-indexed KV; only that forward is measured (the
+        // logits gate in docs/spark-x2.6-vq.md). Exact prefix reuse is what
+        // the caches can offer, but nothing is marked Qualified until its
+        // gate runs. Banks, disk restore, snapshots and a drafter are not
         // implemented, so they are declared absent rather than promised.
         ModelFamily::Spark2_5Vq => ServingCaps {
             family,

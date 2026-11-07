@@ -49712,6 +49712,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_glm53_compact_gpu.cuh"
 #include "ds4_glmvq_gpu.cuh"
 #include "ds4_gemma4_gpu.cuh"
+#include "ds4_spark2_5_gpu.cuh"
 /* Gemma-4 discrete SSD stream map: the Gemma-owned counterpart of the shared
  * ds4_glm53_map.inc (included above, never edited). Needs the map statics and
  * the unit materializer, so it is included here, after both. */

@@ -96,10 +96,10 @@ impl PayloadLayout {
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
-            // Spark-X2.6 VQ stays unmapped on purpose: nothing in this tree
-            // writes a spark2_5 payload (there is no engine yet), so a layout
-            // word here would be a constant with no producer. The native
-            // writer defines the word when the engine lands
+            // Spark-X2.6 VQ stays unmapped on purpose: the native graph has
+            // no payload writer (disk and snapshot are declared absent), so a
+            // layout word here would be a constant with no producer. The
+            // native writer defines the word when it lands
             // (docs/spark-x2.6-vq.md).
             _ => Self::DeepSeek,
         }
