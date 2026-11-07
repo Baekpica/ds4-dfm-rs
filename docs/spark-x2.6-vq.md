@@ -280,14 +280,14 @@ the comparison looks like a failure rather than a pass.
 ## OpenAI surface
 
 `ds4-server` serves the release; measured on the RTX 4070 SUPER (12 GiB),
-ctx 4096, graph shared restored weights (7.03 GiB device BF16):
+sm_89, busy SM clock 2,475 MHz, with 100% GPU-resident FP8 weights (3.89 GiB):
 
 | Request | Result |
 |---|---|
-| `GET /v1/models` | 200, context_length 4096, tools and reasoning_effort advertised |
-| `POST /v1/completions`, "The capital of France is", 8 tokens | 200, " Paris, which is the capital of the", TTFT 130 ms, decode 17.1 tok/s |
+| `GET /v1/models` | 200, context_length advertised, tools and reasoning_effort advertised |
+| `POST /v1/chat/completions`, "What is the capital of France?", 23 tokens | 200, "Paris", TTFT 66.7 ms, decode 85.0 tok/s |
 | `POST /v1/chat/completions`, 72-token template, 64 tokens | 200, content empty, 64 tokens in `reasoning_content` (thinking on) |
-| same with `"think": false`, 16 tokens | 200, content "您好，我是一位名叫“小鹿”的AI助手，我以“", TTFT 127 ms |
+| same with `"think": false`, 16 tokens | 200, content "您好，我是一位名叫“小鹿”的AI助手，我以“", TTFT 68 ms, decode 84.4 tok/s |
 | same, `stream: true` | 200, role chunk then one delta per token |
 | tool request, `think: false` | 200, prompt rendered with the tool schema, no `tool_calls` (base checkpoint, not instruction-tuned) |
 
@@ -295,10 +295,32 @@ Three honest notes. Thinking on spends the completion budget inside the
 reasoning block; `reasoning_content` carries it and `finish_reason` is
 `length`, so a caller that wants visible text sets `"think": false`. Tools are
 plumbed (render, parse, replay) but this checkpoint does not emit calls. The
-7.03 GiB restored image is allocated before the serving plan is quoted, so the
-default 4 GiB floor no longer fits on a 12 GiB card; start that card with
-`--mem-floor-gb 1`. Both belong in the scheduler accounting, not only in the
-log.
+3.89 GiB FP8 restored image fits comfortably within consumer 12 GiB cards, leaving
+ample headroom for the E4M3 KV cache even at 128K context. Start with `--mem-floor-gb 1`.
+
+## Performance
+
+Benchmarked on **NVIDIA GeForce RTX 4070 SUPER 12GB** (sm_89, busy SM clock 2,475 MHz):
+
+| Execution Path | Prefill (512 ctx) | TTFT (512 prompt) | Decode Rate | Weight Memory |
+|---|---:|---:|---:|---:|
+| Scalar CPU/Host PCIe streaming | 690 tok/s | ~742 ms | 20.6 tok/s | 7.03 GiB (BF16) |
+| **Tensor Core GEMM + Resident FP8** | **4,889.3 tok/s** | **~104 ms** | **84.4 tok/s** | **3.89 GiB (FP8)** |
+| **Speedup** | **7.1×** | **7.1×** | **4.1×** | **-45% memory** |
+
+At 128K context (`--ctx 131072`), the E4M3 full-layer KV cache and resident weights
+occupy ~6.7 GiB total VRAM, running comfortably on a single 12 GiB GPU.
+
+## Diagnostic knobs and switches
+
+| Variable | Values | Default | Role |
+|---|---|---|---|
+| `DS4_SPARK2_5_WEIGHTS` | `fp8`, `bf16` | `fp8` | Weight restoration precision (`fp8` for 3.89 GiB resident Tensor Core image) |
+| `DS4_SPARK2_5_RESTORE` | `1`, `0` | `1` | `=1` pre-restores image once into VRAM; `=0` falls back to per-layer restoration |
+| `DS4_SPARK2_5_FULL_KV` | `fp8`, `bf16` | `fp8` | Storage format for the 9 full-context layers |
+| `DS4_SPARK2_5_PREFILL_CHUNK` | `256`..`1024` | `1024` | Chunk size for prefill forward evaluation |
+| `DS4_SPARK2_5_DUMP_HIDDEN` | `<prefix>` | unset | Dumps per-stage float32 hidden states for parity walk |
+| `DS4_SPARK2_5_DUMP_WEIGHT` | `<file>` | unset | Dumps restored weight matrix for verification |
 
 ## Serving capabilities and future work
 
