@@ -38,6 +38,11 @@ typedef struct {
 ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
     const ds4_gvq_record *records, uint32_t count);
 void ds4_gpu_gvq_unbind(ds4_gvq_model *model);
+/* Materialize the VQ matrices to device BF16 once; NULL keeps the per-call
+ * restore path. Free the pair with ds4_gpu_gvq_restore_free. */
+ds4_gvq_model *ds4_gpu_gvq_restore_device(const ds4_gvq_model *src,
+        ds4_gpu_tensor **storage_out, uint64_t *bytes_out);
+void ds4_gpu_gvq_restore_free(ds4_gvq_model *model, ds4_gpu_tensor *storage);
 uint64_t ds4_gpu_gvq_workspace(uint32_t rows);
 uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
     uint32_t tokens, uint32_t type, ds4_gvq_math math);

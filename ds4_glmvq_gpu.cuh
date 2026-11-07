@@ -302,8 +302,87 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
     return plan;
 }
 
-extern "C" uint64_t ds4_gpu_gvq_workspace(uint32_t rows) {
-    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) +
+/* Materialize every VQ matrix into device BF16 once.
+ *
+ * The linear path otherwise restores a whole matrix into scratch per call
+ * (cuda/glm_vq_linear.cuh:51-96): for Spark's 10,240 x 2,560 FFN pair that is
+ * 52.4 MB of restore traffic per projection per token, 180 times a token. The
+ * returned model borrows the source records and points each VQ entry at its
+ * slice of *storage_out; the ordinary BF16 linear and GEMV lanes then run
+ * unchanged. Returns NULL without allocating when nothing is VQ-encoded or
+ * the device refuses the buffer, so the caller keeps the restore-per-call
+ * path. */
+extern "C" ds4_gvq_model *ds4_gpu_gvq_restore_device(const ds4_gvq_model *src,
+        ds4_gpu_tensor **storage_out, uint64_t *bytes_out) {
+    if (storage_out) { *storage_out = nullptr; }
+    if (bytes_out) { *bytes_out = 0; }
+    if (!src || !storage_out || !bytes_out) { return nullptr; }
+    uint64_t bytes = 0;
+    for (const ds4_gvq_record &r : src->records) {
+        if (r.type != GVQ_TYPE_VQ) { continue; }
+        if (!r.rows || !r.cols) { return nullptr; }
+        const uint64_t n = (uint64_t)r.rows * r.cols;
+        if (n > UINT64_MAX / sizeof(__nv_bfloat16) ||
+            bytes > UINT64_MAX - n * sizeof(__nv_bfloat16)) {
+            return nullptr;
+        }
+        bytes += n * sizeof(__nv_bfloat16);
+    }
+    if (!bytes) { return nullptr; }
+    ds4_gpu_tensor *store = ds4_gpu_tensor_alloc(bytes);
+    if (!store) { return nullptr; }
+    ds4_gvq_model *plan = new (std::nothrow) ds4_gvq_model;
+    if (!plan) { ds4_gpu_tensor_free(store); return nullptr; }
+    plan->records = src->records;
+    plan->source = src->source;
+    const cudaStream_t stream = ds4_current_stream();
+    uint8_t *base = (uint8_t *)store->ptr;
+    uint64_t off = 0;
+    for (size_t i = 0; i < plan->source.size(); i++) {
+        glmvq_source &s = plan->source[i];
+        ds4_gvq_record &r = plan->records[i];
+        if (r.type != GVQ_TYPE_VQ) { continue; }
+        const uint64_t n = (uint64_t)r.rows * r.cols * sizeof(__nv_bfloat16);
+        if (!s.vq.main ||
+            glmvq_restore_bf16(s.vq, (__nv_bfloat16 *)(base + off), stream,
+                GLMVQ_RESTORE_VECTOR) != cudaSuccess) {
+            ds4_gpu_gvq_unbind(plan);
+            ds4_gpu_tensor_free(store);
+            return nullptr;
+        }
+        s.data = base + off;
+        s.storage = GLMVQ_WEIGHT_BF16;
+        s.vq = {};
+        r.type = GVQ_TYPE_BF16;
+        r.bytes = n;
+        off += n;
+    }
+    if (!cuda_ok(cudaStreamSynchronize(stream), "GLM VQ device restore")) {
+        ds4_gpu_gvq_unbind(plan);
+        ds4_gpu_tensor_free(store);
+        return nullptr;
+    }
+    /* Kernels that resolve the source table through the device copy. */
+    const uint64_t table = plan->source.size() * sizeof(glmvq_source);
+    plan->device = ds4_gpu_tensor_alloc(table);
+    if (!plan->device ||
+        !ds4_gpu_tensor_write(plan->device, 0, plan->source.data(), table)) {
+        ds4_gpu_gvq_unbind(plan);
+        ds4_gpu_tensor_free(store);
+        return nullptr;
+    }
+    *storage_out = store;
+    *bytes_out = bytes;
+    return plan;
+}
+
+extern "C" void ds4_gpu_gvq_restore_free(ds4_gvq_model *model,
+        ds4_gpu_tensor *storage) {
+    ds4_gpu_gvq_unbind(model);
+    ds4_gpu_tensor_free(storage);
+}
+
+extern "C" uint64_t ds4_gpu_gvq_workspace(uint32_t rows) {    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) +
         gvq_mma_bytes(rows) + gvq_decode_bytes();
 }
 

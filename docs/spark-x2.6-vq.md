@@ -208,15 +208,69 @@ first is an argmax gate. Reporting the first as "matches the reference" would
 be false at any tight tolerance; reporting the second as bit identity would be
 false too (1e-2, not 0).
 
+## End to end: the same eight tokens as the reference
+
+Greedy generation is the strongest gate this pair can give, and it passes
+when the flag is named: with the same prompt ("The capital of France is")
+and `enable_thinking=False`, the engine and the dequantized-weights reference
+produce the same eight tokens character for character,
+"您好，我是一位名叫“小鹿". With `enable_thinking=True` both produce
+"不起劲|\n\n用户提出了一个新的" — also identical. The flag matters: the
+earlier apparent mismatch compared a no-think engine run with a reference
+that defaulted to thinking on, and the two prompts are different (21 versus
+72 tokens). `test` runs are recorded here with the flag because without it
+the comparison looks like a failure rather than a pass.
+
+## OpenAI surface
+
+`ds4-server` serves the release; measured on the RTX 4070 SUPER (12 GiB),
+ctx 4096, graph shared restored weights (7.03 GiB device BF16):
+
+| Request | Result |
+|---|---|
+| `GET /v1/models` | 200, context_length 4096, tools and reasoning_effort advertised |
+| `POST /v1/completions`, "The capital of France is", 8 tokens | 200, " Paris, which is the capital of the", TTFT 130 ms, decode 17.1 tok/s |
+| `POST /v1/chat/completions`, 72-token template, 64 tokens | 200, content empty, 64 tokens in `reasoning_content` (thinking on) |
+| same with `"think": false`, 16 tokens | 200, content "您好，我是一位名叫“小鹿”的AI助手，我以“", TTFT 127 ms |
+| same, `stream: true` | 200, role chunk then one delta per token |
+| tool request, `think: false` | 200, prompt rendered with the tool schema, no `tool_calls` (base checkpoint, not instruction-tuned) |
+
+Three honest notes. Thinking on spends the completion budget inside the
+reasoning block; `reasoning_content` carries it and `finish_reason` is
+`length`, so a caller that wants visible text sets `"think": false`. Tools are
+plumbed (render, parse, replay) but this checkpoint does not emit calls. The
+7.03 GiB restored image is allocated before the serving plan is quoted, so the
+default 4 GiB floor no longer fits on a 12 GiB card; start that card with
+`--mem-floor-gb 1`. Both belong in the scheduler accounting, not only in the
+log (handoff Unit 4).
+
 ## Not in this unit
 
-Banks, prefix forks, disk KV, snapshots and any drafter: the family declares
-them absent, `--serving-check` has nothing qualified to run, and the scheduler
-refuses a multi-sequence graph for it. `ServingCaps` reports `banks: serial`,
-`reuse: exact` with support `None`, and every optional capability `None`.
+Capability parity with Gemma-4 VQ is five lanes plus a qualified context, and
+each is absent rather than promised. Gemma-4 declares banks Persistent with
+Qualified support, reuse Partial/Qualified, disk Qualified, snapshot
+Qualified, an MTP sidecar Present, and ctx_max 262,144
+(crates/ds4-core/src/serving.rs:986-1013). Spark declares Serial/None,
+Exact/None, disk None, snapshot None, MTP None, and ctx_max None (:1025-1043).
+The order below is the one that unblocks the most; none may be marked
+Qualified without the gate named here.
 
-The session payload has no layout word: `PayloadLayout` in
-`crates/ds4-core/src/payload.rs` maps tags that the native engine writes, and
-the graph has no payload writer yet, so the family stays off that table rather
-than claiming a reachable constant. Native save/restore refuse with a named
-error.
+1. ctx_max: the model's native maximum is 1,048,576, but the nine full layers
+   cost 36 GiB at BF16 rows (2 x 1,048,576 x 1,024 x 2 B each), so a measured
+   fit comes first: FP8 rows or a smaller qualified context.
+2. reuse: sync_keep over the ring (window + chunk), gated by an identical
+   resend and a re-rendered continuation. serving-check already reports
+   prefix 16/17 and continue 17/17 as works-but-undeclared.
+3. disk and snapshot: a session payload that serializes the sliding ring and
+   the full-context rows, plus the layout word `payload.rs` has no writer for.
+4. banks: the bank driver must accept this graph (follow
+   ds4_gemma4_batch.inc; the restored weights are already engine-shared).
+5. drafter: none exists for this artifact. The DSpark sidecar in the
+   checkpoint tree is a DFlash drafter for Spark X2.5 (architecture dflash,
+   block_size 7, target layers 3/11/19/26/34), not X2.6.
+6. FP8 KV: Gemma selects it per family with `DS4_GEMMA4_FULL_KV=fp8`
+   (ds4_gemma4.h:106, ds4_gemma4_graph.inc:334). Spark has no FP8 row lane
+   and no switch today. `DS4_CUDA_FP8_KV` sizes the DeepSeek compressed-KV
+   lane (serving_host.rs:2201: `comp_row` from `n_rot`/`n_indexer_head_dim`),
+   so it does not reach this graph: Spark's BF16 KV is untested for FP8
+   support, not inheriting it.

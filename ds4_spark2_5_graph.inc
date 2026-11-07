@@ -178,7 +178,24 @@ static bool spark2_5_gpu_bind(ds4_weights *w, const ds4_model *m) {
     }
     w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);
     free(records);
-    return w->glmvq_gpu != NULL;
+    if (!w->glmvq_gpu) { return false; }
+    /* One BF16 device image of the VQ matrices for the whole engine: a graph
+     * per session must not duplicate it. DS4_SPARK2_5_RESTORE=0 keeps the
+     * per-call restore for an A/B or a device too small to hold it. */
+    const char *restore_env = getenv("DS4_SPARK2_5_RESTORE");
+    if (!restore_env || strcmp(restore_env, "0") != 0) {
+        uint64_t bytes = 0;
+        w->spark_restored = ds4_gpu_gvq_restore_device(w->glmvq_gpu,
+            &w->spark_restored_store, &bytes);
+        if (w->spark_restored) {
+            fprintf(stderr, "ds4: Spark-X2.6 restored %.2f GiB of VQ weights to device BF16\n",
+                (double)bytes / 1073741824.0);
+        } else {
+            fprintf(stderr, "ds4: Spark-X2.6 device restore unavailable; the linear "
+                "path restores each matrix per call\n");
+        }
+    }
+    return true;
 }
 
 /* ---------------- graph ---------------- */
@@ -263,8 +280,10 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
     g->ctx = ctx;
     g->cap = cap;
     g->rows = cap;
-    g->model = w->glmvq_gpu;
     const uint32_t rows = g->rows;
+    /* The restored BF16 image is the engine's (spark2_5_gpu_bind); a graph
+     * only owns its KV state and activation set. */
+    g->model = w->spark_restored ? w->spark_restored : w->glmvq_gpu;
     g->gvq = ds4_gpu_gvq_create_linear(g->model,
         spark2_5_linear_workspace(rows), rows);
     if (!g->gvq) {
@@ -329,9 +348,10 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
         g->kv_bytes += 2u * bytes;
     }
     ds4_log(stderr, DS4_LOG_TIMING,
-        "ds4: Spark-X2.6 graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.1f MiB\n",
+        "ds4: Spark-X2.6 graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.1f MiB%s\n",
         ctx, cap, (double)g->kv_bytes / 1073741824.0,
-        (double)spark2_5_session_memory(ctx, cap).scratch_bytes / 1048576.0);
+        (double)spark2_5_session_memory(ctx, cap).scratch_bytes / 1048576.0,
+        w->spark_restored ? " (shared restored weights)" : " (per-call restore)");
     g->ready = spark2_5_graph_reset(g);
     return g;
 }
