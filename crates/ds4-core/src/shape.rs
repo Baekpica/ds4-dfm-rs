@@ -38,6 +38,7 @@ pub enum ModelFamily {
     MinimaxVq = 17,
     Axk2Vq = 18,
     Gemma4Vq = 19,
+    Spark2_5Vq = 20,
 }
 
 impl ModelFamily {
@@ -63,6 +64,7 @@ impl ModelFamily {
             "naive_n05_flash" => Some(Self::NaiveN05),
             "iquest_q1" => Some(Self::IQuestQ1),
             "gemma4_vq" => Some(Self::Gemma4Vq),
+            "spark2_5_vq" => Some(Self::Spark2_5Vq),
             _ => None,
         }
     }
@@ -89,6 +91,7 @@ impl ModelFamily {
             Self::NaiveN05 => "naive_n05_flash",
             Self::IQuestQ1 => "iquest_q1",
             Self::Gemma4Vq => "gemma4_vq",
+            Self::Spark2_5Vq => "spark2_5_vq",
         }
     }
 }
@@ -120,6 +123,7 @@ pub enum Variant {
     Axk2Vq = 21,
     Mimo26FlashVq = 22,
     Gemma4A4bVq = 23,
+    SparkX26_4bVq = 24,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -382,6 +386,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
         Some(b"mimo2_vq") => ArchRoute::Fixed(Variant::Mimo26FlashVq),
         Some(b"gemma4_vq") => ArchRoute::Fixed(Variant::Gemma4A4bVq),
+        Some(b"spark2_5") => ArchRoute::Fixed(Variant::SparkX26_4bVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -412,6 +417,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Axk2Vq => SHAPE_AXK2_VQ,
         Variant::Mimo26FlashVq => SHAPE_MIMO26_FLASH_VQ,
         Variant::Gemma4A4bVq => SHAPE_GEMMA4_A4B_VQ,
+        Variant::SparkX26_4bVq => SHAPE_SPARK2_5_VQ,
     }
 }
 
@@ -1538,6 +1544,72 @@ pub(crate) const SHAPE_GEMMA4_A4B_VQ: Shape = Shape {
     expert_weight_scale: 0.0,
     swiglu_clamp_exp: 0.0,
     rope_freq_base: 1_000_000.0,
+    rope_freq_base_swa: 10_000.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 0,
+};
+
+// Spark-X2.6-4B VQ (spark2_5/layout.rs), from the checkpoint's config.json.
+// The geometry is dual and this struct holds one value per field: the numbers
+// below are the sliding-window majority (27 of 36 layers: three sliding then
+// one full, nine times), whose rotary is complete (partial_rotary_factor 1.0)
+// at base 1e4. The nine full layers (3, 7, 11, ... 35) rotate the same 256-wide
+// head only 0.25 of the way (64 dims) at base 5e6. The family runtime reads
+// `layer_types` and `rope_parameters` per layer; it must not read these fields
+// as if they covered all 36. There are no experts and no drafter.
+pub(crate) const SHAPE_SPARK2_5_VQ: Shape = Shape {
+    name: "Spark-X2.6-4B-VQ",
+    family: ModelFamily::Spark2_5Vq,
+    variant: Variant::SparkX26_4bVq,
+    n_layer: 36,
+    n_embd: 2560,
+    n_vocab: 131_072,
+    n_head: 16,
+    n_head_kv: 4,
+    n_noise_head: 0,
+    n_head_dim: 256,
+    n_value_dim: 256,
+    n_rot: 256,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 0,
+    n_expert_used: 0,
+    n_expert_shared: 0,
+    n_ff_exp: 0,
+    n_ff_dense: 10_240,
+    n_ff_shexp: 0,
+    n_hash_layer: 0,
+    n_swa: 512,
+    n_swa_period: 0,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 0,
+    n_leading_dense: 0,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 0,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 9,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    use_rope: true,
+    use_qk_norm: false,
+    rms_eps: 1.0e-6,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 0.0,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 5_000_000.0,
     rope_freq_base_swa: 10_000.0,
     rope_scale_factor: 1.0,
     rope_yarn_beta_fast: 0.0,

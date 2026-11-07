@@ -3643,6 +3643,11 @@ pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     if shape.family == ModelFamily::Gemma4Vq {
         return crate::gemma4_vq::mtp_layouts();
     }
+    // Spark ships no drafter, so an MTP expectation set would name tensors
+    // this family's release never carries.
+    if shape.family == ModelFamily::Spark2_5Vq {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -3803,6 +3808,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::MinimaxVq => crate::minimax_vq::layouts(),
         ModelFamily::Axk2Vq => crate::axk2_vq::layouts(),
         ModelFamily::Gemma4Vq => crate::gemma4_vq::layouts(),
+        ModelFamily::Spark2_5Vq => crate::spark2_5::layouts(),
         ModelFamily::Qwen35 => expected_qwen35(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
@@ -3999,6 +4005,10 @@ pub fn validate_mtp_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
     }
     // Gemma-4's drafter has no fused gate/up expert stack: its MLP is dense.
     if plan.shape.family == ModelFamily::Gemma4Vq {
+        return Ok(());
+    }
+    // Spark has no drafter at all: there is no gate/up stack to expect.
+    if plan.shape.family == ModelFamily::Spark2_5Vq {
         return Ok(());
     }
     expect_gate_up(

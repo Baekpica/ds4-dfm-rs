@@ -55,6 +55,7 @@ mod session;
 mod shape;
 mod sibling;
 mod sidecar;
+mod spark2_5;
 mod spec;
 mod ssd;
 mod ssd_quote;
@@ -1426,6 +1427,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
         (g, Vocab::load_path(path, shape.family))
     } else if shape.family == ModelFamily::Gemma4Vq {
         let g = gemma4_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Spark2_5Vq {
+        let g = spark2_5::metadata(path).map_err(|e| Error {
             code: 1,
             message: format!("metadata failed: {}", e.token()),
         })?;

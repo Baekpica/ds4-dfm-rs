@@ -28,6 +28,7 @@ pub enum TensorError {
     Axk2Vq(&'static str),
     Mimo2Vq(&'static str),
     Gemma4Vq(&'static str),
+    Spark2_5(&'static str),
 }
 
 impl TensorError {
@@ -49,6 +50,7 @@ impl TensorError {
             TensorError::Axk2Vq(reason) => format!("axk2-vq {reason}"),
             TensorError::Mimo2Vq(reason) => format!("mimo2-vq {reason}"),
             TensorError::Gemma4Vq(reason) => format!("gemma4-vq {reason}"),
+            TensorError::Spark2_5(reason) => format!("spark2-5 {reason}"),
         }
     }
 }
@@ -318,9 +320,11 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
-    // MiMo, A.X-K2, MiniMax and Beam parts carry GVQ1 tensors GLM's
+    // MiMo, A.X-K2, MiniMax, Beam and Spark carry GVQ1 tensors GLM's
     // validator would claim.
-    if crate::gemma4_vq::requested(g) {
+    if crate::spark2_5::requested(g) {
+        crate::spark2_5::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::gemma4_vq::requested(g) {
         crate::gemma4_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::mimo2_vq::requested(g) {
         crate::mimo2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -408,6 +412,10 @@ impl TensorInventory {
             // `open_gemma4_vq` with the MTP feature.
             if crate::gemma4_vq::is_release(path) {
                 return crate::gemma4_vq::open_dir(path, crate::Gemma4VqFeature::Trunk);
+            }
+            // Spark releases have exactly two parts and no optional one.
+            if crate::spark2_5::is_release(path) {
+                return crate::spark2_5::open_dir(path);
             }
             return crate::glm_vq::open_dir(path);
         }

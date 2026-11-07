@@ -28,7 +28,8 @@ fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Qwen35
         | ModelFamily::IQuestQ1
         | ModelFamily::NaiveN05
-        | ModelFamily::Gemma4Vq => u64::from(shape.n_embd),
+        | ModelFamily::Gemma4Vq
+        | ModelFamily::Spark2_5Vq => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note

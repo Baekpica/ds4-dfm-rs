@@ -375,6 +375,14 @@ impl Vocab {
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
             ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
+            // Unit 2 ports `tok/spark2_5.rs`. Until it lands a Spark
+            // vocabulary is refused here rather than tokenized as another
+            // family's pre-tokenizer chain.
+            ModelFamily::Spark2_5Vq => {
+                return Err(TokError::InvalidTokenizer(
+                    "Spark-X2.6 VQ tokenizer is not ported yet",
+                ));
+            }
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -2460,6 +2468,11 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
         ModelFamily::Gemma4Vq => gemma4::encode(vocab, text, out),
+        // Unreachable until Unit 2: a Spark vocabulary cannot be built,
+        // because `load_specials` refuses the family above. A silent empty
+        // encode here would look like a model producing no output, so it is
+        // an explicit panic instead.
+        ModelFamily::Spark2_5Vq => unreachable!("Spark-X2.6 VQ tokenizer is not ported yet"),
     }
 }
 

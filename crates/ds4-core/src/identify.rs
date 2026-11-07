@@ -216,6 +216,9 @@ pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
         if crate::gemma4_vq::is_release(path) {
             return crate::gemma4_vq::identify(path);
         }
+        if crate::spark2_5::is_release(path) {
+            return crate::spark2_5::identify(path);
+        }
         return crate::glm_vq::identify(path);
     }
     let g = GgufFile::open(path)?;

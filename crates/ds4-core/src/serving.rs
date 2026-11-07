@@ -1011,6 +1011,32 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
+        // Spark-X2.6 loads and identifies; it has no engine yet (Unit 3), so
+        // every capability stays at what the loader proves. Exact prefix
+        // reuse is what the family's position-indexed caches can offer, but
+        // nothing is marked Qualified: a capability is marked only when
+        // measured. Banks, disk restore, snapshots and a drafter are not
+        // implemented, so they are declared absent rather than promised.
+        ModelFamily::Spark2_5Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::Exact,
+            reuse_support: Support::None,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: None,
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         // Banks own their MSA index keys and NVFP4 K/V over graph 0's
         // scratch; the native 1M context leaves room for one. The release's
         // DSpark part (mapped only when drafting, as Ling-3.1's MTP part)
@@ -1688,6 +1714,7 @@ impl ServingCaps {
             Variant::MinimaxVq => "minimax_m3_vq",
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
+            Variant::SparkX26_4bVq => "spark2_5_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",

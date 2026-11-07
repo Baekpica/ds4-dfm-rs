@@ -1237,6 +1237,11 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         if crate::axk2_vq::is_release(path) {
             return crate::axk2_vq::trunk_bytes(path).unwrap_or(0);
         }
+        // Spark's embedding part stays on SSD too: only the trunk is
+        // device-resident.
+        if crate::spark2_5::is_release(path) {
+            return crate::spark2_5::resident_bytes(path).unwrap_or(0);
+        }
         return crate::glm_vq::part_bytes(path).unwrap_or(0);
     }
     let count = split_count.max(1);
@@ -1419,6 +1424,10 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
         ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
+        // No engine exists for this family yet (Unit 3), so the planner
+        // prices the serial one-row floor instead of a graph that is not
+        // built; the measured chunk replaces this with the engine.
+        ModelFamily::Spark2_5Vq => 1,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1542,6 +1551,8 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             DOTS3_NATIVE_MAX,
         ),
+        // No engine and no prefill switch: one row per forward.
+        ModelFamily::Spark2_5Vq => 1,
     };
     cap.min(ctx)
 }
