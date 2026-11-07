@@ -16,7 +16,7 @@ implementation of the graph is the checkpoint's
 | Shape constant and architecture route (`spark2_5`) | implemented, `SHAPE_SPARK2_5_VQ` |
 | Layout table (830 entries, generated from the runtime pack) | implemented, `spark2_5/layout.rs` |
 | Inventory check (type and shape per tensor, GVQ1/GVR8 headers, book and residual links) | implemented |
-| Tokenizer and chat adapter | not ported |
+| Tokenizer and chat adapter | implemented, `crates/ds4-core/src/tok/spark2_5.rs` |
 | Forward pass, KV layouts, serving lane | not implemented |
 
 Nothing in the serving capability table is qualified for this family: banks,
@@ -85,13 +85,54 @@ vocabulary is refused before a weight is bound.
 6. The loaded inventory equals the layout table entry for entry: 830 names,
    stored type words and GGUF-order dimensions.
 
+## Tokenizer and chat
+
+The trunk carries the source vocabulary under GGUF's own namespace, and the
+adapter refuses any other pre-tokenizer:
+
+- `tokenizer.ggml.pre` is `spark2_5`; 131,072 tokens and 130,716 merges. The
+  chain is `Split(\p{N}{1,3})`, `Split(CJK)`, `Split(word/punctuation)`,
+  `Digits(individual_digits)`, `ByteLevel(add_prefix_space=false,
+  use_regex=false)`, then BPE with no byte fallback and no `fuse_unk`.
+- `bos` 0, `eos` 1 and `pad` 2, `unk` 5. `<｜end▁of▁sentence｜>` (1) is both the
+  turn close and the only stop token; `<｜end▁of▁text｜>` (7) exists in the
+  vocabulary and the template never emits it, so a stop set is built from the
+  id, not from a rendered string.
+- 113 added tokens. The 91 the source marks special are GGUF control tokens
+  (type 3) and are matched atomically by the shared control split. The 22
+  marked special=false (ids 3–5, 8–13 and 130972–130984) are type 1 in GGUF,
+  so the adapter registers them by id; otherwise `<|Bot|>` would pre-tokenize
+  as punctuation and letters instead of one piece. Ids 130986–131071 are the
+  reserved `<||unused2..87||>` slots and are not stop candidates.
+- The chat template is the checkpoint's `chat_template.jinja`, carried
+  verbatim under `tokenizer.chat_template` and verified against its pinned
+  SHA-256 at load. It is Jinja-only: the legacy chat builder refuses the
+  family. The request effort is restricted to `high` and `low` (the template
+  raises otherwise), and the generation prompt opens `<think>` unless
+  thinking is explicitly off.
+- Decoding maps bytes back through the GPT-2 byte table; the role markers
+  contain U+FF5C and therefore print literally.
+
+The gates are in `crates/ds4-core/tests/spark2_5_tokenizer.rs`. The chat
+fixture is model-free (`tests/fixtures/spark2_5/`); the tokenizer gate reads
+only the release's trunk metadata behind `SPARK2_5_RELEASE`, like the other
+families. `make_eval_cases.py` regenerates both from the reference pipeline
+(`tokenizers` for ids, Transformers' own Jinja environment for bytes) so the
+fixture never depends on this tree's Rust code; it also takes an optional
+fuzz-case count for a wider differential run.
+
+On the server the family maps to syntax 24 and its input render refuses
+without the official template, as Gemma-4 does. Output parsing reuses the
+`<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`
+envelope and `<think>`/`</think>` channel that the GLM path already implements,
+which is the grammar pinned in `token-check.json`; it stays unqualified until
+a live batch measures it.
+
 ## Not in this unit
 
-The tokenizer adapter (`tokenizer.ggml.pre` chain, added-token matching,
-special ids) and the chat renderer; the forward pass with its fused qkv
-slicing, per-head output gate and two rotary geometries; KV layouts; and any
-serving lane. `--serving-check` therefore reports no qualified item for this
-family.
+The forward pass with its fused qkv slicing, per-head output gate and two
+rotary geometries; KV layouts; and any serving lane. `--serving-check`
+therefore reports no qualified item for this family.
 
 The session payload has no layout word either: `PayloadLayout` in
 `crates/ds4-core/src/payload.rs` maps tags that the native engine writes, and

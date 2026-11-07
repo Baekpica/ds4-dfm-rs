@@ -1337,6 +1337,9 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::BeamVq => ChatFormat::Beam,
         ModelSyntax::MinimaxVq => ChatFormat::Minimax,
         ModelSyntax::Gemma4 => ChatFormat::Gemma4,
+        // Spark's `<tool_call>`/`<arg_key>` envelope and `<think>` channel are
+        // the ones the DeepSeek-format parser already implements for GLM.
+        ModelSyntax::Spark2_5 => ChatFormat::DeepSeek,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -1457,6 +1460,7 @@ pub(crate) fn thinking_visible_key(
             | ModelSyntax::IQuestQ1
             | ModelSyntax::BeamVq
             | ModelSyntax::Axk2Vq
+            | ModelSyntax::Spark2_5
     ) {
         // Removing reasoning changes these families' history grammar. Re-render
         // the structured history with Jinja instead of inventing a prefix.

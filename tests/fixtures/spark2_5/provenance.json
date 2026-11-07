@@ -1,0 +1,26 @@
+{
+  "source_model": "Spark-X2.6-4B-Base",
+  "checkpoint_dir": "/data/Spark-X2.6-4B-Base/models/hf",
+  "reference_stack": "tokenizers 0.23.3 + transformers 5.22.2 + jinja2 3.1.6",
+  "template_file": "chat_template.jinja",
+  "template_sha256": "480576bd2ef80726a0dba6406d72ca37f4f4f9ca747c7f1c8d159dbdf40f6929",
+  "template_bytes": 5717,
+  "tokenizer_json_sha256": "710cce15cf3565674c499f9413997c6e8101f2bdd96245cff8f0311fb501248c",
+  "generation_config_file": "generation_config.json",
+  "eos_token_id": 1,
+  "bos_token_id": 0,
+  "pad_token_id": 2,
+  "special_tokens": {
+    "bos_token": "<｜start▁of▁sentence｜>",
+    "eos_token": "<｜end▁of▁sentence｜>",
+    "unk_token": "<unk>",
+    "pad_token": "<｜▁pad▁｜>"
+  },
+  "notes": [
+    "Ids come from tokenizers reading the checkpoint's tokenizer.json: empty normalizer, three Split stages, Digits(individual_digits), ByteLevel(add_prefix_space=false), then BPE with 130716 merges and 113 added tokens.",
+    "Rendered bytes come from Transformers' _compile_jinja_template (trim_blocks, lstrip_blocks, loopcontrols, Python tojson, namespace, raise_exception), the engine apply_chat_template drives.",
+    "The artifact's trunk GGUF carries this template verbatim under tokenizer.chat_template; crates/ds4-core/src/spark2_5.rs verifies that copy against template_sha256 at load.",
+    "generation_config.json eos_token_id is 1 (<｜end▁of▁sentence｜>); <｜end▁of▁text｜> (7) is a different token and is not a stop.",
+    "make_eval_cases.py takes an optional fuzz-case count for a wider differential run; the committed corpus uses the default 120."
+  ]
+}

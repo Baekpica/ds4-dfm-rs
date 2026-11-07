@@ -40,6 +40,10 @@ fn minimax_model(id: i32) -> bool {
     id == crate::Variant::MinimaxVq as i32
 }
 
+fn spark_model(id: i32) -> bool {
+    id == crate::Variant::SparkX26_4bVq as i32
+}
+
 impl ChatOptions {
     pub fn new(model_id: i32, mode: ChatThinkMode) -> Self {
         use ChatThinkMode::{High, Low, Max, None};
@@ -54,6 +58,12 @@ impl ChatOptions {
             (19, None) => "minimal",
             // MiniMax has no "none" effort; off closes the think span instead.
             (id, None) if minimax_model(id) => "low",
+            // Spark's template accepts only high and low; anything else is a
+            // raise_exception, so every other mode resolves to high.
+            (id, _) if spark_model(id) => match mode {
+                Low => "low",
+                _ => "high",
+            },
             (_, None) => "none",
             (_, Low) => "low",
             (_, High) => "high",
@@ -122,6 +132,10 @@ impl Template {
             let gguf = crate::gemma4_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
         }
+        if path.is_dir() && crate::spark2_5::is_release(path) {
+            let gguf = crate::spark2_5::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() {
             let gguf = crate::glm_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -136,7 +150,10 @@ impl Template {
         } else {
             path.parent().unwrap_or_else(|| Path::new("."))
         };
-        if path.is_dir() && !crate::gemma4_vq::is_release(path) {
+        if path.is_dir()
+            && !crate::gemma4_vq::is_release(path)
+            && !crate::spark2_5::is_release(path)
+        {
             let beam = crate::beam_vq::is_release(path);
             let minimax = crate::minimax_vq::is_release(path);
             let axk2 = crate::axk2_vq::is_release(path);
@@ -184,6 +201,9 @@ impl Template {
         };
         if source.trim().is_empty() {
             return Err(asset_error(format!("empty template at {origin}")));
+        }
+        if gguf.get_string("general.architecture") == Some(b"spark2_5") {
+            crate::spark2_5::verify_template(&source).map_err(asset_error)?;
         }
         let mut template = Self::compile(&source, RenderClock::System)?;
         template.source = origin;

@@ -23,6 +23,7 @@ mod mimo2;
 mod minimax;
 mod naive;
 mod qwen4exp;
+mod spark2_5;
 mod step37;
 
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
@@ -284,6 +285,7 @@ impl Vocab {
                                     | ModelFamily::NaiveN05
                                     | ModelFamily::IQuestQ1
                                     | ModelFamily::Gemma4Vq
+                                    | ModelFamily::Spark2_5Vq
                             );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
@@ -375,14 +377,7 @@ impl Vocab {
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
             ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
-            // Unit 2 ports `tok/spark2_5.rs`. Until it lands a Spark
-            // vocabulary is refused here rather than tokenized as another
-            // family's pre-tokenizer chain.
-            ModelFamily::Spark2_5Vq => {
-                return Err(TokError::InvalidTokenizer(
-                    "Spark-X2.6 VQ tokenizer is not ported yet",
-                ));
-            }
+            ModelFamily::Spark2_5Vq => spark2_5::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -711,6 +706,12 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Gemma-4 release metadata"))?;
             return Self::load_tables(&g, family, None);
         }
+        // Spark-X2.6 also carries its vocabulary in the trunk part.
+        if family == ModelFamily::Spark2_5Vq && crate::spark2_5::is_release(path) {
+            let g = crate::spark2_5::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Spark-X2.6 release metadata"))?;
+            return Self::load_tables(&g, family, None);
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -730,6 +731,7 @@ impl Vocab {
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
                 | ModelFamily::Gemma4Vq
+                | ModelFamily::Spark2_5Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -785,6 +787,9 @@ impl Vocab {
             )),
             ModelFamily::Gemma4Vq => Some(TokError::InvalidTokenizer(
                 "Gemma-4 VQ chat requires official Jinja",
+            )),
+            ModelFamily::Spark2_5Vq => Some(TokError::InvalidTokenizer(
+                "Spark-X2.6 VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -912,7 +917,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::Spark2_5Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1116,7 +1122,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::Spark2_5Vq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -2468,11 +2475,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
         ModelFamily::Gemma4Vq => gemma4::encode(vocab, text, out),
-        // Unreachable until Unit 2: a Spark vocabulary cannot be built,
-        // because `load_specials` refuses the family above. A silent empty
-        // encode here would look like a model producing no output, so it is
-        // an explicit panic instead.
-        ModelFamily::Spark2_5Vq => unreachable!("Spark-X2.6 VQ tokenizer is not ported yet"),
+        ModelFamily::Spark2_5Vq => spark2_5::encode(vocab, text, out),
     }
 }
 
@@ -2491,6 +2494,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
             | ModelFamily::Gemma4Vq
+            | ModelFamily::Spark2_5Vq
     ) {
         return user_defined_at(vocab, p, 0);
     }

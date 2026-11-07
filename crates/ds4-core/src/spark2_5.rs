@@ -126,6 +126,20 @@ pub(super) fn metadata(root: &std::path::Path) -> Result<GgufFile> {
     Ok(GgufFile::open(&release::first_part(root)?)?)
 }
 
+/// sha256 of the checkpoint's `chat_template.jinja`, pinned by
+/// token-check.json. The trunk carries the template verbatim, so an artifact
+/// that renders a different grammar is refused here rather than in a turn.
+const TEMPLATE_SHA256: &str = "480576bd2ef80726a0dba6406d72ca37f4f4f9ca747c7f1c8d159dbdf40f6929";
+
+pub(crate) fn verify_template(source: &str) -> std::result::Result<(), &'static str> {
+    let digest = Sha256::digest(source.as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    if hex != TEMPLATE_SHA256 {
+        return Err("Spark-X2.6 chat template is not the pinned one");
+    }
+    Ok(())
+}
+
 /// A part this family owns: its architecture string, or any metadata under
 /// this namespace, whichever is present. The tensor parser dispatches on it.
 pub(super) fn requested(g: &GgufFile) -> bool {

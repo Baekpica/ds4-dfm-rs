@@ -1969,6 +1969,9 @@ pub fn parse_generated_message(
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => {
             parse_glm_generated(syntax, text, require_thinking_closed, orders)
         }
+        // Spark's pinned grammar is the same `<tool_call>name<arg_key>k
+        // </arg_key><arg_value>v</arg_value></tool_call>` envelope.
+        ModelSyntax::Spark2_5 => parse_glm_generated(syntax, text, require_thinking_closed, orders),
         // Malformed tool envelopes must not become user-visible raw text.
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
         ModelSyntax::BeamVq => beam::parse(text, orders),
@@ -2792,7 +2795,9 @@ impl SemAccum {
     /// and every position kept the request's draw instead of the raw argmax.
     pub fn set_model_syntax(&mut self, syntax: ModelSyntax) {
         self.dsml.set_tool_syntax(match syntax {
-            ModelSyntax::Glm53 => ToolSyntax::Glm,
+            // Spark's pinned tool envelope is GLM's `<tool_call>` + `<arg_key>`
+            // pairs, so the structural tracker reads the same grammar.
+            ModelSyntax::Glm53 | ModelSyntax::Spark2_5 => ToolSyntax::Glm,
             _ => ToolSyntax::Dsml,
         });
     }
