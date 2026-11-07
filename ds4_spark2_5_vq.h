@@ -47,6 +47,8 @@ enum {
      * 8-bit GVR8 residual indices into 256 words. */
     SPARK_VECTOR = 8,
     SPARK_WORDS = 8192,
+    /* GVQ1/GVBC/GVR8 headers are 128 bytes (FORMAT.md). */
+    SPARK_HEADER = 128,
     SPARK_RES_WORDS = 256,
 };
 
@@ -96,6 +98,12 @@ int ds4_gpu_spark_gelu_mul(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint64_t count);
 int ds4_gpu_spark_qkv_split(ds4_gpu_tensor *q, ds4_gpu_tensor *k,
     ds4_gpu_tensor *v, const ds4_gpu_tensor *qkv, uint32_t rows);
+/* Restore one GVQ1 matrix into BF16 rows; `vq2`/`book2` are the stage-2
+ * stream and book of a container version 3 release, NULL for version 2. */
+int ds4_gpu_spark_restore(ds4_gpu_tensor *out,
+    const void *vq, uint64_t vq_bytes, const void *vq2, uint64_t vq2_bytes,
+    const void *book, const void *book2, const void *res, uint64_t res_bytes,
+    const void *res_book, uint32_t rows, uint32_t cols);
 
 #ifdef __cplusplus
 }

@@ -31,15 +31,15 @@ fn spec(out: &mut Vec<LayoutSpec>, name: &str, typ: u32, dims: &[u64]) {
 /// One entry per stored tensor, in pack order: the embedding part
 /// first, the resident trunk second.
 pub(super) fn layouts() -> Vec<LayoutSpec> {
-    let mut out = Vec::with_capacity(830);
-    // embedding part: spark-x2.6-4b-vq8.embedding.gguf
+    let mut out = Vec::with_capacity(1190);
+    // embedding part: spark-x2.6-4b-vq8-2s.embedding.gguf
     spec(
         &mut out,
         "model.embedding.weight",
         ty::BF16,
         &[2560, 131072],
     );
-    // trunk part: spark-x2.6-4b-vq8.gguf
+    // trunk part: spark-x2.6-4b-vq8-2s.gguf
     spec(
         &mut out,
         "model.layers.0.input_layernorm.weight",
@@ -55,6 +55,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.0.mlp.down_proj.weight",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.mlp.down_proj.weight.stage2",
         ty::GVQ8,
         &[10240, 2560],
     );
@@ -84,6 +96,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.0.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.0.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -103,6 +127,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.0.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -138,6 +174,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.0.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.0.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -157,6 +205,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.0.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.0.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -192,6 +252,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.1.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.1.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -216,6 +288,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.1.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.1.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -235,6 +319,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.1.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -270,6 +366,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.1.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.1.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -289,6 +397,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.1.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.1.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -324,6 +444,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.10.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.10.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -348,6 +480,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.10.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.10.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -367,6 +511,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.10.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -402,6 +558,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.10.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.10.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -421,6 +589,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.10.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.10.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -456,6 +636,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.11.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.11.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -480,6 +672,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.11.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.11.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -499,6 +703,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.11.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -534,6 +750,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.11.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.11.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -553,6 +781,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.11.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.11.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -588,6 +828,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.12.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.12.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -612,6 +864,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.12.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.12.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -631,6 +895,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.12.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -666,6 +942,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.12.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.12.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -685,6 +973,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.12.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.12.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -720,6 +1020,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.13.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.13.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -744,6 +1056,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.13.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.13.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -763,6 +1087,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.13.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -798,6 +1134,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.13.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.13.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -817,6 +1165,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.13.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.13.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -852,6 +1212,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.14.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.14.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -876,6 +1248,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.14.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.14.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -895,6 +1279,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.14.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -930,6 +1326,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.14.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.14.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -949,6 +1357,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.14.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.14.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -984,6 +1404,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.15.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.15.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1008,6 +1440,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.15.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.15.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1027,6 +1471,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.15.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1062,6 +1518,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.15.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.15.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1081,6 +1549,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.15.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.15.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1116,6 +1596,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.16.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.16.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1140,6 +1632,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.16.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.16.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1159,6 +1663,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.16.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1194,6 +1710,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.16.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.16.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1213,6 +1741,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.16.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.16.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1248,6 +1788,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.17.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.17.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1272,6 +1824,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.17.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.17.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1291,6 +1855,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.17.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1326,6 +1902,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.17.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.17.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1345,6 +1933,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.17.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.17.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1380,6 +1980,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.18.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.18.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1404,6 +2016,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.18.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.18.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1423,6 +2047,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.18.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1458,6 +2094,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.18.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.18.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1477,6 +2125,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.18.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.18.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1512,6 +2172,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.19.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.19.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1536,6 +2208,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.19.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.19.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1555,6 +2239,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.19.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1590,6 +2286,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.19.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.19.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1609,6 +2317,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.19.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.19.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1644,6 +2364,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.2.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.2.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1668,6 +2400,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.2.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.2.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1687,6 +2431,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.2.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1722,6 +2478,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.2.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.2.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1741,6 +2509,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.2.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.2.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1776,6 +2556,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.20.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.20.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1800,6 +2592,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.20.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.20.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1819,6 +2623,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.20.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1854,6 +2670,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.20.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.20.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1873,6 +2701,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.20.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.20.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -1908,6 +2748,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.21.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.21.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1932,6 +2784,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.21.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.21.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -1951,6 +2815,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.21.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -1986,6 +2862,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.21.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.21.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2005,6 +2893,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.21.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.21.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2040,6 +2940,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.22.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.22.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2064,6 +2976,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.22.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.22.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2083,6 +3007,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.22.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2118,6 +3054,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.22.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.22.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2137,6 +3085,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.22.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.22.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2172,6 +3132,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.23.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.23.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2196,6 +3168,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.23.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.23.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2215,6 +3199,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.23.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2250,6 +3246,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.23.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.23.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2269,6 +3277,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.23.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.23.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2304,6 +3324,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.24.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.24.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2328,6 +3360,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.24.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.24.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2347,6 +3391,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.24.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2382,6 +3438,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.24.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.24.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2401,6 +3469,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.24.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.24.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2436,6 +3516,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.25.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.25.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2460,6 +3552,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.25.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.25.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2479,6 +3583,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.25.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2514,6 +3630,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.25.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.25.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2533,6 +3661,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.25.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.25.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2568,6 +3708,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.26.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.26.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2592,6 +3744,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.26.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.26.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2611,6 +3775,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.26.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2646,6 +3822,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.26.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.26.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2665,6 +3853,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.26.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.26.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2700,6 +3900,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.27.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.27.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2724,6 +3936,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.27.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.27.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2743,6 +3967,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.27.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2778,6 +4014,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.27.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.27.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2797,6 +4045,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.27.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.27.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2832,6 +4092,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.28.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.28.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2856,6 +4128,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.28.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.28.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2875,6 +4159,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.28.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -2910,6 +4206,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.28.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.28.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2929,6 +4237,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.28.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.28.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -2964,6 +4284,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.29.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.29.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -2988,6 +4320,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.29.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.29.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3007,6 +4351,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.29.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3042,6 +4398,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.29.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.29.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3061,6 +4429,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.29.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.29.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3096,6 +4476,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.3.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.3.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3120,6 +4512,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.3.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.3.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3139,6 +4543,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.3.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3174,6 +4590,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.3.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.3.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3193,6 +4621,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.3.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.3.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3228,6 +4668,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.30.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.30.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3252,6 +4704,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.30.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.30.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3271,6 +4735,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.30.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3306,6 +4782,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.30.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.30.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3325,6 +4813,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.30.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.30.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3360,6 +4860,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.31.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.31.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3384,6 +4896,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.31.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.31.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3403,6 +4927,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.31.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3438,6 +4974,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.31.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.31.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3457,6 +5005,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.31.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.31.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3492,6 +5052,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.32.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.32.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3516,6 +5088,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.32.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.32.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3535,6 +5119,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.32.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3570,6 +5166,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.32.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.32.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3589,6 +5197,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.32.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.32.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3624,6 +5244,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.33.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.33.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3648,6 +5280,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.33.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.33.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3667,6 +5311,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.33.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3702,6 +5358,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.33.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.33.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3721,6 +5389,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.33.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.33.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3756,6 +5436,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.34.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.34.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3780,6 +5472,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.34.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.34.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3799,6 +5503,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.34.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3834,6 +5550,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.34.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.34.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3853,6 +5581,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.34.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.34.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -3888,6 +5628,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.35.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.35.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3912,6 +5664,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.35.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.35.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3931,6 +5695,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.35.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -3966,6 +5742,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.35.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.35.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -3985,6 +5773,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.35.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.35.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4020,6 +5820,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.4.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.4.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4044,6 +5856,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.4.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.4.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4063,6 +5887,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.4.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4098,6 +5934,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.4.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.4.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4117,6 +5965,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.4.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.4.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4152,6 +6012,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.5.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.5.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4176,6 +6048,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.5.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.5.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4195,6 +6079,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.5.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4230,6 +6126,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.5.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.5.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4249,6 +6157,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.5.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.5.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4284,6 +6204,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.6.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.6.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4308,6 +6240,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.6.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.6.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4327,6 +6271,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.6.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4362,6 +6318,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.6.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.6.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4381,6 +6349,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.6.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.6.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4416,6 +6396,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.7.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.7.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4440,6 +6432,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.7.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.7.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4459,6 +6463,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.7.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4494,6 +6510,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.7.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.7.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4513,6 +6541,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.7.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.7.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4548,6 +6588,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.8.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.8.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4572,6 +6624,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.8.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.8.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4591,6 +6655,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.8.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4626,6 +6702,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.8.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.8.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4645,6 +6733,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.8.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.8.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );
@@ -4680,6 +6780,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.9.mlp.down_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.mlp.down_proj.weight.stage2",
+        ty::GVQ8,
+        &[10240, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.9.mlp.down_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4704,6 +6816,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.9.mlp.gate_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.mlp.gate_proj.weight.stage2",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
         "model.layers.9.mlp.gate_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4723,6 +6847,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.9.mlp.up_proj.weight",
+        ty::GVQ8,
+        &[2560, 10240],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.mlp.up_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.mlp.up_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 10240],
     );
@@ -4758,6 +6894,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     );
     spec(
         &mut out,
+        "model.layers.9.self_attn.out_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.self_attn.out_proj.weight.stage2",
+        ty::GVQ8,
+        &[4096, 2560],
+    );
+    spec(
+        &mut out,
         "model.layers.9.self_attn.out_proj.weight.vq_residual_book",
         ty::GVBC,
         &[8, 256],
@@ -4777,6 +6925,18 @@ pub(super) fn layouts() -> Vec<LayoutSpec> {
     spec(
         &mut out,
         "model.layers.9.self_attn.q_k_v_proj.weight",
+        ty::GVQ8,
+        &[2560, 6144],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.self_attn.q_k_v_proj.weight.vq_stage2_book",
+        ty::GVBC,
+        &[8, 8192],
+    );
+    spec(
+        &mut out,
+        "model.layers.9.self_attn.q_k_v_proj.weight.stage2",
         ty::GVQ8,
         &[2560, 6144],
     );

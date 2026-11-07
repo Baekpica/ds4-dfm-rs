@@ -44,9 +44,14 @@ const SOURCE_MODEL: &[u8] = b"spark2_5";
 /// none yet, which is why `part_metadata` refuses the plain container.
 const RECIPE_R8: &[u8] = b"spark-x2.6-4b-base-r13r8";
 /// The plain 13-bit container, which this family's converter has never
-/// written, and the R13+8 container that it does write.
+/// written; the R13+8 container that it does write (version 2), and the
+/// two-stage R13+8 container the vq-gguf v3 envelope writes: one GVQ1 stream
+/// per stage, linked by `spark2_5.stages`, each stage with its own book and
+/// row gains (artifact README "The format (version 3)":
+/// W = gain1*(C1[i1] + R8[j]) + gain2*C2[i2]).
 const FORMAT_VERSION: u32 = 1;
 const RESIDUAL_VERSION: u32 = 2;
+const STAGE2_VERSION: u32 = 3;
 const ALIGN: u64 = 128;
 const HEADER: u64 = 128;
 const VECTOR: u8 = 8;
@@ -113,8 +118,21 @@ pub(super) fn identify(
     model::identify(path)
 }
 
+/// The stored-tensor contract. A container version 3 release adds a second
+/// 13-bit stream per matrix (`.stage2` and its `.vq_stage2_book`), 360 entries
+/// generated from that artifact's own runtime pack. Those entries are optional
+/// here so a version 2 release still binds; the artifact validator makes them
+/// all-or-none per version (`validate_stages`).
 pub(super) fn layouts() -> Vec<crate::LayoutSpec> {
-    layout::layouts()
+    let mut specs = layout::layouts();
+    for spec in &mut specs {
+        if spec.name.ends_with(".stage2") || spec.name.ends_with(".vq_stage2_book") {
+            if let crate::TypeClass::Exact(typ) = spec.class {
+                spec.class = crate::TypeClass::OptionalExact(typ);
+            }
+        }
+    }
+    specs
 }
 
 /// Bytes of the device-resident part: the trunk. The embedding stays on SSD.
@@ -176,7 +194,16 @@ pub(super) fn validate_inventory(
             return Err(crate::ValidateError::Token("Spark-X2.6 VQ tensor layout"));
         }
     }
-    if seen.len() != specs.len() {
+    // Optional entries are absent from a version 2 release; every required
+    // one must be present, and the name lookup above already refuses extras.
+    let absent = specs.iter().any(|s| {
+        let optional = matches!(
+            s.class,
+            crate::TypeClass::OptionalExact(_) | crate::TypeClass::Ling31Scale
+        );
+        !optional && !seen.contains(s.name.as_str())
+    });
+    if absent {
         return Err(crate::ValidateError::Token(
             "Spark-X2.6 VQ tensor set mismatch",
         ));
@@ -331,10 +358,18 @@ fn validate_residuals(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
     let map = object(g, "spark2_5.residuals")?;
     let residuals = tensors.iter().filter(|t| t.typ == RESIDUAL).count();
     let matrices = tensors.iter().filter(|t| t.typ == VQ).count();
+    // Container version 3 stores two GVQ1 streams per matrix (stage 1 and
+    // stage 2), so the residual count is half the 13-bit tensors.
+    let stages = match g.get_u32("spark2_5.format_version") {
+        Some(STAGE2_VERSION) => 2,
+        _ => 1,
+    };
     if residuals == 0 && map.is_empty() {
         return Ok(());
     }
-    if g.get_u32("spark2_5.format_version") != Some(RESIDUAL_VERSION) {
+    if g.get_u32("spark2_5.format_version") != Some(RESIDUAL_VERSION)
+        && g.get_u32("spark2_5.format_version") != Some(STAGE2_VERSION)
+    {
         return Err(fail("residual stage needs container version 2"));
     }
     let by_name: HashMap<_, _> = tensors.iter().map(|t| (t.name.as_str(), t)).collect();
@@ -352,8 +387,48 @@ fn validate_residuals(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
             return Err(fail("residual link type/shape/duplicate"));
         }
     }
-    if linked.len() != residuals || residuals != matrices {
+    if linked.len() != residuals || residuals * stages != matrices {
         return Err(fail("partial or unlinked residual stage"));
+    }
+    Ok(())
+}
+
+/// `spark2_5.stages` maps each residual parent to its stage-2 GVQ1 stream
+/// (container version 3, artifact README "The format (version 3)"). The stage
+/// is all-or-none: every matrix has exactly one stage 2, and no stage-2
+/// tensor is also a residual parent.
+fn validate_stages(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
+    let map = object(g, "spark2_5.stages")?;
+    if g.get_u32("spark2_5.format_version") != Some(STAGE2_VERSION) {
+        return if map.is_empty() {
+            Ok(())
+        } else {
+            Err(fail("stage-2 link outside container version 3"))
+        };
+    }
+    let by_name: HashMap<_, _> = tensors.iter().map(|t| (t.name.as_str(), t)).collect();
+    let parents = object(g, "spark2_5.residuals")?;
+    if map.len() != parents.len() {
+        return Err(fail("partial stage-2 stage"));
+    }
+    let mut linked = HashSet::new();
+    for (parent, value) in &map {
+        let name = value.as_str().ok_or(fail("invalid stage-2 link"))?;
+        let (Some(p), Some(s)) = (by_name.get(parent.as_str()), by_name.get(name)) else {
+            return Err(fail("missing stage-2 parent/tensor"));
+        };
+        if !parents.contains_key(parent)
+            || p.typ != VQ
+            || s.typ != VQ
+            || p.dim[..2] != s.dim[..2]
+            || !linked.insert(s.name.as_str())
+        {
+            return Err(fail("stage-2 link type/shape/duplicate"));
+        }
+    }
+    let matrices = tensors.iter().filter(|t| t.typ == VQ).count();
+    if linked.len() * 2 != matrices {
+        return Err(fail("unlinked stage-2 stream"));
     }
     Ok(())
 }
@@ -443,7 +518,9 @@ fn part_metadata(g: &GgufFile) -> Result<()> {
     // missing arm: this release has no plain recipe id to tie it to, and
     // accepting it under the R13+8 id would be a coincidence of strings.
     let supported = match g.get_u32("spark2_5.format_version") {
-        Some(RESIDUAL_VERSION) => g.get_string("spark2_5.recipe_id") == Some(RECIPE_R8),
+        Some(RESIDUAL_VERSION) | Some(STAGE2_VERSION) => {
+            g.get_string("spark2_5.recipe_id") == Some(RECIPE_R8)
+        }
         Some(FORMAT_VERSION) => {
             return Err(fail("plain container has no plain recipe id"));
         }
@@ -575,5 +652,6 @@ pub(super) fn validate_part(
         return Err(fail("trailing/missing bytes"));
     }
     validate_books(g, tensors, &links)?;
-    validate_residuals(g, tensors)
+    validate_residuals(g, tensors)?;
+    validate_stages(g, tensors)
 }

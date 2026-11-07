@@ -36,10 +36,13 @@ const MAX_METADATA: u64 = 64 * 1024 * 1024;
 const RELEASE: &str = "release.json";
 const FILES: &str = "files.json";
 /// The container version this family's converter writes: R13+8, whose parts
-/// carry a GVR8 residual plane per matrix. There is no plain (version 1)
-/// build, and the release's recipe id is the `-r13r8` string, so a version-1
-/// release has nothing to tie to and is refused (`version_recipe`).
+/// carry a GVR8 residual plane per matrix. Version 2 is one GVQ1 stream per
+/// matrix; version 3 adds the stage-2 stream (`spark2_5.stages`). There is no
+/// plain (version 1) build, and the release's recipe id is the `-r13r8`
+/// string, so a version-1 release has nothing to tie to and is refused
+/// (`version_recipe`).
 const RESIDUAL_FORMAT_VERSION: u64 = 2;
+const STAGE2_FORMAT_VERSION: u64 = 3;
 const CONTEXT: u64 = 1_048_576;
 /// A Q4_K header has two f16 scales; retain an incomplete four-byte header.
 const SCALE_TAIL: usize = 3;
@@ -201,8 +204,9 @@ struct Part {
 /// produced.
 fn version_recipe(release: &serde_json::Value) -> Result<bool> {
     let recipe = text(release, "recipe_id")?;
+    let version = number(release, "format_version")?;
     Ok(
-        number(release, "format_version")? == RESIDUAL_FORMAT_VERSION
+        (version == RESIDUAL_FORMAT_VERSION || version == STAGE2_FORMAT_VERSION)
             && recipe.as_bytes() == RECIPE_R8,
     )
 }

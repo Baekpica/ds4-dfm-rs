@@ -52,6 +52,24 @@ static void spark2_5_bind_matrix(const ds4_model *m, ds4_spark2_5_matrix *mx,
                          SPARK_VECTOR, SPARK_RES_WORDS, 0);
     mx->res = spark2_5_matrix_tensor(m, il, stem, ".weight.res");
     tensor_expect_layout(mx->res, DS4_TENSOR_GLM_RES, 2, in, out, 0);
+
+    /* Container version 3: the stage-2 stream and its own book. Rust proved
+     * the stage map all-or-none before this runs, so a present stage 2 is
+     * bound for all five matrices; an absent one stays NULL. */
+    char name[192];
+    const int n = snprintf(name, sizeof(name), "model.layers.%u.%s%s",
+                           il, stem, ".weight.stage2");
+    if (n < 0 || (size_t)n >= sizeof(name)) {
+        ds4_die("Spark-X2.6 tensor name too long");
+    }
+    if (model_find_tensor(m, name)) {
+        mx->stage2 = required_tensor(m, name);
+        tensor_expect_layout(mx->stage2, DS4_TENSOR_GLM_VQ, 2, in, out, 0);
+        mx->stage2_book = spark2_5_matrix_tensor(m, il, stem,
+                                                 ".weight.vq_stage2_book");
+        tensor_expect_layout(mx->stage2_book, DS4_TENSOR_GLM_BOOK, 2,
+                             SPARK_VECTOR, SPARK_WORDS, 0);
+    }
 }
 
 static void spark2_5_bind(ds4_weights *w, const ds4_model *m) {

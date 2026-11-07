@@ -46,6 +46,23 @@ embed × 2560 ─▶ [ rms ─▶ GQA sliding 512 / full ─▶ sigmoid head gat
   layer; no q/k norm tensors.
 - Dense FFN, 10,240 wide, gelu; no experts, no drafter.
 
+### Weights
+
+The graph does not decode VQ per projection. `spark2_5_gpu_bind` restores the
+180 matrices once per engine into one BF16 image (`ds4_weights.spark_image`,
+7.03 GiB) with the family's own kernel (`cuda/spark2_5.cuh`
+`spark_restore_kernel`, `ds4_gpu_spark_restore`), which reads both container
+versions and applies the stage-2 term in FP32 before the single BF16
+rounding. Each projection is then one BF16 GEMM over its slice
+(`ds4_gpu_v41_matmul_bf16_dev_tensor`, cuda/ds41_dense.cuh:228-253), the same
+entry the DeepSeek vision tower uses for device-resident weights.
+`DS4_SPARK2_5_RESTORE=0` skips the image and restores one matrix into a
+52.4 MB graph scratch before its GEMM.
+
+The restore is verified element-wise: layer 0 `down_proj`'s first vector
+matches a hand decode of the container bit for bit
+(`DS4_SPARK2_5_DUMP_WEIGHT=<file>` dumps it for the comparison).
+
 ### KV
 
 A BF16 row of one layer is 2 x 1,024 x 2 B = 4,096 bytes. Sliding layers keep
@@ -86,6 +103,18 @@ release uses: a 13-bit index per 8 weights into an 8,192-word E4M3 book plus
 an 8-bit GVR8 index into a 256-word residual book. The attention projections
 are VQ too, so a layer's five matrices (`q_k_v_proj`, `out_proj`, `gate_proj`,
 `up_proj`, `down_proj`) carry two books and one residual plane each.
+
+Two container versions are read, told apart by `spark2_5.format_version`:
+
+- 2, one 13-bit stream per matrix: 829 trunk tensors, 1,262,301,824 bytes.
+- 3, two stages per matrix: 1,189 trunk tensors, 2,043,237,120 bytes. Each
+  matrix gains a `.stage2` GVQ1 stream and its `.vq_stage2_book`, linked by
+  `spark2_5.stages`, and the reconstruction is
+  `W = gain1*(C1[i1] + R8[j]) + gain2*C2[i2]`. Measured 10.10% weighted mean
+  relL2 against 23.19% for the one-stage build of the same checkpoint
+  (`quality.json`, `family.json`). The stage entries are optional in the
+  layout table, so a version 2 release binds without them; the artifact
+  validator (`validate_stages`) makes them all-or-none inside version 3.
 
 `config.json` sits beside the parts and is hashed in `files.json`; the module
 embeds a byte-identical copy and compares the checkpoint's file against it

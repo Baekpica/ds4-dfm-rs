@@ -70,17 +70,19 @@ static uint32_t spark2_5_prefill_cap(uint32_t ctx) {
     return cap < ctx ? cap : ctx;
 }
 
-/* The VQ linear restores a whole matrix into scratch before its GEMM
- * (cuda/glm_vq_linear.cuh:51-96: [restored | x | y]), and the family's widest
- * matrix is the 10,240 x 2,560 FFN pair, whose restored BF16 image is 52.4 MB
- * at any row count. ds4_gpu_gvq_workspace_linear's fixed 32 MiB covers
- * Gemma-4's 2,112/2,816-wide matrices but not this one, so the graph sizes its
- * own scratch and asks glmvq_linear_bytes for the term. */
-static uint64_t spark2_5_linear_workspace(uint32_t rows) {
-    uint64_t need = ds4_gpu_gvq_workspace_linear(rows);
-    const uint64_t widest = ds4_gpu_gvq_linear_bytes(
-        SPARK_FF, SPARK_EMBD, rows, DS4_TENSOR_GLM_VQ, DS4_GVQ_BF16);
-    return widest > need ? widest : need;
+/* The widest matrix is the 10,240 x 2,560 FFN pair: one restored BF16 row set
+ * of 52.4 MB. With the shared image on (the default) a graph needs no weight
+ * scratch at all; DS4_SPARK2_5_RESTORE=0 restores each matrix into this
+ * buffer before the GEMM. DS4_SPARK2_5_IMAGE=1 in spark2_5_image_on decides
+ * which lane the engine bound. */
+static uint64_t spark2_5_widest_matrix_bytes(void) {
+    return (uint64_t)SPARK_FF * SPARK_EMBD * sizeof(uint16_t);
+}
+
+static uint64_t spark2_5_linear_workspace(void) {
+    const char *restore_env = getenv("DS4_SPARK2_5_RESTORE");
+    const int image = !restore_env || strcmp(restore_env, "0") != 0;
+    return image ? 0 : spark2_5_widest_matrix_bytes();
 }
 
 static uint64_t spark2_5_activation_bytes(uint32_t rows) {
@@ -103,7 +105,7 @@ static ds4_context_memory spark2_5_session_memory(uint32_t ctx, uint32_t cap) {
     m.raw_cap = ctx;
     m.raw_bytes = spark2_5_kv_bytes(ctx, cap);
     m.scratch_bytes = spark2_5_activation_bytes(cap) +
-        spark2_5_linear_workspace(cap);
+        spark2_5_linear_workspace();
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
@@ -146,62 +148,95 @@ static uint32_t spark2_5_index(const ds4_model *m, const ds4_tensor *t) {
     return t ? (uint32_t)(t - m->tensors) : DS4_GVQ_NO_LINK;
 }
 
-/* Materialized source pointers belong to the weight owner. Each matrix links
- * its own 8192-word book; its GVR8 plane links the 256-word residual book
- * (the link ivq checks at bind time), which is what makes the R13+8 decode
- * exact. */
-static bool spark2_5_gpu_bind(ds4_weights *w, const ds4_model *m) {
-    if (!w->spark || !m->n_tensors || m->n_tensors > UINT32_MAX) { return false; }
-    const uint32_t count = (uint32_t)m->n_tensors;
-    ds4_gvq_record *records = xcalloc(count, sizeof(*records));
-    for (uint32_t i = 0; i < count; i++) {
-        const ds4_tensor *t = &m->tensors[i];
-        const uint64_t cols = t->ndim ? t->dim[0] : 1u;
-        const uint64_t rows = cols ? t->elements / cols : 0u;
-        if (!cols || cols > UINT32_MAX || !rows || rows > UINT32_MAX) {
-            free(records);
-            return false;
-        }
-        records[i] = (ds4_gvq_record){t->abs_offset, t->bytes, t->type,
-            (uint32_t)rows, (uint32_t)cols, spark2_5_index(m, t->source_scale),
-            DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
+/* The 180 VQ matrices as one BF16 image owned by ds4_weights and shared by
+ * every session's graph. `spark2_5_dims` is the (input, output) pair of each
+ * of the five matrices, in the order the layers bind them: q_k_v_proj,
+ * out_proj, gate_proj, up_proj, down_proj (modeling_spark.py:152-212). */
+static const uint32_t spark2_5_dims[5][2] = {
+    {SPARK_EMBD, SPARK_QKV_DIM}, {SPARK_Q_DIM, SPARK_EMBD},
+    {SPARK_EMBD, SPARK_FF}, {SPARK_EMBD, SPARK_FF}, {SPARK_FF, SPARK_EMBD},
+};
+
+static ds4_spark2_5_matrix *spark2_5_matrix(ds4_spark2_5_layer *l, uint32_t k) {
+    switch (k) {
+    case 0: return &l->qkv;
+    case 1: return &l->out;
+    case 2: return &l->ffn_gate;
+    case 3: return &l->ffn_up;
+    default: return &l->ffn_down;
     }
+}
+
+/* One matrix into `dst` (out rows x in cols BF16). The stage-2 stream is
+ * present only on a container version 3 release. */
+static bool spark2_5_restore_matrix(const ds4_model *m,
+        const ds4_spark2_5_matrix *mx, ds4_gpu_tensor *dst,
+        uint32_t out, uint32_t in) {
+    const uint8_t *map = (const uint8_t *)m->map;
+    return ds4_gpu_spark_restore(dst,
+        map + mx->w->abs_offset, mx->w->bytes,
+        mx->stage2 ? map + mx->stage2->abs_offset : NULL,
+        mx->stage2 ? mx->stage2->bytes : 0,
+        map + mx->book->abs_offset,
+        mx->stage2_book ? map + mx->stage2_book->abs_offset : NULL,
+        map + mx->res->abs_offset, mx->res->bytes,
+        map + mx->res_book->abs_offset, out, in) != 0;
+}
+
+/* Build the engine's BF16 image. The restore runs the family's own kernel
+ * (cuda/spark2_5.cuh spark_restore_kernel) over both container versions, so
+ * the image is the same whether the release carries one 13-bit stream or two.
+ * DS4_SPARK2_5_RESTORE=0 binds no image: each linear restores into the
+ * graph's scratch instead. */
+static bool spark2_5_gpu_bind(ds4_weights *w, const ds4_model *m) {
+    if (!w->spark) { return false; }
+    const char *restore_env = getenv("DS4_SPARK2_5_RESTORE");
+    if (restore_env && strcmp(restore_env, "0") == 0) { return true; }
+
+    uint64_t bytes = 0;
     for (uint32_t il = 0; il < SPARK_LAYERS; il++) {
-        const ds4_spark2_5_layer *l = &w->spark[il];
-        const ds4_spark2_5_matrix *mx[5] = {
-            &l->qkv, &l->out, &l->ffn_gate, &l->ffn_up, &l->ffn_down
-        };
         for (uint32_t k = 0; k < 5; k++) {
-            if (!mx[k]->w || !mx[k]->book || !mx[k]->res ||
-                !mx[k]->res_book) {
-                free(records);
+            const ds4_spark2_5_matrix *mx = spark2_5_matrix(&w->spark[il], k);
+            if (!mx->w || !mx->book || !mx->res || !mx->res_book ||
+                (mx->stage2 && !mx->stage2_book)) {
                 return false;
             }
-            const uint32_t w_i = spark2_5_index(m, mx[k]->w);
-            const uint32_t res_i = spark2_5_index(m, mx[k]->res);
-            records[w_i].book = spark2_5_index(m, mx[k]->book);
-            records[w_i].res = res_i;
-            records[res_i].book = spark2_5_index(m, mx[k]->res_book);
+            bytes += (uint64_t)spark2_5_dims[k][0] * spark2_5_dims[k][1] *
+                     sizeof(uint16_t);
         }
     }
-    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);
-    free(records);
-    if (!w->glmvq_gpu) { return false; }
-    /* One BF16 device image of the VQ matrices for the whole engine: a graph
-     * per session must not duplicate it. DS4_SPARK2_5_RESTORE=0 keeps the
-     * per-call restore for an A/B or a device too small to hold it. */
-    const char *restore_env = getenv("DS4_SPARK2_5_RESTORE");
-    if (!restore_env || strcmp(restore_env, "0") != 0) {
-        uint64_t bytes = 0;
-        w->spark_restored = ds4_gpu_gvq_restore_device(w->glmvq_gpu,
-            &w->spark_restored_store, &bytes);
-        if (w->spark_restored) {
-            fprintf(stderr, "ds4: Spark-X2.6 restored %.2f GiB of VQ weights to device BF16\n",
-                (double)bytes / 1073741824.0);
-        } else {
-            fprintf(stderr, "ds4: Spark-X2.6 device restore unavailable; the linear "
-                "path restores each matrix per call\n");
+    w->spark_image = ds4_gpu_tensor_alloc(bytes);
+    if (!w->spark_image) { return false; }
+
+    uint64_t off = 0;
+    for (uint32_t il = 0; il < SPARK_LAYERS; il++) {
+        for (uint32_t k = 0; k < 5; k++) {
+            ds4_spark2_5_matrix *mx = spark2_5_matrix(&w->spark[il], k);
+            const uint32_t in = spark2_5_dims[k][0], out = spark2_5_dims[k][1];
+            const uint64_t slice = (uint64_t)in * out * sizeof(uint16_t);
+            ds4_gpu_tensor *view = ds4_gpu_tensor_view(w->spark_image, off, slice);
+            if (!view) { return false; }
+            const bool ok = spark2_5_restore_matrix(m, mx, view, out, in);
+            ds4_gpu_tensor_free(view);
+            if (!ok) { return false; }
+            mx->image_off = off;
+            off += slice;
         }
+    }
+    fprintf(stderr, "ds4: Spark-X2.6 restored %.2f GiB of VQ weights to one BF16 image\n",
+        (double)bytes / 1073741824.0);
+    /* Diagnostic only (DS4_SPARK2_5_DUMP_WEIGHT=<file>): the first 16 BF16
+     * values of layer 0's down_proj, so a parity run can check the restore
+     * against a hand decode of the container (stage 1 + residual + stage 2). */
+    const char *dump = getenv("DS4_SPARK2_5_DUMP_WEIGHT");
+    if (dump && dump[0]) {
+        uint16_t head[16] = {0};
+        FILE *fp = fopen(dump, "wb");
+        if (fp && ds4_gpu_tensor_read(w->spark_image,
+                w->spark[0].ffn_down.image_off, head, sizeof(head))) {
+            (void)fwrite(head, sizeof(head), 1, fp);
+        }
+        if (fp) { (void)fclose(fp); }
     }
     return true;
 }
@@ -209,8 +244,10 @@ static bool spark2_5_gpu_bind(ds4_weights *w, const ds4_model *m) {
 /* ---------------- graph ---------------- */
 
 typedef struct ds4_spark2_5_graph {
-    ds4_gvq_model *model;
-    ds4_gvq_ctx *gvq;
+    /* Weight scratch only when DS4_SPARK2_5_RESTORE=0: one restored matrix
+     * (the widest, 52.4 MB) before its GEMM. Otherwise the engine's BF16
+     * image (ds4_weights spark_image) holds every weight. */
+    ds4_gpu_tensor *wbf16;
     uint32_t ctx, cap, rows, position;
     ds4_gpu_tensor *cur, *norm, *branch;         /* [rows][EMBD] */
     ds4_gpu_tensor *qkv;                          /* [rows][QKV_DIM] */
@@ -240,7 +277,7 @@ static void spark2_5_graph_clear(ds4_spark2_5_graph *g) {
         ds4_gpu_tensor_free(g->vcache[il]);
         ds4_gpu_tensor_free(g->fkcache[il]);
     }
-    ds4_gpu_gvq_free(g->gvq);
+    ds4_gpu_tensor_free(g->wbf16);
     ds4_gpu_tensor_free(g->cur);
     ds4_gpu_tensor_free(g->norm);
     ds4_gpu_tensor_free(g->branch);
@@ -285,7 +322,7 @@ static void spark2_5_rope_table(uint32_t pairs, uint32_t rot, double theta,
 
 static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
         uint32_t ctx, uint32_t cap) {
-    if (!w->spark || !w->glmvq_gpu || !ctx || !cap || cap > ctx ||
+    if (!w->spark || !ctx || !cap || cap > ctx ||
         ctx > SPARK_CONTEXT || cap > SPARK_PREFILL_MAX) {
         return NULL;
     }
@@ -295,15 +332,8 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
     g->rows = cap;
     const uint32_t rows = g->rows;
     /* The restored BF16 image is the engine's (spark2_5_gpu_bind); a graph
-     * only owns its KV state and activation set. */
-    g->model = w->spark_restored ? w->spark_restored : w->glmvq_gpu;
-    g->gvq = ds4_gpu_gvq_create_linear(g->model,
-        spark2_5_linear_workspace(rows), rows);
-    if (!g->gvq) {
-        fprintf(stderr, "ds4: Spark-X2.6 GVQ context creation failed\n");
-        spark2_5_graph_release(g);
-        return NULL;
-    }
+     * only owns its KV state, its activation set and, without the image, one
+     * matrix of scratch. */
     const uint64_t f32 = sizeof(float);
 #define SPARK_ALLOC(field, bytes) do {                                        \
         g->field = ds4_gpu_tensor_alloc(bytes);                               \
@@ -332,6 +362,7 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
     SPARK_ALLOC(positions, (uint64_t)rows * sizeof(uint32_t));
     SPARK_ALLOC(inv_sliding, (uint64_t)(SPARK_ROT_SLIDING / 2u) * f32);
     SPARK_ALLOC(inv_full, (uint64_t)(SPARK_ROT_FULL / 2u) * f32);
+    if (!w->spark_image) { SPARK_ALLOC(wbf16, spark2_5_widest_matrix_bytes()); }
 #undef SPARK_ALLOC
     float inv[SPARK_ROT_SLIDING / 2u];
     spark2_5_rope_table(SPARK_ROT_SLIDING / 2u, SPARK_ROT_SLIDING,
@@ -382,7 +413,7 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
         ctx, cap, (double)g->kv_bytes / 1073741824.0,
         (double)spark2_5_session_memory(ctx, cap).scratch_bytes / 1048576.0,
         g->full_fp8 ? "fp8" : "bf16",
-        w->spark_restored ? " (shared restored weights)" : " (per-call restore)");
+        w->spark_image ? " (shared restored image)" : " (per-call restore)");
     g->ready = spark2_5_graph_reset(g);
     return g;
 }
@@ -420,6 +451,31 @@ static void spark2_5_dump_row(const ds4_gpu_tensor *x, uint64_t stride_elems,
     (void)fclose(fp);
 }
 
+/* One VQ projection as a BF16 GEMM over the engine's restored image, or over
+ * a scratch restore when the image is off (DS4_SPARK2_5_RESTORE=0). The GEMM
+ * reads W as [out][in] BF16 rows and writes F32 rows
+ * (cuda/ds41_dense.cuh:228-253), the dtype every activation buffer here
+ * already has. */
+static bool spark2_5_linear(ds4_spark2_5_graph *g, const ds4_weights *w,
+        const ds4_model *m, const ds4_spark2_5_matrix *mx,
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t rows, uint32_t in_dim, uint32_t out_dim) {
+    if (!w->spark_image) {
+        if (!g->wbf16 || !spark2_5_restore_matrix(m, mx, g->wbf16, out_dim, in_dim)) {
+            return false;
+        }
+        return ds4_gpu_v41_matmul_bf16_dev_tensor(out, g->wbf16, in_dim,
+            out_dim, in, rows) != 0;
+    }
+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(w->spark_image, mx->image_off,
+        (uint64_t)in_dim * out_dim * sizeof(uint16_t));
+    if (!view) { return false; }
+    const int ok = ds4_gpu_v41_matmul_bf16_dev_tensor(out, view, in_dim,
+        out_dim, in, rows);
+    ds4_gpu_tensor_free(view);
+    return ok != 0;
+}
+
 /* One decoder layer over `rows` activation rows starting at position pos0.
  * Every buffer is the graph's own; the layer differs from the next only in
  * its weights and its rope geometry. */
@@ -449,8 +505,8 @@ static bool spark2_5_layer(ds4_spark2_5_graph *g, const ds4_model *m,
         snprintf(tag, sizeof(tag), "norm_attn%u", il);
         spark2_5_dump_row(g->norm, (uint64_t)(rows - 1u) * SPARK_EMBD, tag);
     }
-    SPARK_STEP(ds4_gpu_gvq_linear(g->gvq, g->qkv,
-        spark2_5_index(m, l->qkv.w), g->norm, rows, DS4_GVQ_BF16), "qkv projection");
+    SPARK_STEP(spark2_5_linear(g, w, m, &l->qkv, g->qkv, g->norm, rows,
+        SPARK_EMBD, SPARK_QKV_DIM), "qkv projection");
     SPARK_STEP(ds4_gpu_matmul_bf16_tensor(g->gate, m->map, m->size,
         l->g_proj->abs_offset, SPARK_EMBD, SPARK_HEADS, g->norm, rows),
         "gate projection");
@@ -508,9 +564,8 @@ static bool spark2_5_layer(ds4_spark2_5_graph *g, const ds4_model *m,
         SPARK_HEADS, SPARK_HEAD_DIM), "headwise gate");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->attn, g->attn,
         (uint64_t)rows * SPARK_Q_DIM), "gated output rounding");
-    SPARK_STEP(ds4_gpu_gvq_linear(g->gvq, g->branch,
-        spark2_5_index(m, l->out.w), g->attn, rows, DS4_GVQ_BF16),
-        "output projection");
+    SPARK_STEP(spark2_5_linear(g, w, m, &l->out, g->branch, g->attn, rows,
+        SPARK_Q_DIM, SPARK_EMBD), "output projection");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->branch, g->branch,
         acts), "output projection rounding");
     SPARK_STEP(ds4_gpu_add_tensor(g->cur, g->cur, g->branch,
@@ -525,15 +580,10 @@ static bool spark2_5_layer(ds4_spark2_5_graph *g, const ds4_model *m,
         snprintf(tag, sizeof(tag), "norm_ffn%u", il);
         spark2_5_dump_row(g->norm, (uint64_t)(rows - 1u) * SPARK_EMBD, tag);
     }
-    {
-        const uint32_t proj[2] = {
-            spark2_5_index(m, l->ffn_gate.w),
-            spark2_5_index(m, l->ffn_up.w),
-        };
-        ds4_gpu_tensor *outs[2] = {g->ffn_gate, g->ffn_up};
-        SPARK_STEP(ds4_gpu_gvq_linear_many(g->gvq, outs, proj, 2u, g->norm,
-            rows, DS4_GVQ_BF16), "FFN gate/up projection");
-    }
+    SPARK_STEP(spark2_5_linear(g, w, m, &l->ffn_gate, g->ffn_gate, g->norm,
+        rows, SPARK_EMBD, SPARK_FF), "FFN gate projection");
+    SPARK_STEP(spark2_5_linear(g, w, m, &l->ffn_up, g->ffn_up, g->norm,
+        rows, SPARK_EMBD, SPARK_FF), "FFN up projection");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->ffn_gate, g->ffn_gate,
         (uint64_t)rows * SPARK_FF), "FFN gate rounding");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->ffn_up, g->ffn_up,
@@ -542,9 +592,8 @@ static bool spark2_5_layer(ds4_spark2_5_graph *g, const ds4_model *m,
         (uint64_t)rows * SPARK_FF), "GELU product");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->ffn_mid, g->ffn_mid,
         (uint64_t)rows * SPARK_FF), "FFN mid rounding");
-    SPARK_STEP(ds4_gpu_gvq_linear(g->gvq, g->ffn_out,
-        spark2_5_index(m, l->ffn_down.w), g->ffn_mid, rows, DS4_GVQ_BF16),
-        "FFN down projection");
+    SPARK_STEP(spark2_5_linear(g, w, m, &l->ffn_down, g->ffn_out, g->ffn_mid,
+        rows, SPARK_FF, SPARK_EMBD), "FFN down projection");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->ffn_out, g->ffn_out,
         acts), "FFN down rounding");
     SPARK_STEP(ds4_gpu_add_tensor(g->cur, g->cur, g->ffn_out,

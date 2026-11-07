@@ -5745,11 +5745,16 @@ typedef struct {
     ds4_tensor *gate_res[G4_EXPERTS], *up_res[G4_EXPERTS], *down_res[G4_EXPERTS];
 } ds4_gemma4_layer;
 
-/* Spark-X2.6 VQ: one GVQ1 matrix with the three tensors it links (the 8192-word
+/* Spark-X2.6 VQ: one GVQ1 matrix with the tensors it links (the 8192-word
  * book, the 256-word residual book and the GVR8 plane), five matrices per
- * layer, two F32 RMSNorms and the BF16 per-head output gate. */
+ * layer, two F32 RMSNorms and the BF16 per-head output gate. Container
+ * version 3 adds a second GVQ1 stream (`stage2`) with its own 8192-word book
+ * (`.vq_stage2_book`); both are NULL on a version-2 release. */
 typedef struct {
     ds4_tensor *w, *book, *res_book, *res;
+    ds4_tensor *stage2, *stage2_book;
+    /* Byte offset of this matrix in the engine's BF16 image. */
+    uint64_t image_off;
 } ds4_spark2_5_matrix;
 
 typedef struct {
@@ -5811,10 +5816,10 @@ typedef struct {
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
     /* Spark-X2.6: the BF16 device image of every VQ matrix, built once here
-     * and shared by every session graph (7 GiB of restored weights must not
-     * be duplicated per graph). NULL keeps the per-call restore path. */
-    ds4_gvq_model *spark_restored;
-    ds4_gpu_tensor *spark_restored_store;
+     * by the family's own restore kernel and shared by every session graph
+     * (7 GiB of restored weights must not be duplicated per graph). NULL when
+     * DS4_SPARK2_5_RESTORE=0 keeps the per-call restore path. */
+    ds4_gpu_tensor *spark_image;
 #endif
     /* The official checkpoint carries one dense MTP block in the same GGUF.
      * It is bound separately from the 53 executable target-model layers. */
@@ -11244,11 +11249,8 @@ int ds4_dspark_validate(const char *path) {
 static void weights_free(ds4_weights *w) {
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gpu_gvq_unbind(w->glmvq_gpu);
-    if (w->spark_restored) {
-        ds4_gpu_gvq_restore_free(w->spark_restored, w->spark_restored_store);
-        w->spark_restored = NULL;
-        w->spark_restored_store = NULL;
-    }
+    ds4_gpu_tensor_free(w->spark_image);
+    w->spark_image = NULL;
 #endif
     free(w->glmvq);
     free(w->ling31);
