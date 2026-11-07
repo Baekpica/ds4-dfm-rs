@@ -44,10 +44,18 @@ static uint32_t spark2_5_kv_rows(uint32_t il, uint32_t ctx, uint32_t cap) {
 }
 
 static uint64_t spark2_5_kv_bytes(uint32_t ctx, uint32_t cap) {
+    const int fp8 = spark2_5_full_kv_fp8();
     uint64_t bytes = 0;
     for (uint32_t il = 0; il < SPARK_LAYERS; il++) {
-        bytes += 2u * (uint64_t)spark2_5_kv_rows(il, ctx, cap) *
-                 SPARK_KV_DIM * sizeof(uint16_t);
+        const uint32_t rows = spark2_5_kv_rows(il, ctx, cap);
+        /* A FP8 full layer keeps K, V and their scales in one row
+         * (cuda/gemma4_attn_fp8.cuh:14-20); everything else keeps two BF16
+         * planes. The allocator and the host quote share this function. */
+        if (fp8 && spark2_5_layer_full(il)) {
+            bytes += (uint64_t)rows * spark2_5_fp8_row_bytes();
+        } else {
+            bytes += 2u * (uint64_t)rows * SPARK_KV_DIM * sizeof(uint16_t);
+        }
     }
     return bytes;
 }
@@ -216,6 +224,10 @@ typedef struct ds4_spark2_5_graph {
     ds4_gpu_tensor *positions;                    /* [rows] u32 */
     ds4_gpu_tensor *inv_sliding, *inv_full;       /* rope tables */
     ds4_gpu_tensor *kcache[SPARK_LAYERS], *vcache[SPARK_LAYERS];
+    /* A FP8 full layer's combined K|V|scales rows; kcache/vcache stay NULL
+     * for those layers (ds4_gemma4_graph.inc:52-56). */
+    ds4_gpu_tensor *fkcache[SPARK_LAYERS];
+    int full_fp8;
     uint64_t kv_bytes;
     bool ready;
     bool failed;
@@ -226,6 +238,7 @@ static void spark2_5_graph_clear(ds4_spark2_5_graph *g) {
     for (uint32_t il = 0; il < SPARK_LAYERS; il++) {
         ds4_gpu_tensor_free(g->kcache[il]);
         ds4_gpu_tensor_free(g->vcache[il]);
+        ds4_gpu_tensor_free(g->fkcache[il]);
     }
     ds4_gpu_gvq_free(g->gvq);
     ds4_gpu_tensor_free(g->cur);
@@ -335,8 +348,24 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
         spark2_5_graph_release(g);
         return NULL;
     }
+    g->full_fp8 = spark2_5_full_kv_fp8();
     for (uint32_t il = 0; il < SPARK_LAYERS; il++) {
         const uint32_t kv_rows = spark2_5_kv_rows(il, ctx, cap);
+        /* One combined E4M3 row per position on a FP8 full layer; two BF16
+         * planes everywhere else. */
+        if (g->full_fp8 && spark2_5_layer_full(il)) {
+            const uint64_t bytes =
+                (uint64_t)kv_rows * spark2_5_fp8_row_bytes();
+            g->fkcache[il] = ds4_gpu_tensor_alloc(bytes);
+            if (!g->fkcache[il]) {
+                fprintf(stderr,
+                    "ds4: Spark-X2.6 FP8 KV allocation failed at layer %u\n", il);
+                spark2_5_graph_release(g);
+                return NULL;
+            }
+            g->kv_bytes += bytes;
+            continue;
+        }
         const uint64_t bytes = (uint64_t)kv_rows * SPARK_KV_DIM * sizeof(uint16_t);
         g->kcache[il] = ds4_gpu_tensor_alloc(bytes);
         g->vcache[il] = ds4_gpu_tensor_alloc(bytes);
@@ -348,9 +377,11 @@ static ds4_spark2_5_graph *spark2_5_graph_create(ds4_weights *w,
         g->kv_bytes += 2u * bytes;
     }
     ds4_log(stderr, DS4_LOG_TIMING,
-        "ds4: Spark-X2.6 graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.1f MiB%s\n",
+        "ds4: Spark-X2.6 graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.1f MiB"
+        " full_kv=%s%s\n",
         ctx, cap, (double)g->kv_bytes / 1073741824.0,
         (double)spark2_5_session_memory(ctx, cap).scratch_bytes / 1048576.0,
+        g->full_fp8 ? "fp8" : "bf16",
         w->spark_restored ? " (shared restored weights)" : " (per-call restore)");
     g->ready = spark2_5_graph_reset(g);
     return g;
@@ -445,16 +476,29 @@ static bool spark2_5_layer(ds4_spark2_5_graph *g, const ds4_model *m,
         (uint64_t)rows * SPARK_Q_DIM), "query scale");
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->k, g->k,
         (uint64_t)rows * SPARK_KV_DIM), "k rounding after rope");
-    SPARK_STEP(ds4_gpu_g4_kv_store(g->kcache[il], g->k, g->positions, rows,
-        SPARK_KV_DIM, ring, kv_rows), "key cache store");
-    SPARK_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows,
-        SPARK_KV_DIM, ring, kv_rows), "value cache store");
+    /* Full layers may keep E4M3 rows with one f16 scale per KV head
+     * (DS4_SPARK2_5_FULL_KV=fp8); the sliding layers and the default stay
+     * BF16. Both lanes share the attention geometry below. */
+    if (g->full_fp8 && full) {
+        SPARK_STEP(ds4_gpu_g4_kv_store_fp8(g->fkcache[il], g->k, g->v,
+            g->positions, rows, SPARK_KV_DIM, SPARK_KV_HEADS, SPARK_HEAD_DIM,
+            ring, kv_rows), "FP8 key/value cache store");
+        SPARK_STEP(ds4_gpu_g4_attn_fp8(g->attn, g->q, g->fkcache[il],
+            g->positions, rows, pos0, SPARK_HEADS, SPARK_KV_HEADS,
+            SPARK_HEAD_DIM, 0u, ring, 0u, spark2_5_fp8_row_bytes()),
+            "FP8 attention");
+    } else {
+        SPARK_STEP(ds4_gpu_g4_kv_store(g->kcache[il], g->k, g->positions, rows,
+            SPARK_KV_DIM, ring, kv_rows), "key cache store");
+        SPARK_STEP(ds4_gpu_g4_kv_store(g->vcache[il], g->v, g->positions, rows,
+            SPARK_KV_DIM, ring, kv_rows), "value cache store");
 
-    /* 4:1 grouped causal attention, sliding on 27 layers and full on 9
-     * (modeling_spark.py:60-96; config.json sliding_window 512). */
-    SPARK_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il],
-        g->positions, rows, pos0, SPARK_HEADS, SPARK_KV_HEADS,
-        SPARK_HEAD_DIM, full ? 0u : SPARK_WINDOW, ring, 0u), "attention");
+        /* 4:1 grouped causal attention, sliding on 27 layers and full on 9
+         * (modeling_spark.py:60-96; config.json sliding_window 512). */
+        SPARK_STEP(ds4_gpu_g4_attn(g->attn, g->q, g->kcache[il], g->vcache[il],
+            g->positions, rows, pos0, SPARK_HEADS, SPARK_KV_HEADS,
+            SPARK_HEAD_DIM, full ? 0u : SPARK_WINDOW, ring, 0u), "attention");
+    }
     SPARK_STEP(ds4_gpu_motif3_round_bf16_tensor(g->attn, g->attn,
         (uint64_t)rows * SPARK_Q_DIM), "attention output rounding");
 

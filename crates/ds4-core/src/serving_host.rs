@@ -230,6 +230,15 @@ const GEMMA4_WINDOW: u64 = 1024;
 /// `G4_MTP_DRAFTS` (ds4_gemma4_plan.h): one verify block is drafts + 1 rows,
 /// and the sliding ring must be that much wider than the window.
 const GEMMA4_MTP_DRAFTS: u32 = 6;
+
+/// Spark-X2.6 (`ds4_spark2_5_graph.inc` spark2_5_prefill_cap): the native
+/// default is min(ctx, 512), the family env up to 1024.
+const SPARK_PREFILL_CHUNK_ENV: &str = "DS4_SPARK2_5_PREFILL_CHUNK";
+const SPARK_NATIVE_DEFAULT: u32 = 512;
+const SPARK_NATIVE_MAX: u32 = 1024;
+/// config.json sliding_window: the 27 sliding layers keep window + chunk rows
+/// (ds4_spark2_5_kv_rows), the nine full layers the whole context.
+const SPARK_WINDOW: u64 = 512;
 const GEMMA4_MTP_EMBED: u64 = 1024;
 const GEMMA4_MTP_FFN: u64 = 8192;
 const GEMMA4_SLIDING_KV_HEADS: u64 = 8;
@@ -765,6 +774,21 @@ pub fn fill_quote_facts(
                 0,
             )
         }
+        (ModelFamily::Spark2_5Vq, Some(s)) => {
+            // ds4_spark2_5_graph.inc spark2_5_kv_bytes: the nine full layers
+            // hold the whole context (E4M3 rows under
+            // DS4_SPARK2_5_FULL_KV=fp8, ds4_spark2_5_vq.h:76-84), the 27
+            // sliding layers a ring of window + chunk. The generic 36 x ctx
+            // charge priced every layer at full width, 19.3 GiB at 131K
+            // against 2.37 GiB real, and refused 128K before the model opened.
+            let cap = native.min(ctx_tokens).max(1);
+            (
+                spark2_5_kv_bytes(s, ctx, cap),
+                spark2_5_scratch_bytes(s, cap),
+                0,
+                0,
+            )
+        }
         _ => (kv, 0, 0, 0),
     };
     let mut media_extra = 0;
@@ -986,6 +1010,15 @@ pub fn attach_host_quote(
         }
     }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
+    // Spark-X2.6 materialises a BF16 copy of every encoded matrix once per
+    // engine (ds4_gpu_gvq_restore_device): 7.03 GiB the 0.78 GiB artifact
+    // span does not carry. Charge it as resident weights so the admission
+    // quote describes what the open already allocated.
+    if caps.family == ModelFamily::Spark2_5Vq && spark2_5_restore_on() {
+        if let Some(shape) = shape {
+            weights_bytes = weights_bytes.saturating_add(spark2_5_restored_bytes(shape));
+        }
+    }
     // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
     if let (ModelFamily::Ling31Vq, MtpMode::On, Some(path)) =
         (caps.family, req.mtp_mode, model_path)
@@ -1552,7 +1585,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             DOTS3_NATIVE_MAX,
         ),
         // No engine and no prefill switch: one row per forward.
-        ModelFamily::Spark2_5Vq => 1,
+        ModelFamily::Spark2_5Vq => env_u32(
+            SPARK_PREFILL_CHUNK_ENV,
+            SPARK_NATIVE_DEFAULT,
+            1,
+            SPARK_NATIVE_MAX,
+        ),
     };
     cap.min(ctx)
 }
@@ -3306,6 +3344,77 @@ fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
         live.saturating_add(mapped)
             .saturating_add(resident_runtime(facts)),
     );
+}
+
+/// ds4_spark2_5_graph.inc spark2_5_kv_bytes, mirrored: the nine full layers
+/// (il % 4 == 3) hold `ctx` rows, the 27 sliding layers `min(ctx, window +
+/// chunk)`. A full layer's row is BF16 K|V, or E4M3 K|V plus one f16 scale
+/// per KV head each under DS4_SPARK2_5_FULL_KV=fp8
+/// (cuda/gemma4_attn_fp8.cuh:14-20, ds4_spark2_5_vq.h spark2_5_fp8_row_bytes).
+fn spark2_5_kv_bytes(shape: Shape, ctx: u64, cap: u32) -> u64 {
+    let fp8 = std::env::var("DS4_SPARK2_5_FULL_KV").ok().as_deref() == Some("fp8");
+    let kv_heads = u64::from(shape.n_head_kv);
+    let kv_dim = kv_heads * u64::from(shape.n_head_dim);
+    let bf16_row = 2 * kv_dim * 2;
+    let fp8_row = 2 * kv_dim + 2 * kv_heads * 2;
+    let sliding = ctx.min(SPARK_WINDOW + u64::from(cap));
+    (0..shape.n_layer)
+        .map(|il| {
+            let full = il % 4 == 3;
+            let rows = if full { ctx } else { sliding };
+            rows * if full && fp8 { fp8_row } else { bf16_row }
+        })
+        .sum()
+}
+
+/// ds4_spark2_5_graph.inc spark2_5_activation_bytes plus
+/// spark2_5_linear_workspace, mirrored: the F32 row buffers, the token and
+/// position rows, the logits and the two rope tables, then the GVQ linear
+/// scratch (cuda/glm_vq_linear.cuh:22-28) sized by the widest matrix, the
+/// 10,240 x 2,560 FFN pair.
+fn spark2_5_scratch_bytes(shape: Shape, cap: u32) -> u64 {
+    const CUBLAS_WORKSPACE: u64 = 32 << 20;
+    let rows = u64::from(cap);
+    let embd = u64::from(shape.n_embd);
+    let heads = u64::from(shape.n_head);
+    let kv_heads = u64::from(shape.n_head_kv);
+    let head_dim = u64::from(shape.n_head_dim);
+    let qkv = (heads + 2 * kv_heads) * head_dim;
+    let q = heads * head_dim;
+    let kv = kv_heads * head_dim;
+    let ff = u64::from(shape.n_ff_dense);
+    let acts = rows * 4 * (3 * embd + qkv + 2 * q + 2 * kv + heads + 3 * ff + embd)
+        + rows * 8
+        + u64::from(shape.n_vocab) * 4
+        // (SPARK_ROT_SLIDING + SPARK_ROT_FULL) / 2 f32 entries.
+        + (256 + 64) / 2 * 4;
+    let linear = CUBLAS_WORKSPACE + rows * 8 * 4;
+    // glmvq_linear_bytes with FP8 storage: the whole matrix restored to BF16
+    // plus the row and column copies the GEMM stages.
+    let widest = (ff * embd + rows * (ff + embd)) * 2;
+    acts + linear.max(widest)
+}
+
+/// The BF16 image ds4_gpu_gvq_restore_device materialises once per engine
+/// (ds4_glmvq_gpu.cuh): every encoded matrix at rows * cols * 2 bytes. The
+/// artifact's own 0.78 GiB span does not carry it, and the 7.03 GiB image is
+/// what makes a 128K session need the FP8 KV lane on a 12 GiB card.
+fn spark2_5_restored_bytes(shape: Shape) -> u64 {
+    let embd = u64::from(shape.n_embd);
+    let heads = u64::from(shape.n_head);
+    let kv_heads = u64::from(shape.n_head_kv);
+    let head_dim = u64::from(shape.n_head_dim);
+    let qkv = (heads + 2 * kv_heads) * head_dim;
+    let q = heads * head_dim;
+    let ff = u64::from(shape.n_ff_dense);
+    // qkv + out + gate + up + down, each rows * cols.
+    let per_layer = qkv * embd + q * embd + 2 * embd * ff + ff * embd;
+    per_layer * u64::from(shape.n_layer) * 2
+}
+
+/// DS4_SPARK2_5_RESTORE=0 keeps the per-call restore (ds4_spark2_5_graph.inc).
+fn spark2_5_restore_on() -> bool {
+    std::env::var("DS4_SPARK2_5_RESTORE").ok().as_deref() != Some("0")
 }
 
 fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {

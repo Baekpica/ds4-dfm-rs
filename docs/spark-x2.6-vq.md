@@ -18,6 +18,7 @@ implementation of the graph is the checkpoint's
 | Inventory check (type and shape per tensor, GVQ1/GVR8 headers, book and residual links) | implemented |
 | Tokenizer and chat adapter | implemented, `crates/ds4-core/src/tok/spark2_5.rs` |
 | Forward pass (36 layers, fused qkv, dual rope, serial KV) | implemented, `ds4_spark2_5_graph.inc`, `cuda/spark2_5.cuh` |
+| Full-layer KV as E4M3 (`DS4_SPARK2_5_FULL_KV=fp8`) | implemented, smoke-gated (see KV below) |
 | Serving lane (banks, disk KV, snapshots, drafter) | not implemented, declared absent |
 
 Nothing in the serving capability table is qualified for this family: banks,
@@ -44,6 +45,32 @@ embed × 2560 ─▶ [ rms ─▶ GQA sliding 512 / full ─▶ sigmoid head gat
 - Per-head sigmoid output gate (`gate_attn_act_mode`), 16 BF16 columns per
   layer; no q/k norm tensors.
 - Dense FFN, 10,240 wide, gelu; no experts, no drafter.
+
+### KV
+
+A BF16 row of one layer is 2 x 1,024 x 2 B = 4,096 bytes. Sliding layers keep
+`window + chunk` rows (512 + 512 by default), so their 27 rings stay small;
+the nine full layers keep the whole context, which is the cost that decides
+the serving context:
+
+| Context | Full layers BF16 | Full layers E4M3 | Sliding rings (27) |
+|---|---|---|---|
+| 8,192 | 288 MiB | 145 MiB | 108 MiB |
+| 32,768 | 1,152 MiB | 580 MiB | 108 MiB |
+| 131,072 | 4,608 MiB | 2,320 MiB | 108 MiB |
+
+`DS4_SPARK2_5_FULL_KV=fp8` stores the nine full layers as the row Beam, MiMo
+and Gemma-4 already ship: E4M3 K | E4M3 V | one f16 scale per KV head for
+each, 2,064 bytes against 4,096 (`cuda/gemma4_attn_fp8.cuh:14-20`,
+`ds4_gpu_g4_kv_store_fp8` and `ds4_gpu_g4_attn_fp8`). Sliding layers stay
+BF16; their window bounds them. The switch is read where the graph is created
+(`ds4_spark2_5_vq.h`), so the allocator, the session fit and the host quote
+(`serving_host.rs` `spark2_5_kv_bytes`) price the same rows.
+
+Measured, not yet a quality gate: at 131,072 with `DS4_SPARK2_5_RESTORE=0`
+the graph allocates 2.37 GiB of KV and answers "The capital of France is
+Paris" and "1+2 = 3" correctly; the FP8-vs-BF16 teacher-forced NLL and top-1
+gate at 32K-131K is still required before this lane is called qualified.
 
 ## Artifact
 
@@ -255,9 +282,9 @@ Exact/None, disk None, snapshot None, MTP None, and ctx_max None (:1025-1043).
 The order below is the one that unblocks the most; none may be marked
 Qualified without the gate named here.
 
-1. ctx_max: the model's native maximum is 1,048,576, but the nine full layers
-   cost 36 GiB at BF16 rows (2 x 1,048,576 x 1,024 x 2 B each), so a measured
-   fit comes first: FP8 rows or a smaller qualified context.
+1. ctx_max: the model's native maximum is 1,048,576 and 128K now fits with
+   E4M3 full-layer rows, but the measured FP8 gate above and a 1M fit are
+   still missing, so the declared context stays unqualified.
 2. reuse: sync_keep over the ring (window + chunk), gated by an identical
    resend and a re-rendered continuation. serving-check already reports
    prefix 16/17 and continue 17/17 as works-but-undeclared.
@@ -268,9 +295,8 @@ Qualified without the gate named here.
 5. drafter: none exists for this artifact. The DSpark sidecar in the
    checkpoint tree is a DFlash drafter for Spark X2.5 (architecture dflash,
    block_size 7, target layers 3/11/19/26/34), not X2.6.
-6. FP8 KV: Gemma selects it per family with `DS4_GEMMA4_FULL_KV=fp8`
-   (ds4_gemma4.h:106, ds4_gemma4_graph.inc:334). Spark has no FP8 row lane
-   and no switch today. `DS4_CUDA_FP8_KV` sizes the DeepSeek compressed-KV
-   lane (serving_host.rs:2201: `comp_row` from `n_rot`/`n_indexer_head_dim`),
-   so it does not reach this graph: Spark's BF16 KV is untested for FP8
-   support, not inheriting it.
+
+The FP8 lane is per family, `DS4_SPARK2_5_FULL_KV=fp8`, and does not come
+from `DS4_CUDA_FP8_KV`: that switch sizes the DeepSeek compressed-KV lane
+(serving_host.rs:2201, `comp_row` from `n_rot`/`n_indexer_head_dim`) and
+never reaches this graph.

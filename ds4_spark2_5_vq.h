@@ -2,6 +2,8 @@
 #define DS4_SPARK2_5_VQ_H
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* Spark-X2.6-4B VQ (`spark2_5`): a dense, 36-layer GQA transformer over the
  * same R13+8 container Gemma-4 uses, with no routed experts and no drafter.
@@ -64,6 +66,26 @@ static inline int spark2_5_layer_full(unsigned il) {
 
 static inline uint32_t spark2_5_rot(uint32_t il) {
     return spark2_5_layer_full(il) ? SPARK_ROT_FULL : SPARK_ROT_SLIDING;
+}
+
+/* The nine full layers may keep their KV as E4M3 instead of BF16, the lane
+ * Beam, MiMo and Gemma-4 already ship (ds4_gemma4.h:100-110,
+ * ds4_beam_bind.inc:56-67): E4M3 K and V with one f16 scale per KV head,
+ * full layers only. At the native 1M context the BF16 row costs 36 GiB and
+ * 128K costs 4.5 GiB for these layers; E4M3 halves that to 2.27 GiB, which
+ * is what fits a 12 GiB card beside the 7.03 GiB restored image. The 27
+ * sliding layers keep BF16 rows, which their window already bounds. Off by
+ * default; DS4_SPARK2_5_FULL_KV=fp8 turns it on. */
+static inline int spark2_5_full_kv_fp8(void) {
+    const char *v = getenv("DS4_SPARK2_5_FULL_KV");
+    return v && strcmp(v, "fp8") == 0;
+}
+
+/* One combined FP8 full-layer row: E4M3 K | E4M3 V | one f16 scale per KV
+ * head for each (cuda/gemma4_attn_fp8.cuh:1-23). 2,064 bytes against 4,096
+ * BF16 for this geometry. */
+static inline uint64_t spark2_5_fp8_row_bytes(void) {
+    return 2ull * SPARK_KV_DIM + 2ull * SPARK_KV_HEADS * sizeof(uint16_t);
 }
 
 /* The three graph-specific entries (cuda/spark2_5.cuh). */
