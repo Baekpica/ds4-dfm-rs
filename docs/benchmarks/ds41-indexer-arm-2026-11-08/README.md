@@ -41,10 +41,12 @@ run means, following the [October 13 card](../ds41-spark-64k-2026-10-13/README.m
   and are stated rather than smoothed away. Absolute tok/s is therefore not
   comparable with records measured under the capped range.
 - Server `ds4-server` SHA256
-  `865f239cfa945d8d078c9c9e225a873bfff7e8bfdabcd8eb797e865cb03f9f3d`, built
-  from this commit's tree; the campaign build differs from it only in comment
-  text. One binary for all three arms; the arm is chosen by
-  `DS4_DS41_IDX_MMA` in the process environment, never by a rebuild.
+  `865f239cfa945d8d078c9c9e225a873bfff7e8bfdabcd8eb797e865cb03f9f3d` for the
+  measured runs, and `dc7cbad59db933d875799eff39b7f8faca4f59859154ccae3886fcd8d95fa49b`
+  for the artifact rebuilt from this commit's tree; comment text is the only
+  source difference between them, so the code is the same. One binary for all
+  three arms; the arm is chosen by `DS4_DS41_IDX_MMA` in the process
+  environment, never by a rebuild.
 - Same model, corpus and request bodies in every process: single serial
   sequence, automatic embedded MTP, default CUDA graphs and VMM, temperature
   0, reasoning off. No profiler, emitted token trace or logits dump.
