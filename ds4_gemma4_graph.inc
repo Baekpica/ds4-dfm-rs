@@ -615,13 +615,13 @@ static bool gemma4_exact_prefill(void) {
     return ds4_gemma4_knob_bool("DS4_GEMMA4_EXACT_PREFILL");
 }
 
-/* Gemma's own Q4_K decode (cuda/gemma4_q4_decode.cuh), off by default
- * (DS4_GEMMA4_Q4_DECODE=1). One token only; the shared dispatcher, and its
- * scalar fallback under 4 MiB, stays the reference. */
+/* Gemma's own Q4_K decode (cuda/gemma4_q4_decode.cuh), default ON
+ * (DS4_GEMMA4_Q4_DECODE=0 disables). One token only; the shared dispatcher
+ * stays the fallback. */
 static bool g4_q4_decode(void) {
     static int on = -1;
     if (on < 0) {
-        on = ds4_gemma4_knob_bool("DS4_GEMMA4_Q4_DECODE");
+        on = !ds4_gemma4_knob_off("DS4_GEMMA4_Q4_DECODE");
     }
     return on != 0;
 }
@@ -774,11 +774,10 @@ static bool g4_moe_persist(void) {
     } \
 } while (0)
 
-/* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): a route whose expert is
- * absent while the slot pool is full is computed on the host instead of
- * evicting a resident one. The GPU chunk sees a zero-weight stand-in for it
- * (a no-op in the ordered scatter), and the host contribution is added with
- * the same rounding right after the chunk. */
+/* Cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu, default ON): active resident
+ * FP8 experts run on the GPU (Tensor Core WMMA GEMM in prefill, persistent
+ * E4M3 codebook kernels in decode), while non-active (cache-miss) experts run
+ * on the host CPU in parallel instead of evicting resident slots. */
 static bool gemma4_moe_miss_cpu(void) {
     static int on = -1;
     if (on < 0) { on = ds4_gemma4_knob_miss_cpu(); }
@@ -786,64 +785,118 @@ static bool gemma4_moe_miss_cpu(void) {
 }
 
 static bool gemma4_moe_run_mix(ds4_gemma4_graph *g, const ds4_model *m,
-        const ds4_weights *w, uint32_t il, const uint32_t *experts) {
-    static ds4_gpu_tensor *mix_ids, *mix_w, *mix_d;
-    static float hx[G4_EMBED], hd[G4_EMBED];
-    int32_t ids[G4_USED], gids[G4_USED];
-    float ws[G4_USED], gws[G4_USED];
-    uint32_t cpu[G4_USED], ncpu = 0;
-    if (!g->stream ||
-        !ds4_gpu_tensor_read(g->selected, 0, ids, sizeof(ids)) ||
-        !ds4_gpu_tensor_read(g->weights, 0, ws, sizeof(ws))) {
-        return false;
-    }
-    int32_t stand_in = -1;
-    for (uint32_t i = 0; i < G4_USED; i++) {
-        if (ids[i] < 0 || (uint32_t)ids[i] >= G4_EXPERTS) { return false; }
-        if (gemma4_stream_slot_of(g->stream, il, (uint32_t)ids[i]) >= 0 ||
-            gemma4_stream_has_free(g->stream)) {
-            gids[i] = ids[i];
-            gws[i] = ws[i];
-            continue;
-        }
-        if (stand_in < 0) { stand_in = gemma4_stream_any_resident(g->stream, il); }
-        if (stand_in < 0) {
-            gids[i] = ids[i];
-            gws[i] = ws[i];
-            continue;
-        }
-        gids[i] = stand_in;
-        gws[i] = 0.0f;
-        cpu[ncpu++] = i;
-    }
-    if (!mix_ids) {
-        mix_ids = ds4_gpu_tensor_alloc((uint64_t)G4_USED * sizeof(int32_t));
-        mix_w = ds4_gpu_tensor_alloc((uint64_t)G4_USED * sizeof(float));
-        mix_d = ds4_gpu_tensor_alloc((uint64_t)G4_EMBED * sizeof(float));
-        if (!mix_ids || !mix_w || !mix_d) { return false; }
-    }
-    if (!ds4_gpu_tensor_write(mix_ids, 0, gids, sizeof(gids)) ||
-        !ds4_gpu_tensor_write(mix_w, 0, gws, sizeof(gws))) {
-        return false;
-    }
-    const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il, mix_ids, 0, 1);
-    ds4_gpu_g4_moe_note_routes(il, ids, G4_USED);
-    if (!chunk ||
-        !ds4_gpu_g4_moe_run_ids(g->moe, g->exp_acc, g->norm, mix_w, experts,
-                                g->stream->ids, chunk, il)) {
-        return false;
-    }
-    if (!ncpu) { return true; }
-    if (!ds4_gpu_tensor_read(g->norm, 0, hx, (uint64_t)G4_EMBED * sizeof(float))) {
-        return false;
-    }
-    for (uint32_t k = 0; k < ncpu; k++) {
-        const uint32_t i = cpu[k];
-        if (!ds4_gpu_g4_cpu_moe_expert(g->gvq, experts, (uint32_t)ids[i], hx, hd) ||
-            !ds4_gpu_tensor_write(mix_d, 0, hd, (uint64_t)G4_EMBED * sizeof(float)) ||
-            !ds4_gpu_g4_moe_add_one(g->exp_acc, mix_d, ws[i], G4_EMBED)) {
+        const ds4_weights *w, uint32_t il, const uint32_t *experts, uint32_t rows) {
+    static ds4_gpu_tensor *mix_ids;
+    static int32_t *ids, *gids;
+    static float *ws, *cpu_w, *hx, *hd;
+    static uint32_t *cpu_exp, *cpu_tok;
+    static uint32_t cap_rows;
+    if (!g->stream || !rows || rows > g->cap) { return false; }
+    if (rows > cap_rows) {
+        const size_t pairs = (size_t)rows * G4_USED;
+        free(ids); free(gids); free(ws); free(cpu_w);
+        free(cpu_exp); free(cpu_tok); free(hx); free(hd);
+        ids = (int32_t *)malloc(pairs * sizeof(int32_t));
+        gids = (int32_t *)malloc(pairs * sizeof(int32_t));
+        ws = (float *)malloc(pairs * sizeof(float));
+        cpu_w = (float *)malloc(pairs * sizeof(float));
+        cpu_exp = (uint32_t *)malloc(pairs * sizeof(uint32_t));
+        cpu_tok = (uint32_t *)malloc(pairs * sizeof(uint32_t));
+        hx = (float *)malloc((size_t)rows * G4_EMBED * sizeof(float));
+        hd = (float *)malloc(pairs * G4_EMBED * sizeof(float));
+        if (!ids || !gids || !ws || !cpu_w || !cpu_exp || !cpu_tok || !hx || !hd) {
+            cap_rows = 0;
             return false;
         }
+        cap_rows = rows;
+    }
+    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    if (!ds4_gpu_tensor_read(g->selected, 0, ids, pairs * sizeof(int32_t))) {
+        return false;
+    }
+    uint8_t admit[G4_EXPERTS] = {0};
+    uint32_t layer_resident = 0;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        if (gemma4_stream_slot_of(g->stream, il, e) >= 0) {
+            layer_resident++;
+        }
+    }
+    const uint32_t layer_cap = (g->stream->count + G4_LAYERS - 1u - il) / G4_LAYERS;
+    uint32_t free_left = gemma4_stream_free_count(g->stream);
+    const uint32_t layer_room = layer_resident < layer_cap ? (layer_cap - layer_resident) : 0u;
+    if (free_left > layer_room) { free_left = layer_room; }
+    for (uint64_t i = 0; i < pairs; i++) {
+        const int32_t id = ids[i];
+        if (id < 0 || (uint32_t)id >= G4_EXPERTS) { return false; }
+        const uint32_t e = (uint32_t)id;
+        if (admit[e]) { continue; }
+        if (gemma4_stream_slot_of(g->stream, il, e) >= 0) {
+            admit[e] = 1;
+        } else if (free_left > 0) {
+            admit[e] = 1;
+            free_left--;
+        }
+    }
+    uint32_t ncpu = 0, ngpu = 0;
+    for (uint64_t i = 0; i < pairs; i++) {
+        const uint32_t e = (uint32_t)ids[i];
+        if (admit[e]) {
+            gids[i] = ids[i];
+            ngpu++;
+        } else {
+            gids[i] = -1;
+            cpu_exp[ncpu] = e;
+            cpu_tok[ncpu] = (uint32_t)(i / G4_USED);
+            ncpu++;
+        }
+    }
+    ds4_gpu_g4_moe_note_routes(il, ids, (uint32_t)pairs);
+    if (ncpu > 0) {
+        if (!ds4_gpu_tensor_read(g->weights, 0, ws, pairs * sizeof(float)) ||
+            !ds4_gpu_tensor_read(g->norm, 0, hx, (uint64_t)rows * G4_EMBED * sizeof(float))) {
+            return false;
+        }
+        uint32_t k = 0;
+        for (uint64_t i = 0; i < pairs; i++) {
+            if (gids[i] < 0) {
+                cpu_w[k++] = ws[i];
+            }
+        }
+    }
+    if (ngpu > 0) {
+        const uint32_t staged = gemma4_stream_stage_host(g->stream, m, w, il, gids, rows);
+        if (staged != rows) { return false; }
+        bool gpu_done = false;
+        if (rows == 1u && g4_moe_persist()) {
+            const ds4_gpu_tensor *sel_tensor = g->selected;
+            if (ncpu > 0) {
+                if (!mix_ids) {
+                    mix_ids = ds4_gpu_tensor_alloc((uint64_t)G4_USED * sizeof(int32_t));
+                    if (!mix_ids) { return false; }
+                }
+                if (!ds4_gpu_tensor_write(mix_ids, 0, gids, (uint64_t)G4_USED * sizeof(int32_t))) {
+                    return false;
+                }
+                sel_tensor = mix_ids;
+            }
+            gpu_done = ds4_gpu_g4_moe_run_persist(g->moe, g->exp_acc, g->norm, sel_tensor,
+                g->weights, experts, il) != 0;
+        }
+        if (!gpu_done) {
+            if (!ds4_gpu_g4_moe_run_ids(g->moe, g->exp_acc, g->norm, g->weights, experts,
+                    gids, rows, il)) {
+                return false;
+            }
+        }
+    } else {
+        if (!ds4_gpu_tensor_fill_f32(g->exp_acc, 0.0f, (uint64_t)rows * G4_EMBED)) {
+            return false;
+        }
+    }
+    if (!ncpu) { return true; }
+    if (!ds4_gpu_g4_cpu_moe_routes(g->gvq, experts, cpu_exp, cpu_tok, ncpu, hx, rows, hd) ||
+        !ds4_gpu_g4_moe_add_many(g->moe, g->exp_acc, hd, cpu_tok, cpu_w, ncpu, rows)) {
+        return false;
     }
     return true;
 }
@@ -877,8 +930,8 @@ static bool gemma4_moe_run(ds4_gemma4_graph *g, const ds4_model *m,
         return ds4_gpu_g4_moe_run(g->moe, g->exp_acc, g->norm, g->selected,
             g->weights, experts, rows, il) != 0;
     }
-    if (rows == 1u && gemma4_moe_miss_cpu()) {
-        return gemma4_moe_run_mix(g, m, w, il, experts);
+    if (gemma4_moe_miss_cpu()) {
+        return gemma4_moe_run_mix(g, m, w, il, experts, rows);
     }
     for (uint32_t done = 0; done < rows;) {
         const uint32_t chunk = gemma4_stream_stage(g->stream, m, w, il,
