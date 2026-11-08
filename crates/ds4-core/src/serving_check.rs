@@ -37,6 +37,15 @@
 //! Session items compare the top-1 at the frontier and after each forced
 //! token; banks expose only their greedy streams. Exactness is reported,
 //! not required.
+//!
+//! The V4.1 route takes no session: its reuse is the engine's own checkpoint
+//! (`ds4_ds41_kvreuse.inc`), which the run writes and the next run resumes at
+//! its position. A hit therefore chunks its suffix from the checkpoint while
+//! a cold run chunks from zero, which that file names as an FP-level
+//! difference, and a greedy chain carries one near-tie flip into a different
+//! continuation. Its continue item gates the frontier token and reports the
+//! chain rather than failing on it: what reuse must not do is change the
+//! decision at the point it resumes.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -797,6 +806,44 @@ fn admit(
     Ok(a)
 }
 
+/// The verdict for a hit that resumes a checkpoint the run itself wrote.
+///
+/// A hit resumes at the checkpoint's position, so its suffix prefills from
+/// there while a cold run chunks from zero; `ds4_ds41_kvreuse.inc` names that
+/// as an FP-level difference (block boundaries), the same class as changing
+/// the prefill chunk. A greedy chain turns one near-tie flip into a different
+/// continuation, so the chain past the first token is not comparable. What a
+/// hit must preserve is the frontier decision, the first token the reused and
+/// suffixed state emits against the cold run's; a divergence after it is
+/// reported in the detail, not failed.
+fn hit_streams(want: &[i32], got: Result<(i32, Vec<i32>)>) -> Measured {
+    let (kept, tokens) = match got {
+        Ok(got) => got,
+        Err(e) => return Measured::Refused(e.message),
+    };
+    if kept <= 0 {
+        return Measured::Cold;
+    }
+    let Some(first) = tokens.first() else {
+        return Measured::Wrong(format!("kept {kept}, no token emitted"));
+    };
+    if want.first() != Some(first) {
+        return Measured::Wrong(format!(
+            "kept {kept}, the frontier token differs: want {}, got {first}",
+            want.first().copied().unwrap_or(-1)
+        ));
+    }
+    let matched = want.iter().zip(&tokens).take_while(|(a, b)| a == b).count();
+    let of = want.len().max(tokens.len());
+    if matched == of {
+        return Measured::Works(format!("kept {kept}, tokens {matched}/{of}"));
+    }
+    Measured::Works(format!(
+        "kept {kept}, tokens {matched}/{of}; frontier token {first} matches \
+         (a hit resumes the checkpoint's chunk boundary)"
+    ))
+}
+
 fn streams(want: &[i32], got: Result<(i32, Vec<i32>)>) -> Measured {
     let (kept, tokens) = match got {
         Ok(got) => got,
@@ -1125,7 +1172,11 @@ pub fn serving_check_v41(
             Item::Prefix | Item::Rewind => &want_t,
             _ => &want_u,
         };
-        list.rows.push((item, streams(want, got)));
+        let measured = match item {
+            Item::Continue => hit_streams(want, got),
+            _ => streams(want, got),
+        };
+        list.rows.push((item, measured));
     }
     for item in Item::BANK {
         list.rows.push((
@@ -1315,6 +1366,31 @@ mod tests {
         ));
         let wrong = rows(vec![vec![0.0, 2.0, 1.0], vec![0.0, 0.0, 9.0]]);
         assert!(matches!(compare(&both, &wrong, 5), Measured::Wrong(_)));
+    }
+
+    #[test]
+    fn hit_streams_gate_the_frontier_not_the_chain() {
+        let want = [1, 2, 3];
+        assert_eq!(hit_streams(&want, Ok((0, vec![1, 2, 3]))), Measured::Cold);
+        assert!(matches!(
+            hit_streams(&want, Ok((4, vec![1, 2, 3]))),
+            Measured::Works(_)
+        ));
+        // A chain that leaves the cold stream after the frontier is the
+        // chunk-boundary difference, reported, not failed.
+        assert!(matches!(
+            hit_streams(&want, Ok((4, vec![1, 9, 9]))),
+            Measured::Works(_)
+        ));
+        // A different frontier token is what reuse must never do.
+        assert!(matches!(
+            hit_streams(&want, Ok((4, vec![9, 2, 3]))),
+            Measured::Wrong(_)
+        ));
+        assert!(matches!(
+            hit_streams(&want, Ok((4, Vec::new()))),
+            Measured::Wrong(_)
+        ));
     }
 
     #[test]
