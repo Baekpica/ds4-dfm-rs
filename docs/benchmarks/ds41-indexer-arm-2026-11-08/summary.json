@@ -1,0 +1,2273 @@
+{
+  "repeats": 2,
+  "arms": {
+    "scalar": {
+      "metrics": {
+        "prefill_tps": {
+          "run_means": [
+            978.528125,
+            981.865625
+          ],
+          "mean_of_run_means": 980.1968750000001
+        },
+        "gen_tps": {
+          "run_means": [
+            35.278125,
+            35.315625
+          ],
+          "mean_of_run_means": 35.296875
+        }
+      },
+      "frontiers": [
+        {
+          "frontier_tokens": 2048,
+          "actual_prompt_tokens": 2149,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              951.9,
+              957.5
+            ],
+            "median": 954.7,
+            "min": 951.9,
+            "max": 957.5
+          },
+          "gen_tps": {
+            "runs": [
+              41.2,
+              43.0
+            ],
+            "median": 42.1,
+            "min": 41.2,
+            "max": 43.0
+          }
+        },
+        {
+          "frontier_tokens": 4096,
+          "actual_prompt_tokens": 4268,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1024.7,
+              1029.5
+            ],
+            "median": 1027.1,
+            "min": 1024.7,
+            "max": 1029.5
+          },
+          "gen_tps": {
+            "runs": [
+              44.1,
+              44.0
+            ],
+            "median": 44.05,
+            "min": 44.0,
+            "max": 44.1
+          }
+        },
+        {
+          "frontier_tokens": 6144,
+          "actual_prompt_tokens": 6398,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1033.3,
+              1037.7
+            ],
+            "median": 1035.5,
+            "min": 1033.3,
+            "max": 1037.7
+          },
+          "gen_tps": {
+            "runs": [
+              30.7,
+              30.5
+            ],
+            "median": 30.6,
+            "min": 30.5,
+            "max": 30.7
+          }
+        },
+        {
+          "frontier_tokens": 8192,
+          "actual_prompt_tokens": 8449,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1042.2,
+              1045.6
+            ],
+            "median": 1043.9,
+            "min": 1042.2,
+            "max": 1045.6
+          },
+          "gen_tps": {
+            "runs": [
+              32.9,
+              33.0
+            ],
+            "median": 32.95,
+            "min": 32.9,
+            "max": 33.0
+          }
+        },
+        {
+          "frontier_tokens": 10240,
+          "actual_prompt_tokens": 10487,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1044.6,
+              1048.3
+            ],
+            "median": 1046.4499999999998,
+            "min": 1044.6,
+            "max": 1048.3
+          },
+          "gen_tps": {
+            "runs": [
+              32.0,
+              31.9
+            ],
+            "median": 31.95,
+            "min": 31.9,
+            "max": 32.0
+          }
+        },
+        {
+          "frontier_tokens": 12288,
+          "actual_prompt_tokens": 12541,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1039.0,
+              1042.0
+            ],
+            "median": 1040.5,
+            "min": 1039.0,
+            "max": 1042.0
+          },
+          "gen_tps": {
+            "runs": [
+              29.8,
+              29.9
+            ],
+            "median": 29.85,
+            "min": 29.8,
+            "max": 29.9
+          }
+        },
+        {
+          "frontier_tokens": 14336,
+          "actual_prompt_tokens": 14516,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1043.2,
+              1047.5
+            ],
+            "median": 1045.35,
+            "min": 1043.2,
+            "max": 1047.5
+          },
+          "gen_tps": {
+            "runs": [
+              32.2,
+              32.3
+            ],
+            "median": 32.25,
+            "min": 32.2,
+            "max": 32.3
+          }
+        },
+        {
+          "frontier_tokens": 16384,
+          "actual_prompt_tokens": 16546,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1043.2,
+              1044.5
+            ],
+            "median": 1043.85,
+            "min": 1043.2,
+            "max": 1044.5
+          },
+          "gen_tps": {
+            "runs": [
+              31.1,
+              31.1
+            ],
+            "median": 31.1,
+            "min": 31.1,
+            "max": 31.1
+          }
+        },
+        {
+          "frontier_tokens": 18432,
+          "actual_prompt_tokens": 18537,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1038.5,
+              1041.8
+            ],
+            "median": 1040.15,
+            "min": 1038.5,
+            "max": 1041.8
+          },
+          "gen_tps": {
+            "runs": [
+              34.4,
+              34.1
+            ],
+            "median": 34.25,
+            "min": 34.1,
+            "max": 34.4
+          }
+        },
+        {
+          "frontier_tokens": 20480,
+          "actual_prompt_tokens": 20573,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1034.4,
+              1037.6
+            ],
+            "median": 1036.0,
+            "min": 1034.4,
+            "max": 1037.6
+          },
+          "gen_tps": {
+            "runs": [
+              32.8,
+              32.9
+            ],
+            "median": 32.849999999999994,
+            "min": 32.8,
+            "max": 32.9
+          }
+        },
+        {
+          "frontier_tokens": 22528,
+          "actual_prompt_tokens": 22609,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1028.3,
+              1031.9
+            ],
+            "median": 1030.1,
+            "min": 1028.3,
+            "max": 1031.9
+          },
+          "gen_tps": {
+            "runs": [
+              41.4,
+              41.6
+            ],
+            "median": 41.5,
+            "min": 41.4,
+            "max": 41.6
+          }
+        },
+        {
+          "frontier_tokens": 24576,
+          "actual_prompt_tokens": 24651,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1020.8,
+              1025.2
+            ],
+            "median": 1023.0,
+            "min": 1020.8,
+            "max": 1025.2
+          },
+          "gen_tps": {
+            "runs": [
+              32.2,
+              32.6
+            ],
+            "median": 32.400000000000006,
+            "min": 32.2,
+            "max": 32.6
+          }
+        },
+        {
+          "frontier_tokens": 26624,
+          "actual_prompt_tokens": 26665,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1015.2,
+              1016.7
+            ],
+            "median": 1015.95,
+            "min": 1015.2,
+            "max": 1016.7
+          },
+          "gen_tps": {
+            "runs": [
+              32.0,
+              32.0
+            ],
+            "median": 32.0,
+            "min": 32.0,
+            "max": 32.0
+          }
+        },
+        {
+          "frontier_tokens": 28672,
+          "actual_prompt_tokens": 28691,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1010.6,
+              1013.3
+            ],
+            "median": 1011.95,
+            "min": 1010.6,
+            "max": 1013.3
+          },
+          "gen_tps": {
+            "runs": [
+              41.7,
+              41.8
+            ],
+            "median": 41.75,
+            "min": 41.7,
+            "max": 41.8
+          }
+        },
+        {
+          "frontier_tokens": 30720,
+          "actual_prompt_tokens": 30712,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              945.3,
+              948.8
+            ],
+            "median": 947.05,
+            "min": 945.3,
+            "max": 948.8
+          },
+          "gen_tps": {
+            "runs": [
+              42.9,
+              42.9
+            ],
+            "median": 42.9,
+            "min": 42.9,
+            "max": 42.9
+          }
+        },
+        {
+          "frontier_tokens": 32768,
+          "actual_prompt_tokens": 32749,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              944.9,
+              948.6
+            ],
+            "median": 946.75,
+            "min": 944.9,
+            "max": 948.6
+          },
+          "gen_tps": {
+            "runs": [
+              41.5,
+              41.2
+            ],
+            "median": 41.35,
+            "min": 41.2,
+            "max": 41.5
+          }
+        },
+        {
+          "frontier_tokens": 34816,
+          "actual_prompt_tokens": 34846,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              992.5,
+              995.5
+            ],
+            "median": 994.0,
+            "min": 992.5,
+            "max": 995.5
+          },
+          "gen_tps": {
+            "runs": [
+              41.4,
+              41.4
+            ],
+            "median": 41.4,
+            "min": 41.4,
+            "max": 41.4
+          }
+        },
+        {
+          "frontier_tokens": 36864,
+          "actual_prompt_tokens": 36948,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              985.7,
+              988.8
+            ],
+            "median": 987.25,
+            "min": 985.7,
+            "max": 988.8
+          },
+          "gen_tps": {
+            "runs": [
+              34.6,
+              34.5
+            ],
+            "median": 34.55,
+            "min": 34.5,
+            "max": 34.6
+          }
+        },
+        {
+          "frontier_tokens": 38912,
+          "actual_prompt_tokens": 38975,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              979.4,
+              982.8
+            ],
+            "median": 981.0999999999999,
+            "min": 979.4,
+            "max": 982.8
+          },
+          "gen_tps": {
+            "runs": [
+              35.4,
+              35.5
+            ],
+            "median": 35.45,
+            "min": 35.4,
+            "max": 35.5
+          }
+        },
+        {
+          "frontier_tokens": 40960,
+          "actual_prompt_tokens": 41121,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              975.1,
+              975.6
+            ],
+            "median": 975.35,
+            "min": 975.1,
+            "max": 975.6
+          },
+          "gen_tps": {
+            "runs": [
+              39.9,
+              39.9
+            ],
+            "median": 39.9,
+            "min": 39.9,
+            "max": 39.9
+          }
+        },
+        {
+          "frontier_tokens": 43008,
+          "actual_prompt_tokens": 43208,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              966.3,
+              968.1
+            ],
+            "median": 967.2,
+            "min": 966.3,
+            "max": 968.1
+          },
+          "gen_tps": {
+            "runs": [
+              32.1,
+              31.2
+            ],
+            "median": 31.65,
+            "min": 31.2,
+            "max": 32.1
+          }
+        },
+        {
+          "frontier_tokens": 45056,
+          "actual_prompt_tokens": 45315,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              959.9,
+              962.4
+            ],
+            "median": 961.15,
+            "min": 959.9,
+            "max": 962.4
+          },
+          "gen_tps": {
+            "runs": [
+              32.3,
+              32.0
+            ],
+            "median": 32.15,
+            "min": 32.0,
+            "max": 32.3
+          }
+        },
+        {
+          "frontier_tokens": 47104,
+          "actual_prompt_tokens": 47364,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              951.9,
+              955.2
+            ],
+            "median": 953.55,
+            "min": 951.9,
+            "max": 955.2
+          },
+          "gen_tps": {
+            "runs": [
+              33.7,
+              33.8
+            ],
+            "median": 33.75,
+            "min": 33.7,
+            "max": 33.8
+          }
+        },
+        {
+          "frontier_tokens": 49152,
+          "actual_prompt_tokens": 49440,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              946.4,
+              950.6
+            ],
+            "median": 948.5,
+            "min": 946.4,
+            "max": 950.6
+          },
+          "gen_tps": {
+            "runs": [
+              32.9,
+              32.8
+            ],
+            "median": 32.849999999999994,
+            "min": 32.8,
+            "max": 32.9
+          }
+        },
+        {
+          "frontier_tokens": 51200,
+          "actual_prompt_tokens": 51650,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              938.3,
+              941.9
+            ],
+            "median": 940.0999999999999,
+            "min": 938.3,
+            "max": 941.9
+          },
+          "gen_tps": {
+            "runs": [
+              41.2,
+              41.2
+            ],
+            "median": 41.2,
+            "min": 41.2,
+            "max": 41.2
+          }
+        },
+        {
+          "frontier_tokens": 53248,
+          "actual_prompt_tokens": 53800,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              928.4,
+              932.4
+            ],
+            "median": 930.4,
+            "min": 928.4,
+            "max": 932.4
+          },
+          "gen_tps": {
+            "runs": [
+              39.2,
+              40.3
+            ],
+            "median": 39.75,
+            "min": 39.2,
+            "max": 40.3
+          }
+        },
+        {
+          "frontier_tokens": 55296,
+          "actual_prompt_tokens": 55966,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              923.4,
+              924.2
+            ],
+            "median": 923.8,
+            "min": 923.4,
+            "max": 924.2
+          },
+          "gen_tps": {
+            "runs": [
+              33.2,
+              32.9
+            ],
+            "median": 33.05,
+            "min": 32.9,
+            "max": 33.2
+          }
+        },
+        {
+          "frontier_tokens": 57344,
+          "actual_prompt_tokens": 58131,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              913.7,
+              916.9
+            ],
+            "median": 915.3,
+            "min": 913.7,
+            "max": 916.9
+          },
+          "gen_tps": {
+            "runs": [
+              32.1,
+              32.4
+            ],
+            "median": 32.25,
+            "min": 32.1,
+            "max": 32.4
+          }
+        },
+        {
+          "frontier_tokens": 59392,
+          "actual_prompt_tokens": 60213,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              907.0,
+              911.8
+            ],
+            "median": 909.4,
+            "min": 907.0,
+            "max": 911.8
+          },
+          "gen_tps": {
+            "runs": [
+              29.6,
+              29.6
+            ],
+            "median": 29.6,
+            "min": 29.6,
+            "max": 29.6
+          }
+        },
+        {
+          "frontier_tokens": 61440,
+          "actual_prompt_tokens": 62355,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              900.4,
+              904.8
+            ],
+            "median": 902.5999999999999,
+            "min": 900.4,
+            "max": 904.8
+          },
+          "gen_tps": {
+            "runs": [
+              33.8,
+              33.4
+            ],
+            "median": 33.599999999999994,
+            "min": 33.4,
+            "max": 33.8
+          }
+        },
+        {
+          "frontier_tokens": 63488,
+          "actual_prompt_tokens": 64524,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              894.2,
+              898.6
+            ],
+            "median": 896.4000000000001,
+            "min": 894.2,
+            "max": 898.6
+          },
+          "gen_tps": {
+            "runs": [
+              31.4,
+              31.2
+            ],
+            "median": 31.299999999999997,
+            "min": 31.2,
+            "max": 31.4
+          }
+        },
+        {
+          "frontier_tokens": 65536,
+          "actual_prompt_tokens": 66608,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              890.2,
+              893.6
+            ],
+            "median": 891.9000000000001,
+            "min": 890.2,
+            "max": 893.6
+          },
+          "gen_tps": {
+            "runs": [
+              33.2,
+              33.2
+            ],
+            "median": 33.2,
+            "min": 33.2,
+            "max": 33.2
+          }
+        }
+      ]
+    },
+    "s8": {
+      "metrics": {
+        "prefill_tps": {
+          "run_means": [
+            1094.9,
+            1091.434375
+          ],
+          "mean_of_run_means": 1093.1671875000002
+        },
+        "gen_tps": {
+          "run_means": [
+            36.203125,
+            36.1125
+          ],
+          "mean_of_run_means": 36.1578125
+        }
+      },
+      "frontiers": [
+        {
+          "frontier_tokens": 2048,
+          "actual_prompt_tokens": 2149,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              969.7,
+              960.3
+            ],
+            "median": 965.0,
+            "min": 960.3,
+            "max": 969.7
+          },
+          "gen_tps": {
+            "runs": [
+              43.3,
+              42.9
+            ],
+            "median": 43.099999999999994,
+            "min": 42.9,
+            "max": 43.3
+          }
+        },
+        {
+          "frontier_tokens": 4096,
+          "actual_prompt_tokens": 4268,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1051.7,
+              1038.0
+            ],
+            "median": 1044.85,
+            "min": 1038.0,
+            "max": 1051.7
+          },
+          "gen_tps": {
+            "runs": [
+              44.9,
+              44.9
+            ],
+            "median": 44.9,
+            "min": 44.9,
+            "max": 44.9
+          }
+        },
+        {
+          "frontier_tokens": 6144,
+          "actual_prompt_tokens": 6398,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1067.4,
+              1058.4
+            ],
+            "median": 1062.9,
+            "min": 1058.4,
+            "max": 1067.4
+          },
+          "gen_tps": {
+            "runs": [
+              31.1,
+              31.1
+            ],
+            "median": 31.1,
+            "min": 31.1,
+            "max": 31.1
+          }
+        },
+        {
+          "frontier_tokens": 8192,
+          "actual_prompt_tokens": 8449,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1079.9,
+              1072.0
+            ],
+            "median": 1075.95,
+            "min": 1072.0,
+            "max": 1079.9
+          },
+          "gen_tps": {
+            "runs": [
+              34.3,
+              34.0
+            ],
+            "median": 34.15,
+            "min": 34.0,
+            "max": 34.3
+          }
+        },
+        {
+          "frontier_tokens": 10240,
+          "actual_prompt_tokens": 10487,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1092.4,
+              1086.2
+            ],
+            "median": 1089.3000000000002,
+            "min": 1086.2,
+            "max": 1092.4
+          },
+          "gen_tps": {
+            "runs": [
+              32.3,
+              32.2
+            ],
+            "median": 32.25,
+            "min": 32.2,
+            "max": 32.3
+          }
+        },
+        {
+          "frontier_tokens": 12288,
+          "actual_prompt_tokens": 12541,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1093.0,
+              1090.9
+            ],
+            "median": 1091.95,
+            "min": 1090.9,
+            "max": 1093.0
+          },
+          "gen_tps": {
+            "runs": [
+              29.8,
+              30.0
+            ],
+            "median": 29.9,
+            "min": 29.8,
+            "max": 30.0
+          }
+        },
+        {
+          "frontier_tokens": 14336,
+          "actual_prompt_tokens": 14516,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1101.4,
+              1095.3
+            ],
+            "median": 1098.35,
+            "min": 1095.3,
+            "max": 1101.4
+          },
+          "gen_tps": {
+            "runs": [
+              32.7,
+              32.5
+            ],
+            "median": 32.6,
+            "min": 32.5,
+            "max": 32.7
+          }
+        },
+        {
+          "frontier_tokens": 16384,
+          "actual_prompt_tokens": 16546,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1104.9,
+              1098.9
+            ],
+            "median": 1101.9,
+            "min": 1098.9,
+            "max": 1104.9
+          },
+          "gen_tps": {
+            "runs": [
+              31.5,
+              31.4
+            ],
+            "median": 31.45,
+            "min": 31.4,
+            "max": 31.5
+          }
+        },
+        {
+          "frontier_tokens": 18432,
+          "actual_prompt_tokens": 18537,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.7,
+              1102.6
+            ],
+            "median": 1105.65,
+            "min": 1102.6,
+            "max": 1108.7
+          },
+          "gen_tps": {
+            "runs": [
+              35.1,
+              35.2
+            ],
+            "median": 35.150000000000006,
+            "min": 35.1,
+            "max": 35.2
+          }
+        },
+        {
+          "frontier_tokens": 20480,
+          "actual_prompt_tokens": 20573,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.9,
+              1105.8
+            ],
+            "median": 1107.35,
+            "min": 1105.8,
+            "max": 1108.9
+          },
+          "gen_tps": {
+            "runs": [
+              33.2,
+              33.3
+            ],
+            "median": 33.25,
+            "min": 33.2,
+            "max": 33.3
+          }
+        },
+        {
+          "frontier_tokens": 22528,
+          "actual_prompt_tokens": 22609,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.0,
+              1105.5
+            ],
+            "median": 1106.75,
+            "min": 1105.5,
+            "max": 1108.0
+          },
+          "gen_tps": {
+            "runs": [
+              42.2,
+              42.3
+            ],
+            "median": 42.25,
+            "min": 42.2,
+            "max": 42.3
+          }
+        },
+        {
+          "frontier_tokens": 24576,
+          "actual_prompt_tokens": 24651,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.6,
+              1108.0
+            ],
+            "median": 1108.3,
+            "min": 1108.0,
+            "max": 1108.6
+          },
+          "gen_tps": {
+            "runs": [
+              32.7,
+              32.9
+            ],
+            "median": 32.8,
+            "min": 32.7,
+            "max": 32.9
+          }
+        },
+        {
+          "frontier_tokens": 26624,
+          "actual_prompt_tokens": 26665,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.3,
+              1108.2
+            ],
+            "median": 1108.25,
+            "min": 1108.2,
+            "max": 1108.3
+          },
+          "gen_tps": {
+            "runs": [
+              32.3,
+              32.3
+            ],
+            "median": 32.3,
+            "min": 32.3,
+            "max": 32.3
+          }
+        },
+        {
+          "frontier_tokens": 28672,
+          "actual_prompt_tokens": 28691,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1112.5,
+              1110.1
+            ],
+            "median": 1111.3,
+            "min": 1110.1,
+            "max": 1112.5
+          },
+          "gen_tps": {
+            "runs": [
+              43.4,
+              43.3
+            ],
+            "median": 43.349999999999994,
+            "min": 43.3,
+            "max": 43.4
+          }
+        },
+        {
+          "frontier_tokens": 30720,
+          "actual_prompt_tokens": 30712,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1065.3,
+              1068.2
+            ],
+            "median": 1066.75,
+            "min": 1065.3,
+            "max": 1068.2
+          },
+          "gen_tps": {
+            "runs": [
+              43.9,
+              43.7
+            ],
+            "median": 43.8,
+            "min": 43.7,
+            "max": 43.9
+          }
+        },
+        {
+          "frontier_tokens": 32768,
+          "actual_prompt_tokens": 32749,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1073.6,
+              1073.8
+            ],
+            "median": 1073.6999999999998,
+            "min": 1073.6,
+            "max": 1073.8
+          },
+          "gen_tps": {
+            "runs": [
+              42.3,
+              42.5
+            ],
+            "median": 42.4,
+            "min": 42.3,
+            "max": 42.5
+          }
+        },
+        {
+          "frontier_tokens": 34816,
+          "actual_prompt_tokens": 34846,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1111.2,
+              1108.2
+            ],
+            "median": 1109.7,
+            "min": 1108.2,
+            "max": 1111.2
+          },
+          "gen_tps": {
+            "runs": [
+              42.4,
+              42.3
+            ],
+            "median": 42.349999999999994,
+            "min": 42.3,
+            "max": 42.4
+          }
+        },
+        {
+          "frontier_tokens": 36864,
+          "actual_prompt_tokens": 36948,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1110.3,
+              1110.8
+            ],
+            "median": 1110.55,
+            "min": 1110.3,
+            "max": 1110.8
+          },
+          "gen_tps": {
+            "runs": [
+              36.4,
+              36.3
+            ],
+            "median": 36.349999999999994,
+            "min": 36.3,
+            "max": 36.4
+          }
+        },
+        {
+          "frontier_tokens": 38912,
+          "actual_prompt_tokens": 38975,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1111.9,
+              1108.5
+            ],
+            "median": 1110.2,
+            "min": 1108.5,
+            "max": 1111.9
+          },
+          "gen_tps": {
+            "runs": [
+              36.5,
+              36.4
+            ],
+            "median": 36.45,
+            "min": 36.4,
+            "max": 36.5
+          }
+        },
+        {
+          "frontier_tokens": 40960,
+          "actual_prompt_tokens": 41121,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1110.2,
+              1110.1
+            ],
+            "median": 1110.15,
+            "min": 1110.1,
+            "max": 1110.2
+          },
+          "gen_tps": {
+            "runs": [
+              41.2,
+              41.2
+            ],
+            "median": 41.2,
+            "min": 41.2,
+            "max": 41.2
+          }
+        },
+        {
+          "frontier_tokens": 43008,
+          "actual_prompt_tokens": 43208,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.1,
+              1106.8
+            ],
+            "median": 1107.4499999999998,
+            "min": 1106.8,
+            "max": 1108.1
+          },
+          "gen_tps": {
+            "runs": [
+              32.7,
+              32.4
+            ],
+            "median": 32.55,
+            "min": 32.4,
+            "max": 32.7
+          }
+        },
+        {
+          "frontier_tokens": 45056,
+          "actual_prompt_tokens": 45315,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1113.4,
+              1106.4
+            ],
+            "median": 1109.9,
+            "min": 1106.4,
+            "max": 1113.4
+          },
+          "gen_tps": {
+            "runs": [
+              33.0,
+              32.9
+            ],
+            "median": 32.95,
+            "min": 32.9,
+            "max": 33.0
+          }
+        },
+        {
+          "frontier_tokens": 47104,
+          "actual_prompt_tokens": 47364,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1109.9,
+              1107.4
+            ],
+            "median": 1108.65,
+            "min": 1107.4,
+            "max": 1109.9
+          },
+          "gen_tps": {
+            "runs": [
+              35.3,
+              35.2
+            ],
+            "median": 35.25,
+            "min": 35.2,
+            "max": 35.3
+          }
+        },
+        {
+          "frontier_tokens": 49152,
+          "actual_prompt_tokens": 49440,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.6,
+              1106.5
+            ],
+            "median": 1107.55,
+            "min": 1106.5,
+            "max": 1108.6
+          },
+          "gen_tps": {
+            "runs": [
+              33.7,
+              33.7
+            ],
+            "median": 33.7,
+            "min": 33.7,
+            "max": 33.7
+          }
+        },
+        {
+          "frontier_tokens": 51200,
+          "actual_prompt_tokens": 51650,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1106.9,
+              1102.4
+            ],
+            "median": 1104.65,
+            "min": 1102.4,
+            "max": 1106.9
+          },
+          "gen_tps": {
+            "runs": [
+              41.8,
+              41.7
+            ],
+            "median": 41.75,
+            "min": 41.7,
+            "max": 41.8
+          }
+        },
+        {
+          "frontier_tokens": 53248,
+          "actual_prompt_tokens": 53800,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1103.4,
+              1100.2
+            ],
+            "median": 1101.8000000000002,
+            "min": 1100.2,
+            "max": 1103.4
+          },
+          "gen_tps": {
+            "runs": [
+              41.9,
+              41.1
+            ],
+            "median": 41.5,
+            "min": 41.1,
+            "max": 41.9
+          }
+        },
+        {
+          "frontier_tokens": 55296,
+          "actual_prompt_tokens": 55966,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1101.2,
+              1099.2
+            ],
+            "median": 1100.2,
+            "min": 1099.2,
+            "max": 1101.2
+          },
+          "gen_tps": {
+            "runs": [
+              34.2,
+              34.3
+            ],
+            "median": 34.25,
+            "min": 34.2,
+            "max": 34.3
+          }
+        },
+        {
+          "frontier_tokens": 57344,
+          "actual_prompt_tokens": 58131,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1100.8,
+              1095.9
+            ],
+            "median": 1098.35,
+            "min": 1095.9,
+            "max": 1100.8
+          },
+          "gen_tps": {
+            "runs": [
+              33.3,
+              33.4
+            ],
+            "median": 33.349999999999994,
+            "min": 33.3,
+            "max": 33.4
+          }
+        },
+        {
+          "frontier_tokens": 59392,
+          "actual_prompt_tokens": 60213,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1098.3,
+              1097.5
+            ],
+            "median": 1097.9,
+            "min": 1097.5,
+            "max": 1098.3
+          },
+          "gen_tps": {
+            "runs": [
+              30.6,
+              30.2
+            ],
+            "median": 30.4,
+            "min": 30.2,
+            "max": 30.6
+          }
+        },
+        {
+          "frontier_tokens": 61440,
+          "actual_prompt_tokens": 62355,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1097.2,
+              1094.8
+            ],
+            "median": 1096.0,
+            "min": 1094.8,
+            "max": 1097.2
+          },
+          "gen_tps": {
+            "runs": [
+              34.5,
+              34.2
+            ],
+            "median": 34.35,
+            "min": 34.2,
+            "max": 34.5
+          }
+        },
+        {
+          "frontier_tokens": 63488,
+          "actual_prompt_tokens": 64524,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1095.3,
+              1093.3
+            ],
+            "median": 1094.3,
+            "min": 1093.3,
+            "max": 1095.3
+          },
+          "gen_tps": {
+            "runs": [
+              31.9,
+              31.6
+            ],
+            "median": 31.75,
+            "min": 31.6,
+            "max": 31.9
+          }
+        },
+        {
+          "frontier_tokens": 65536,
+          "actual_prompt_tokens": 66608,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1095.8,
+              1095.7
+            ],
+            "median": 1095.75,
+            "min": 1095.7,
+            "max": 1095.8
+          },
+          "gen_tps": {
+            "runs": [
+              34.1,
+              34.2
+            ],
+            "median": 34.150000000000006,
+            "min": 34.1,
+            "max": 34.2
+          }
+        }
+      ]
+    },
+    "mxf4": {
+      "metrics": {
+        "prefill_tps": {
+          "run_means": [
+            1098.915625,
+            1096.321875
+          ],
+          "mean_of_run_means": 1097.61875
+        },
+        "gen_tps": {
+          "run_means": [
+            36.140625,
+            36.090625
+          ],
+          "mean_of_run_means": 36.115625
+        }
+      },
+      "frontiers": [
+        {
+          "frontier_tokens": 2048,
+          "actual_prompt_tokens": 2149,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              962.7,
+              964.6
+            ],
+            "median": 963.6500000000001,
+            "min": 962.7,
+            "max": 964.6
+          },
+          "gen_tps": {
+            "runs": [
+              42.8,
+              43.0
+            ],
+            "median": 42.9,
+            "min": 42.8,
+            "max": 43.0
+          }
+        },
+        {
+          "frontier_tokens": 4096,
+          "actual_prompt_tokens": 4268,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1048.9,
+              1043.5
+            ],
+            "median": 1046.2,
+            "min": 1043.5,
+            "max": 1048.9
+          },
+          "gen_tps": {
+            "runs": [
+              44.9,
+              44.0
+            ],
+            "median": 44.45,
+            "min": 44.0,
+            "max": 44.9
+          }
+        },
+        {
+          "frontier_tokens": 6144,
+          "actual_prompt_tokens": 6398,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1065.6,
+              1060.8
+            ],
+            "median": 1063.1999999999998,
+            "min": 1060.8,
+            "max": 1065.6
+          },
+          "gen_tps": {
+            "runs": [
+              31.2,
+              31.1
+            ],
+            "median": 31.15,
+            "min": 31.1,
+            "max": 31.2
+          }
+        },
+        {
+          "frontier_tokens": 8192,
+          "actual_prompt_tokens": 8449,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1078.8,
+              1078.9
+            ],
+            "median": 1078.85,
+            "min": 1078.8,
+            "max": 1078.9
+          },
+          "gen_tps": {
+            "runs": [
+              34.1,
+              34.2
+            ],
+            "median": 34.150000000000006,
+            "min": 34.1,
+            "max": 34.2
+          }
+        },
+        {
+          "frontier_tokens": 10240,
+          "actual_prompt_tokens": 10487,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1091.3,
+              1088.6
+            ],
+            "median": 1089.9499999999998,
+            "min": 1088.6,
+            "max": 1091.3
+          },
+          "gen_tps": {
+            "runs": [
+              32.4,
+              32.4
+            ],
+            "median": 32.4,
+            "min": 32.4,
+            "max": 32.4
+          }
+        },
+        {
+          "frontier_tokens": 12288,
+          "actual_prompt_tokens": 12541,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1093.5,
+              1095.1
+            ],
+            "median": 1094.3,
+            "min": 1093.5,
+            "max": 1095.1
+          },
+          "gen_tps": {
+            "runs": [
+              30.1,
+              30.0
+            ],
+            "median": 30.05,
+            "min": 30.0,
+            "max": 30.1
+          }
+        },
+        {
+          "frontier_tokens": 14336,
+          "actual_prompt_tokens": 14516,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1101.9,
+              1099.7
+            ],
+            "median": 1100.8000000000002,
+            "min": 1099.7,
+            "max": 1101.9
+          },
+          "gen_tps": {
+            "runs": [
+              32.3,
+              32.6
+            ],
+            "median": 32.45,
+            "min": 32.3,
+            "max": 32.6
+          }
+        },
+        {
+          "frontier_tokens": 16384,
+          "actual_prompt_tokens": 16546,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.0,
+              1102.9
+            ],
+            "median": 1105.45,
+            "min": 1102.9,
+            "max": 1108.0
+          },
+          "gen_tps": {
+            "runs": [
+              31.5,
+              31.3
+            ],
+            "median": 31.4,
+            "min": 31.3,
+            "max": 31.5
+          }
+        },
+        {
+          "frontier_tokens": 18432,
+          "actual_prompt_tokens": 18537,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1111.2,
+              1105.4
+            ],
+            "median": 1108.3000000000002,
+            "min": 1105.4,
+            "max": 1111.2
+          },
+          "gen_tps": {
+            "runs": [
+              35.1,
+              35.1
+            ],
+            "median": 35.1,
+            "min": 35.1,
+            "max": 35.1
+          }
+        },
+        {
+          "frontier_tokens": 20480,
+          "actual_prompt_tokens": 20573,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1113.8,
+              1107.9
+            ],
+            "median": 1110.85,
+            "min": 1107.9,
+            "max": 1113.8
+          },
+          "gen_tps": {
+            "runs": [
+              33.4,
+              33.2
+            ],
+            "median": 33.3,
+            "min": 33.2,
+            "max": 33.4
+          }
+        },
+        {
+          "frontier_tokens": 22528,
+          "actual_prompt_tokens": 22609,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1114.8,
+              1111.1
+            ],
+            "median": 1112.9499999999998,
+            "min": 1111.1,
+            "max": 1114.8
+          },
+          "gen_tps": {
+            "runs": [
+              42.2,
+              42.2
+            ],
+            "median": 42.2,
+            "min": 42.2,
+            "max": 42.2
+          }
+        },
+        {
+          "frontier_tokens": 24576,
+          "actual_prompt_tokens": 24651,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1115.0,
+              1111.6
+            ],
+            "median": 1113.3,
+            "min": 1111.6,
+            "max": 1115.0
+          },
+          "gen_tps": {
+            "runs": [
+              32.8,
+              32.8
+            ],
+            "median": 32.8,
+            "min": 32.8,
+            "max": 32.8
+          }
+        },
+        {
+          "frontier_tokens": 26624,
+          "actual_prompt_tokens": 26665,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1113.4,
+              1112.4
+            ],
+            "median": 1112.9,
+            "min": 1112.4,
+            "max": 1113.4
+          },
+          "gen_tps": {
+            "runs": [
+              32.2,
+              32.3
+            ],
+            "median": 32.25,
+            "min": 32.2,
+            "max": 32.3
+          }
+        },
+        {
+          "frontier_tokens": 28672,
+          "actual_prompt_tokens": 28691,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1113.6,
+              1114.5
+            ],
+            "median": 1114.05,
+            "min": 1113.6,
+            "max": 1114.5
+          },
+          "gen_tps": {
+            "runs": [
+              43.2,
+              43.5
+            ],
+            "median": 43.35,
+            "min": 43.2,
+            "max": 43.5
+          }
+        },
+        {
+          "frontier_tokens": 30720,
+          "actual_prompt_tokens": 30712,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1069.4,
+              1068.0
+            ],
+            "median": 1068.7,
+            "min": 1068.0,
+            "max": 1069.4
+          },
+          "gen_tps": {
+            "runs": [
+              43.7,
+              43.8
+            ],
+            "median": 43.75,
+            "min": 43.7,
+            "max": 43.8
+          }
+        },
+        {
+          "frontier_tokens": 32768,
+          "actual_prompt_tokens": 32749,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1076.7,
+              1074.6
+            ],
+            "median": 1075.65,
+            "min": 1074.6,
+            "max": 1076.7
+          },
+          "gen_tps": {
+            "runs": [
+              42.5,
+              42.5
+            ],
+            "median": 42.5,
+            "min": 42.5,
+            "max": 42.5
+          }
+        },
+        {
+          "frontier_tokens": 34816,
+          "actual_prompt_tokens": 34846,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1114.8,
+              1114.5
+            ],
+            "median": 1114.65,
+            "min": 1114.5,
+            "max": 1114.8
+          },
+          "gen_tps": {
+            "runs": [
+              42.4,
+              42.3
+            ],
+            "median": 42.349999999999994,
+            "min": 42.3,
+            "max": 42.4
+          }
+        },
+        {
+          "frontier_tokens": 36864,
+          "actual_prompt_tokens": 36948,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1115.1,
+              1112.3
+            ],
+            "median": 1113.6999999999998,
+            "min": 1112.3,
+            "max": 1115.1
+          },
+          "gen_tps": {
+            "runs": [
+              36.4,
+              36.4
+            ],
+            "median": 36.4,
+            "min": 36.4,
+            "max": 36.4
+          }
+        },
+        {
+          "frontier_tokens": 38912,
+          "actual_prompt_tokens": 38975,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1115.5,
+              1113.6
+            ],
+            "median": 1114.55,
+            "min": 1113.6,
+            "max": 1115.5
+          },
+          "gen_tps": {
+            "runs": [
+              36.1,
+              36.2
+            ],
+            "median": 36.150000000000006,
+            "min": 36.1,
+            "max": 36.2
+          }
+        },
+        {
+          "frontier_tokens": 40960,
+          "actual_prompt_tokens": 41121,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1116.6,
+              1113.0
+            ],
+            "median": 1114.8,
+            "min": 1113.0,
+            "max": 1116.6
+          },
+          "gen_tps": {
+            "runs": [
+              41.1,
+              41.1
+            ],
+            "median": 41.1,
+            "min": 41.1,
+            "max": 41.1
+          }
+        },
+        {
+          "frontier_tokens": 43008,
+          "actual_prompt_tokens": 43208,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1114.3,
+              1111.9
+            ],
+            "median": 1113.1,
+            "min": 1111.9,
+            "max": 1114.3
+          },
+          "gen_tps": {
+            "runs": [
+              32.6,
+              32.7
+            ],
+            "median": 32.650000000000006,
+            "min": 32.6,
+            "max": 32.7
+          }
+        },
+        {
+          "frontier_tokens": 45056,
+          "actual_prompt_tokens": 45315,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1115.2,
+              1112.7
+            ],
+            "median": 1113.95,
+            "min": 1112.7,
+            "max": 1115.2
+          },
+          "gen_tps": {
+            "runs": [
+              32.9,
+              32.8
+            ],
+            "median": 32.849999999999994,
+            "min": 32.8,
+            "max": 32.9
+          }
+        },
+        {
+          "frontier_tokens": 47104,
+          "actual_prompt_tokens": 47364,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1114.1,
+              1113.7
+            ],
+            "median": 1113.9,
+            "min": 1113.7,
+            "max": 1114.1
+          },
+          "gen_tps": {
+            "runs": [
+              35.2,
+              35.2
+            ],
+            "median": 35.2,
+            "min": 35.2,
+            "max": 35.2
+          }
+        },
+        {
+          "frontier_tokens": 49152,
+          "actual_prompt_tokens": 49440,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1114.6,
+              1110.9
+            ],
+            "median": 1112.75,
+            "min": 1110.9,
+            "max": 1114.6
+          },
+          "gen_tps": {
+            "runs": [
+              33.5,
+              33.6
+            ],
+            "median": 33.55,
+            "min": 33.5,
+            "max": 33.6
+          }
+        },
+        {
+          "frontier_tokens": 51200,
+          "actual_prompt_tokens": 51650,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1116.8,
+              1110.8
+            ],
+            "median": 1113.8,
+            "min": 1110.8,
+            "max": 1116.8
+          },
+          "gen_tps": {
+            "runs": [
+              41.8,
+              41.5
+            ],
+            "median": 41.65,
+            "min": 41.5,
+            "max": 41.8
+          }
+        },
+        {
+          "frontier_tokens": 53248,
+          "actual_prompt_tokens": 53800,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1112.3,
+              1107.4
+            ],
+            "median": 1109.85,
+            "min": 1107.4,
+            "max": 1112.3
+          },
+          "gen_tps": {
+            "runs": [
+              41.8,
+              40.9
+            ],
+            "median": 41.349999999999994,
+            "min": 40.9,
+            "max": 41.8
+          }
+        },
+        {
+          "frontier_tokens": 55296,
+          "actual_prompt_tokens": 55966,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1106.9,
+              1106.0
+            ],
+            "median": 1106.45,
+            "min": 1106.0,
+            "max": 1106.9
+          },
+          "gen_tps": {
+            "runs": [
+              34.3,
+              34.3
+            ],
+            "median": 34.3,
+            "min": 34.3,
+            "max": 34.3
+          }
+        },
+        {
+          "frontier_tokens": 57344,
+          "actual_prompt_tokens": 58131,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1107.0,
+              1104.2
+            ],
+            "median": 1105.6,
+            "min": 1104.2,
+            "max": 1107.0
+          },
+          "gen_tps": {
+            "runs": [
+              33.4,
+              33.4
+            ],
+            "median": 33.4,
+            "min": 33.4,
+            "max": 33.4
+          }
+        },
+        {
+          "frontier_tokens": 59392,
+          "actual_prompt_tokens": 60213,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1105.2,
+              1104.4
+            ],
+            "median": 1104.8000000000002,
+            "min": 1104.4,
+            "max": 1105.2
+          },
+          "gen_tps": {
+            "runs": [
+              30.5,
+              30.5
+            ],
+            "median": 30.5,
+            "min": 30.5,
+            "max": 30.5
+          }
+        },
+        {
+          "frontier_tokens": 61440,
+          "actual_prompt_tokens": 62355,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1103.9,
+              1103.0
+            ],
+            "median": 1103.45,
+            "min": 1103.0,
+            "max": 1103.9
+          },
+          "gen_tps": {
+            "runs": [
+              34.1,
+              34.1
+            ],
+            "median": 34.1,
+            "min": 34.1,
+            "max": 34.1
+          }
+        },
+        {
+          "frontier_tokens": 63488,
+          "actual_prompt_tokens": 64524,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1108.1,
+              1101.8
+            ],
+            "median": 1104.9499999999998,
+            "min": 1101.8,
+            "max": 1108.1
+          },
+          "gen_tps": {
+            "runs": [
+              31.9,
+              31.7
+            ],
+            "median": 31.799999999999997,
+            "min": 31.7,
+            "max": 31.9
+          }
+        },
+        {
+          "frontier_tokens": 65536,
+          "actual_prompt_tokens": 66608,
+          "generated_tokens": 128,
+          "prefill_tps": {
+            "runs": [
+              1106.3,
+              1102.5
+            ],
+            "median": 1104.4,
+            "min": 1102.5,
+            "max": 1106.3
+          },
+          "gen_tps": {
+            "runs": [
+              34.1,
+              34.2
+            ],
+            "median": 34.150000000000006,
+            "min": 34.1,
+            "max": 34.2
+          }
+        }
+      ]
+    }
+  }
+}

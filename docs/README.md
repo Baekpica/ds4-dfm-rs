@@ -187,7 +187,9 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [session state](releases/bonsai-session-2026-09-30.md),
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
-- **DeepSeek V4.1:** [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
+- **DeepSeek V4.1:** [indexer score on the tensor cores: three arms over 2K-64K, November 8](benchmarks/ds41-indexer-arm-2026-11-08/README.md),
+  [the rounds and the numerics behind that arm choice](ds41-indexer-2026-11-08.md),
+  [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
   [vision weight staging: paired TTFT, decode costs and multi-image gates, October 14](benchmarks/ds41-vision-staging-2026-10-14/README.md),
   [warm-path campaign: the asset-open cache, October 13](benchmarks/ds41-warmpath-2026-10-13/README.md),
   [2K–64K Prefill/Decode tables and graph, October 13](benchmarks/ds41-spark-64k-2026-10-13/README.md),

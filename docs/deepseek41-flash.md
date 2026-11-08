@@ -357,6 +357,20 @@ Measured A/Bs on this side:
 - Side-stream forks (r6, build `1e7d8f24`): prefill at or above the baseline on
   every frontier (+1.4% at 2048, +0.3% median); decode median 41.20 -> 41.70 t/s.
 
+## Diagnostic switches
+
+| Variable | Effect |
+|---|---|
+| `DS4_DS41_IDX_MMA` | indexer score arm: `0` the scalar kernel (`cuda/ds41_indexer.cuh`), `1` the s8 `mma.sync` arm, `2` the native MXFP4 arm (`cuda/ds41_indexer_mma.cuh`) |
+| `DS41_NO_GRAPH=1` | decode without captured graphs (the engine's `set_graph(0)`) |
+| `DS41_FEED_NO_PREFETCH=1` | engram declarations ignored; bit-identical control for the cross-block prefetch |
+| `DS41_VISION_REENCODE=1` | full image reencoding instead of a prepared-payload reuse |
+
+The indexer default is the native MXFP4 arm on a Blackwell build
+(`DS4_CUDA_HAVE_MXF4`, the `sm_121a` target) and the s8 arm otherwise; the
+variable only downgrades. The arm in use is printed once per process. The
+measurement is in the [indexer optimization log](ds41-indexer-2026-11-08.md).
+
 ## Optimization target
 
 The comparable target for the ds41 port is port == its own engine, not the
