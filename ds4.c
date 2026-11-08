@@ -74074,7 +74074,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > G4_MTP_DRAFTS) { e->mtp_draft_tokens = G4_MTP_DRAFTS; }
             /* The drafter reads the trunk's full-layer KV as bf16 rows
              * (ds4_gemma4_mtp.inc:265-266); the FP8 option replaces that
-             * layer's rows, so the two cannot be armed together yet. */
+             * layer's rows, so if DS4_GEMMA4_FULL_KV was not explicitly forced
+             * to fp8, default to bf16 when --mtp is attached. */
+            {
+                const char *fkv = getenv("DS4_GEMMA4_FULL_KV");
+                if (!fkv || !*fkv) {
+                    setenv("DS4_GEMMA4_FULL_KV", "bf16", 0);
+                }
+            }
             if (gemma4_full_kv_fp8()) {
                 fprintf(stderr, "ds4: DS4_GEMMA4_FULL_KV=fp8 cannot pair with --mtp: "
                     "the drafter reads the full layer's bf16 KV\n");

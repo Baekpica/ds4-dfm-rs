@@ -3312,10 +3312,19 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         // round's verify block), the five full layers hold the whole context.
         // The generic 30 x ctx charge prices layers the engine never
         // allocates at that width.
-        // ds4_gemma4.h (ds4_gemma4_full_kv_row): the five full layers may
-        // keep E4M3 K | E4M3 V | one f16 scale per KV head each under
-        // DS4_GEMMA4_FULL_KV=fp8; the sliding rings stay bf16.
-        let fp8 = std::env::var("DS4_GEMMA4_FULL_KV").ok().as_deref() == Some("fp8");
+        // ds4_gemma4.h (ds4_gemma4_full_kv_row): the five full layers keep
+        // E4M3 K | E4M3 V | one f16 scale per KV head each by default (unless
+        // DS4_GEMMA4_FULL_KV=bf16|0 or DS4_CUDA_FP8_KV=0); the sliding rings
+        // stay bf16.
+        let cuda_fp8_off = matches!(
+            std::env::var("DS4_CUDA_FP8_KV").ok().as_deref(),
+            Some("0" | "off" | "false")
+        );
+        let full_kv_off = matches!(
+            std::env::var("DS4_GEMMA4_FULL_KV").ok().as_deref(),
+            Some("0" | "off" | "false" | "bf16")
+        );
+        let fp8 = !cuda_fp8_off && !full_kv_off;
         let full_row = if fp8 {
             GEMMA4_FULL_KV_HEADS * GEMMA4_FULL_HEAD_DIM * 2 + GEMMA4_FULL_KV_HEADS * 2 * 2
         } else {
@@ -7772,12 +7781,19 @@ exit 1
 
     /// ds4_gemma4.h (ds4_gemma4_kv_rows): 25 sliding layers at window + the
     /// widest block one forward writes (here one draft round's seven verify
-    /// rows), five full layers at the whole context, f16 key and value. At
-    /// ctx 2048 that is 253,091,840 bytes.
+    /// rows), five full layers at the whole context (E4M3 FP8 by default:
+    /// 232,202,240 bytes at ctx 2048; BF16 under DS4_GEMMA4_FULL_KV=bf16:
+    /// 253,091,840 bytes).
     #[test]
     fn gemma4_bank_kv_prices_the_hybrid_layout() {
+        let _env = lock_test_env();
+        let _unset = EnvGuard::unset("DS4_GEMMA4_FULL_KV");
         let shape = crate::shape::SHAPE_GEMMA4_A4B_VQ;
-        assert_eq!(bank_kv_bytes(shape, 2048, 1), 253_091_840);
+        assert_eq!(bank_kv_bytes(shape, 2048, 1), 232_202_240);
+        {
+            let _bf16 = EnvGuard::set("DS4_GEMMA4_FULL_KV", "bf16");
+            assert_eq!(bank_kv_bytes(shape, 2048, 1), 253_091_840);
+        }
         // Charging every layer at the full context is what refused the plan.
         let generic = 30 * 2048 * 2 * 8 * 256 * 2;
         assert!(bank_kv_bytes(shape, 2048, 1) < generic);
