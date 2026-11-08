@@ -57,7 +57,9 @@ family's own BF16 GEMV, with the 30·tanh cap.
 
 **Prefill (512-row chunks; `--native-chunk` up to 8,192).** The Q4_K
 projections and the expert routes are grouped over the chunk, so each expert
-matrix is decoded once per chunk (`cuda/gemma_vq_prefill.cuh`). Attention
+matrix is decoded once per chunk into shared memory and multiplied on Tensor
+Cores (`wmma::mma_sync` 16×16×16 BF16→F32 in `cuda/gemma_vq_prefill.cuh`;
+`DS4_GEMMA4_VQ_PREFILL_SCALAR=1` restores scalar dot products). Attention
 runs on tensor cores from 16 rows (`cuda/gemma4_attn_mma.cuh`: one CTA per KV
 head and row tile, 32-key tiles, F32 online softmax, P in BF16); the 2–8-row
 verify blocks of the drafter keep the tile kernel.
@@ -66,9 +68,12 @@ verify blocks of the drafter keep the tile kernel.
 context) written at `position % rows`, so a chunk never overwrites a slot one of its earlier
 rows still reads; a full layer keeps the context. BF16 rows are 8,192 bytes
 per token on a sliding layer and 4,096 on a full one: 5.29 GiB per bank at
-262,144 positions and 512-row chunks. `DS4_GEMMA4_FULL_KV=fp8` stores the full layers as one
-E4M3 row per token with an F16 scale per KV head (2,056 bytes; 2.80 GiB per
-bank) and runs the same tensor-core kernels on F16 tiles. A serial rewind or
+262,144 positions and 512-row chunks. By default (`DS4_GEMMA4_FULL_KV=fp8`),
+the full layers are stored as one E4M3 row per token with an F16 scale per KV
+head (2,056 bytes; 2.80 GiB per bank at 262,144 positions) and run the same
+tensor-core kernels on F16 tiles (`DS4_GEMMA4_FULL_KV=bf16` restores BF16 full
+layers, which is also selected automatically when `--mtp` is bound without an
+explicit override). A serial rewind or
 a bank fork at k is exact while the ring, counted from the newest row
 written, still holds the 1,024 positions under k, and never below a restored
 snapshot (`gemma4_ring_keeps`, `make test-gemma4-ring`); otherwise the
@@ -83,11 +88,14 @@ attention measures 1.4e-3 max error against the reference on synthetic
 cases and relL2 4e-4 against the tile kernel on the model.
 
 **12 GiB cards.** A discrete card has no pageable memory access, so the
-engine copies the 9.37 GiB trunk and embedding to the device. Three opt-in
-placements trade VRAM for speed: `DS4_GEMMA4_MOE_CACHE_MIB=N` keeps the
-experts host-cold and fills an N MiB slot pool from the page cache as the
-router asks (`DS4_GEMMA4_MOE_MISS=cpu` computes a decode miss on the host
-instead of evicting); `DS4_GEMMA4_MOE_CPU_LAYERS=N` and `DS4_GEMMA4_CPU_MOE=1`
+engine copies the trunk and embedding to the device. Three placements
+trade VRAM for speed: `DS4_GEMMA4_MOE_CACHE_MIB=N` keeps a resident E4M3 VQ
+expert slot pool in VRAM with a per-layer quota (`104–105` of `128` experts per
+layer at `5,856 MiB`) where active resident experts run on the GPU (Tensor Core
+WMMA GEMM in prefill and persistent E4M3 codebook decode in decode) while
+non-active (cold) experts are grouped by expert and evaluated in parallel on the
+host AVX2 pool (`DS4_GEMMA4_MOE_MISS=cpu`, default ON; `=evict` restores
+slot eviction); `DS4_GEMMA4_MOE_CPU_LAYERS=N` and `DS4_GEMMA4_CPU_MOE=1`
 run the first N or all layers' experts on an x86-64 AVX2 host
 (`cuda/gemma4_cpu_moe.cuh`). `--ssd-streaming` streams expert records from
 the artifact through the same slot pool.
@@ -189,7 +197,22 @@ runs it alone.
 
 ## Performance
 
-The [2K–64K sweep](../speed-bench/gb10_spark_gemma4_1a8c5199.csv) (server
+Benchmarked on **NVIDIA GeForce RTX 4070 SUPER 12GB** (`sm_89`, busy SM clock 2,790 MHz, `-c 131072` with E4M3 FP8 full-layer KV cache and `5,856 MiB` resident FP8 expert pool):
+
+| Execution Path | Prefill (512–777 ctx) | TTFT (512 prompt) | Decode Rate | Expert / KV Memory |
+|---|---:|---:|---:|---:|
+| Scalar CPU/Host PCIe expert streaming (`DS4_GEMMA4_CPU_MOE=1`, BF16 KV) | 249.0 tok/s | ~2,056 ms | 18.0 tok/s | 9.37 GiB (BF16 KV) |
+| GPU Slot Pool Evict (`DS4_GEMMA4_MOE_MISS=evict`) | 744.1 tok/s | ~1,072 ms | 40.3 tok/s | 5.72 GiB pool + 256 MiB staging |
+| **Tensor Core GEMM + Resident FP8 Active / Scalar CPU Non-Active** | **1,413.8 tok/s** | **~422 ms** | **44.5 tok/s** (54.8 tok/s resident) | **5.72 GiB (FP8 pool, E4M3 KV)** |
+| **Speedup (vs Scalar CPU streaming)** | **5.7×** | **4.9×** | **2.5×** (3.0× resident) | **-47% full-layer KV** |
+
+- **Live OpenAI API measurements (`-c 131072`, `5,856 MiB` FP8 pool)**:
+  - **543 prompt tokens**: Prefill **1,344.2 tok/s**, TTFT **422.4 ms**, Decode **44.5 tok/s**
+  - **777 prompt tokens**: Prefill **1,413.8 tok/s**, TTFT **571.2 ms**, Decode **43.8 tok/s**
+  - **2,770 prompt tokens**: Prefill **1,442.9 tok/s**, TTFT **1,942.1 ms**, Decode **43.5 tok/s**
+- **Memory footprint at 128K (`--ctx 131072`)**: `9,109 MiB` idle after boot (`5.72 GiB` resident E4M3 FP8 expert pool + `2.35 GiB` trunk/embeddings) and `11,015 MiB` peak with the 128K E4M3 full-layer KV cache and session graph workspace, running comfortably on a single 12 GiB GPU.
+
+The earlier [2K–64K sweep](../speed-bench/gb10_spark_gemma4_1a8c5199.csv) (server
 binary `1a8c5199`, R13+8 parts of the release's byte sizes, 2,048-row
 chunks, 128 generated tokens per frontier) ran on a GB10 **outside the clock
 policy**: busy SM clocks were 2,437–2,450 MHz, above the 300–2,200 MHz range
@@ -271,19 +294,19 @@ path the gates compare against:
 | `DS4_GEMMA4_VQ_GEMV`, `DS4_GEMMA4_VQ_PREFILL` | BF16 restore plus cuBLAS for the expert projections |
 | `DS4_GEMMA4_ROUTER_DOT`, `DS4_GEMMA4_ROUTER_PAR` | the shared router linear; the serial top-8 scan |
 | `DS4_GEMMA4_HEAD_GEMV`, `DS4_GEMMA4_Q8_BATCH`, `DS4_GEMMA4_FUSE_ROPE` | the shared head linear; the shared Q8_0 dispatcher; separate norm and RoPE kernels |
+| `DS4_GEMMA4_Q4_DECODE`, `DS4_GEMMA4_MOE_FUSED` | the shared Q4_K decode dispatcher; separate gate and up prefill passes |
 
 Values and opt-ins:
 
 | Variable | Effect |
 |---|---|
 | `DS4_GEMMA4_PREFILL_CHUNK` | prefill rows per forward, 1–8,192 (default 512; `--native-chunk` sets it) |
-| `DS4_GEMMA4_EXACT_PREFILL=1` | one-row calls per route, the chunk-exactness gate |
-| `DS4_GEMMA4_FULL_KV=fp8` | E4M3 full-layer rows |
+| `DS4_GEMMA4_EXACT_PREFILL=1`, `DS4_GEMMA4_VQ_PREFILL_SCALAR=1` | one-row calls per route (the chunk-exactness gate); scalar dot products instead of Tensor Core WMMA in VQ prefill |
+| `DS4_GEMMA4_FULL_KV` | `fp8` (default: E4M3 full-layer rows; `DS4_CUDA_FP8_KV=0` or `--mtp` selects `bf16`), `bf16` |
 | `DS4_GEMMA4_ATTN_SPLIT_SPAN` | keys per split-K CTA, 16–4,096 (default 64) |
-| `DS4_GEMMA4_MOE_CACHE_MIB`, `DS4_GEMMA4_MOE_MISS=cpu` | the expert slot pool and its miss policy |
+| `DS4_GEMMA4_MOE_CACHE_MIB`, `DS4_GEMMA4_MOE_MISS` | the expert slot pool and its miss policy (`cpu` default: active resident experts on GPU, cold experts batched on AVX2 host; `evict` restores GPU slot eviction) |
 | `DS4_GEMMA4_MOE_CPU_LAYERS`, `DS4_GEMMA4_CPU_MOE=1`, `DS4_GEMMA4_CPU_MOE_THREADS` | host experts for the first N or all layers (AVX2), pool width (default 20) |
 | `DS4_GEMMA4_MOE_STAGING_MIB`, `DS4_GEMMA4_MOE_STAGING_PREAD=1`, `DS4_GEMMA4_MOE_STAGING_QUEUED=0`, `DS4_GEMMA4_MOE_WARM=0` | the slot pool's pinned ring (default 256 MiB), its pread source, the blocking fill, no expert warm at open |
-| `DS4_GEMMA4_MOE_FUSED=1`, `DS4_GEMMA4_Q4_DECODE=1` | unadopted fused gate/up and Q4_K decode kernels |
 | `DS4_GEMMA4_VQ_GEMV_VARIANT`, `DS4_GEMMA4_VQ_GEMV_THREADS` | GEMV mapping (0 auto, 1 warp, 2 block) and width (128, 256, 512) |
 | `DS4_GEMMA4_MOE_TRACE=1`, `DS4_GEMMA4_MOE_STAGING_TRACE=1` | routing histogram at exit; the mapping's read rate |
 | `DS4_GEMMA4_VQ_VERIFY`, `DS4_GEMMA4_MOE_PERSIST_VERIFY`, `DS4_GEMMA4_Q4_DECODE_VERIFY`, `DS4_GEMMA4_ATTN_CMP` | compare a fast path with its reference in the running model |
