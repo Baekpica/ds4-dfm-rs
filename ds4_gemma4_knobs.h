@@ -42,18 +42,23 @@ static inline uint32_t ds4_gemma4_knob_cpu_threads(void) {
     return (uint32_t)threads;
 }
 
-/* Cache-miss policy: default ON computes non-active (cache-miss) routes on
- * the host CPU while active resident FP8 experts run on Tensor Core GEMM /
- * persistent GPU kernels. Set DS4_GEMMA4_MOE_MISS=evict|gpu|0 to evict a
- * resident slot instead. */
+/* Cache-miss policy: on x86, default computes non-active (cache-miss) routes on
+ * the host CPU via AVX2 while active resident FP8 experts run on Tensor Core GEMM /
+ * persistent GPU kernels. On non-x86 hosts (such as aarch64 / GB10) where host AVX2
+ * kernels are unavailable, default to GPU slot eviction instead.
+ * Set DS4_GEMMA4_MOE_MISS=evict|gpu|0 to force GPU eviction, or =cpu to force host CPU. */
 static inline int ds4_gemma4_knob_miss_cpu(void) {
     const char *v = getenv("DS4_GEMMA4_MOE_MISS");
+#if !defined(__x86_64__) && !defined(__i386__)
+    return v && strcmp(v, "cpu") == 0;
+#else
     if (!v || !*v) { return 1; }
     if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0 || strcmp(v, "false") == 0 ||
         strcmp(v, "gpu") == 0 || strcmp(v, "evict") == 0) {
         return 0;
     }
     return 1;
+#endif
 }
 
 /* Full-layer KV: default ON keeps E4M3 FP8 rows (with per-head FP16 scale);

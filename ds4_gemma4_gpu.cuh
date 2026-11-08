@@ -934,16 +934,20 @@ static int g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d, float w,
  * host pipeline for cold experts, and the ordered add of their contributions. */
 extern "C" int ds4_gpu_g4_cpu_moe_expert(ds4_gvq_ctx *ctx, const uint32_t *matrices,
         uint32_t expert, const float *x, float *out) {
-    if (!ctx || !ctx->model || !g_model_host_base) { return 0; }
-    return g4_cpu_moe_expert(g_model_host_base, ctx->model, matrices, expert, x, out);
+    if (!ctx || !ctx->model) { return 0; }
+    const void *map = ctx->model->map ? ctx->model->map : g_model_host_base;
+    if (!map) { return 0; }
+    return g4_cpu_moe_expert(map, ctx->model, matrices, expert, x, out);
 }
 
 extern "C" int ds4_gpu_g4_cpu_moe_routes(ds4_gvq_ctx *ctx, const uint32_t *matrices,
         const uint32_t *experts, const uint32_t *tokens, uint32_t nroutes,
         const float *x, uint32_t rows, float *out) {
     if (!nroutes) { return 1; }
-    if (!ctx || !ctx->model || !g_model_host_base) { return 0; }
-    return g4_cpu_moe_routes(g_model_host_base, ctx->model, matrices, experts, tokens,
+    if (!ctx || !ctx->model) { return 0; }
+    const void *map = ctx->model->map ? ctx->model->map : g_model_host_base;
+    if (!map) { return 0; }
+    return g4_cpu_moe_routes(map, ctx->model, matrices, experts, tokens,
         nroutes, x, rows, out);
 }
 
@@ -1286,11 +1290,16 @@ static int g4_moe_run_cpu(ds4_g4_moe *m, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
         const uint32_t *matrices, const int32_t *routes, uint32_t rows,
         uint32_t layer) {
-    if (!m->gvq || !m->gvq->model || !g_model_host_base) {
+    if (!m->gvq || !m->gvq->model) {
         fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
         return 0;
     }
-    if (!g4_cpu_moe_run_tensors(g_model_host_base, m->gvq->model, out, input,
+    const void *map = m->gvq->model->map ? m->gvq->model->map : g_model_host_base;
+    if (!map) {
+        fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
+        return 0;
+    }
+    if (!g4_cpu_moe_run_tensors(map, m->gvq->model, out, input,
                                 weights, matrices, routes, rows, layer)) {
         fprintf(stderr, "ds4: Gemma-4 CPU MoE layer failed\n");
         return 0;

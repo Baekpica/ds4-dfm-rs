@@ -73,8 +73,6 @@ typedef struct ds4_gemma4_graph {
  * see G4_SHARED_SLIDING/G4_SHARED_FULL. The rows are already stored by the
  * ordinary forward, post k/v norm and post rope, so publishing is a read. */
 static const ds4_gpu_tensor *gemma4_shared_k(const ds4_gemma4_graph *g, bool full) {
-    /* The full layer is a combined FP8 row; the drafter reads bf16, so the
-     * FP8 option refuses --mtp instead of publishing a row it cannot read. */
     if (full && g->full_fp8) { return NULL; }
     return g->kcache[gemma4_shared_layer(full)];
 }
@@ -82,6 +80,11 @@ static const ds4_gpu_tensor *gemma4_shared_k(const ds4_gemma4_graph *g, bool ful
 static const ds4_gpu_tensor *gemma4_shared_v(const ds4_gemma4_graph *g, bool full) {
     if (full && g->full_fp8) { return NULL; }
     return g->vcache[gemma4_shared_layer(full)];
+}
+
+static const ds4_gpu_tensor *gemma4_shared_fkv(const ds4_gemma4_graph *g, bool full) {
+    if (!full || !g->full_fp8) { return NULL; }
+    return g->fkcache[gemma4_shared_layer(full)];
 }
 
 static uint32_t gemma4_index(const ds4_model *m, const ds4_tensor *t) {
@@ -791,7 +794,7 @@ static bool gemma4_moe_run_mix(ds4_gemma4_graph *g, const ds4_model *m,
     static float *ws, *cpu_w, *hx, *hd;
     static uint32_t *cpu_exp, *cpu_tok;
     static uint32_t cap_rows;
-    if (!g->stream || !rows || rows > g->cap) { return false; }
+    if (!g->stream || !rows || rows > g->rows) { return false; }
     if (rows > cap_rows) {
         const size_t pairs = (size_t)rows * G4_USED;
         free(ids); free(gids); free(ws); free(cpu_w);
@@ -1038,6 +1041,23 @@ static bool gemma4_layer(ds4_gemma4_graph *g, ds4_model *m, ds4_weights *w,
             G4_STEP(ds4_gpu_g4_attn_split_fp8(g->attn, g->q, g->fkcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes),
                 "attention");
+        } else if (rows < 16u && kv == 2u && dim == 512u &&
+                   g4_attn_split() && g4_attn_split_mma()) {
+            bool ok = true;
+            for (uint32_t r = 0; r < rows && ok; r++) {
+                ds4_gpu_tensor *qv = ds4_gpu_tensor_view(g->q,
+                    (uint64_t)r * heads_width * sizeof(float), heads_width * sizeof(float));
+                ds4_gpu_tensor *av = ds4_gpu_tensor_view(g->attn,
+                    (uint64_t)r * heads_width * sizeof(float), heads_width * sizeof(float));
+                ok = qv && av && ds4_gpu_g4_attn_split_fp8(av, qv, g->fkcache[il],
+                    g->positions, 1u, first + r, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes);
+                if (qv) ds4_gpu_tensor_free(qv);
+                if (av) ds4_gpu_tensor_free(av);
+            }
+            if (!ok) {
+                fprintf(stderr, "ds4: Gemma-4 FP8 split attention failed at row\n");
+                return false;
+            }
         } else if (rows >= 16u && kv == 2u && dim == 512u && g4_attn_mma()) {
             G4_STEP(ds4_gpu_g4_attn_mma_fp8(g->attn, g->q, g->fkcache[il],
                 g->positions, rows, first, G4_HEADS, kv, dim, 0u, ring, 0u, row_bytes),

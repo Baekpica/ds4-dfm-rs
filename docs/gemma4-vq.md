@@ -72,8 +72,7 @@ per token on a sliding layer and 4,096 on a full one: 5.29 GiB per bank at
 the full layers are stored as one E4M3 row per token with an F16 scale per KV
 head (2,056 bytes; 2.80 GiB per bank at 262,144 positions) and run the same
 tensor-core kernels on F16 tiles (`DS4_GEMMA4_FULL_KV=bf16` restores BF16 full
-layers, which is also selected automatically when `--mtp` is bound without an
-explicit override). A serial rewind or
+layers). A serial rewind or
 a bank fork at k is exact while the ring, counted from the newest row
 written, still holds the 1,024 positions under k, and never below a restored
 snapshot (`gemma4_ring_keeps`, `make test-gemma4-ring`); otherwise the
@@ -206,10 +205,20 @@ Benchmarked on **NVIDIA GeForce RTX 4070 SUPER 12GB** (`sm_89`, busy SM clock 2,
 | **Tensor Core GEMM + Resident FP8 Active / Scalar CPU Non-Active** | **1,413.8 tok/s** | **~422 ms** | **44.5 tok/s** (54.8 tok/s resident) | **5.72 GiB (FP8 pool, E4M3 KV)** |
 | **Speedup (vs Scalar CPU streaming)** | **5.7×** | **4.9×** | **2.5×** (3.0× resident) | **-47% full-layer KV** |
 
-- **Live OpenAI API measurements (`-c 131072`, `5,856 MiB` FP8 pool)**:
-  - **543 prompt tokens**: Prefill **1,344.2 tok/s**, TTFT **422.4 ms**, Decode **44.5 tok/s**
-  - **777 prompt tokens**: Prefill **1,413.8 tok/s**, TTFT **571.2 ms**, Decode **43.8 tok/s**
-  - **2,770 prompt tokens**: Prefill **1,442.9 tok/s**, TTFT **1,942.1 ms**, Decode **43.5 tok/s**
+- **Live OpenAI API measurements (`5,856 MiB` FP8 pool, `-c 65536`–`131072`)**:
+  - **Plain Persistent Decode (`--mtp-mode off`)**:
+    - **Decode rate**: **42.8–43.7 tok/s** via persistent 2-launch E4M3 codebook decode kernel (`cuda/gemma4_moe_persist.cuh`, ~22.8 ms/token).
+    - **TTFT (warm prefix reuse)**: **45.4 ms** (vs 579.4 ms cold).
+    - **Memory**: 9.21 GiB peak at 65K context; leaves 3,130 resident slots (81.5% of all experts in VRAM).
+  - **MTP Speculative Decoding (`--mtp <mtp-path> --mtp-mode on --mtp-draft 2`)**:
+    - Full E4M3 FP8 KV cache support natively active in trunk and drafter.
+    - Generates **2.67–2.86 tokens per step** (`tok_per_step`), delivering **31.4–35.4 effective tok/s** decode.
+    - While MTP yields ~2.7 tokens per engine step, plain 1-row decode on the persistent GPU kernel is ~38% faster (43.7 tok/s vs 31.6 tok/s) because multi-row verify passes (`rows = 3`) fall off the 1-row persistent kernel onto split-K GEMMs.
+    - **TTFT (warm prefix reuse)**: **108.2 ms** (vs 261.0–669.3 ms cold).
+  - **Cold prompt scaling (543–2,770 tokens)**:
+    - **543 prompt tokens**: Prefill **1,344.2 tok/s**, TTFT **422.4 ms**, Decode **44.5 tok/s**
+    - **777 prompt tokens**: Prefill **1,413.8 tok/s**, TTFT **571.2 ms**, Decode **43.8 tok/s**
+    - **2,770 prompt tokens**: Prefill **1,442.9 tok/s**, TTFT **1,942.1 ms**, Decode **43.5 tok/s**
 - **Memory footprint at 128K (`--ctx 131072`)**: `9,109 MiB` idle after boot (`5.72 GiB` resident E4M3 FP8 expert pool + `2.35 GiB` trunk/embeddings) and `11,015 MiB` peak with the 128K E4M3 full-layer KV cache and session graph workspace, running comfortably on a single 12 GiB GPU.
 
 The earlier [2K–64K sweep](../speed-bench/gb10_spark_gemma4_1a8c5199.csv) (server
@@ -302,7 +311,7 @@ Values and opt-ins:
 |---|---|
 | `DS4_GEMMA4_PREFILL_CHUNK` | prefill rows per forward, 1–8,192 (default 512; `--native-chunk` sets it) |
 | `DS4_GEMMA4_EXACT_PREFILL=1`, `DS4_GEMMA4_VQ_PREFILL_SCALAR=1` | one-row calls per route (the chunk-exactness gate); scalar dot products instead of Tensor Core WMMA in VQ prefill |
-| `DS4_GEMMA4_FULL_KV` | `fp8` (default: E4M3 full-layer rows; `DS4_CUDA_FP8_KV=0` or `--mtp` selects `bf16`), `bf16` |
+| `DS4_GEMMA4_FULL_KV` | `fp8` (default: E4M3 full-layer rows; `DS4_CUDA_FP8_KV=0` selects `bf16`), `bf16` |
 | `DS4_GEMMA4_ATTN_SPLIT_SPAN` | keys per split-K CTA, 16–4,096 (default 64) |
 | `DS4_GEMMA4_MOE_CACHE_MIB`, `DS4_GEMMA4_MOE_MISS` | the expert slot pool and its miss policy (`cpu` default: active resident experts on GPU, cold experts batched on AVX2 host; `evict` restores GPU slot eviction) |
 | `DS4_GEMMA4_MOE_CPU_LAYERS`, `DS4_GEMMA4_CPU_MOE=1`, `DS4_GEMMA4_CPU_MOE_THREADS` | host experts for the first N or all layers (AVX2), pool width (default 20) |
