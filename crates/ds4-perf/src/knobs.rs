@@ -91,6 +91,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_GEMMA4_VQ_GEMV"
             | "DS4_GEMMA4_ATTN_SPLIT_SPAN"
             | "DS4_GEMMA4_PREFILL_CHUNK"
+            | "DS4_DS41_IDX_MMA"
     )
 }
 
@@ -202,6 +203,9 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_GEMMA4_VQ_GEMV" => family == "gemma4_vq" && matches!(value, "0" | "1"),
         "DS4_GEMMA4_ATTN_SPLIT_SPAN" => family == "gemma4_vq" && (16..=4096).contains(&n),
         "DS4_GEMMA4_PREFILL_CHUNK" => family == "gemma4_vq" && (1..=8192).contains(&n),
+        // 0 scalar, 1 s8 mma, 2 native MXFP4 (Blackwell builds); the served
+        // default is 2, so an experiment only ever names an arm explicitly.
+        "DS4_DS41_IDX_MMA" => family == "deepseek4-v41-flash" && (0..=2).contains(&n),
         _ => false,
     };
     if !valid {
@@ -228,6 +232,16 @@ mod tests {
         ] {
             assert!(!super::tunable(key), "{key}");
         }
+    }
+
+    #[test]
+    fn ds41_indexer_arms_are_scoped_and_bounded() {
+        assert!(super::tunable("DS4_DS41_IDX_MMA"));
+        for value in ["0", "1", "2"] {
+            assert!(super::validate("DS4_DS41_IDX_MMA", value, "deepseek4-v41-flash").is_ok());
+        }
+        assert!(super::validate("DS4_DS41_IDX_MMA", "3", "deepseek4-v41-flash").is_err());
+        assert!(super::validate("DS4_DS41_IDX_MMA", "2", "gemma4_vq").is_err());
     }
 
     #[test]
