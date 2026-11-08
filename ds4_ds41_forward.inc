@@ -486,6 +486,12 @@ static void v41_state_free(ds4_v41_state *st) {
  * grows to what this pass actually touches (group count x row count), never
  * to ctx — the 1M-context scratch illusion the engine documents there. */
 static bool v41_index_scratch_prepare(ds4_v41_state *st, uint32_t ng_need, uint32_t rows_score, uint32_t rows_cand) {
+    /* The tensor-core score arm keeps its q mantissas in a grow-only scratch
+     * sized by the rows one launch scores (ds4_gpu_v41_indexer_scratch_prepare).
+     * A no-op once it fits, and it must grow here rather than inside the
+     * score launch: the graph route calls this under capture, where a
+     * cudaMalloc is illegal. */
+    if (!ds4_gpu_v41_indexer_scratch_prepare(rows_score, DS4_N_INDEXER_HEAD)) return false;
     const uint32_t kcap = g_ds4_v41.candidate_source_layer >= 0 && g_ds4_v41.candidate_topk_blocks > 0 ? (uint32_t)g_ds4_v41.candidate_topk_blocks : 0u;
     if (ng_need <= st->iscap && rows_score <= st->isrows && rows_cand <= st->icrows && st->iscore && (st->cand || !kcap)) return true;
     /* The graph route grows this before capture (dg_capture, core_v41_state.c:199-204);

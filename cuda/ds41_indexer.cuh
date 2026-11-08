@@ -21,10 +21,10 @@
  * index" rule holds unchanged.
  *
  * ★Named port deviations (P4-4)★:
- *   - the s8 mma score variant (cuda_v41_indexer_mma.inc.cu) is NOT ported;
- *     ds4_gpu_v41_set_indexer_mma records the flag and the score entry refuses
- *     by name while it is on (the engine keeps the switch for A/B judgment
- *     only, default off);
+ *   - the s8 mma score variant now has its own file, ds41_indexer_mma.cuh,
+ *     included right after this one; the scalar kernel below stays the path
+ *     for shapes the tensor-core file does not compile and the kill switch
+ *     (DS4_DS41_IDX_MMA=0);
  *   - the engine's candidate scratch is per decode lane (DS4_GPU_MAX_LANES,
  *     concurrent captured decode graphs); the port has no lane concept yet —
  *     one static slot, named here because the day lanes land this must split.
@@ -117,11 +117,56 @@ __global__ static void v41_indexer_score_kernel(float *score, const float *q, co
     }
 }
 
-/* The mma score switch (cuda_v41_indexer.inc.cu:95-99).  Kept so the flag has
- * one owner; the port has no mma variant, and the score entry below refuses by
- * name while the flag is on. */
-static int g_v41_idx_mma = 0;
-void ds4_gpu_v41_set_indexer_mma(int on) { g_v41_idx_mma = on ? 1 : 0; }
+/* The tensor-core arms live in ds41_indexer_mma.cuh, included right after
+ * this file; the score entry below dispatches to them. Declared here because
+ * the scalar kernel stays the path for shapes an arm does not compile (head
+ * counts other than 32/64, dk other than 128) and for the kill switch. */
+static int v41_indexer_score_mma_launch(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k,
+                                        const ds4_gpu_tensor *weights, const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap,
+                                        uint32_t n_tok, uint32_t pos0, uint32_t ng, uint32_t n_head, uint32_t dk, uint32_t ratio,
+                                        const ds4_gpu_tensor *posd);
+static void v41_idx_mma_grid(uint32_t ns, uint32_t *tiles_out, uint32_t *gblocks_out);
+static int v41_indexer_score_mxf4_launch(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k,
+                                         const ds4_gpu_tensor *weights, const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap,
+                                         uint32_t n_tok, uint32_t pos0, uint32_t ng, uint32_t n_head, uint32_t dk, uint32_t ratio,
+                                         const ds4_gpu_tensor *posd);
+
+/* DS4_DS41_IDX_MMA selects the score kernel. The release default is the
+ * native MXFP4 arm on a Blackwell build (DS4_CUDA_HAVE_MXF4; ds41 is a
+ * Spark-only family, so that is the served path) and the s8 arm everywhere
+ * else. The variable only downgrades: 0 = the scalar kernel (kill switch),
+ * 1 = the s8 arm, 2 = the MXFP4 arm. Read once per process; only the
+ * runtime setter moves it after that, and that bumps the scratch generation.
+ *
+ * Measured on the Spark (GB10, temperature 0, two fresh processes per arm,
+ * 2K-64K full-prefill sweep): prefill 980.2 tok/s on the scalar kernel,
+ * 1,093.2 on the s8 arm and 1,097.6 on the MXFP4 arm (mean of run means);
+ * at 64K, 891.9 / 1,095.8 / 1,104.4. All 192 completions are identical
+ * across the arms. Conditions and receipts: docs/ds41-indexer-2026-11-08.md. */
+static int g_v41_idx_mma = -1;
+static int v41_idx_mma_mode(void) {
+    if (g_v41_idx_mma < 0) {
+        const char *v = getenv("DS4_DS41_IDX_MMA");
+        if (v && v[0] == '0') { g_v41_idx_mma = 0; }
+        else if (v && v[0] == '1') { g_v41_idx_mma = 1; }
+        else if (v && v[0] == '2') { g_v41_idx_mma = 2; }
+#if defined(DS4_CUDA_HAVE_MXF4)
+        else { g_v41_idx_mma = 2; }
+#else
+        else { g_v41_idx_mma = 1; }
+#endif
+    }
+    return g_v41_idx_mma;
+}
+/* A runtime flip changes which kernel a step launches, so bump the scratch
+ * generation: captured decode graphs stamped the old generation are
+ * re-captured instead of replaying the other arm. */
+void ds4_gpu_v41_set_indexer_mma(int on) {
+    const int want = on ? 1 : 0;
+    if (want == g_v41_idx_mma) { return; }
+    g_v41_idx_mma = want;
+    g_v41_scratch_gen++;
+}
 
 extern "C" int ds4_gpu_v41_indexer_score_tensor(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k,
                                                 const ds4_gpu_tensor *weights, const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap,
@@ -132,9 +177,22 @@ extern "C" int ds4_gpu_v41_indexer_score_tensor(ds4_gpu_tensor *score, const ds4
     if (posd && n_tok > 8u) return 0;   /* graph path: pure decode 1 row or a verify batch <= 8 rows */
     if (ng == 0) return 1;
     if (cand_list && (cand_bs == 0u || cand_cap == 0u)) return 0;
-    if (g_v41_idx_mma) {
-        fprintf(stderr, "ds4: [ds41] the indexer s8 mma score variant is not ported (scalar kernel only)\n");
-        return 0;
+    const int mode = v41_idx_mma_mode();
+    if (mode && (n_head == 32u || n_head == 64u) && dk == 128u) {
+        /* Qualified shape; the grid.y cap is checked here so an over-wide
+         * context falls back to the scalar kernel (which wraps by grid
+         * stride) instead of failing the forward, the way the arm's own
+         * launch refuses. Unreachable below ~134M groups, kept so it cannot
+         * become a live refusal. */
+        const uint32_t ns = cand_list ? v41_cand_ns(ng, cand_bs, cand_cap) : ng;
+        uint32_t tiles = 1, gblocks = 1;
+        v41_idx_mma_grid(ns, &tiles, &gblocks);
+        if (gblocks <= 65535u) {
+            if (mode == 2) {
+                return v41_indexer_score_mxf4_launch(score, q, k, weights, cand_list, cand_bs, cand_cap, n_tok, pos0, ng, n_head, dk, ratio, posd);
+            }
+            return v41_indexer_score_mma_launch(score, q, k, weights, cand_list, cand_bs, cand_cap, n_tok, pos0, ng, n_head, dk, ratio, posd);
+        }
     }
     /* One block = 8 warps x V41_IDX_G groups; more groups = more blocks
      * (65535 is CUDA's grid.y hard cap; the kernel wraps by grid stride).

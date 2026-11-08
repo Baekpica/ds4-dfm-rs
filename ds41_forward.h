@@ -358,6 +358,15 @@ int ds4_gpu_v41_debug_read_weight(const void *model_map, uint64_t model_size,
 int ds4_gpu_v41_debug_dump_raw(const void *model_map, uint64_t model_size,
                                uint64_t offset, uint64_t bytes, const char *path);
 
+/* The tensor-core indexer score arm's q scratch (cuda/ds41_indexer_mma.cuh).
+ * The forward grows it in v41_index_scratch_prepare, before a decode graph is
+ * captured, because cudaMalloc under capture is illegal.
+ * Precondition of the arm: q is ds4_gpu_v41_act_quant_fp4_tensor output
+ * (e2m1 x ue8m0, 32-dim blocks aligned to the indexer head dim) and k is the
+ * packed index-K cache; any other q is silently re-quantised, so such a
+ * caller must keep the scalar kernel. */
+int ds4_gpu_v41_indexer_scratch_prepare(uint32_t n_tok, uint32_t n_head);
+
 #ifdef __cplusplus
 }
 #endif
