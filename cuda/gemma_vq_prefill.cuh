@@ -42,20 +42,23 @@
  * these shapes, cublasLt::splitKreduce_kernel); the gate is generated tokens
  * within the measured noise, not bit identity. */
 
+#include <mma.h>
 #include "gemma_vq_decode.cuh"
 #include "gemma4_primitives.cuh"
+#include "../ds4_gemma4_knobs.h"
+
+using namespace nvcuda;
 
 /* Tile: BM weight rows x BN tokens, BK columns per round. The padded row
- * stride keeps the shared loads conflict-free: (BK + 4) bf16 = 136 B = 34
- * words, so 32 consecutive rows touch 16 banks twice, and every row base is
- * 8-byte aligned for the uint2 reads the compute loop uses. */
+ * stride (BK + 8 = 72 bf16 = 144 B = 36 words) keeps shared loads conflict-free
+ * and satisfies wmma::load_matrix_sync's 16-byte (8-bf16) stride alignment. */
 enum {
     G4_VQP_BM = 128,
     G4_VQP_BN = 32,
     G4_VQP_BK = 64,
-    G4_VQP_PAD = 4,
-    G4_VQP_RT = 4,      /* rows per compute thread */
-    G4_VQP_TT = 4,      /* tokens per compute thread */
+    G4_VQP_PAD = 8,
+    G4_VQP_RT = 4,      /* rows per compute thread (scalar fallback) */
+    G4_VQP_TT = 4,      /* tokens per compute thread (scalar fallback) */
     G4_VQP_THREADS = (G4_VQP_BM / G4_VQP_RT) * (G4_VQP_BN / G4_VQP_TT)
 };
 
@@ -227,8 +230,9 @@ static int g4_vq_prefill_ready(const glmvq_matrix &m) {
 
 /* The layer pass: one block per work item. GLU decodes both matrices and
  * writes gelu(a) * b (the g4_gelu_kernel expression, cuda/gemma4_primitives.cuh:125-130);
- * otherwise it writes the rounded single product. */
-template <bool GLU, uint32_t BM, uint32_t BN, uint32_t BK, uint32_t THREADS>
+ * otherwise it writes the rounded single product. Default USE_MMA=true uses
+ * Tensor Core WMMA (16x16x16 bf16 -> f32) with coalesced shared staging. */
+template <bool GLU, uint32_t BM, uint32_t BN, uint32_t BK, uint32_t THREADS, bool USE_MMA = true>
 __global__ __launch_bounds__(THREADS, GLU ? 1 : 2) void g4_vq_gemm_items_kernel(
         const g4_vqp_item *items, uint32_t count, const glmvq_matrix *qmat,
         const float *x, uint32_t xstride, float *y, uint32_t ystride) {
@@ -240,9 +244,6 @@ __global__ __launch_bounds__(THREADS, GLU ? 1 : 2) void g4_vq_gemm_items_kernel(
     __shared__ __nv_bfloat16 wb[GLU ? BM * (BK + G4_VQP_PAD) : 1];
     __shared__ __nv_bfloat16 xs[BN * (BK + G4_VQP_PAD)];
     __shared__ uint2 s_res[GLU ? 2 : 1][256];
-    constexpr uint32_t GROUPS = BN / G4_VQP_TT;
-    const uint32_t r = (threadIdx.x / GROUPS) * G4_VQP_RT;
-    const uint32_t t = (threadIdx.x % GROUPS) * G4_VQP_TT;
     if (threadIdx.x < 256u) {
         if (a.res) { s_res[0][threadIdx.x] = __ldg((const uint2 *)a.res_book + threadIdx.x); }
         if (GLU && b.res) { s_res[1][threadIdx.x] = __ldg((const uint2 *)b.res_book + threadIdx.x); }
@@ -251,38 +252,99 @@ __global__ __launch_bounds__(THREADS, GLU ? 1 : 2) void g4_vq_gemm_items_kernel(
     const uint32_t drow = it.row0 + threadIdx.x / 2u;
     const float gain_a = drow < a.rows ? __half2float(a.gain[drow]) : 0.0f;
     const float gain_b = GLU ? (drow < b.rows ? __half2float(b.gain[drow]) : 0.0f) : 0.0f;
-    float g[G4_VQP_RT][G4_VQP_TT], u[G4_VQP_RT][G4_VQP_TT];
-    #pragma unroll
-    for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+    if (USE_MMA) {
+        static_assert(BM == 128u && BN == 32u && BK == 64u && THREADS == 256u,
+            "WMMA geometry expects 128x32x64 with 8 warps");
+        constexpr uint32_t STRIDE = BK + G4_VQP_PAD;
+        const uint32_t warp_id = threadIdx.x / 32u;
+        const uint32_t m_base = warp_id * 16u;
+        wmma::fragment<wmma::accumulator, 16, 16, 16, float> g_acc[2], u_acc[2];
         #pragma unroll
-        for (uint32_t j = 0; j < G4_VQP_TT; j++) { g[i][j] = 0.0f; u[i][j] = 0.0f; }
-    }
-    for (uint32_t k0 = 0; k0 < a.cols; k0 += BK) {
-        g4_vqp_weight_tile<BM, BK, THREADS>(a, it.row0, k0, gain_a,
-            a.res ? s_res[0] : nullptr, wa);
-        if (GLU) {
-            g4_vqp_weight_tile<BM, BK, THREADS>(b, it.row0, k0, gain_b,
-                b.res ? s_res[1] : nullptr, wb);
+        for (uint32_t nt = 0; nt < 2u; nt++) {
+            wmma::fill_fragment(g_acc[nt], 0.0f);
+            if (GLU) { wmma::fill_fragment(u_acc[nt], 0.0f); }
         }
-        g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, it.token0, it.end, k0, xs);
-        __syncthreads();
-        g4_vqp_compute<BK>(wa, xs, r, t, g);
-        if (GLU) { g4_vqp_compute<BK>(wb, xs, r, t, u); }
-        __syncthreads();
-    }
-    #pragma unroll
-    for (uint32_t i = 0; i < G4_VQP_RT; i++) {
-        const uint32_t row = it.row0 + r + i;
-        if (row >= a.rows) { continue; }
+        for (uint32_t k0 = 0; k0 < a.cols; k0 += BK) {
+            g4_vqp_weight_tile<BM, BK, THREADS>(a, it.row0, k0, gain_a,
+                a.res ? s_res[0] : nullptr, wa);
+            if (GLU) {
+                g4_vqp_weight_tile<BM, BK, THREADS>(b, it.row0, k0, gain_b,
+                    b.res ? s_res[1] : nullptr, wb);
+            }
+            g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, it.token0, it.end, k0, xs);
+            __syncthreads();
+            #pragma unroll
+            for (uint32_t ks = 0; ks < BK; ks += 16u) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag0, b_frag1;
+                wmma::load_matrix_sync(a_frag, wa + m_base * STRIDE + ks, STRIDE);
+                wmma::load_matrix_sync(b_frag0, xs + 0u * STRIDE + ks, STRIDE);
+                wmma::load_matrix_sync(b_frag1, xs + 16u * STRIDE + ks, STRIDE);
+                wmma::mma_sync(g_acc[0], a_frag, b_frag0, g_acc[0]);
+                wmma::mma_sync(g_acc[1], a_frag, b_frag1, g_acc[1]);
+                if (GLU) {
+                    wmma::load_matrix_sync(a_frag, wb + m_base * STRIDE + ks, STRIDE);
+                    wmma::mma_sync(u_acc[0], a_frag, b_frag0, u_acc[0]);
+                    wmma::mma_sync(u_acc[1], a_frag, b_frag1, u_acc[1]);
+                }
+            }
+            __syncthreads();
+        }
         #pragma unroll
-        for (uint32_t j = 0; j < G4_VQP_TT; j++) {
-            const uint32_t token = it.token0 + t + j;
-            if (token < it.end) {
-                /* GLU writes the reference's epilogue exactly; the single
-                 * matrix rounds to the BF16 boundary glmvq_gemm applies. */
-                y[(uint64_t)token * ystride + row] = GLU
-                    ? g4_round(g4_gelu(g[i][j]) * g4_round(u[i][j]))
-                    : g4_round(g[i][j]);
+        for (uint32_t nt = 0; nt < 2u; nt++) {
+            #pragma unroll
+            for (uint32_t e = 0; e < g_acc[nt].num_elements; e++) {
+                g_acc[nt].x[e] = GLU
+                    ? g4_round(g4_gelu(g_acc[nt].x[e]) * g4_round(u_acc[nt].x[e]))
+                    : g4_round(g_acc[nt].x[e]);
+            }
+        }
+        float *out_s = (float *)wa;
+        wmma::store_matrix_sync(out_s + 0u * 16u * BM + m_base, g_acc[0], BM, wmma::mem_col_major);
+        wmma::store_matrix_sync(out_s + 1u * 16u * BM + m_base, g_acc[1], BM, wmma::mem_col_major);
+        __syncthreads();
+        for (uint32_t idx = threadIdx.x; idx < BN * BM; idx += THREADS) {
+            const uint32_t t_local = idx / BM, r_local = idx % BM;
+            const uint32_t token = it.token0 + t_local, row = it.row0 + r_local;
+            if (token < it.end && row < a.rows) {
+                y[(uint64_t)token * ystride + row] = out_s[idx];
+            }
+        }
+    } else {
+        constexpr uint32_t GROUPS = BN / G4_VQP_TT;
+        const uint32_t r = (threadIdx.x / GROUPS) * G4_VQP_RT;
+        const uint32_t t = (threadIdx.x % GROUPS) * G4_VQP_TT;
+        float g[G4_VQP_RT][G4_VQP_TT], u[G4_VQP_RT][G4_VQP_TT];
+        #pragma unroll
+        for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+            #pragma unroll
+            for (uint32_t j = 0; j < G4_VQP_TT; j++) { g[i][j] = 0.0f; u[i][j] = 0.0f; }
+        }
+        for (uint32_t k0 = 0; k0 < a.cols; k0 += BK) {
+            g4_vqp_weight_tile<BM, BK, THREADS>(a, it.row0, k0, gain_a,
+                a.res ? s_res[0] : nullptr, wa);
+            if (GLU) {
+                g4_vqp_weight_tile<BM, BK, THREADS>(b, it.row0, k0, gain_b,
+                    b.res ? s_res[1] : nullptr, wb);
+            }
+            g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, it.token0, it.end, k0, xs);
+            __syncthreads();
+            g4_vqp_compute<BK>(wa, xs, r, t, g);
+            if (GLU) { g4_vqp_compute<BK>(wb, xs, r, t, u); }
+            __syncthreads();
+        }
+        #pragma unroll
+        for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+            const uint32_t row = it.row0 + r + i;
+            if (row >= a.rows) { continue; }
+            #pragma unroll
+            for (uint32_t j = 0; j < G4_VQP_TT; j++) {
+                const uint32_t token = it.token0 + t + j;
+                if (token < it.end) {
+                    y[(uint64_t)token * ystride + row] = GLU
+                        ? g4_round(g4_gelu(g[i][j]) * g4_round(u[i][j]))
+                        : g4_round(g[i][j]);
+                }
             }
         }
     }
@@ -290,7 +352,7 @@ __global__ __launch_bounds__(THREADS, GLU ? 1 : 2) void g4_vq_gemm_items_kernel(
 
 /* One direct VQ GEMM for a single matrix and the whole token range: the
  * verification entry (DS4_GEMMA4_VQ_VERIFY) and the one-matrix shape. */
-template <uint32_t BM, uint32_t BN, uint32_t BK, uint32_t THREADS>
+template <uint32_t BM, uint32_t BN, uint32_t BK, uint32_t THREADS, bool USE_MMA = true>
 __global__ __launch_bounds__(THREADS, 2) void g4_vq_gemm_kernel(glmvq_matrix m,
         const float *x, uint32_t xstride, float *y, uint32_t ystride, uint32_t tokens) {
     __shared__ __nv_bfloat16 ws[BM * (BK + G4_VQP_PAD)];
@@ -298,38 +360,89 @@ __global__ __launch_bounds__(THREADS, 2) void g4_vq_gemm_kernel(glmvq_matrix m,
     __shared__ uint2 s_res[256];
     const uint32_t r0 = blockIdx.x * BM;
     const uint32_t t0 = blockIdx.y * BN;
-    constexpr uint32_t GROUPS = BN / G4_VQP_TT;
-    const uint32_t r = (threadIdx.x / GROUPS) * G4_VQP_RT;
-    const uint32_t t = (threadIdx.x % GROUPS) * G4_VQP_TT;
     if (m.res && threadIdx.x < 256u) {
         s_res[threadIdx.x] = __ldg((const uint2 *)m.res_book + threadIdx.x);
     }
     __syncthreads();
     const uint32_t drow = r0 + threadIdx.x / 2u;
     const float gain = drow < m.rows ? __half2float(m.gain[drow]) : 0.0f;
-    float acc[G4_VQP_RT][G4_VQP_TT];
-    #pragma unroll
-    for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+    if (USE_MMA) {
+        static_assert(BM == 128u && BN == 32u && BK == 64u && THREADS == 256u,
+            "WMMA geometry expects 128x32x64 with 8 warps");
+        constexpr uint32_t STRIDE = BK + G4_VQP_PAD;
+        const uint32_t warp_id = threadIdx.x / 32u;
+        const uint32_t m_base = warp_id * 16u;
+        wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_f[2];
+        wmma::fill_fragment(acc_f[0], 0.0f);
+        wmma::fill_fragment(acc_f[1], 0.0f);
+        for (uint32_t k0 = 0; k0 < m.cols; k0 += BK) {
+            g4_vqp_weight_tile<BM, BK, THREADS>(m, r0, k0, gain, m.res ? s_res : nullptr, ws);
+            g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, t0, tokens, k0, xs);
+            __syncthreads();
+            #pragma unroll
+            for (uint32_t ks = 0; ks < BK; ks += 16u) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag0, b_frag1;
+                wmma::load_matrix_sync(a_frag, ws + m_base * STRIDE + ks, STRIDE);
+                wmma::load_matrix_sync(b_frag0, xs + 0u * STRIDE + ks, STRIDE);
+                wmma::load_matrix_sync(b_frag1, xs + 16u * STRIDE + ks, STRIDE);
+                wmma::mma_sync(acc_f[0], a_frag, b_frag0, acc_f[0]);
+                wmma::mma_sync(acc_f[1], a_frag, b_frag1, acc_f[1]);
+            }
+            __syncthreads();
+        }
         #pragma unroll
-        for (uint32_t j = 0; j < G4_VQP_TT; j++) { acc[i][j] = 0.0f; }
-    }
-    for (uint32_t k0 = 0; k0 < m.cols; k0 += BK) {
-        g4_vqp_weight_tile<BM, BK, THREADS>(m, r0, k0, gain, m.res ? s_res : nullptr, ws);
-        g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, t0, tokens, k0, xs);
+        for (uint32_t nt = 0; nt < 2u; nt++) {
+            #pragma unroll
+            for (uint32_t e = 0; e < acc_f[nt].num_elements; e++) {
+                acc_f[nt].x[e] = g4_round(acc_f[nt].x[e]);
+            }
+        }
+        float *out_s = (float *)ws;
+        wmma::store_matrix_sync(out_s + 0u * 16u * BM + m_base, acc_f[0], BM, wmma::mem_col_major);
+        wmma::store_matrix_sync(out_s + 1u * 16u * BM + m_base, acc_f[1], BM, wmma::mem_col_major);
         __syncthreads();
-        g4_vqp_compute<BK>(ws, xs, r, t, acc);
-        __syncthreads();
-    }
-    #pragma unroll
-    for (uint32_t i = 0; i < G4_VQP_RT; i++) {
-        const uint32_t row = r0 + r + i;
-        if (row >= m.rows) { continue; }
+        for (uint32_t idx = threadIdx.x; idx < BN * BM; idx += THREADS) {
+            const uint32_t t_local = idx / BM, r_local = idx % BM;
+            const uint32_t token = t0 + t_local, row = r0 + r_local;
+            if (token < tokens && row < m.rows) {
+                y[(uint64_t)token * ystride + row] = out_s[idx];
+            }
+        }
+    } else {
+        constexpr uint32_t GROUPS = BN / G4_VQP_TT;
+        const uint32_t r = (threadIdx.x / GROUPS) * G4_VQP_RT;
+        const uint32_t t = (threadIdx.x % GROUPS) * G4_VQP_TT;
+        float acc[G4_VQP_RT][G4_VQP_TT];
         #pragma unroll
-        for (uint32_t j = 0; j < G4_VQP_TT; j++) {
-            const uint32_t token = t0 + t + j;
-            if (token < tokens) { y[(uint64_t)token * ystride + row] = g4_round(acc[i][j]); }
+        for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+            #pragma unroll
+            for (uint32_t j = 0; j < G4_VQP_TT; j++) { acc[i][j] = 0.0f; }
+        }
+        for (uint32_t k0 = 0; k0 < m.cols; k0 += BK) {
+            g4_vqp_weight_tile<BM, BK, THREADS>(m, r0, k0, gain, m.res ? s_res : nullptr, ws);
+            g4_vqp_activation_tile<BN, BK, THREADS>(x, xstride, t0, tokens, k0, xs);
+            __syncthreads();
+            g4_vqp_compute<BK>(ws, xs, r, t, acc);
+            __syncthreads();
+        }
+        #pragma unroll
+        for (uint32_t i = 0; i < G4_VQP_RT; i++) {
+            const uint32_t row = r0 + r + i;
+            if (row >= m.rows) { continue; }
+            #pragma unroll
+            for (uint32_t j = 0; j < G4_VQP_TT; j++) {
+                const uint32_t token = t0 + t + j;
+                if (token < tokens) { y[(uint64_t)token * ystride + row] = g4_round(acc[i][j]); }
+            }
         }
     }
+}
+
+/* DS4_GEMMA4_VQ_PREFILL_SCALAR=1 forces the scalar FMA micro-tile; Tensor Core
+ * WMMA is default ON. */
+static inline int g4_vq_prefill_scalar(void) {
+    return ds4_gemma4_knob_bool("DS4_GEMMA4_VQ_PREFILL_SCALAR");
 }
 
 /* Launch one direct VQ GEMM over a single matrix. Returns 0 (nothing
@@ -340,8 +453,13 @@ static int g4_vq_gemm(const glmvq_matrix &m, const float *x, uint32_t xstride,
     if (xstride < m.cols || ystride < m.rows) { return 0; }
     const dim3 grid((m.rows + G4_VQP_BM - 1u) / G4_VQP_BM,
         (tokens + G4_VQP_BN - 1u) / G4_VQP_BN);
-    g4_vq_gemm_kernel<G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS>
-        <<<grid, G4_VQP_THREADS, 0, stream>>>(m, x, xstride, y, ystride, tokens);
+    if (g4_vq_prefill_scalar()) {
+        g4_vq_gemm_kernel<G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, false>
+            <<<grid, G4_VQP_THREADS, 0, stream>>>(m, x, xstride, y, ystride, tokens);
+    } else {
+        g4_vq_gemm_kernel<G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, true>
+            <<<grid, G4_VQP_THREADS, 0, stream>>>(m, x, xstride, y, ystride, tokens);
+    }
     return cudaGetLastError() == cudaSuccess;
 }
 
@@ -352,12 +470,23 @@ static int g4_vq_gemm_items(const g4_vqp_item *items, uint32_t count,
         const glmvq_matrix *qmat, bool glu, const float *x, uint32_t xstride,
         float *y, uint32_t ystride, cudaStream_t stream) {
     if (!items || !count || !qmat || !x || !y) { return 0; }
+    const int scalar = g4_vq_prefill_scalar();
     if (glu) {
-        g4_vq_gemm_items_kernel<true, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS>
-            <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        if (scalar) {
+            g4_vq_gemm_items_kernel<true, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, false>
+                <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        } else {
+            g4_vq_gemm_items_kernel<true, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, true>
+                <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        }
     } else {
-        g4_vq_gemm_items_kernel<false, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS>
-            <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        if (scalar) {
+            g4_vq_gemm_items_kernel<false, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, false>
+                <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        } else {
+            g4_vq_gemm_items_kernel<false, G4_VQP_BM, G4_VQP_BN, G4_VQP_BK, G4_VQP_THREADS, true>
+                <<<count, G4_VQP_THREADS, 0, stream>>>(items, count, qmat, x, xstride, y, ystride);
+        }
     }
     return cudaGetLastError() == cudaSuccess;
 }
