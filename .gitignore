@@ -310,3 +310,6 @@ tests/naive_banks
 /tests/gemma4_q4_decode
 /tests/gemma4_mtp_gate
 /tests/gemma4_ring
+
+# Local operator launcher for this host; the engine surface is ds4/ds4-c.
+/run-bonsai.sh
