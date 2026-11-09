@@ -5387,6 +5387,15 @@ int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, ui
 int ds4_gpu_v41_grouped_matmul_q4k_tensor(ds4_gpu_tensor *low, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t n_groups, uint64_t group_dim, uint64_t rank,
         const ds4_gpu_tensor *heads, uint32_t n_tok, int round_out);
+/* The coarse-to-fine output head (cuda/ds41_head.cuh): greedy only.  Fills
+ * out[t][0..out_dim) for t < n_tok from a 1024-column Q8 sketch, the top
+ * 3,584 ids above the 512 anchors, and an exact q4_K rescore of those rows;
+ * every other id holds -INFINITY.  Returns 0 (the caller runs the full head)
+ * on a non-q4_K head, a shape outside the path, a capture started before the
+ * sketch was built, or a refused build. */
+int ds4_gpu_v41_head_c2f_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint64_t norm_offset, uint64_t in_dim, uint64_t out_dim,
+        const ds4_gpu_tensor *x, uint32_t n_tok);
 int ds4_gpu_v41_embed_q4k_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *tokens, const void *model_map,
         uint64_t model_size, uint64_t weight_offset, uint64_t n_vocab, uint32_t n_tok, uint64_t dim);
 int ds4_gpu_v41_matmul_f32_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,

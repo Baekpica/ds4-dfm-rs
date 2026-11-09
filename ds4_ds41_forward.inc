@@ -284,6 +284,7 @@ typedef struct {
      * row — the last position's normed input goes to xlast and the head runs
      * the decode-style GEMV on it; last_logit_row then points at row 0. */
     int head_last_only;
+    int head_c2f;               /* greedy: the coarse-to-fine head (cuda/ds41_head.cuh) instead of the full q4_K head */
     ds4_gpu_tensor *xlast;      /* [1][E] the last position's normed head input */
     ds4_gpu_tensor *eraw[DS4_V41_MAX_ENGRAM], *erows, *ekv;   /* engram: raw row bytes [cap][cols][stride], decoded rows, wkv output */
     const v41_engram_feed *efeed;    /* caller-supplied rows (hash + pread are host work) */
@@ -1134,6 +1135,30 @@ static bool v41_layer(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
     return true;
 }
 
+/* ---- the output head (L2 unit, cuda/ds41_head.cuh) ----
+ * A bare-argmax request may take the coarse-to-fine head: a 1024-column Q8
+ * sketch of the same weights, the top 4,096 candidates, and an exact q4_K
+ * rescore of those rows.  Sampled requests keep the full head — the device
+ * sampler and the sampled-speculation verify draw from the whole row, so a
+ * truncated one would change the top-p/top-k support.  Any refusal (a
+ * non-q4_K head, a shape outside the path, a capture that started before the
+ * sketch was built) falls back to the full head here.  DS41_HEAD_FULL=1 is
+ * the A/B control and the kill switch. */
+static int v41_head_c2f_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("DS41_HEAD_FULL") ? 0 : 1;
+    return on;
+}
+static bool v41_head_proj(ds4_engine *e, ds4_gpu_tensor *out, const ds4_tensor *w, const ds4_gpu_tensor *x,
+                          uint32_t n, int c2f) {
+    if (c2f && w->type == DS4_TENSOR_Q4_K &&
+        ds4_gpu_v41_head_c2f_tensor(out, e->model.map, e->model.size, w->abs_offset,
+                                    e->weights.output_norm->abs_offset, DS4_N_EMBD, DS4_N_VOCAB, x, n)) {
+        return true;
+    }
+    return v41_tproj(&e->model, out, w, DS4_N_EMBD, DS4_N_VOCAB, x, n, 0);
+}
+
 /* Forward body: embed -> expand to hc lanes -> layers -> head.  The direct
  * path owns the position advance and the sync (v41_forward below). */
 static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
@@ -1199,11 +1224,11 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
          * logits buffer only needs the rows the caller reads (logits_rows),
          * so the n > logits_rows guard stays on the full-GEMM arm only. */
         if (!ds4_gpu_tensor_copy(st->xlast, 0, st->xn, (uint64_t)(n - 1u) * E * 4, (uint64_t)E * 4)) return false;
-        if (!v41_tproj(&e->model, st->logits, e->weights.output, E, DS4_N_VOCAB, st->xlast, 1, 0)) return false;
+        if (!v41_head_proj(e, st->logits, e->weights.output, st->xlast, 1, st->head_c2f)) return false;
         st->last_logit_row = 0;
     } else {
         if (n > st->logits_rows) { fprintf(stderr, "ds4: [v41] head needs %u logits rows, buffer has %u\n", n, st->logits_rows); return false; }
-        if (!v41_tproj(&e->model, st->logits, e->weights.output, E, DS4_N_VOCAB, st->xn, n, 0)) return false;
+        if (!v41_head_proj(e, st->logits, e->weights.output, st->xn, n, st->head_c2f)) return false;
         st->last_logit_row = n - 1u;
     }
     if (g_ds4_v41_prof) {   /* per-layer ms: one glance shows which layer eats the time (engram L1/L14, sources L2/8/14/20) */

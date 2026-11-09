@@ -342,10 +342,12 @@ static bool v41_draft_block(ds4_engine *e, ds4_v41_draft *dr, uint32_t pos0) {
     for (uint32_t T = 0; T < v->mtp_towers; T++) if (!v41_layer(e, st, T)) return false;
     /* Exit: the official mtp[-1] borrows the main model's head; the norm is
      * mtp.2.norm (out_norm).  The amp correction (dr->ampK) is not ported:
-     * without the sidecar it is the identity anyway (core_v41_draft.c:252). */
+     * without the sidecar it is the identity anyway (core_v41_draft.c:252).
+     * The markov add below re-ranks the row's candidates only: under the
+     * coarse-to-fine head the non-candidate ids stay -INFINITY. */
     if (!ds4_gpu_v41_hc_pre_tensor(dr->h, st->hc, st->pre_mix, E, DS4_N_HC, B)) return false;
     if (!ds4_gpu_v41_rms_norm_tensor(st->xn, dr->h, m->map, m->size, e->weights.v41_towers.out_norm->abs_offset, E, B, DS4_RMS_EPS)) return false;
-    if (!v41_tproj(m, st->logits, e->weights.output, E, DS4_N_VOCAB, st->xn, B, 0)) return false;
+    if (!v41_head_proj(e, st->logits, e->weights.output, st->xn, B, st->head_c2f)) return false;
     /* Per position, all on device (one D2H per position would cost the whole
      * speculation gain): logits[i] += markov_head(token_i) -> argmax ->
      * token_{i+1}. */
@@ -746,6 +748,11 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
     uint64_t rng = g_decode_sampling.seed ? g_decode_sampling.seed :
         ((uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ (uint64_t)clock());   /* the V4 CLI's rule (core_v41_api.c:163-164) */
     const bool sampling = dev_sample || penal;   /* log only: this request is not bare argmax */
+    /* The coarse-to-fine head is greedy only (cuda/ds41_head.cuh): the sampler
+     * and the sampled verify read the full logits row.  A DS41_GEN_LOGITS dump
+     * also keeps the full head — the dump is the row a caller diffs against,
+     * and a -INFINITY-filled candidate row is not that row. */
+    st.head_c2f = v41_head_c2f_on() && !sampling && !gen_fd;
     st.dev_sample = dev_sample ? 1 : 0;
     st.samp = (ds4_gpu_sample_params){ .temperature = g_decode_sampling.temperature, .top_p = g_decode_sampling.top_p,
                                        .min_p = g_decode_sampling.min_p, .top_k = g_decode_sampling.top_k, .seed = rng };
@@ -766,6 +773,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
      * E[p(argmax q)] vs distribution draft E[sum min(p,q)].  Greedy is
      * untouched (temperature 0 stays argmax, the byte-for-byte gate). */
     if (spec && dev_sample) { dr.dev_sample = 1; dr.samp = st.samp; dr.samp.stream = 1u; st.spec_q = dr.st.logits; }
+    if (spec) dr.st.head_c2f = st.head_c2f;   /* the draft head takes the same path as the request's main head */
     v41_sched cal; memset(&cal, 0, sizeof cal);
     uint32_t spec_rounds = 0, spec_acc = 0, spec_off = 0, spec_skipped = 0, spec_hist[DS4_MTP_MAX_BLOCK + 1];
     g_v41_last_spec_rounds = g_v41_last_spec_off = g_v41_last_spec_acc = 0;   /* the monitor account clears per run (core_v41_api.c:42) */
