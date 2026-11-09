@@ -2477,7 +2477,7 @@ test-qwen35-ref: tests/test_qwen35_ref
 # Bonsai (qwen35) reference checks.  They need the Prism Bonsai GGUF and the
 # CPU host binary (make cpu); no llama.cpp is involved.  DS4_BONSAI_MODEL and
 # DS4_BONSAI_STEPS override the artifact path and the greedy step count.
-DS4_BONSAI_MODEL ?= /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+DS4_BONSAI_MODEL ?=
 DS4_BONSAI_STEPS ?= 12
 
 # Every tensor of the artifact read through this tree's own row reader, against

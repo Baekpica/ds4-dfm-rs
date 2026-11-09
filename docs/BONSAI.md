@@ -17,26 +17,25 @@ The artifact these numbers were measured with:
     general.architecture = qwen35
 
 `download_model.sh` in this tree has no Bonsai target (it lists only the
-DeepSeek V4 downloads), so the GGUF is placed in the model directory by hand.
+DeepSeek V4 downloads), so the GGUF is placed in the model directory by hand
+and named through `DS4_BONSAI_MODEL` (no default; the runbooks require it).
 
 ## What this tree can do today
 
-One binary, `./ds4-c`, serves both backends. What it can do depends on how it
-was built:
+Two hosts run this family. `./ds4-c` is the C host: the `--first-token-test`
+greedy diagnostic, the `--cpu` reference and the per-kernel tests live there.
+`./ds4` is the Rust host and the default binary: `-p` for a prompt,
+`--token-ids` with `--predict` for raw ids, `--serving-check` for the
+capability checklist. Both run the same C inference core.
 
 | Build | Command | Can run |
 | --- | --- | --- |
-| CUDA-linked | `make ds4-c CUDA_ARCH=sm_89` | `--cuda` (device graph) and `--cpu` (CPU reference) |
-| CPU-only | `make cpu` | `--cpu` only; not CUDA-linked, so `--cuda` is refused by the script |
+| CUDA-linked | `make ds4 ds4-c CUDA_ARCH=sm_89` (`make cuda-spark` on GB10) | `--cuda` (device graph) and `--cpu` (CPU reference) |
+| CPU-only | `make cpu` | `--cpu` only; `--cuda` is refused |
 
-The CUDA build is the one this recipe uses; `run-bonsai.sh` never rebuilds
-anything, it only reports what is present.
+The CUDA build is the one this page's numbers use. Nothing here rebuilds a
+binary: the commands below run what `make` produced.
 
-The diagnostic generator `--first-token-test` is the reproducible oracle path:
-greedy, with `-p "<prompt>"`. The Rust host is the default binary
-(`make ds4` produces `./ds4`; the C hosts keep the `-c` suffix and this recipe's
-runbooks use them), and `make test-qwen35-rust-host` pins the two hosts to the
-same ids.
 `DS4_QWEN35_STEPS=<n>` sets the greedy step count (default 16) and
 `DS4_QWEN35_TOKENS=<comma ids>` replaces the prompt with raw token ids, which
 is how the reproducible parity gate is run. `DS4_QWEN35_LOGITS=<file>` dumps
@@ -69,9 +68,23 @@ ranges and reduces them in attn_merge. Without that split this family's decode
 collapsed as the context grew — 4.32 tokens/s at a 15k context, against 35.65
 in the pre-port baseline — and the split is what closed that gap.
 
-`run-bonsai.sh session` drives both backends through the session and diffs each
-against the CPU reference. The CLI's plain generation path (`-p`, no
-`--first-token-test`) routes this family through the session as well.
+`DS4_QWEN35_SESSION=1` drives both backends through the session; run the same
+prompt on each and diff the token lines:
+
+```sh
+DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_SESSION=1 DS4_QWEN35_STEPS=16 \
+    ./ds4-c -m "$DS4_BONSAI_MODEL" --cuda --first-token-test -p "The capital of France is" \
+    | grep '^token ' > misc/scratch/bonsai-cuda-session.tokens
+
+DS4_QWEN35_SESSION=1 DS4_QWEN35_STEPS=16 \
+    ./ds4-c -m "$DS4_BONSAI_MODEL" --cpu --first-token-test -p "The capital of France is" \
+    | grep '^token ' > misc/scratch/bonsai-cpu-session.tokens
+
+diff misc/scratch/bonsai-cpu-session.tokens misc/scratch/bonsai-cuda-session.tokens
+```
+
+The CLI's plain generation path (`-p`, no `--first-token-test`) routes this
+family through the session as well.
 
 ## The server path
 
@@ -88,24 +101,33 @@ default an unmapped id would fall back to.
 | lanes | serial only (`--max-seqs`, batching, MTP refused by name) | serial only |
 | speed | ~1.4 s for a 36-token answer with 45 prompt tokens | ~3 s per forward |
 
+```sh
+DS4_CUDA_COPY_MODEL=1 ./ds4-server -m "$DS4_BONSAI_MODEL" \
+    --backend cuda -c 45056 --mem-floor-gb 1 --host 127.0.0.1 --port 8899
 ```
-$ ./run-bonsai.sh server
-model:   Ternary-Bonsai-2-27B-PQ2_0.gguf
-prompt:  The capital of France is
-ctx:     45056, memory floor 1G, port 8899
-backend: cuda
-binary:  ./ds4-server
 
-server:  up (pid 1240413)
-         listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open ...
-id:      Ternary-Bonsai-2-27B-PQ2_0
+The server reports the plan and the listener before it answers:
 
-wall:    1.40s for the request
-finish:  stop
-answer:   Paris.
-reasoning: The user is asking a simple factual question: "The capital of France is". I just need to complete the sentence. The capital of France is Paris.
-usage:    {'prompt_tokens': 45, 'completion_tokens': 36, 'total_tokens': 81, ...}
 ```
+ds4-server-rs: request defaults temperature=1 (model) top_p=0.95 (model) top_k=0 min_p=0 max_tokens=393216 seed=per-request
+family: qwen35
+requested: reuse=auto max_seqs=auto mtp=auto ctx=45056 floor=1G disk=false
+ds4-server-rs: listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open host_vocab=yes
+```
+
+One request through it:
+
+```sh
+curl -s http://127.0.0.1:8899/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"Ternary-Bonsai-2-27B-PQ2_0",
+         "messages":[{"role":"user","content":"The capital of France is"}],
+         "max_tokens":64,"temperature":0}'
+```
+
+The recorded answer on the CUDA server was one 36-token reply (`finish_reason`
+stop) ending in `Paris.`, with `prompt_tokens` 45 and `completion_tokens` 36;
+`/v1/models` answers the same id with `context_length` 45056.
 
 The advertised id is the GGUF stem, as it is for every family in this tree; the
 sibling C server's names (`prism-bonsai-2-27b`, `-chat`, `-no-think`,
@@ -113,35 +135,10 @@ sibling C server's names (`prism-bonsai-2-27b`, `-chat`, `-no-think`,
 `/v1/models/<id>`, and the server does not validate the model field of a chat
 request, so a client configured with the alias is served.
 
-`server` is a smoke test: it starts the server, sends one request and stops it.
-To keep one up for a client (open-grok, a script, curl), use `serve`:
-
-```
-$ ./run-bonsai.sh serve start        # -> serve with no argument does the same
-model:   Ternary-Bonsai-2-27B-PQ2_0.gguf
-backend: cuda, ctx 45056, memory floor 1G, port 8899
-server:  up (pid 1355296)
-         listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open ...
-base_url: http://127.0.0.1:8899/v1
-id:      Ternary-Bonsai-2-27B-PQ2_0 (aliases: prism-bonsai-2-27b*)
-log:     misc/scratch/bonsai-serve.log
-note:    one ds4 model at a time; this server holds the slot until stopped
-
-$ ./run-bonsai.sh serve status
-server:  running (pid 1355296)
-base_url: http://127.0.0.1:8899/v1
-serving: Ternary-Bonsai-2-27B-PQ2_0 ctx 45056
-vram:    7474 MiB, 12282 MiB
-
-$ ./run-bonsai.sh serve stop
-server:  stopped (pid 1355296)
-```
-
-`serve logs [n]` tails the capture. The pid file and the log live in
-`misc/scratch`, and `stop` only ever kills the pid that file records, so a
-foreign `ds4-server` is never touched. A second `serve start` reports the
-running server instead of starting another one, and if any other ds4 model
-holds the single slot the start refuses and names the process.
+The server runs in the foreground and holds the single model slot until it
+exits; stop it with the shell's own job control. It refuses by name what it
+cannot do (see Limitations) instead of staying silently idle, and `--kv-disk-dir`
+stops the start rather than being accepted and ignored.
 
 An open-grok client block for it (port 8899, the id it advertises, and a
 context the card can host):
@@ -166,8 +163,9 @@ CUDA graph adds its chunk-sized transient buffers. The generic estimate charges
 all 64 blocks as attention rows (four times the real KV) and refuses every
 usable context on a 12 GiB card even with the memory floor at zero.
 
-Measured with `--mem-floor-gb 1` on this host (`--check-config` reports the
-plan before the model opens, so the last row also reports a real start):
+Measured on this host through `ds4-server`'s admission plan
+(`--mem-floor-gb 1`; `--check-config` prints the plan before the model opens,
+so the last row also reports a real start):
 
 | ctx | bank (CUDA) | plan total | free device memory at plan time | verdict |
 | --- | --- | --- | --- | --- |
@@ -179,15 +177,14 @@ plan before the model opens, so the last row also reports a real start):
 
 `available` is the free device memory the quote reads at plan time, so the
 verdict moves with whatever else is on the card; 45056 is the largest context
-with a workable margin here and is what `DS4_BONSAI_CTX` defaults to. Device
-use is not flat: a freshly started server holds 7.30 GiB (weights plus
-transients), and the first requests bring the ctx-45056 bank (3.14 GiB) in, for
+with a workable margin here and is the `-c` these commands pass. Device use is
+not flat: a freshly started server holds 7.30 GiB (weights plus transients),
+and the first requests bring the ctx-45056 bank (3.14 GiB) in, for
 10.57 GiB steady state, which is the number to plan against and the one the
-plan's 10.86 GiB total already quotes. The 4 GiB
-default memory floor refuses all of these. The CPU reference allocates a float
-key/value row for every block, so its own limit is roughly half these contexts
-on a 32 GiB host; `DS4_BONSAI_CTX` and `DS4_BONSAI_MEM_FLOOR` (with
-`--kv-disk-dir` refused by name) set the trade.
+plan's 10.86 GiB total already quotes. The 4 GiB default memory floor refuses
+all of these. The CPU reference allocates a float key/value row for every
+block, so its own limit is roughly half these contexts on a 32 GiB host; `-c`
+and `--mem-floor-gb` (with `--kv-disk-dir` refused by name) set the trade.
 
 ## Environment requirement: copy the model to the device
 
@@ -201,164 +198,124 @@ backend falls back to lazy per-range materialisation and dies part-way through
 the trunk with `Bonsai matmul failed for blk.<n>.<tensor>`; the tensor that
 fails depends on allocation order, the symptom does not. With the variable the
 log reads `CUDA copying 6.71 GiB model to device memory` and the copy costs
-about 0.7 s. `run-bonsai.sh` sets it for every `--cuda` run.
+about 0.7 s. Set it for every `--cuda` / `--backend cuda` run below.
 
 ## Running
 
 ```sh
-make ds4-c CUDA_ARCH=sm_89
+make ds4 ds4-c CUDA_ARCH=sm_89     # make cuda-spark on GB10
+export DS4_BONSAI_MODEL=/path/to/Ternary-Bonsai-2-27B-PQ2_0.gguf
+export DS4_CUDA_COPY_MODEL=1       # every CUDA run on this host
 
-./run-bonsai.sh status              # what is built, which artifact, what can run
-./run-bonsai.sh                     # generate from the default prompt (CUDA)
-./run-bonsai.sh "a prompt"          # same, your prompt
-./run-bonsai.sh cuda ["prompt"]     # the CUDA graph explicitly
-./run-bonsai.sh cpu ["prompt"]      # the CPU reference (the oracle)
-./run-bonsai.sh compare ["prompt"]  # both backends, diffed token for token
-./run-bonsai.sh ids                 # the explicit five-id parity gate
-./run-bonsai.sh session ["prompt"]  # both backends through the session, diffed
-./run-bonsai.sh server ["prompt"]   # one chat request through the Rust server
-./run-bonsai.sh serve [start|stop|status|logs]  # keep a server up for a client
-./run-bonsai.sh bench [tokens]      # decode rate with /usr/bin/time
-./run-bonsai.sh help
+# the greedy diagnostic, one token per graph call
+./ds4-c -m "$DS4_BONSAI_MODEL" --cuda --first-token-test -p "The capital of France is"
+
+# the same prompt on the CPU reference (the oracle)
+./ds4-c -m "$DS4_BONSAI_MODEL" --cpu --first-token-test -p "The capital of France is"
+
+# the Rust host over the same raw ids
+./ds4 -m "$DS4_BONSAI_MODEL" --backend cuda \
+    --token-ids 760,6511,314,9338,369 --predict 8 --temp 0
+
+# both backends over the parity ids, diffed
+make bonsai-cuda-parity
+
+# one chat request through the server
+./ds4-server -m "$DS4_BONSAI_MODEL" --backend cuda -c 45056 \
+    --mem-floor-gb 1 --host 127.0.0.1 --port 8899
 ```
 
-Env overrides: `DS4_BONSAI_MODEL`, `DS4_BONSAI_BIN`, `DS4_BONSAI_BACKEND`
-(`cuda`|`cpu`), `DS4_BONSAI_STEPS`, `DS4_BONSAI_WAIT`, `DS4_BONSAI_LOG`, and
-for `server` / `serve` `DS4_BONSAI_SERVER_BIN`, `DS4_BONSAI_CTX` (default
-45056), `DS4_BONSAI_MEM_FLOOR` (default 1, GiB), `DS4_BONSAI_SERVER_PORT` and
-`DS4_BONSAI_SERVER_TOKENS` (default 64: the reasoning block alone runs about 33
-tokens before any content).
+Switches that shape a run: `DS4_QWEN35_STEPS`, `DS4_QWEN35_TOKENS`,
+`DS4_QWEN35_LOGITS`, `DS4_QWEN35_SESSION`, `DS4_QWEN35_PREFILL_CHUNK`,
+`DS4_MTP_SPEC_DISABLE`, `DS4_MTP_SPEC_LOG`, `DS4_QWEN35_MTP_PROBE` and
+`DS4_CUDA_COPY_MODEL` (all above).
 
 The engine holds a single global lock (`/tmp/ds4.lock`), so only one
-`ds4`/`ds4-c` process runs at a time; a second refuses to start by design. The
-script waits for the slot (up to `DS4_BONSAI_WAIT` seconds, default 300)
-instead of failing, and retries if the engine still refuses.
+`ds4`/`ds4-c`/`ds4-server` process runs at a time; a second refuses to start by
+design. Wait for the running one to finish, or stop the process you started.
 
-### status
+### What is present
 
-```
-$ ./run-bonsai.sh status
-binary:  ./ds4-c
-         present, built 2026-09-30 09:30:17
-         CUDA-linked: runs --cuda and --cpu (both backends)
-model:   Ternary-Bonsai-2-27B-PQ2_0.gguf
-         present, 6.71 GiB
-gpu:     NVIDIA GeForce RTX 4070 SUPER, 180 MiB, 12282 MiB
-         no compute process
-slot:    busy (another ds4/ds4-c holds /tmp/ds4.lock); runs will wait
-entry:   --first-token-test (greedy diagnostic), the session path, and
-         the Rust server (./run-bonsai.sh server)
-         DS4_QWEN35_STEPS=<n>, DS4_QWEN35_TOKENS=<comma ids>,
-         DS4_QWEN35_SESSION=1 (drive the same run through a session),
-         DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)
-server:  ./ds4-server
-         present; serves this family (id from the GGUF stem, aliases
-         prism-bonsai-2-27b*) with DS4_BONSAI_CTX=45056 and
-         DS4_BONSAI_MEM_FLOOR=1G on port 8899
-supported: generate, cuda, cpu, compare, ids, session, server, serve, bench, status, help
-refused:   batching, MTP/DSpark, SSD/disk KV, session snapshots, distributed
-           ranks (each refused by name; --kv-disk-dir stops the server for
-           this family rather than staying silently unused)
-runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,
-           make test-qwen35-cuda, make test-qwen35-session,
-           make test-qwen35-session-multichunk, make test-qwen35-rows,
-           make pq2-0-test, make bonsai-fold-selftest, make bonsai-ref-check
+There is no status subcommand: check the pieces directly.
+
+```sh
+ldd ./ds4-c | grep libcudart          # CUDA-linked, so --cuda and --cpu both run
+ls -l "$DS4_BONSAI_MODEL"             # 6.71 GiB (7,206,168,928 bytes)
+nvidia-smi                            # free device memory against the plan above
+fuser -v /tmp/ds4.lock 2>&1           # which process holds the single slot
 ```
 
-### ids (the reproducible parity gate)
+What the binaries carry for this family: `./ds4-c` has `--first-token-test`
+(greedy diagnostic), the session path and `--cpu`; `./ds4` has `-p`,
+`--token-ids`/`--predict`, `--serving-check` and `--cuda`/`--cpu`/`--backend`;
+`./ds4-server` serves the id from the GGUF stem with the aliases above.
 
-`ids` is byte for byte what `make bonsai-cuda-parity` runs: the same five ids
-through both backends at the same step count, diffed.
+Refused by name: batching, DSpark, SSD/disk KV, session snapshots and
+distributed ranks (a real start stops rather than ignoring them; `--kv-disk-dir`
+stops the server for this family).
 
-```
-$ ./run-bonsai.sh ids
-model:   Ternary-Bonsai-2-27B-PQ2_0.gguf
-tokens:  760,6511,314,9338,369 (explicit ids; the prompt is ignored)
-steps:   8
+Runbooks in this tree (all read `DS4_BONSAI_MODEL`): `make bonsai-cuda-check`,
+`make bonsai-cuda-parity`, `make test-qwen35-cuda`,
+`make test-qwen35-rust-host`, `make test-qwen35-session`,
+`make test-qwen35-session-multichunk`, `make test-qwen35-rows`,
+`make pq2-0-test`, `make bonsai-fold-selftest`, `make bonsai-ref-check`.
 
---- CUDA graph ---
-waiting for a free device slot (another ds4 process is running)...
-backend:      cuda
-wall:         1.61s for the prompt plus 8 greedy tokens (includes the model load)
-decode rate:  4.97 tokens/s (steps / wall; steady state is higher)
-peak rss:     7616 MiB
-continuation:
-   Paris.
-The capital of Germany is
+### The parity gate
 
---- CPU reference (the oracle) ---
-backend:      cpu
-wall:         42.12s for the prompt plus 8 greedy tokens (includes the model load)
-decode rate:  0.19 tokens/s (steps / wall; steady state is higher)
-peak rss:     6911 MiB
-continuation:
-   Paris.
-The capital of Germany is
-
---- token-for-token diff ---
-IDENTICAL: both backends print the same 8 ids for the same
-           explicit prompt; this is the reproducible parity gate
-```
-
-### compare (both backends on one prompt)
+`make bonsai-cuda-parity` is the reproducible gate: eight steps from the five
+explicit ids on both backends, diffed, and it prints one line.
 
 ```
-$ ./run-bonsai.sh compare
-model:   Ternary-Bonsai-2-27B-PQ2_0.gguf
-prompt:  The capital of France is
-steps:   16, generated by both backends
+$ make bonsai-cuda-parity
+bonsai cuda parity: PASS
+```
 
---- CUDA graph ---
-backend:      cuda
-wall:         2.39s for the prompt plus 16 greedy tokens (includes the model load)
-decode rate:  6.69 tokens/s (steps / wall; steady state is higher)
-peak rss:     7616 MiB
-continuation:
+Spelled out, that is `DS4_QWEN35_TOKENS=760,6511,314,9338,369
+DS4_QWEN35_STEPS=8` through `./ds4-c --first-token-test` on `--cuda` and on
+`--cpu`. The eight generated ids are 11751 Paris, 13 `.`, 198, 760 The,
+6511 capital, 314 of, 9564 Germany, 369 is, so the stream continues
+`Paris.` then `The capital of Germany is`.
+
+On this host the CUDA run took 1.61 s wall for the prompt plus eight tokens
+including the model load, with 7616 MiB peak RSS; the CPU reference took
+42.12 s and 6911 MiB for the same stream. Those wall times are load-inclusive
+floors, not the steady-state rate.
+
+### Both backends on one prompt
+
+```sh
+./ds4-c -m "$DS4_BONSAI_MODEL" --cuda --first-token-test \
+    -p "The capital of France is" | grep '^token ' > misc/scratch/bonsai-cuda.tokens
+./ds4-c -m "$DS4_BONSAI_MODEL" --cpu --first-token-test \
+    -p "The capital of France is" | grep '^token ' > misc/scratch/bonsai-cpu.tokens
+diff misc/scratch/bonsai-cpu.tokens misc/scratch/bonsai-cuda.tokens
+```
+
+Recorded at `DS4_QWEN35_STEPS=16`: both printed
+
+```
   The user is asking a simple factual question: "The capital of France is"
-
---- CPU reference (the oracle) ---
-backend:      cpu
-wall:         139.25s for the prompt plus 16 greedy tokens (includes the model load)
-decode rate:  0.11 tokens/s (steps / wall; steady state is higher)
-peak rss:     6916 MiB
-continuation:
-  The user is asking a simple factual question: "The capital of France is"
-
---- token-for-token diff ---
-IDENTICAL: all 16 generated token ids agree, so the CUDA graph
-           reproduces the CPU reference on this prompt
-           (per-backend token lines kept at misc/scratch/bonsai-{cpu,cuda}.tokens)
 ```
 
-The `-p` prompt is chat-templated by the CLI (25 tokens here), which is why
-its continuation is not the bare "Paris" stream `ids` prints. The CPU side is
-about 3 s per forward, so a 16-step compare takes just over two minutes.
+and the 16 generated token ids agreed. The `-p` prompt is chat-templated by the
+CLI (25 tokens here), which is why its continuation is not the bare `Paris`
+stream the parity ids print. The CPU side is about 3 s per forward, so a
+16-step comparison takes just over two minutes.
 
-### bench
+### Decode rate
 
-```
-$ ./run-bonsai.sh bench 8
-tokens:  8 greedy, one forward each, after the prompt
-timed:   /usr/bin/time
-
-backend:      cuda
-wall:         2.15s for the prompt plus 8 greedy tokens (includes the model load)
-decode rate:  3.72 tokens/s (steps / wall; steady state is higher)
-peak rss:     7616 MiB
-continuation:
-  The user is asking a simple factual question
+```sh
+/usr/bin/time -f '%e s wall, %M KiB peak' \
+    ./ds4-c -m "$DS4_BONSAI_MODEL" --cuda --first-token-test \
+    -p "The capital of France is"
 ```
 
-The rate here divides steps by total wall, which includes the one-off 0.7 s
-model copy and the prompt pass; it is a floor, not the steady-state rate. A
-64-step run on the same box:
-
-```
-$ ./run-bonsai.sh bench 64
-wall:         3.67s for the prompt plus 64 greedy tokens (includes the model load)
-decode rate:  17.44 tokens/s (steps / wall; steady state is higher)
-peak rss:     7616 MiB
-```
+Recorded at `DS4_QWEN35_STEPS=64` on this host: 3.67 s wall, 17.44 tokens/s,
+7616 MiB peak RSS. The rate divides steps by total wall, which includes the
+one-off 0.7 s model copy and the prompt pass, so it is a floor; the steady-state
+decode is about 26 ms per token. `ds4-bench` measures the same family from the
+Rust host with its own workload script (`--mtp` off by default, `--mtp-draft`
+to arm the block).
 
 ## The MTP artifact, reproduced byte for byte
 
@@ -508,7 +465,7 @@ Runbooks in this tree (all read `DS4_BONSAI_MODEL`):
 | Target | Covers |
 | --- | --- |
 | `make bonsai-cuda-check` | the greedy stream on the CUDA graph alone |
-| `make bonsai-cuda-parity` | CPU reference vs CUDA graph streams, diffed (what `ids` runs) |
+| `make bonsai-cuda-parity` | CPU reference vs CUDA graph streams, diffed over the parity ids |
 | `make test-qwen35-cuda` | the CUDA kernels against the in-process CPU reference, no model file needed |
 | `make test-qwen35-session` | the session path on both backends (plain, prefix reuse, rewind, invalidate, context bound), diffed against the in-process CPU reference |
 | `make test-qwen35-session-multichunk` | the same scenarios with `DS4_QWEN35_PREFILL_CHUNK=2`, so the prefill crosses many chunk boundaries |
@@ -570,12 +527,12 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
   sidecar, tensor parallelism and distributed ranks.
 - **The CPU reference is the slow path.** About 3 s per forward against ~26 ms
   per token on the card, which is why the CPU session runs the reference trunk
-  and `./run-bonsai.sh session` takes minutes.
+  and a 16-step CPU comparison takes minutes.
 - **Greedy generation from a chat-templated prompt is a near-tie coin flip.**
   The CPU and CUDA logits differ by the 0.08093 above, and on the CLI's
   chat-templated prompt a continuation can flip between the backends (about
   0.1 on a 22-magnitude top logit). The reproducible gate is the explicit-token
-  stream (`ids` / `make bonsai-cuda-parity`); a long chat continuation is not
+  stream (`make bonsai-cuda-parity`); a long chat continuation is not
   evidence. See
   [the CUDA graph report](releases/bonsai-cuda-graph-2026-09-30.md), section 4.
 
