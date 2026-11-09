@@ -433,6 +433,19 @@ mod tests {
             Ok(())
         }
     }
+    // A rewrite of unchanged size can land inside one coarse-clock tick, where
+    // mtime and ctime, the fields the cache keys on, do not move.  Advance the
+    // modification time so the drift the tests assert on is visible on every
+    // filesystem, not only on one with a fine-grained timestamp clock.
+    fn rewrite_stamped(path: &std::path::Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+    }
     #[test]
     fn verification_rejects_drift_and_conflicting_digest() {
         let root = std::env::temp_dir().join(format!("ds4-verified-{}", std::process::id()));
@@ -445,7 +458,7 @@ mod tests {
         checked.verify(&path, &expected).unwrap();
         assert_eq!(checked.full_reads, 1);
         assert!(checked.verify(&path, &hash_bytes(b"other")).is_err());
-        fs::write(&path, b"other").unwrap();
+        rewrite_stamped(&path, b"other");
         assert!(checked.verify(&path, &expected).is_err());
         assert!(checked.finish().is_err());
 
@@ -485,7 +498,7 @@ mod tests {
             checked.finish().is_err(),
             "root envelope must remain pinned"
         );
-        fs::write(&input, b"new input!").unwrap();
+        rewrite_stamped(&input, b"new input!");
         assert!(load_verified::<Example>(&root.join("1.json"), &mut checked).is_err());
         assert!(checked.finish().is_err());
         fs::remove_dir_all(root).unwrap();

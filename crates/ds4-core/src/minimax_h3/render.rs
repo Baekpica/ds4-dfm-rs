@@ -659,7 +659,8 @@ mod tests {
 
         use std::os::unix::process::CommandExt;
         for mode in ["early-exit", "audio-fd"] {
-            let mut child = Command::new(std::env::current_exe().unwrap())
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
                 .args([
                     "--exact",
                     "minimax_h3::render::tests::mux_pipe_lifetimes",
@@ -667,9 +668,19 @@ mod tests {
                 ])
                 .env(CHILD, mode)
                 .stdout(Stdio::null())
-                .process_group(0)
-                .spawn()
-                .unwrap();
+                .process_group(0);
+            // The re-exec'd child asserts the audio descriptor is free before
+            // mux_mp4 claims it.  A launcher can leave fd 3 open (a shell
+            // redirect or a test harness pipe), and spawn preserves it, so
+            // close it in the child.  pre_exec runs after fork, where close is
+            // async-signal-safe.
+            unsafe {
+                command.pre_exec(|| {
+                    libc::close(MUX_AUDIO_FD);
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 if let Some(status) = child.try_wait().unwrap() {
