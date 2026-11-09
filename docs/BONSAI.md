@@ -42,6 +42,9 @@ is how the reproducible parity gate is run. `DS4_QWEN35_LOGITS=<file>` dumps
 the prompt pass's n x 248320 f32 logits. `DS4_QWEN35_SESSION=1` drives that
 same prompt and greedy loop through a real `ds4_session` (create, sync, eval)
 instead of a state local to the diagnostic, on either backend.
+`DS4_QWEN35_SYNC_LOG=1` prints every prefix-reuse capture and resume decision;
+`DS4_KV_DEBUG=1` prints the server's per-request store decision and why it did
+not happen.
 
 ## The session path
 
@@ -57,16 +60,16 @@ and the context bound; the table below says what each backend does differently.
 | speed | ~26 ms per token | ~3 s per forward |
 
 Refused by name rather than pretended: batching (the session verifies at most
-the two rows of one draft block), DSpark drafting, SSD/disk KV, tensor
-parallelism, distributed ranks, and KV snapshots (`ds4_session_payload_bytes`
-returns 0 and both payload paths refuse). The family's own embedded MTP block
-drafts on the serial lane (see "The draft loop"); the bank driver has no draft
-round for it. Attention is chosen per batch, not per model: a chunk of 32 rows
-or more takes the token-tile MMA kernel, and decode (or anything below that)
-takes the row-exact kernel, which cuts a row's key range into up to 64 split
-ranges and reduces them in attn_merge. Without that split this family's decode
-collapsed as the context grew — 4.32 tokens/s at a 15k context, against 35.65
-in the pre-port baseline — and the split is what closed that gap.
+the two rows of one draft block), DSpark drafting, tensor parallelism and
+distributed ranks. Session snapshots and the disk KV store are implemented
+(see "Prefix reuse and disk checkpoints"); the bank driver has no draft round
+for the embedded block. Attention is chosen per batch, not per model: a chunk
+of 32 rows or more takes the token-tile MMA kernel, and decode (or anything
+below that) takes the row-exact kernel, which cuts a row's key range into up
+to 64 split ranges and reduces them in attn_merge. Without that split this
+family's decode collapsed as the context grew — 4.32 tokens/s at a 15k
+context, against 35.65 in the pre-port baseline — and the split is what
+closed that gap.
 
 `DS4_QWEN35_SESSION=1` drives both backends through the session; run the same
 prompt on each and diff the token lines:
@@ -85,6 +88,65 @@ diff misc/scratch/bonsai-cpu-session.tokens misc/scratch/bonsai-cuda-session.tok
 
 The CLI's plain generation path (`-p`, no `--first-token-test`) routes this
 family through the session as well.
+
+## Prefix reuse and disk checkpoints
+
+The family's state is four things: the positional fp16 k/v rows of the 16
+gated-attention layers, the 48 gated delta-net recurrences, their 48 conv
+histories, and — when the artifact carries the grafted block — that block's own
+k/v prefix and the hidden row it is holding. `ds4_qwen35_payload.inc`
+serializes exactly that.
+
+| Part | Bytes |
+| --- | --- |
+| k/v, per token across the 16 attention layers | 65,536 (4 x 256 x 2, k and v) |
+| recurrences, all 48 layers | 151,007,232 (3 MiB each) |
+| conv histories, all 48 layers | 5,898,240 (120 KiB each) |
+| block prefix, per token (only when the drafter ran) | 4,096 |
+| block's held hidden row, once | 20,480 |
+
+So a checkpoint is 156,893,184 B of state plus 64 KB per token: 159,590,787 B
+measured for a 26-token prompt, 2.9 GiB at 45,056 tokens.
+
+Two cases drive it:
+
+- An extension (the prompt continues the checkpoint) resumes at the live
+  position and prefills only the new tokens. Nothing is copied.
+- A re-rendered continuation or a resent turn resumes at the deepest capture at
+  or below the common prefix, and the tail is prefilled from there. Captures
+  are taken at the last chunk's start and at the end of every sync, two slots
+  in total.
+
+The recurrence cannot be sliced, so a prompt that diverges inside one prefill
+chunk has no capture below it and replays from zero. With the 512-row default
+chunk that means prompts shorter than 512 tokens never rewind; the checklist
+reports that case as a cold prefill, not a reuse.
+
+Captures are refused when `free - floor` cannot hold the copy. On a 12 GiB card
+with the 4 GiB default floor there is nothing left (measured: free 3.85 GiB),
+so every capture is skipped and prefills replay — correct, just slower. Serve
+with `--mem-floor-gb 1` (or raise the free memory) to turn reuse on.
+
+Server path: the ordinary disk cache applies to OpenAI chat requests with
+thinking off (`ordinary_disk_cache_eligible`), two turns or more, and at least
+`--kv-cache-min-tokens` tokens. The store's identity is the model id, the
+quantization class (2-bit for this dense trunk) and the session context, so an
+entry from a different context is not offered. Measured on the RTX 4070 SUPER
+(sm_89), 26 prompt tokens, `--reasoning-effort none`:
+
+| Run | cached | prefill | TTFT |
+| --- | --- | --- | --- |
+| cold, first request | 0 | 26 | 1081 ms |
+| same prompt, same server | 26 | 0 | 419 ms |
+| same prompt, fresh server process | 26 | 0 | 353 ms |
+
+`--serving-check` on a 1,801-token prompt reports all five session items as
+working: prefix and rewind kept 1536, continue, disk and snapshot kept 1801,
+top-1 17/17.
+
+`DS4_QWEN35_SYNC_LOG=1` prints each capture and each resume decision, and
+`DS4_KV_DEBUG=1` prints the server's per-request store decision and why it did
+not happen.
 
 ## The server path
 
@@ -137,8 +199,10 @@ request, so a client configured with the alias is served.
 
 The server runs in the foreground and holds the single model slot until it
 exits; stop it with the shell's own job control. It refuses by name what it
-cannot do (see Limitations) instead of staying silently idle, and `--kv-disk-dir`
-stops the start rather than being accepted and ignored.
+cannot do (see Limitations) instead of staying silently idle. Add
+`--kv-disk-dir <dir>` to keep checkpoints on disk; the plan line then reads
+`disk=true` and the store reports `disk_unverified` until the family's disk
+lane is qualified ("Prefix reuse and disk checkpoints").
 
 An open-grok client block for it (port 8899, the id it advertises, and a
 context the card can host):
@@ -182,9 +246,10 @@ not flat: a freshly started server holds 7.30 GiB (weights plus transients),
 and the first requests bring the ctx-45056 bank (3.14 GiB) in, for
 10.57 GiB steady state, which is the number to plan against and the one the
 plan's 10.86 GiB total already quotes. The 4 GiB default memory floor refuses
-all of these. The CPU reference allocates a float key/value row for every
-block, so its own limit is roughly half these contexts on a 32 GiB host; `-c`
-and `--mem-floor-gb` (with `--kv-disk-dir` refused by name) set the trade.
+all of these, and it also refuses every prefix-reuse capture, so the serving
+command above passes `--mem-floor-gb 1`. The CPU reference allocates a float
+key/value row for every block, so its own limit is roughly half these contexts
+on a 32 GiB host; `-c` and `--mem-floor-gb` set the trade.
 
 ## Environment requirement: copy the model to the device
 
@@ -250,9 +315,9 @@ What the binaries carry for this family: `./ds4-c` has `--first-token-test`
 `--token-ids`/`--predict`, `--serving-check` and `--cuda`/`--cpu`/`--backend`;
 `./ds4-server` serves the id from the GGUF stem with the aliases above.
 
-Refused by name: batching, DSpark, SSD/disk KV, session snapshots and
-distributed ranks (a real start stops rather than ignoring them; `--kv-disk-dir`
-stops the server for this family).
+Refused by name: batching, DSpark and distributed ranks (a real start stops
+rather than ignoring them). Disk KV and session snapshots are accepted and
+implemented (see "Prefix reuse and disk checkpoints").
 
 Runbooks in this tree (all read `DS4_BONSAI_MODEL`): `make bonsai-cuda-check`,
 `make bonsai-cuda-parity`, `make test-qwen35-cuda`,
@@ -519,14 +584,16 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 - **Serving is exercised but not qualified.** The server answers on both
   backends and refuses by name what it cannot do, but the family's serving caps
   carry no qualified context, bank or prompt limits, and only the serial lane
-  is wired: batching, DSpark, SSD/disk KV, tensor parallelism and session
-  snapshots are refused (`--kv-disk-dir` stops the server rather than staying
-  silently unused) and the plan reports `reuse=exact` with a
-  `partial_unqualified` warning. Do not read the caps as a qualified service.
-- **No batching, SSD/disk KV or session snapshots.** Each is refused by name
-  rather than pretended: the session verifies at most one draft block's two
-  rows, the payload paths refuse, and the engine gate rejects the DSpark
-  sidecar, tensor parallelism and distributed ranks.
+  is wired: batching, DSpark and tensor parallelism are refused, and the plan
+  reports `reuse=exact` with `partial_unqualified` and disk KV as
+  `disk_unverified`. Do not read the caps as a qualified service.
+- **No batching or banks.** The multi-sequence graph does not exist for this
+  family, so the bank items of the checklist report "this model does not yet
+  implement the multi-sequence graph" and each session serves one conversation.
+- **Reuse has two conditions that silently cost prefill when unmet.** Both are
+  visible in the logs and neither changes the output: captures need free memory
+  above the floor (see "Prefix reuse and disk checkpoints"), and a prompt that
+  diverges inside one prefill chunk has no checkpoint below it to resume from.
 - **The CPU reference is the slow path.** About 3 s per forward against ~26 ms
   per token on the card, which is why the CPU session runs the reference trunk
   and a 16-step CPU comparison takes minutes.

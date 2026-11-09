@@ -1217,6 +1217,12 @@ impl BindPlan {
     /// Inkling keeps source tensor names rather than `ffn_gate_exps` aliases.
     pub fn routed_quant_bits(&self) -> i32 {
         const T_Q4_K: u32 = 12;
+        // Bonsai has no routed experts, so the loop below finds nothing.  Its
+        // disk identity keys on the trunk weights, and PQ2_0 (2-bit codes with
+        // a scale) is the only trunk format its loader accepts.
+        if self.shape.family == ModelFamily::Qwen35 {
+            return 2;
+        }
         for slot in &self.slots {
             if slot.name.starts_with("mtp.") || slot.name.starts_with("dspark.") {
                 continue;

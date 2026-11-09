@@ -788,8 +788,13 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             bank_support: Support::None,
             reuse: ReuseKind::Partial,
             reuse_support: Support::Present,
-            disk: Support::None,
-            snapshot: Support::None,
+            // The native payload carries the fp16 k/v rows, the gated
+            // delta-net recurrences and the grafted block's own prefix
+            // (ds4_qwen35_payload.inc), so the prefix store and the session
+            // snapshot both restore into a live session. Present until the
+            // serving gate has run on the artifact.
+            disk: Support::Present,
+            snapshot: Support::Present,
             // The drafter is the grafted block the artifact already carries
             // (docs/BONSAI.md), not a sidecar, and one draft is one two-row
             // verify block on the serial lane. Present, not qualified: the

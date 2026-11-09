@@ -48398,6 +48398,16 @@ typedef struct ds4_dots3_spec ds4_dots3_spec;
 /* Bonsai (qwen35) owns its graph and its CPU reference state as whole-struct
  * allocations defined far below; the session only holds pointers to them. */
 struct ds4_qwen35_gpu_graph;
+/* The family's snapshot codec (ds4_qwen35_payload.inc) sits beside the graph it
+ * serializes, far below the session payload dispatchers that call it. */
+static uint64_t qwen35_payload_bytes(const struct ds4_qwen35_gpu_graph *g, uint32_t n);
+static int qwen35_payload_save(struct ds4_qwen35_gpu_graph *g, const int *tokens,
+                               uint32_t n, const float *logits, FILE *fp,
+                               char *err, size_t errlen);
+static int qwen35_payload_restore(struct ds4_qwen35_gpu_graph *g, FILE *fp,
+                                  uint64_t *left,
+                                  const uint32_t *h, int **tokens_out, float *logits,
+                                  char *err, size_t errlen);
 struct ds4_qwen35_ref_state;
 
 /* Copies of a serial session's recurrent state pool a rewind resumes from
@@ -55074,6 +55084,10 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
 
 int ds4_engine_routed_quant_bits(ds4_engine *e) {
     if (!e) return 0;
+    /* Bonsai has no routed experts: the disk identity keys on its trunk
+     * weights, and PQ2_0 is the only trunk format the loader accepts
+     * (weights_validate_qwen35_layout), so it is the 2-bit class. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) return 2;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         const ds4_tensor *gate = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING
             ? (e->weights.inkling.layer[il].gate ? e->weights.inkling.layer[il].w13 : NULL)
@@ -56436,9 +56450,14 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
 #endif
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
+#ifndef DS4_NO_GPU
     /* Bonsai's state is the gated delta-net recurrence, the conv history and
-     * the fp16 k/v rows, not the DeepSeek raw-swa layout a snapshot writes. */
-    if (ds4_session_is_qwen35(s)) return 0;
+     * the fp16 k/v rows; its codec is ds4_qwen35_payload.inc. */
+    if (ds4_session_is_qwen35(s)) {
+        return s->qwen35_graph
+            ? qwen35_payload_bytes(s->qwen35_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
+#endif
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
         if (!s->glm53_graph_ready ||
@@ -56636,6 +56655,14 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_qwen35(s)) {
+        if (!fp || !ds4_session_payload_bytes(s)) {
+            payload_set_err(err, errlen, "Bonsai has no snapshot-ready checkpoint");
+            return 1;
+        }
+        return qwen35_payload_save(s->qwen35_graph, s->checkpoint.v,
+            (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
     if (ds4_session_is_gemma4(s)) {
         if (!ds4_session_payload_bytes(s)) {
             payload_set_err(err, errlen, "Gemma-4 has no snapshot-ready checkpoint");
@@ -57173,9 +57200,6 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->checkpoint.len = 0;
         s->mtp_draft_valid = false;
         qwen35_session_reset(s);
-        payload_set_err(err, errlen,
-                        "Bonsai session snapshots are not implemented yet");
-        return 1;
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) {
@@ -57293,6 +57317,33 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     const uint32_t payload_version = h[1];
 #ifndef DS4_NO_GPU
+
+    if (ds4_session_is_qwen35(s)) {
+        if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
+        if (!s->qwen35_graph) {
+            payload_set_err(err, errlen, "Bonsai graph is not ready for restore");
+            return 1;
+        }
+        float *new_logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*new_logits));
+        int *tokens = NULL;
+        const int rc = qwen35_payload_restore(s->qwen35_graph, fp, &remaining, h,
+                                              &tokens, new_logits, err, errlen);
+        if (rc != 0) {
+            free(new_logits);
+            /* A partial restore leaves the recurrent state unusable. */
+            qwen35_session_reset(s);
+            return 1;
+        }
+        token_vec next = {0};
+        for (uint32_t i = 0; i < h[7]; i++) { token_vec_push(&next, tokens[i]); }
+        free(tokens);
+        token_vec_free(&s->checkpoint);
+        s->checkpoint = next;
+        memcpy(s->logits, new_logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        free(new_logits);
+        s->checkpoint_valid = true;
+        return 0;
+    }
 
     if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
     if (ds4_session_is_solar(s)) {
@@ -72039,6 +72090,9 @@ typedef struct ds4_qwen35_gpu_graph {
     /* Drafts per cycle this graph can verify: 2 only when the engine asked for
      * two and the second checkpoint pair was allocated. */
     uint32_t mtp_drafts;
+    /* Byte size of one linear layer's recurrence and conv history: the parts a
+     * serial rewind copies when a prompt leaves the live state. */
+    uint64_t lin_state_bytes, lin_hist_bytes;
     ds4_gpu_tensor *signs[DS4_MAX_HADAMARD_SETS];
     uint32_t         sign_width[DS4_MAX_HADAMARD_SETS];
 } ds4_qwen35_gpu_graph;
@@ -72519,6 +72573,14 @@ static bool qwen35_graph_mtp_rows(ds4_qwen35_gpu_graph *g, ds4_engine *e,
 static bool qwen35_graph_mtp_fill(ds4_qwen35_gpu_graph *g, ds4_engine *e,
                                   const uint32_t *ids, uint32_t n, uint32_t pos0) {
     const uint64_t row_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    /* The row the previous chunk left pending is completed by this chunk's
+     * first token (or by the token a plain decode just forwarded), so the
+     * block's k/v stays contiguous across a chunked prefill. */
+    if (g->mtp_pending && g->mtp_pos + 1u == pos0) {
+        if (!qwen35_graph_mtp_row(g, e, ids[0], g->mtp_hidden, g->mtp_pos)) return false;
+        g->mtp_pos++;
+        g->mtp_pending = false;
+    }
     if (n > 1u) {
         if (!qwen35_graph_mtp_rows(g, e, ids + 1u, n - 1u, pos0)) return false;
         g->mtp_pos = pos0 + n - 1u;
@@ -72556,6 +72618,9 @@ static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
     }
     memset(g, 0, sizeof(*g));
 }
+
+/* The family's snapshot codec: the state this graph owns, serialized. */
+#include "ds4_qwen35_payload.inc"
 
 /* One allocation per tensor the trunk reuses, plus the per-layer state: a
  * gated delta-net layer keeps its state and conv history, an attention layer
@@ -72657,9 +72722,10 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
         const ds4_layer_weights *l = &w->layer[il];
         if (!l->attn_norm) continue;
         if (ds4_qwen35_layer_is_linear(il)) {
-            g->lin_state[il] = ds4_gpu_tensor_alloc((uint64_t)Hv * D * D * f32);
-            g->lin_hist[il] = ds4_gpu_tensor_alloc(
-                (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32);
+            g->lin_state_bytes = (uint64_t)Hv * D * D * f32;
+            g->lin_hist_bytes = (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32;
+            g->lin_state[il] = ds4_gpu_tensor_alloc(g->lin_state_bytes);
+            g->lin_hist[il] = ds4_gpu_tensor_alloc(g->lin_hist_bytes);
             /* A verify can only roll back what it checkpointed, and only an
              * artifact that carries the grafted block ever verifies.  The
              * second pair exists only for a two-draft block: it is 155 MB more
@@ -79092,6 +79158,104 @@ static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errl
  * sampler (sample-and-match).
  * ------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * Bonsai (qwen35) serial rewind
+ *
+ * The trunk state is positional fp16 k/v rows plus, per linear layer, the
+ * gated delta-net recurrence and its conv history.  A prompt that leaves the
+ * live state keeps its common prefix: the k/v rows below it are untouched
+ * (attention never reads at or past the position), and the recurrence resumes
+ * from a copy taken at or below it, in the generic serial-ckpt slots every
+ * rewind-capable family uses.  The grafted block's rows follow the trunk: its
+ * prefix below the kept position holds the same tokens.
+ * ------------------------------------------------------------------------- */
+
+/* The rewindable parts, in layer order: one recurrence and one conv history
+ * per gated delta-net layer. */
+static uint32_t qwen35_sync_parts(const ds4_qwen35_gpu_graph *g, serial_part *parts) {
+    uint32_t n = 0;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!g->lin_state[il] || !g->lin_hist[il]) { continue; }
+        parts[n++] = (serial_part){g->lin_state[il], g->lin_state_bytes};
+        parts[n++] = (serial_part){g->lin_hist[il], g->lin_hist_bytes};
+    }
+    return n;
+}
+
+/* Copies the state as it stands after `pos` rows.  A failed copy only costs a
+ * cold prefill, so the caller does not act on it. */
+static void qwen35_sync_capture(ds4_session *s, uint32_t pos) {
+    if (!s->qwen35_graph) { return; }
+    serial_part parts[2u * DS4_QWEN35_MAX_LAYER];
+    const uint32_t n = qwen35_sync_parts(s->qwen35_graph, parts);
+    const int slot = n ? serial_ckpt_capture(s, parts, n, pos) : -1;
+    if (getenv("DS4_QWEN35_SYNC_LOG")) {
+        uint64_t bytes = 0;
+        for (uint32_t i = 0; i < n; i++) { bytes += parts[i].bytes; }
+        ds4_mem_observation o;
+        (void)ds4_gpu_mem_observe(&o);
+        fprintf(stderr,
+                "ds4: Bonsai capture at %u: %u parts, %llu B, usable %llu "
+                "(free %llu, floor %llu, sub %llu), slot %d, gen %llu\n",
+                pos, n, (unsigned long long)bytes,
+                (unsigned long long)ds4_mem_usable(),
+                (unsigned long long)o.free_bytes,
+                (unsigned long long)ds4_mem_floor_bytes(),
+                (unsigned long long)ds4_gpu_substrate_outstanding(), slot,
+                (unsigned long long)s->generation);
+    }
+}
+
+/* Rows a sync may resume at: the live position for an extension, else the
+ * deepest copy at or below the common prefix.  Zero prefills from the start.
+ * A pending draft row is the state every forward leaves behind, so it does not
+ * disqualify a resume: the tail prefill refills it from the kept position. */
+static uint32_t qwen35_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    /* DS4_QWEN35_SYNC_LOG prints the resume decision: which row the sync keeps
+     * and, when it rebuilds, the state that disqualified the live one. */
+    const bool log = getenv("DS4_QWEN35_SYNC_LOG") != NULL;
+    if (!g || !s->checkpoint_valid || g->trial_n ||
+        g->pos != (uint32_t)s->checkpoint.len) {
+        if (log) {
+            fprintf(stderr,
+                    "ds4: Bonsai sync cold: graph %d valid %d trial %u pos %u ckpt %d\n",
+                    g != NULL, s->checkpoint_valid, g ? g->trial_n : 0u,
+                    g ? g->pos : 0u, s->checkpoint.len);
+        }
+        return 0;
+    }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->pos) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    if (log) {
+        fprintf(stderr, "ds4: Bonsai sync: common prefix %u of %d, slot %d at %u\n",
+                keep, prompt->len, slot, slot < 0 ? 0u : s->rewind.pos[slot]);
+    }
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
+/* Moves the trunk back to `keep` rows.  The k/v rows past it keep what the
+ * abandoned branch wrote; the tail being prefilled overwrites them.
+ *
+ * The block's rows [0, keep) are the same tokens, so they stay; the row at
+ * keep-1 is the one a fill never wrote (its chunk ended there), so a drafted
+ * cycle past this rewind reads one stale key/value row.  Only the drafts read
+ * it -- the committed tokens come from the trunk verify -- and the tail fill
+ * rewrites every row from `keep` on. */
+static bool qwen35_sync_rewind(ds4_session *s, uint32_t keep) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    serial_part parts[2u * DS4_QWEN35_MAX_LAYER];
+    const uint32_t n = qwen35_sync_parts(g, parts);
+    const int slot = serial_ckpt_find(s, keep);
+    if (!n || slot < 0 || !serial_ckpt_restore(s, slot, parts, n)) { return false; }
+    g->pos = keep;
+    if (g->mtp_pos > keep) { g->mtp_pos = keep; }
+    g->mtp_pending = false;
+    session_rewound(s, keep);
+    return true;
+}
+
 /* A cycle's failed step leaves the trunk state ahead of the checkpoint, and
  * the gated delta-net state cannot be sliced: drop the checkpoint so the next
  * decode replays it, as a failed plain decode does. */
@@ -79358,6 +79522,7 @@ int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
     if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_gemma4(s)) { return s->gemma4_graph_ready ? (int)gemma4_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_qwen35(s)) { return s->qwen35_graph ? (int)qwen35_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
 #endif
     return -1;
@@ -79508,20 +79673,21 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                 return 1;
             }
         }
-        int start = 0;
-        /* A checkpoint the prompt extends continues where it stopped: the trunk
-         * state already ends at the checkpoint's last position. */
-        if (s->checkpoint_valid &&
-            qwen35_session_pos(s) == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        /* Resume at the common prefix when a copy exists at or below it (an
+         * agent client re-rendering the last answer, or a resent turn), and
+         * prefill from the start only when there is none. */
+        int start = (int)qwen35_sync_keep(s, prompt);
+        if (start > 0 && (uint32_t)start < qwen35_session_pos(s) &&
+            !qwen35_sync_rewind(s, (uint32_t)start)) {
+            start = 0;
+        }
+        if (start == 0) {
             qwen35_session_reset(s);
             s->generation++;
             s->checkpoint.len = 0;
             s->checkpoint_valid = false;
+        } else if (start == prompt->len) {
+            return 0;
         }
         while (start < prompt->len) {
             uint32_t chunk = (uint32_t)(prompt->len - start);
@@ -79533,6 +79699,12 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (chunk == 0) {
                 snprintf(err, errlen, "context is full");
                 return 1;
+            }
+            /* The last chunk's start and the sync's end are the two rows a
+             * later rewind resumes at: a resent turn keeps the first, a
+             * re-rendered continuation the second. */
+            if (start + (int)chunk == prompt->len && start > 0) {
+                qwen35_sync_capture(s, (uint32_t)start);
             }
             /* The state is only trustworthy once the whole chunk has landed. */
             s->checkpoint_valid = false;
@@ -79551,6 +79723,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                 s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
             }
         }
+        qwen35_sync_capture(s, (uint32_t)prompt->len);
         return 0;
     }
     if (s->distributed) {

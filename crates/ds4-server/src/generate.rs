@@ -793,10 +793,20 @@ fn cold_sync_and_store(
         restore_suppressed_continued(store, suppressed, target_i32);
         return Err(error);
     }
-    let cold_stored = matches!(
-        try_store_live(io, store, model_id, quant_bits, ctx, KvReason::Cold, None,),
-        Ok(true)
-    );
+    let cold_store = try_store_live(io, store, model_id, quant_bits, ctx, KvReason::Cold, None);
+    /* DS4_KV_DEBUG names every store decision and why it did not happen: a
+     * refused payload is otherwise silent (the request still serves). */
+    if std::env::var_os("DS4_KV_DEBUG").is_some() {
+        match &cold_store {
+            Ok(stored) => eprintln!(
+                "ds4: kv cold store: stored={stored} live={} min={}",
+                io.live_len(),
+                store.opt.min_tokens
+            ),
+            Err(error) => eprintln!("ds4: kv cold store failed: {error}"),
+        }
+    }
+    let cold_stored = matches!(cold_store, Ok(true));
     if cold_stored {
         store.continued_last_store_tokens = store.continued_last_store_tokens.max(target_i32);
     } else {
@@ -4448,6 +4458,15 @@ impl<'a> NativeDecode<'a> {
         let vocab = self.vocab.unwrap_or_else(|| self.model.vocab());
         let save_current = self.session_disk_storable;
         let has_store = self.store.is_some();
+        if std::env::var_os("DS4_KV_DEBUG").is_some() {
+            eprintln!(
+                "ds4: kv sync: disk_eligible={disk_eligible} save_current={save_current} \
+                 has_store={has_store} model_id={model_id} quant_bits={quant_bits} ctx={} \
+                 prompt_tokens={}",
+                self.ctx(),
+                tokens.len()
+            );
+        }
         let prefill_checkpoints = intermediate_prefill_eligible(
             self.model.family() == ds4_core::ModelFamily::DeepSeek4,
             self.model.backend() == ds4_core::Backend::Cuda,

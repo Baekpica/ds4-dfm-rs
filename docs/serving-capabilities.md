@@ -44,7 +44,7 @@ The request's effective and qualified plan remains authoritative.
 | MiniMax-M3.1-Flash-VQ | persistent / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
 | A.X-K2-VQ | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | Gemma-4-26B-A4B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
-| Prism Bonsai 2 27B | serial / none | partial / unverified | none | none | Embedded / serial / unverified |
+| Prism Bonsai 2 27B | serial / none | partial / unverified | unverified | unverified | Embedded / serial / unverified |
 
 ## Bounds and allocator controls
 

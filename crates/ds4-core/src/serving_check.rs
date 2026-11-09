@@ -1218,11 +1218,11 @@ mod tests {
         for v in variants() {
             assert!(declared(v).contains(&"prefix"), "{v:?}");
         }
-        // Bonsai keeps no banks, disk KV or snapshots; Inkling reuses exactly
-        // (no rewind) without banks.
+        // Bonsai keeps no banks but does keep disk and session snapshots;
+        // Inkling reuses exactly (no rewind) without banks.
         assert_eq!(
             declared(Variant::Qwen35_27B),
-            ["prefix", "rewind", "continue"]
+            ["prefix", "rewind", "continue", "session", "session"]
         );
         assert_eq!(
             declared(Variant::InklingSmall),
