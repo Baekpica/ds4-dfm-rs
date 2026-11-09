@@ -228,15 +228,27 @@ fn uses_distributed_replay(args: &BenchArgs) -> bool {
 
 fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
     // These families have live GPU state without serialized checkpoints.
-    // Restore the prefix outside both measured phase ranges.
+    // Restore the prefix outside both measured phase ranges. Bonsai refuses
+    // the snapshot payload by name, so its next frontier rewinds by replay.
     uses_distributed_replay(args)
         || matches!(
             family,
-            ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl
+            ModelFamily::Inkling
+                | ModelFamily::Step37
+                | ModelFamily::Ling3Vl
+                | ModelFamily::Qwen35
         )
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    // Bonsai drafts from the block its own artifact carries, so no --mtp part
+    // is named; one proposal is one two-row verify block.
+    if family == ModelFamily::Qwen35 {
+        return mtp.is_none()
+            && draft >= 1
+            && ds4_core::check_mtp_draft(family, draft).is_ok()
+            && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none();
+    }
     // GLM, Ling-3.1 and MiniMax draft from parts of their own release.
     if matches!(
         family,
@@ -1376,8 +1388,14 @@ mod tests {
         assert!(!use_mtp_spec(ModelFamily::Mimo2, None, 1));
         assert!(use_mtp_spec(ModelFamily::Mimo2, Some("dflash.gguf"), 2));
         assert!(use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
+        assert!(!use_mtp_spec(ModelFamily::Qwen35, None, 0));
+        assert!(use_mtp_spec(ModelFamily::Qwen35, None, 1));
+        assert!(use_mtp_spec(ModelFamily::Qwen35, None, 2));
+        assert!(!use_mtp_spec(ModelFamily::Qwen35, None, 3));
+        assert!(!use_mtp_spec(ModelFamily::Qwen35, Some("draft.gguf"), 1));
 
         std::env::set_var("DS4_MTP_SPEC_DISABLE", "1");
+        assert!(!use_mtp_spec(ModelFamily::Qwen35, None, 1));
         assert!(!use_mtp_spec(ModelFamily::Mimo2, None, 2));
         assert!(!use_mtp_spec(ModelFamily::Mimo2, Some("dflash.gguf"), 2));
         assert!(!use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
