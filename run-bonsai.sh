@@ -98,7 +98,7 @@ MEM_FLOOR="${DS4_BONSAI_MEM_FLOOR:-1}"
 # A served answer needs ~35 tokens: the reasoning block alone runs about 33
 # before any content appears.
 SERVER_TOKENS="${DS4_BONSAI_SERVER_TOKENS:-64}"
-MODEL="${DS4_BONSAI_MODEL:-/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf}"
+MODEL="${DS4_BONSAI_MODEL:-/home/leandro/models/Ternary-Bonsai-2-27B-PQ2_0.gguf}"
 BACKEND="${DS4_BONSAI_BACKEND:-cuda}"
 STEPS="${DS4_BONSAI_STEPS:-16}"
 DEFAULT_PROMPT="The capital of France is"
