@@ -402,6 +402,35 @@ measures 41.9 tok/s without MTP against 60.5 tok/s with two drafts on a
 24 GB RTX PRO 6000 slice; those numbers come from llama.cpp, not from this
 engine, which has no MTP path for this family yet.
 
+### The block as a drafter
+
+`blk.64` runs as a nextn module: `hnorm` over the trunk's hidden row and
+`enorm` over the next token's embedding concatenate through `eh_proj`, one
+full-attention layer with its own fp16 k/v and a SwiGLU feed-forward follow,
+and the trunk's output head returns the draft. The checkpoint
+(`Qwen/Qwen3.8-27B` `config.json`) settles the geometry the tensor widths
+alone left open: 24 query heads, 4 KV heads, head_dim 256, `attn_output_gate`
+true with a swish gate (so `attn_q` is 12288 = 2 x 24 x 256 and
+`attn_output` takes 6144), partial rotary 0.25 (`n_rot` 64), and
+`mtp_use_dedicated_embeddings` false.
+
+Two properties matter for the numbers below:
+
+- The block's weights are Q6_K, copied unrotated from a stock checkpoint, so
+  its matmuls are plain while the trunk's PQ2_0 weights are Hadamard-folded.
+  The residual stream stays in the original basis because the fold rotates
+  each matmul's input (`W'(H a) = W a`), which is why the trunk's hidden state
+  feeds the block directly.
+- Its rows are filled as the trunk completes them: a finished chunk pairs each
+  hidden row with the next token, and the chunk's last row waits for the
+  sampled token.
+
+Draft quality, measured greedily on the pinned prompt with
+`DS4_QWEN35_MTP_PROBE=1` (diagnostic only; nothing drafts without it): the
+draft's argmax equals the trunk's next argmax 89/119 (0.748) and 42/59 (0.712),
+and the 12-step token stream is identical with the probe on and off.
+Verification, rollback and the speed A/B are the next unit.
+
 ## Validation
 
 Runbooks in this tree (all read `DS4_BONSAI_MODEL`):
