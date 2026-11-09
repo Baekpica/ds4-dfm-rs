@@ -926,6 +926,82 @@ bool test_gdn_out_gates() {
     return ok;
 }
 
+/* The conv's snapshot slots are what a rejected draft rolls back to: the
+ * history as it stands after the requested row.  Run the same weights over a
+ * 3-row block with snapshots after rows 0 and 1, and hold each one against a
+ * run that stops at that row -- the exact state the rollback installs -- plus
+ * the block's own row outputs against those runs.  Same kernel and same tap
+ * order, so the comparison is exact. */
+bool test_conv_checkpoint() {
+    constexpr uint32_t C = 512, K = 4, T = 3;
+    constexpr uint64_t hist_n = (uint64_t)(K - 1) * C;
+    constexpr uint64_t w_bytes = (uint64_t)C * K * sizeof(float);
+    const uint64_t x_n = (uint64_t)T * C;
+
+    void *arena = mmap(nullptr, w_bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) return false;
+    std::vector<float> w((size_t)C * K), x(x_n);
+    for (auto &v : w) v = frand();
+    for (auto &v : x) v = 4.0f * frand();
+    std::memcpy(arena, w.data(), w_bytes);
+
+    std::vector<float> zero((size_t)hist_n, 0.0f);
+    std::vector<float> r1((size_t)hist_n), r2((size_t)hist_n);
+    std::vector<float> s0((size_t)hist_n), s1((size_t)hist_n), h3((size_t)hist_n);
+    std::vector<float> x3(x_n), x1((size_t)C), x2((size_t)2 * C), got1((size_t)C);
+
+    ds4_gpu_tensor *tx = ds4_gpu_tensor_alloc(x_n * sizeof(float));
+    ds4_gpu_tensor *th = ds4_gpu_tensor_alloc(hist_n * sizeof(float));
+    ds4_gpu_tensor *ts0 = ds4_gpu_tensor_alloc(hist_n * sizeof(float));
+    ds4_gpu_tensor *ts1 = ds4_gpu_tensor_alloc(hist_n * sizeof(float));
+    bool ok = tx && th && ts0 && ts1;
+
+    /* Reference: the block stopped after its first row, then after two. */
+    for (uint32_t rows = 1; ok && rows <= 2; rows++) {
+        std::vector<float> &ref = rows == 1 ? r1 : r2;
+        std::vector<float> &out = rows == 1 ? x1 : x2;
+        out.assign((size_t)rows * C, 0.0f);
+        std::memcpy(out.data(), x.data(), (size_t)rows * C * sizeof(float));
+        ok = ds4_gpu_tensor_write(tx, 0, out.data(), (uint64_t)rows * C * sizeof(float)) &&
+             ds4_gpu_tensor_write(th, 0, zero.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_qwen4_conv_stream_tensor(tx, th, arena, w_bytes, 0, rows, C, K,
+                                              true, nullptr, 0u, nullptr, 0u) != 0 &&
+             ds4_gpu_tensor_read(th, 0, ref.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_tensor_read(tx, 0, out.data(), (uint64_t)rows * C * sizeof(float));
+    }
+
+    /* The 3-row block with both snapshots. */
+    x3 = x;
+    if (ok) {
+        ok = ds4_gpu_tensor_write(tx, 0, x3.data(), x_n * sizeof(float)) &&
+             ds4_gpu_tensor_write(th, 0, zero.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_qwen4_conv_stream_tensor(tx, th, arena, w_bytes, 0, T, C, K,
+                                              true, ts0, 0u, ts1, 1u) != 0 &&
+             ds4_gpu_tensor_read(th, 0, h3.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_tensor_read(ts0, 0, s0.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_tensor_read(ts1, 0, s1.data(), hist_n * sizeof(float)) &&
+             ds4_gpu_tensor_read(tx, 0, x3.data(), x_n * sizeof(float)) &&
+             ds4_gpu_tensor_read(tx, 0, got1.data(), (uint64_t)C * sizeof(float));
+    }
+    if (!ok) {
+        std::fprintf(stderr, "conv checkpoint: run failed\n");
+    } else {
+        ok = close_enough(s0, r1, 0.0f, 0.0f, "conv checkpoint after row 0") &&
+             close_enough(s1, r2, 0.0f, 0.0f, "conv checkpoint after row 1") &&
+             close_enough(got1, x1, 0.0f, 0.0f, "conv row 0 output") &&
+             close_enough(std::vector<float>(x3.begin(), x3.begin() + 2 * C), x2,
+                          0.0f, 0.0f, "conv rows 0-1 output");
+    }
+
+    ds4_gpu_tensor_free(tx);
+    ds4_gpu_tensor_free(th);
+    ds4_gpu_tensor_free(ts0);
+    ds4_gpu_tensor_free(ts1);
+    munmap(arena, w_bytes);
+    return ok;
+}
+
 /* Bonsai attention core: the row-exact kernel run with the split-K partial
  * buffer the CUDA graph hands it (splits up to 64) against the same kernel run
  * without one (a single split), both measured against the double-precision
@@ -1273,6 +1349,7 @@ int main() {
     const bool q6_ok = test_q6_k_dense();
     const bool fold_ok = test_fold_transform();
     const bool gdn_ok = test_gdn_out_gates();
+    const bool conv_ok = test_conv_checkpoint();
     const bool attn_ok = test_attention_split();
     const bool bf16_ok = test_bf16_matvec_tile();
 
@@ -1299,7 +1376,7 @@ int main() {
     exact_ok = run_shape(kShapes[0], 64, "exact64", true) && exact_ok;
 
     const bool ok = rows_ok && guards_ok && host_ok && q6_ok && fold_ok &&
-                    gdn_ok && attn_ok && bf16_ok && shapes_ok && exact_ok;
+                    gdn_ok && conv_ok && attn_ok && bf16_ok && shapes_ok && exact_ok;
     std::fprintf(stderr, "PQ2_0 CUDA parity: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

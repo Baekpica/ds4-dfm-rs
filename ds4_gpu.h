@@ -1084,7 +1084,11 @@ int ds4_gpu_qwen4_conv_stream_tensor(
         uint32_t              n_tokens,
         uint32_t              n_chan,
         uint32_t              kernel,
-        bool                  activate);
+        bool                  activate,
+        ds4_gpu_tensor       *snap,
+        uint32_t              snap_token,
+        ds4_gpu_tensor       *snap2,
+        uint32_t              snap2_token);
 int ds4_gpu_qwen4_gdn_prep_tensor(
         ds4_gpu_tensor       *qkv,
         ds4_gpu_tensor       *a,
