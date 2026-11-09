@@ -24,13 +24,12 @@ use ds4_sys::{
     ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
     ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
     ds4_bridge_v41_kvreuse_turn_key, ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes,
-    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_chunk, ds4_bridge_v41_set_emit_trace,
+    ds4_bridge_v41_set_chunk, ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace,
     ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling,
-    ds4_bridge_v41_zchain_gr_set,
-    ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
 };
 
-use crate::engram::{EngramHash, EngramShard};
+use crate::engram::{EngramHash, EngramShard, EngramSidecar, SidecarSource};
 use crate::sidecar::{FNV_PRIME, FNV_SEED};
 use crate::uring::Req;
 use crate::{
@@ -334,6 +333,9 @@ fn phase_log(on: bool, what: &str, since: Instant) {
     }
 }
 
+/// The interleaved engram sidecar's file name inside `--engram-dir` (L3).
+const ENGRAM_SIDECAR_FILE: &str = "ds41-engram-interleaved.bin";
+
 /// The engram rows provider: the hash tables and one open shard per engram
 /// layer, plus the token history the n-gram window reads.
 ///
@@ -512,6 +514,53 @@ impl V41Feed {
         }
     }
 
+    /// The interleaved sidecar's fixed name inside the engram dir: dropping
+    /// it there is the opt-in.  `DS41_ENGRAM_PLANES=1` forces the two planes.
+    fn open_sidecar(
+        wire: &V41Wire,
+        engram_dir: Option<&str>,
+    ) -> Result<Option<(EngramSidecar, std::path::PathBuf)>> {
+        if std::env::var_os("DS41_ENGRAM_PLANES").is_some() {
+            return Ok(None);
+        }
+        let Some(dir) = engram_dir else {
+            return Ok(None);
+        };
+        let path = Path::new(dir).join(ENGRAM_SIDECAR_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let sc = match EngramSidecar::open(&path) {
+            Ok(sc) => sc,
+            Err(e) => {
+                eprintln!(
+                    "ds4: [v41] engram sidecar {}: {e}; using the two planes",
+                    path.display()
+                );
+                return Ok(None);
+            }
+        };
+        let mut sources = Vec::with_capacity(wire.engram_table_path.len());
+        for p in &wire.engram_table_path {
+            sources.push(SidecarSource::of(Path::new(p)).map_err(asset_error)?);
+        }
+        if !sc.matches(wire.engram_head_dim, &wire.engram_rows, &sources) {
+            eprintln!(
+                "ds4: [v41] engram sidecar {} does not match the wire's sources; \
+                 using the two planes",
+                path.display()
+            );
+            return Ok(None);
+        }
+        eprintln!(
+            "ds4: [v41] engram rows: interleaved sidecar {} ({} layers, {:.1} GB)",
+            path.display(),
+            sc.layers().len(),
+            sc.size() as f64 / 1e9
+        );
+        Ok(Some((sc, path)))
+    }
+
     /// The asset half of the open, unchanged: this is the file work the cache
     /// above stores.
     fn open_uncached(path: &Path, engram_dir: Option<&str>) -> Result<Option<Self>> {
@@ -527,16 +576,31 @@ impl V41Feed {
         else {
             return Ok(None);
         };
-        let mut shards = Vec::with_capacity(wire.engram_layers.len());
-        let mut sources = Vec::with_capacity(wire.engram_layers.len());
-        for path in &wire.engram_table_path {
-            let shard = EngramShard::open(Path::new(path)).map_err(asset_error)?;
-            sources.push(EngramSource {
+        // L3: an interleaved sidecar in the engram dir replaces the two-plane
+        // reads.  It is a derived copy, so the header must name the wire's
+        // current sources; otherwise the planes are used (they are the
+        // authority) and the refusal is printed.
+        let sidecar = Self::open_sidecar(&wire, engram_dir)?;
+        let mut shards = Vec::new();
+        let sources = match &sidecar {
+            Some((sc, path)) => vec![EngramSource {
                 path: std::fs::canonicalize(path).map_err(asset_error)?,
-                metadata: shard.metadata().map_err(asset_error)?,
-            });
-            shards.push(shard);
-        }
+                metadata: sc.metadata().map_err(asset_error)?,
+            }],
+            None => {
+                shards.reserve(wire.engram_layers.len());
+                let mut sources = Vec::with_capacity(wire.engram_layers.len());
+                for path in &wire.engram_table_path {
+                    let shard = EngramShard::open(Path::new(path)).map_err(asset_error)?;
+                    sources.push(EngramSource {
+                        path: std::fs::canonicalize(path).map_err(asset_error)?,
+                        metadata: shard.metadata().map_err(asset_error)?,
+                    });
+                    shards.push(shard);
+                }
+                sources
+            }
+        };
         let head_dim = wire.engram_head_dim;
         let stride = head_dim + head_dim / 32;
         // The engine's row channel (core_v41_engram.c:231-233): io_uring when
@@ -560,12 +624,16 @@ impl V41Feed {
         if has_ring && !async_on {
             eprintln!("ds4: [v41] engram rows: synchronous protocol (DS41_FEED_SYNC)");
         }
-        let n_layers = shards.len();
+        let n_layers = match &sidecar {
+            Some((sc, _)) => sc.layers().len(),
+            None => shards.len(),
+        };
         let cols = (wire.engram_max_ngram - 1) * wire.engram_heads;
         let core = Arc::new(Mutex::new(FeedCore {
             ring,
             hash,
             shards,
+            sidecar: sidecar.map(|(sc, _)| sc),
             weight_off: wire.engram_weight_off.clone(),
             scale_off: wire.engram_scale_off.clone(),
             rows: wire.engram_rows.clone(),
@@ -1034,6 +1102,10 @@ struct FeedCore {
     ring: Option<crate::uring::Ring>,
     hash: EngramHash,
     shards: Vec<EngramShard>,
+    /// The interleaved sidecar when the engram dir carries one (L3): one
+    /// 264-byte record per row replaces the two-plane reads, and `shards` is
+    /// empty because the sidecar is the only file the feed reads.
+    sidecar: Option<EngramSidecar>,
     weight_off: Vec<u64>,
     scale_off: Vec<u64>,
     rows: Vec<u64>,
@@ -1081,11 +1153,16 @@ impl FeedCore {
         let hd = self.head_dim as u64;
         let nsc = hd / 32;
         let k = ei as usize;
-        let direct = self.shards[k].is_direct();
-        let fd = self.shards[k].raw_fd();
+        // The sidecar interleaves a row into one record, so it is one read per
+        // row instead of two: the whole point of the layout (48 -> 24 reads a
+        // token per layer).
+        let (direct, fd, per_row) = match &self.sidecar {
+            Some(sc) => (sc.is_direct(), sc.raw_fd(), 1),
+            None => (self.shards[k].is_direct(), self.shards[k].raw_fd(), 2),
+        };
         let reqs = ring.reqs_mut();
         reqs.clear();
-        reqs.reserve((end - start) * self.cols as usize * 2);
+        reqs.reserve((end - start) * self.cols as usize * per_row);
         for (i, p) in (start..end).enumerate() {
             let rows = self
                 .hash
@@ -1100,6 +1177,19 @@ impl FeedCore {
                 let r = row_id as u64;
                 let slot = (i * self.cols as usize + c) * self.stride as usize;
                 let wdst = unsafe { base.add(slot) };
+                if let Some(sc) = &self.sidecar {
+                    let off = sc.record_off(k, r).ok_or_else(|| {
+                        format!("engram sidecar row {r} out of range (layer {k})")
+                    })?;
+                    reqs.push(Req {
+                        fd,
+                        direct,
+                        len: self.stride,
+                        off,
+                        dst: wdst,
+                    });
+                    continue;
+                }
                 reqs.push(Req {
                     fd,
                     direct,
@@ -1154,14 +1244,16 @@ impl FeedCore {
                         self.rows[k]
                     ));
                 }
-                let row = self.shards[k]
-                    .row(
+                let row = match &self.sidecar {
+                    Some(sc) => sc.row(k, row_id as u64, self.head_dim),
+                    None => self.shards[k].row(
                         self.weight_off[k],
                         self.scale_off[k],
                         row_id as u64,
                         self.head_dim,
-                    )
-                    .map_err(|e| e.to_string())?;
+                    ),
+                }
+                .map_err(|e| e.to_string())?;
                 let slot = (i * self.cols as usize + c) * self.stride as usize;
                 unsafe {
                     let dst = base.add(slot);
@@ -2304,6 +2396,7 @@ mod tests {
                     n_vocab: 0,
                 },
                 shards: Vec::new(),
+                sidecar: None,
                 weight_off: Vec::new(),
                 scale_off: Vec::new(),
                 rows: Vec::new(),

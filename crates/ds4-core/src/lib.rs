@@ -86,7 +86,10 @@ pub use bind::{
     BindError, BindName, BindNeed, BindPlan, BindSlot, HostBindLook, SupportCatalog,
     DSPARK_MARKOV_RANK, DSPARK_N_LAYER, HOST_BIND_MISS,
 };
-pub use engram::{EngramError, EngramHash, EngramRow, EngramShard, EDIO_ALIGN};
+pub use engram::{
+    EngramError, EngramHash, EngramRow, EngramShard, EngramSidecar, SidecarLayer, SidecarSource,
+    EDIO_ALIGN, SIDECAR_FIXED, SIDECAR_LAYER, SIDECAR_MAGIC, SIDECAR_VERSION,
+};
 pub use gguf::{GgufError, GgufFile};
 pub use identify::{dump_parse, identify_file, identify_gguf, Identified, IdentifyError};
 pub use iquest::{IQuestCache, IQuestPlan};
@@ -99,6 +102,13 @@ pub use layout::{
 };
 pub use ling31_vq::Feature as Ling31Feature;
 
+pub use ds41::{
+    V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
+};
+pub use ds41_run::{
+    v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass, V41KvDisk, V41KvHit,
+    V41RunOptions, V41Sampling,
+};
 pub use gemma4_vq::Gemma4VqFeature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
@@ -172,13 +182,6 @@ pub use tensors::{
     TensorInfo, TensorInventory,
 };
 pub use tok::{dump_cmd, dump_vocab_apply_tapes, ChatThinkMode, TokError, Vocab};
-pub use ds41::{
-    V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
-};
-pub use ds41_run::{
-    v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass, V41KvDisk, V41KvHit,
-    V41RunOptions, V41Sampling,
-};
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,
     ValidateError,
