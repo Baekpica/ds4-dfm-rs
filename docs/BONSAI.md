@@ -310,12 +310,14 @@ stream the parity ids print. The CPU side is about 3 s per forward, so a
     -p "The capital of France is"
 ```
 
-Recorded at `DS4_QWEN35_STEPS=64` on this host: 3.67 s wall, 17.44 tokens/s,
-7616 MiB peak RSS. The rate divides steps by total wall, which includes the
-one-off 0.7 s model copy and the prompt pass, so it is a floor; the steady-state
-decode is about 26 ms per token. `ds4-bench` measures the same family from the
-Rust host with its own workload script (`--mtp` off by default, `--mtp-draft`
-to arm the block).
+Recorded at `DS4_QWEN35_STEPS=64` with the current kernels, this host decodes
+at about 44 tok/s plain (43.94 at a ~1k-token prompt, 44.75 on a 4-token one)
+and 56-61 tok/s with the family's draft block armed; "The draft loop" below
+holds the matched pairs. The rate this command recorded on 2026-09-30 predates
+the family-owned PQ2_0 dense kernel and is superseded. `ds4-bench`
+measures the same family from the Rust host and arms the block by default
+(`DS4_MTP_SPEC_DISABLE=1` for the plain run, `--mtp-draft 2` for the wider
+verify).
 
 ## The MTP artifact, reproduced byte for byte
 

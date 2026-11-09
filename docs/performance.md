@@ -378,14 +378,20 @@ extending broad long-context quality, 1M throughput or concurrent-bank claims.
 
 ## Bonsai
 
-Prism Bonsai 2 27B PQ2_0's [September 30 prefill evidence](releases/bonsai-perf-2026-09-30.md#evidence)
-uses an **RTX 4070 SUPER**, not GB10. Three fresh-server pairs on a 2,140-token
-prompt with 64 outputs record mean prefill 1,023.3; the same tiled runs decode
-at 18.00 / 17.50 / 18.00. The README reports that observed decode range.
-Loaded clocks were 2775–2790 MHz. IDs matched the control.
+Prism Bonsai 2 27B PQ2_0 runs on an **RTX 4070 SUPER**, not GB10. The
+2026-11-09 runs on the current kernel set (greedy, `ds4-c`, sm_89) used a
+~1,000-token prompt with 64 generated tokens: prefill 1,149.7 tok/s alone and
+1,110.2 tok/s with the family's embedded draft block armed, decode 43.94 tok/s
+plain and 56.37 tok/s with one draft (+28%). On a 4-token prompt with 48
+generated tokens the draft loop takes decode from 44.75 to 60.94 tok/s (+36%).
+Every pair printed the identical completion.
 
-The [later split-K report](releases/bonsai-splitk-2026-09-30.md) measures 15K/30K
-workloads. Its decode figures are not combined with this earlier prefill row.
+These replace the September 30 record on a 2,140-token prompt, which was
+measured before the family-owned PQ2_0 dense kernel and the draft loop existed.
+The [September 30 prefill evidence](releases/bonsai-perf-2026-09-30.md#evidence)
+stays as the recorded prefill-era run, not as the current rate. The
+[split-K report](releases/bonsai-splitk-2026-09-30.md) measures 15K/30K
+workloads; its decode figures are not combined with either row.
 
 ## MiniMax-H3 video and audio
 

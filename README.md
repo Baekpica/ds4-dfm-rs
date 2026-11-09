@@ -60,7 +60,7 @@ documented whole-model results are omitted.
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
-| Prism Bonsai 2 27B PQ2_0 | 1,023.3 | 17.50–18.00 | [2,140 + 64, RTX 4070 SUPER](docs/performance.md#bonsai) |
+| Prism Bonsai 2 27B PQ2_0 | 1,149.7 | 43.94 | [~1k + 64, plain; MTP 1: 56.37, RTX 4070 SUPER](docs/performance.md#bonsai) |
 
 ![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
 
