@@ -26038,6 +26038,51 @@ extern "C" int ds4_gpu_matmul_q4_K_tensor(
     return 1;
 }
 
+/* Q6_K is 256 values per 210-byte block (2-byte fp16 scale, 16 int8
+ * sub-scales, 128 ql + 64 qh bytes).  The vendored MMQ template is the only
+ * dense Q6_K path -- unlike Q4_K there is no non-MMQ fallback -- so this
+ * entry does not consult ds4_cuda_use_mmq(): refusing here would leave the
+ * caller with no arm at all. */
+extern "C" int ds4_gpu_matmul_q6_K_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok) {
+    if (!out || !x || !model_map || in_dim == 0u || out_dim == 0u ||
+        n_tok == 0u || in_dim % 256u != 0u || in_dim > INT_MAX ||
+        out_dim > INT_MAX || n_tok > INT_MAX) {
+        return 0;
+    }
+    const uint64_t row_bytes = (in_dim / 256u) * 210u;
+    if (out_dim > UINT64_MAX / row_bytes ||
+        in_dim > UINT64_MAX / n_tok || out_dim > UINT64_MAX / n_tok) {
+        return 0;
+    }
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset ||
+        x->bytes < in_dim * n_tok * sizeof(float) ||
+        out->bytes < out_dim * n_tok * sizeof(float)) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const void *weight = cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "Q6_K dense");
+    if (!weight) return 0;
+    const int rc = ds4_mmq_q6_K_dense(
+        weight, (const float *)x->ptr, (float *)out->ptr,
+        (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream());
+    if (rc != 0) {
+        fprintf(stderr, "ds4: CUDA dense Q6_K MMQ failed (%d)\n", rc);
+        return 0;
+    }
+    return 1;
+}
+
 /* Bonsai's dense arm.  The family GEMV (cuda/bonsai_pq2_gemm.cuh) wins the
  * one-row decode against the vendored MMVQ pair and the family GEMM loses the
  * prefill to the vendored MMQ tiles, so the default routes by row count:

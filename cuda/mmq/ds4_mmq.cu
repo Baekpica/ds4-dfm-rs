@@ -1024,6 +1024,12 @@ extern "C" int ds4_mmq_q4_K_dense_raw(
         DS4_MMQ_RAW);
 }
 
+extern "C" int ds4_mmq_q6_K_dense(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_impl<GGML_TYPE_Q6_K>("ds4_mmq_q6_K_dense", W, X, out, M, N, K, stream);
+}
+
 // ----------------------------------------------------------------------------
 // MoE matmul implementation, shared across all three quant types.
 //

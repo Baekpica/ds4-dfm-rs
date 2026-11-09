@@ -23322,6 +23322,11 @@ static bool plain_graph_matmul_tensor(
                 out, model->map, model->size, weight->abs_offset,
                 in_dim, out_dim, x, n_tokens) != 0;
     }
+    if (weight->type == DS4_TENSOR_Q6_K) {
+        return ds4_gpu_matmul_q6_K_tensor(
+                out, model->map, model->size, weight->abs_offset,
+                in_dim, out_dim, x, n_tokens) != 0;
+    }
     if (weight->type == DS4_TENSOR_BF16) {
         return ds4_gpu_matmul_bf16_tensor(
                 out, model->map, model->size, weight->abs_offset,
@@ -82030,6 +82035,23 @@ int ds4_test_pq2_0_ref_matvec(const void *blocks, uint64_t out_dim,
         out[r] = ref_row_dot(row, x, in_dim);
     }
     free(row);
+    return 0;
+}
+
+/* Q6_K reference entry point for the same test: the row dot the CPU path
+ * itself runs (ds4_vec_dot_q6_K_f32), so a CUDA layout error cannot hide
+ * behind a shared transcription of the format. */
+int ds4_test_q6_K_ref_matvec(const void *blocks, uint64_t out_dim,
+                             uint64_t in_dim, const float *x, float *out) {
+    if (!blocks || !x || !out || out_dim == 0 ||
+        in_dim == 0 || in_dim % QK_K != 0u) {
+        return 1;
+    }
+    const uint64_t row_blocks = in_dim / QK_K;
+    for (uint64_t r = 0; r < out_dim; r++) {
+        out[r] = ds4_vec_dot_q6_K_f32(
+                (int)in_dim, (const block_q6_K *)blocks + r * row_blocks, x);
+    }
     return 0;
 }
 

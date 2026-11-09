@@ -36,6 +36,9 @@ extern "C" int ds4_test_pq2_0_ref_row(const void *blocks, uint64_t row,
 extern "C" int ds4_test_pq2_0_ref_matvec(const void *blocks, uint64_t out_dim,
                                          uint64_t in_dim, const float *x,
                                          float *out);
+extern "C" int ds4_test_q6_K_ref_matvec(const void *blocks, uint64_t out_dim,
+                                        uint64_t in_dim, const float *x,
+                                        float *out);
 extern "C" int ds4_test_hadamard_fold(int op, uint32_t block_size, float *x,
                                       uint32_t n, const float *signs,
                                       uint32_t hd, uint32_t nk, uint32_t rep,
@@ -52,6 +55,21 @@ struct block_pq2_0_test {
 };
 
 static_assert(sizeof(block_pq2_0_test) == BLOCK_BYTES, "unexpected PQ2_0 layout");
+
+/* Q6_K, the grafted MTP block's quant type: 256 values per 210-byte block
+ * (128 ql + 64 qh + 16 int8 sub-scales + one fp16 super-scale). */
+constexpr int QK6 = 256;
+constexpr int Q6_BLOCK_BYTES = 210;
+
+struct block_q6_K_test {
+    uint8_t ql[QK6 / 2];
+    uint8_t qh[QK6 / 4];
+    int8_t  scales[QK6 / 16];
+    uint16_t d;
+};
+
+static_assert(sizeof(block_q6_K_test) == Q6_BLOCK_BYTES,
+              "unexpected Q6_K layout");
 
 /* Model shapes: (out_dim, in_dim) pairs the Bonsai trunk actually matmuls.
  * kEmbd is the embedding lookup width (qwen35.embedding_length). */
@@ -101,6 +119,20 @@ static void fill_blocks(std::vector<block_pq2_0_test> &blocks) {
     for (auto &b : blocks) {
         b.d = float_to_half(0.002f + 0.02f * std::fabs(frand()));
         for (uint8_t &byte : b.qs) byte = (uint8_t)(next_rand() & 0xffu);
+    }
+}
+
+/* Full 0..255 alphabet in ql/qh: the 6-bit quants reach both ends of the
+ * biased -32..31 range.  Sub-scales carry both signs so a kernel that treated
+ * them as unsigned cannot pass. */
+static void fill_q6_blocks(std::vector<block_q6_K_test> &blocks) {
+    for (auto &b : blocks) {
+        for (uint8_t &byte : b.ql) byte = (uint8_t)(next_rand() & 0xffu);
+        for (uint8_t &byte : b.qh) byte = (uint8_t)(next_rand() & 0xffu);
+        for (int8_t &sc : b.scales) {
+            sc = (int8_t)((int)(next_rand() % 49u) - 24);
+        }
+        b.d = float_to_half(0.003f + 0.009f * std::fabs(frand()));
     }
 }
 
@@ -741,6 +773,82 @@ bool test_host_wiring() {
     return ok;
 }
 
+/* 4b. Dense Q6_K, the grafted MTP block's quant type.  Same criterion as the
+ * PQ2_0 matmul above: the kernel quantizes the activation to the MMQ Q8_1
+ * form, so the gate is relative L2 against ds4.c's own float row dot
+ * (ds4_test_q6_K_ref_matvec), not against a copy of the dequantizer. */
+bool test_q6_k_dense() {
+    constexpr uint64_t arena_bytes = (uint64_t)16 << 20;
+    struct q6_shape { int M; int K; };
+    const q6_shape shapes[] = {
+        {1024, 5120},  /* eh_proj / ffn width, 20 super-blocks per row */
+        { 512,  256},  /* one super-block per row: the K edge */
+    };
+
+    void *arena = mmap(nullptr, arena_bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) {
+        std::fprintf(stderr, "q6_K dense: mmap failed\n");
+        return false;
+    }
+    if (ds4_gpu_init() != 1 || ds4_gpu_set_model_map(arena, arena_bytes) != 1) {
+        std::fprintf(stderr, "q6_K dense: backend/model-map setup failed\n");
+        munmap(arena, arena_bytes);
+        return false;
+    }
+
+    bool ok = true;
+    for (const q6_shape &s : shapes) {
+        const uint64_t row_bytes = (uint64_t)(s.K / QK6) * Q6_BLOCK_BYTES;
+        if ((uint64_t)s.M * row_bytes > arena_bytes) {
+            std::fprintf(stderr, "q6_K dense: arena too small for %dx%d\n",
+                         s.M, s.K);
+            ok = false;
+            continue;
+        }
+        std::vector<block_q6_K_test> w((size_t)s.M * (s.K / QK6));
+        fill_q6_blocks(w);
+        std::memcpy(arena, w.data(), w.size() * sizeof(w[0]));
+
+        for (const int n_tok : {1, 4}) {
+            std::vector<float> x((size_t)n_tok * s.K);
+            for (float &v : x) v = 0.5f * frand();
+            std::vector<float> ref((size_t)n_tok * s.M, 0.0f);
+            for (int t = 0; t < n_tok; t++) {
+                ds4_test_q6_K_ref_matvec(w.data(), (uint64_t)s.M, (uint64_t)s.K,
+                                         x.data() + (size_t)t * s.K,
+                                         ref.data() + (size_t)t * s.M);
+            }
+            ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(
+                (uint64_t)x.size() * sizeof(float));
+            ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(
+                (uint64_t)ref.size() * sizeof(float));
+            std::vector<float> got(ref.size());
+            const bool ran = gx && go &&
+                ds4_gpu_tensor_write(gx, 0, x.data(), x.size() * sizeof(float)) &&
+                ds4_gpu_matmul_q6_K_tensor(go, arena, arena_bytes, 0,
+                                           (uint64_t)s.K, (uint64_t)s.M, gx,
+                                           (uint64_t)n_tok) &&
+                ds4_gpu_tensor_read(go, 0, got.data(),
+                                    got.size() * sizeof(float));
+            char label[160];
+            std::snprintf(label, sizeof(label), "q6_K matmul M=%d K=%d N=%d",
+                          s.M, s.K, n_tok);
+            if (!ran) {
+                std::fprintf(stderr, "%s: host dispatch failed\n", label);
+                ok = false;
+            } else {
+                ok = relative_l2_ok(got, ref, 0.05f, label) && ok;
+            }
+            ds4_gpu_tensor_free(go);
+            ds4_gpu_tensor_free(gx);
+        }
+    }
+
+    munmap(arena, arena_bytes);
+    return ok;
+}
+
 /* 5. GDN output norm gates.  The kernel is shared with the qwen4 family, so
  * both gates are checked against a double-precision reference: sigmoid (the
  * qwen4exp call) and silu (this family).  A kernel that ignored the selector
@@ -1162,6 +1270,7 @@ int main() {
     const bool rows_ok = test_row_lookup();
     const bool guards_ok = test_shape_guards();
     const bool host_ok = test_host_wiring();
+    const bool q6_ok = test_q6_k_dense();
     const bool fold_ok = test_fold_transform();
     const bool gdn_ok = test_gdn_out_gates();
     const bool attn_ok = test_attention_split();
@@ -1189,8 +1298,8 @@ int main() {
     }
     exact_ok = run_shape(kShapes[0], 64, "exact64", true) && exact_ok;
 
-    const bool ok = rows_ok && guards_ok && host_ok && fold_ok && gdn_ok &&
-                    attn_ok && bf16_ok && shapes_ok && exact_ok;
+    const bool ok = rows_ok && guards_ok && host_ok && q6_ok && fold_ok &&
+                    gdn_ok && attn_ok && bf16_ok && shapes_ok && exact_ok;
     std::fprintf(stderr, "PQ2_0 CUDA parity: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

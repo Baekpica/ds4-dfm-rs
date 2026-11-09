@@ -972,6 +972,18 @@ int ds4_gpu_matmul_q4_K_tensor(
         const ds4_gpu_tensor *x,
         uint64_t              n_tok);
 
+/* Q6_K dense matmul: 256 values per 210-byte block, in_dim a multiple of
+ * 256.  Used by mixed artifacts such as Bonsai's grafted MTP block. */
+int ds4_gpu_matmul_q6_K_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok);
+
 /* Prism PQ2_0 (ternary Bonsai): 128 values per block, one fp16 scale plus
  * 32 code bytes, levels -d/0/+d/+2d.  Every Bonsai matmul weight ships in
  * this type; in_dim must be a multiple of 256. */
