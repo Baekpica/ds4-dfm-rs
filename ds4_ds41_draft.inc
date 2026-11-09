@@ -641,6 +641,19 @@ static void v41_gen_dump_row(ds4_v41_state *st, FILE *fd) {
     free(row);
 }
 
+/* The DS41_GEN_HIDDEN dump (L2 head gate): the pre-head normed row (xn) that
+ * produced the same position as the DS41_GEN_LOGITS row written beside it.
+ * One E-float row per emitted position, in the same order, so an offline
+ * sketch can be scored against the engine's own full head. */
+static void v41_gen_dump_hidden(ds4_v41_state *st, FILE *fd, uint32_t row) {
+    if (!fd) return;
+    float *h = xmalloc((size_t)DS4_N_EMBD * 4);
+    if (h && ds4_gpu_tensor_read(st->xn, (uint64_t)row * DS4_N_EMBD * 4, h, (uint64_t)DS4_N_EMBD * 4)) {
+        fwrite(h, 4, DS4_N_EMBD, fd);
+    }
+    free(h);
+}
+
 /* The engine's per-run spec account for the server monitor
  * (core_v41_api.c:41-46): the generate entry clears them and the spec
  * summary writes them; ds4_engine_v41_last_spec_stats reads them.  The
@@ -691,6 +704,10 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
      * be diffed against the score path on the same sequence. */
     const char *gen_lg = getenv("DS41_GEN_LOGITS");
     FILE *gen_fd = gen_lg ? fopen(gen_lg, "wb") : NULL;
+    /* DS41_GEN_HIDDEN=<path>: the xn row behind each DS41_GEN_LOGITS row (L2
+     * head gate; same order and count). */
+    const char *gen_hid = getenv("DS41_GEN_HIDDEN");
+    FILE *gen_hid_fd = gen_hid ? fopen(gen_hid, "wb") : NULL;
     ds4_gpu_tensor *am = ds4_gpu_tensor_alloc((uint64_t)(DS4_MTP_MAX_BLOCK + 2u) * 16u);   /* per-row 16 B slots (sampling layout; argmax uses the first int) */
     /* Three routes (core_v41_api.c:139-167, executed by ds4_ds41_sample.inc):
      * temperature > 0 and no penalties = the device sample kernel (speculation
@@ -708,6 +725,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                         "(penalties rewrite logits from the token history, the verify does not take them; drop --dspark or the penalties)\n",
                 (double)g_decode_sampling.dry_multiplier, (double)g_decode_sampling.freq_penalty, (double)g_decode_sampling.presence_penalty);
         if (gen_fd) fclose(gen_fd);
+        if (gen_hid_fd) fclose(gen_hid_fd);
         if (am) ds4_gpu_tensor_free(am);
         v41_state_free(&st);
         return 1;
@@ -831,6 +849,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
         if (!v41_next_token(&st, am, st.last_logit_row, rowbuf, &rng, &hist, &tok32)) break;
         tok = (int)tok32;
         v41_gen_dump_row(&st, gen_fd);
+        v41_gen_dump_hidden(&st, gen_hid_fd, st.n - 1u);
         if (!rowbuf && !dev_sample) {   /* the engine's one-shot argmax self-check (core_v41_api.c:193-200):
              * a wrong kernel would silently emit wrong tokens, so compare the
              * device index against a host scan of the same row once.  The
@@ -881,6 +900,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 if (rowbuf && !v41_next_token(&st, am, 0, rowbuf, &rng, &hist, &nt)) { rc = 1; break; }
                 tok = (int)nt;
                 v41_gen_dump_row(&st, gen_fd);
+                v41_gen_dump_hidden(&st, gen_hid_fd, st.n - 1u);
                 continue;
             }
             if (emit && emit((int)tok, ud) != 0) break;   /* the CLI's EOS convention: nonzero = stop */
@@ -959,6 +979,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
              * host route here. */
             if (rowbuf && !v41_next_token(&st, am, 0, rowbuf, &rng, &hist, &want[0])) { rc = 1; break; }
             if (!k) v41_gen_dump_row(&st, gen_fd);   /* the DS41_GEN_LOGITS dump: the logits row behind a single-token decision */
+            if (!k) v41_gen_dump_hidden(&st, gen_hid_fd, st.n - 1u);
             if (k) { ms_draft += (tr1 - tr0) * 1e3; ms_snap += (tr2 - tr1) * 1e3;
                      ms_verify += (tr3 - tr2) * 1e3; ms_argmax += (now_sec() - tr3) * 1e3; }
             if (drafted) {
@@ -1067,6 +1088,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
     v41_turn_ids_free(&turn);
     free(rowbuf); free(hist.tok); free((void *)hist.brk);   /* the penalty route's buffers (core_v41_api.c:419) */
     if (gen_fd) fclose(gen_fd);
+    if (gen_hid_fd) fclose(gen_hid_fd);
     if (spec) v41_draft_free(&dr);
     if (am) ds4_gpu_tensor_free(am);
     v41_state_free(&st);
