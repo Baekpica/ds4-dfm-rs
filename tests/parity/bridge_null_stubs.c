@@ -670,6 +670,7 @@ void ds4_engine_v41_set_dspark(int mode) { (void)mode; }
 void ds4_engine_v41_set_graph(int on) { (void)on; }
 void ds4_engine_v41_set_emit_trace(int on) { (void)on; }
 void ds4_engine_v41_set_prof(int on) { (void)on; }
+void ds4_engine_v41_set_chunk(int chunk) { (void)chunk; }
 void ds4_engine_v41_last_spec_stats(int *rounds, int *offered, int *accepted) {
     if (rounds) *rounds = 0;
     if (offered) *offered = 0;
