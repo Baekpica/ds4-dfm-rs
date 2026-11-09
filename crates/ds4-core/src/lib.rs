@@ -353,6 +353,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "Gemma-4 accepts at most six recursive draft tokens"
     } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
         "MiniMax DSpark drafts at most seven tokens per block"
+    } else if family == ModelFamily::Qwen35 && draft > crate::qwen35::MTP_DRAFTS as i32 {
+        "Bonsai accepts at most two recursive draft tokens"
     } else {
         return Ok(());
     };

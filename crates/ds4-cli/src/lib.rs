@@ -440,6 +440,14 @@ fn use_mtp_spec(mtp: Option<&str>, draft: i32) -> bool {
     mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
+// Bonsai's drafter is one block of its own artifact, so no `--mtp` part is
+// named; one draft is exactly one verify block.
+fn use_qwen35_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
+    family == ds4_core::ModelFamily::Qwen35
+        && draft >= 1
+        && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+}
+
 fn use_iquest_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
     family == ds4_core::ModelFamily::IQuestQ1
         && (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
@@ -645,6 +653,7 @@ fn run_chat_turn(
     let mut printer = TokenPrinter::new(model.family(), chat.thinking_enabled());
     let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
         || use_iquest_spec(model.family(), args.mtp_draft)
+        || use_qwen35_spec(model.family(), args.mtp_draft)
         || use_glm_spec(model.family(), args.mtp_draft)
         || (model.family() == ds4_core::ModelFamily::NaiveN05
             && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
@@ -983,6 +992,7 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     let mut decode_error = None;
     let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
         || use_iquest_spec(model.family(), args.mtp_draft)
+        || use_qwen35_spec(model.family(), args.mtp_draft)
         || use_glm_spec(model.family(), args.mtp_draft)
         || (model.family() == ds4_core::ModelFamily::NaiveN05
             && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
@@ -2347,6 +2357,15 @@ mod tests {
         assert!(!use_mtp_spec(None, 2));
         assert!(!use_mtp_spec(Some("mtp.gguf"), 1));
         assert!(use_mtp_spec(Some("mtp.gguf"), 2));
+    }
+
+    #[test]
+    fn qwen35_spec_needs_its_own_artifact_only() {
+        assert!(use_qwen35_spec(ds4_core::ModelFamily::Qwen35, 1));
+        // The default draft is one token, so no flag is required; another
+        // family never routes through this arm.
+        assert!(!use_qwen35_spec(ds4_core::ModelFamily::Qwen4Exp, 1));
+        assert!(!use_qwen35_spec(ds4_core::ModelFamily::Qwen35, 0));
     }
 
     #[test]

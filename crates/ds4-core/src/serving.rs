@@ -775,12 +775,12 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
-        // One session on one host: the native path refuses banks, speculation,
-        // snapshots and the disk store by name, so a request for them is
-        // reported as unsupported instead of silently ignored. Prefix reuse is
-        // the prefill checkpoint the native session keeps when the prompt
-        // starts with it.  Either backend hosts the session -- the CUDA graph
-        // or the CPU reference trunk -- so the host is not restricted.
+        // One session on one host: the native path refuses banks, snapshots
+        // and the disk store by name, so a request for them is reported as
+        // unsupported instead of silently ignored. Prefix reuse is the prefill
+        // checkpoint the native session keeps when the prompt starts with it.
+        // Either backend hosts the session -- the CUDA graph or the CPU
+        // reference trunk -- so the host is not restricted.
         ModelFamily::Qwen35 => ServingCaps {
             family,
             variant,
@@ -790,9 +790,14 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse_support: Support::Present,
             disk: Support::None,
             snapshot: Support::None,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            // The drafter is the grafted block the artifact already carries
+            // (docs/BONSAI.md), not a sidecar, and one draft is one two-row
+            // verify block on the serial lane. Present, not qualified: the
+            // bank driver has no draft round for this family and the
+            // measurement is the pending gate.
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
             spec_draft_min: 1,
             host: HostNeed::Any,
             ctx_max: Some(crate::qwen35::CTX_MAX),

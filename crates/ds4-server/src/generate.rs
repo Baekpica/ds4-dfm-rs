@@ -4273,6 +4273,10 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         ds4_core::ModelFamily::Mimo2
         | ds4_core::ModelFamily::BeamVq
         | ds4_core::ModelFamily::MinimaxVq => draft > 1,
+        // Bonsai's drafter is one block inside the trunk's own artifact, not a
+        // sidecar, and one draft is exactly one verify block (the committed
+        // row plus the proposal).
+        ds4_core::ModelFamily::Qwen35 => draft >= 1,
         _ => false,
     }
 }
@@ -4284,6 +4288,13 @@ fn iquest_embedded_mtp_uses_serial_greedy_route() {
     assert!(serial_mtp_ready(IQuestQ1, false, false, 7));
     assert!(!serial_mtp_ready(IQuestQ1, false, false, 1));
     assert!(!serial_mtp_ready(IQuestQ1, false, false, 8));
+}
+
+#[test]
+fn qwen35_embedded_mtp_arms_without_a_sidecar() {
+    use ds4_core::ModelFamily::Qwen35;
+    assert!(serial_mtp_ready(Qwen35, false, false, 1));
+    assert!(!serial_mtp_ready(Qwen35, false, false, 0));
 }
 
 #[test]

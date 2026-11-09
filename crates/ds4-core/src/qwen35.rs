@@ -19,6 +19,12 @@ pub const FULL_ATTN_INTERVAL: u32 = 4;
 /// `rope_orig_ctx`: the trunk is trained at 262144 positions with no scaling.
 pub const CTX_MAX: u32 = 262144;
 
+/// Recursive draft tokens one speculative cycle may propose. The verify block
+/// is one row per draft plus the committed token, and the two kernels that
+/// advance gated delta-net state carry two snapshot slots, so a rejected block
+/// rolls back at most two rows deep: three verify rows at most.
+pub const MTP_DRAFTS: u32 = 2;
+
 /// `ssm.group_count * ssm.state_size`: the projected query/key width.
 pub const LIN_K_DIM: u64 = LIN_K_HEAD as u64 * LIN_HEAD_DIM as u64;
 /// `ssm.time_step_rank * ssm.state_size`: the projected value width.
