@@ -54,6 +54,9 @@ static int v41_dspark_mode(void) {
 }
 void ds4_engine_v41_set_emit_trace(int on) { g_ds4_v41_emit_trace = on; }
 void ds4_engine_v41_set_prof(int on) { g_ds4_v41_prof = on; }
+/* --v41-chunk: 0 = DS4_V41_CHUNK.  Narrowing only; v41_gen_cap clamps. */
+static int g_ds4_v41_chunk = 0;
+void ds4_engine_v41_set_chunk(int chunk) { g_ds4_v41_chunk = chunk > 0 ? chunk : 0; }
 
 /* The engine's prefill progress hook (core_v41_api.c:187-194). */
 static int (*g_v41_progress)(void *ud, const char *event, int current, int total);
@@ -64,7 +67,13 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
 }
 
 static uint32_t v41_gen_cap(const ds4_engine *e, uint32_t np) {
-    uint32_t cap = DS4_V41_CHUNK < np ? DS4_V41_CHUNK : np;
+    /* --v41-chunk narrows the block only: the engram feed's row capacity is
+     * sized from the same cap at open time (ds4_v41_feed_open), so a wider
+     * block would exceed it.  A second, narrower block is the serving
+     * check's second arithmetic for the chain floor. */
+    const uint32_t ck = (g_ds4_v41_chunk > 0 && (uint32_t)g_ds4_v41_chunk < DS4_V41_CHUNK)
+                      ? (uint32_t)g_ds4_v41_chunk : DS4_V41_CHUNK;
+    uint32_t cap = ck < np ? ck : np;
     /* A short prompt still needs the armed tower's full verification batch.
      * The main state and pinned feed share this bound; real context wins. */
     if (v41_dspark_mode() && g_ds4_v41.mtp_towers && g_ds4_v41.mtp_block && g_ds4_v41.n_mtp_target &&

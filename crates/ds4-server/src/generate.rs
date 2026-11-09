@@ -4608,6 +4608,7 @@ impl DecodeIo for NativeDecode<'_> {
             kv_disk: disk.as_mut().map(|d| d as &mut dyn ds4_core::V41KvDisk),
             sampling,
             greedy: Some(greedy),
+            chunk: 0, /* the serving path keeps the build's prefill block */
             zchain: route.zchain.as_deref(),
             posttrain: route.posttrain.as_deref(),
             images,

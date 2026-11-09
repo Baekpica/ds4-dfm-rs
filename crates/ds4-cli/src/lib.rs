@@ -870,6 +870,7 @@ fn run_v41_one_shot(
             dry_allowed_length: args.dry_allowed_length,
         }),
         greedy: None, /* the engine CLI has no tool-syntax hook (cli_diag.c:50 has none) */
+        chunk: 0,     /* --v41-chunk is not a CLI flag yet; the default block */
         zchain: args.zchain.as_deref(),
         posttrain: args.posttrain.as_deref(),
     };

@@ -992,6 +992,8 @@ extern "C" {
     pub fn ds4_bridge_v41_set_graph(on: c_int);
     pub fn ds4_bridge_v41_set_emit_trace(on: c_int);
     pub fn ds4_bridge_v41_set_prof(on: c_int);
+    /* --v41-chunk: the prefill block size, 0 = the build's default. */
+    pub fn ds4_bridge_v41_set_chunk(chunk: c_int);
     /* The V4.1 KV prefix reuse (U-B): --no-kv-reuse, the last run's restored
      * token count, the peek that seeds the host-side engram history, and the
      * mounted-amplifier identity the native drops the checkpoint on. */

@@ -201,6 +201,14 @@ void ds4_engine_v41_set_graph(int on);
 void ds4_engine_v41_set_emit_trace(int on);
 void ds4_engine_v41_set_prof(int on);
 
+/* --v41-chunk (core_v41.h:25): the prefill block size.  0 = the build's
+ * DS4_V41_CHUNK (2048).  A value above it clamps to the default: the engram
+ * feed's row capacity is sized from that cap at open time, so a wider block
+ * has no buffers.  The generate entry reads this knob; the score entry takes
+ * the same value per call (ds4_v41_score_ids).  The serving check sets it to
+ * get a second, narrower arithmetic for its chain noise floor. */
+void ds4_engine_v41_set_chunk(int chunk);
+
 /* ---- U-B: the V4.1 KV prefix reuse (core_v41_kvreuse.c, a8e878a) -----------
  * The engine's own switches and accessors.  --no-kv-reuse lands 0 on
  * ds4_engine_v41_set_kv_reuse (server_config.c's spelling); last_reused is

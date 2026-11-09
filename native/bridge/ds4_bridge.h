@@ -308,6 +308,10 @@ void ds4_bridge_v41_set_dspark(int mode);
 void ds4_bridge_v41_set_graph(int on);
 void ds4_bridge_v41_set_emit_trace(int on);
 void ds4_bridge_v41_set_prof(int on);
+/* --v41-chunk: the prefill block size, 0 = the build's 2048.  Narrowing
+ * only; the engine clamps a wider value (the engram feed's row capacity is
+ * sized from the default at open). */
+void ds4_bridge_v41_set_chunk(int chunk);
 /* The V4.1 KV prefix reuse (U-B, core_v41_kvreuse.c): the --no-kv-reuse
  * switch, the last run's restored token count (the server's usage
  * cached_tokens), the read-only peek that seeds the host-side engram history

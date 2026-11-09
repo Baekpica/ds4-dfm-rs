@@ -837,6 +837,7 @@ void ds4_bridge_v41_set_dspark(int mode) { ds4_engine_v41_set_dspark(mode); }
 void ds4_bridge_v41_set_graph(int on) { ds4_engine_v41_set_graph(on); }
 void ds4_bridge_v41_set_emit_trace(int on) { ds4_engine_v41_set_emit_trace(on); }
 void ds4_bridge_v41_set_prof(int on) { ds4_engine_v41_set_prof(on); }
+void ds4_bridge_v41_set_chunk(int chunk) { ds4_engine_v41_set_chunk(chunk); }
 void ds4_bridge_v41_kvreuse_set(int on) { ds4_engine_v41_set_kv_reuse(on); }
 int ds4_bridge_v41_kvreuse_last_reused(void) { return ds4_engine_v41_last_reused(); }
 uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig) {

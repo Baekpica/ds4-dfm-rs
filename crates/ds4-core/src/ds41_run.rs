@@ -24,8 +24,9 @@ use ds4_sys::{
     ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
     ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
     ds4_bridge_v41_kvreuse_turn_key, ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes,
-    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
-    ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
+    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_chunk, ds4_bridge_v41_set_emit_trace,
+    ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling,
+    ds4_bridge_v41_zchain_gr_set,
     ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
 };
 
@@ -196,6 +197,12 @@ pub struct V41RunOptions<'a> {
     /// The tool-syntax greedy hook (the engine's ds4_greedy_fn, c6e2706): the
     /// serve's closure; the native asks once per position.  None = no hook.
     pub greedy: Option<&'a mut dyn FnMut(*const i32, u32) -> bool>,
+    /// `--v41-chunk` (core_v41.h:25): the prefill block size.  0 = the
+    /// build's default (2048); a wider value clamps (the engram feed's row
+    /// capacity is sized from the default at open).  The serving check sets a
+    /// narrower block to obtain a second accepted arithmetic for its chain
+    /// noise floor; the serving path leaves it at 0.
+    pub chunk: i32,
     /// `--zchain <dir>`: the ② anti-repair sidecar (install.sh's own
     /// spelling; the deployment's third file next to the GGUF).  The engine
     /// carries it to the per-state mount (`core_engine_open.c:120-124` ->
@@ -229,6 +236,7 @@ impl Default for V41RunOptions<'_> {
             kv_disk: None,
             sampling: None,
             greedy: None,
+            chunk: 0,
             zchain: None,
             posttrain: None,
             images: None,
@@ -1760,6 +1768,9 @@ impl Model {
             }
             ds4_bridge_v41_set_emit_trace(i32::from(opts.emit_trace));
             ds4_bridge_v41_set_prof(i32::from(opts.prof));
+            // --v41-chunk: always landed, so a narrowed block never leaks
+            // into the next run (0 restores the build's default).
+            ds4_bridge_v41_set_chunk(opts.chunk);
             // U-B: --no-kv-reuse only; None leaves the native default (on).
             if let Some(on) = opts.kv_reuse {
                 ds4_bridge_v41_kvreuse_set(i32::from(on));
