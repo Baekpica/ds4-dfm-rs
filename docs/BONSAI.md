@@ -4,10 +4,10 @@
 
 Prism Ternary Bonsai 2 27B is the model the `qwen35` family was ported for: a
 dense 26.90 B trunk of 64 blocks, 48 gated delta-net layers and 16
-gated-attention layers, a dense SwiGLU FFN, no MoE and no MTP block. Every
-matmul weight is PQ2_0 (ternary, 2.125 bits per weight) and the Prism exporter
-stores it already Hadamard-folded, so the engine rotates the activation instead
-of the weight. The norms are F32 and the two ssm gates BF16, as the exporter
+gated-attention layers, a dense SwiGLU FFN, no MoE. Every matmul weight is
+PQ2_0 (ternary, 2.125 bits per weight) and the Prism exporter stores it
+already Hadamard-folded, so the engine rotates the activation instead of the
+weight. The norms are F32 and the two ssm gates BF16, as the exporter
 writes them.
 
 The artifact used on this host:
@@ -58,10 +58,12 @@ and the context bound; the table below says what each backend does differently.
 | prefill | `DS4_QWEN35_PREFILL_CHUNK` rows per forward (512 default, 1024 max); a chunk the device cannot hold is halved until the graph opens | one token per forward, as the reference always runs |
 | speed | ~26 ms per token | ~3 s per forward |
 
-Refused by name rather than pretended: batching (the session decodes one row per
-eval), MTP and DSpark drafting, SSD/disk KV, tensor parallelism, distributed
-ranks, and KV snapshots (`ds4_session_payload_bytes` returns 0 and both payload
-paths refuse). Attention is chosen per batch, not per model: a chunk of 32 rows
+Refused by name rather than pretended: batching (the session verifies at most
+the two rows of one draft block), DSpark drafting, SSD/disk KV, tensor
+parallelism, distributed ranks, and KV snapshots (`ds4_session_payload_bytes`
+returns 0 and both payload paths refuse). The family's own embedded MTP block
+drafts on the serial lane (see "The draft loop"); the bank driver has no draft
+round for it. Attention is chosen per batch, not per model: a chunk of 32 rows
 or more takes the token-tile MMA kernel, and decode (or anything below that)
 takes the row-exact kernel, which cuts a row's key range into up to 64 split
 ranges and reduces them in attn_merge. Without that split this family's decode
@@ -399,8 +401,8 @@ Verified 2026-11-09 against the base artifact above: the output is
 `78df4279d40ebebdccfd2dae0e9d4847afee52e94f48f3542ae9437220dbd847`, the digest
 the published repository records for its LFS object. The published model card
 measures 41.9 tok/s without MTP against 60.5 tok/s with two drafts on a
-24 GB RTX PRO 6000 slice; those numbers come from llama.cpp, not from this
-engine, which has no MTP path for this family yet.
+24 GB RTX PRO 6000 slice, under llama.cpp at two drafts. This engine's own
+single-draft loop is measured under "The draft loop" below.
 
 ### The block as a drafter
 
@@ -426,10 +428,77 @@ Two properties matter for the numbers below:
   sampled token.
 
 Draft quality, measured greedily on the pinned prompt with
-`DS4_QWEN35_MTP_PROBE=1` (diagnostic only; nothing drafts without it): the
-draft's argmax equals the trunk's next argmax 89/119 (0.748) and 42/59 (0.712),
-and the 12-step token stream is identical with the probe on and off.
-Verification, rollback and the speed A/B are the next unit.
+`DS4_QWEN35_MTP_PROBE=1` (a diagnostic that only reports): the draft's argmax
+equals the trunk's next argmax 89/119 (0.748) and 42/59 (0.712), and the
+12-step token stream is identical with the probe on and off.
+
+## The draft loop
+
+A speculative cycle is the block's proposal plus one two-row trunk pass:
+
+```
+ pos0                pos0+1
+   |                     |
+ [ first ]  [ draft ]        <- the verify block's two tokens
+   |                     |
+ trunk rows 0 and 1  -> logits row 0 (the target), row 1 (the bonus token)
+   |
+ keep = 1 + (draft == target)
+```
+
+- Draft: the block consumes its pending trunk row with the token just sampled
+  and returns one proposal (the trunk's own output head over the block's row).
+- Verify: one forward over both rows. Row 0 reproduces the plain decode's
+  logits; row 1's logits are free once the draft is accepted, so an accepted
+  cycle emits two tokens.
+- Rollback: 48 trunk layers are gated delta-net with recurrent state. The
+  `conv` and `gdn_scan` kernels already carry two snapshot slots, so a verify
+  checkpoints the state and the conv history as they stand after row 0 and a
+  rejected draft swaps those buffers into place — no replay of the committed
+  row. The checkpoint costs 48 x (3.1 MB state + 0.12 MB history) = 155 MB and
+  exists only for an artifact that carries the block. The k/v rows a rejected
+  block wrote stay stale at positions that are never read: attention reads
+  keys below the live position, and the next cycle overwrites them.
+- The block advances only over accepted rows (`MTP keep`), so its k/v prefix
+  never holds a rejected token.
+- Sampling: a request with a temperature draws its targets from the same two
+  verify rows with the host's sampler (sample-and-match), so drafting is not
+  gated on temperature. `DS4_MTP_SPEC_DISABLE=1` restores plain decode, and
+  `DS4_MTP_SPEC_LOG=1` prints one line per cycle.
+
+Measured 2026-11-09, `ds4-c` (CUDA, sm_89, RTX 4070 SUPER, 12 GiB), greedy
+`--temp 0`, against the same binary with `DS4_MTP_SPEC_DISABLE=1`:
+
+| workload | plain | one draft | gain |
+| --- | --- | --- | --- |
+| 4-token prompt, 48 generated | 44.75 tok/s | 60.94 tok/s | +36% |
+| 25-token prompt, 128 generated | 44.05 tok/s | 59.28 tok/s | +35% |
+| ~1k-token prompt, 64 generated | 43.94 tok/s | 56.37 tok/s | +28% |
+
+Every pair printed the identical completion, so the committed stream is the
+plain decode's own at every context measured. The acceptance was 50 of 77
+cycles (0.65) on the 25-token prompt; the earlier probe's 0.75 was measured on
+the diagnostic prompt. Prefill costs what the fill costs: 1149.7 to 1110.2 t/s
+at ~1k tokens (-3.4%) and nothing measurable on a short prompt, because a
+chunk fills the block's k/v in one batched pass (the FFN and head are skipped
+for rows no draft reads) instead of one weight-read per row.
+
+**Two drafts do not pay.** `--mtp-draft 2` is implemented and deterministic
+(59.30, 59.34, 59.41 tok/s over three runs against 59.13-59.28 for one draft)
+but it is not faster, and its three-row verify changes a committed token on a
+long run (the 128-token printing-press completion differs from plain decode
+after about 40 tokens while staying fluent; a two-row block matches it
+exactly). The reason is the acceptance it buys: first-draft acceptance 0.68 and
+second-draft 0.57 (24 of 42) on that prompt, against 0.65 for one, so a cycle
+yields 2.06 tokens for three verified rows instead of 1.65 for two. The second
+draft chains through the block's own post-FFN hidden state, because the trunk
+row for that position does not exist until the verify runs. One draft is the
+default; the second checkpoint pair is allocated only when `--mtp-draft 2`
+asks for it (155 MB more).
+
+The Rust host reaches the same loop (59 cycles on a 96-token greedy run, the
+same completion as plain decode, and 19 cycles on a temperature-0.8 run through
+sample-and-match). The C host speculates on greedy requests only.
 
 ## Validation
 
@@ -490,14 +559,14 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 - **Serving is exercised but not qualified.** The server answers on both
   backends and refuses by name what it cannot do, but the family's serving caps
   carry no qualified context, bank or prompt limits, and only the serial lane
-  is wired: batching, MTP/DSpark, SSD/disk KV, tensor parallelism and session
+  is wired: batching, DSpark, SSD/disk KV, tensor parallelism and session
   snapshots are refused (`--kv-disk-dir` stops the server rather than staying
   silently unused) and the plan reports `reuse=exact` with a
   `partial_unqualified` warning. Do not read the caps as a qualified service.
-- **No batching, SSD/disk KV, MTP or session snapshots.** Each is refused by
-  name rather than pretended: the session decodes one row per eval, the payload
-  paths refuse, and the engine gate rejects the MTP/DSpark sidecars, tensor
-  parallelism and distributed ranks.
+- **No batching, SSD/disk KV or session snapshots.** Each is refused by name
+  rather than pretended: the session verifies at most one draft block's two
+  rows, the payload paths refuse, and the engine gate rejects the DSpark
+  sidecar, tensor parallelism and distributed ranks.
 - **The CPU reference is the slow path.** About 3 s per forward against ~26 ms
   per token on the card, which is why the CPU session runs the reference trunk
   and `./run-bonsai.sh session` takes minutes.
