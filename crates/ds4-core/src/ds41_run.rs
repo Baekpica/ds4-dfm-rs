@@ -1839,8 +1839,11 @@ impl Model {
             let have = unsafe {
                 ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32, sig_ptr)
             };
+            let t_find = Instant::now();
             if let Some(hit) = disk.find(prompt, signatures, digest, have) {
+                phase_log(phases, "disk find", t_find);
                 if let Some(cpath) = c_path(&hit.path) {
+                    let t_import = Instant::now();
                     let ok = unsafe {
                         ds4_bridge_v41_kvreuse_import(
                             cpath.as_ptr(),
@@ -1850,12 +1853,15 @@ impl Model {
                             hit.tokens,
                         )
                     };
+                    phase_log(phases, "disk import", t_import);
                     if ok == 0 {
                         eprintln!(
                             "ds4: [v41] KV disk checkpoint did not load; the request continues without it"
                         );
                     }
                 }
+            } else {
+                phase_log(phases, "disk find", t_find);
             }
         }
         // U-B's host seam (ds4_ds41_kvreuse.inc): the native checkpoint owns
@@ -1985,7 +1991,8 @@ impl Model {
             };
             if have == prompt.len() as u32 {
                 let mut save = |p: &Path| -> bool {
-                    match c_path(p) {
+                    let t = Instant::now();
+                    let ok = match c_path(p) {
                         Some(c) => unsafe {
                             ds4_bridge_v41_kvreuse_export(
                                 c.as_ptr(),
@@ -1993,9 +2000,21 @@ impl Model {
                             ) != 0
                         },
                         None => false,
+                    };
+                    phase_log(phases, "disk export", t);
+                    if phases {
+                        if let Ok(meta) = std::fs::metadata(p) {
+                            eprintln!(
+                                "ds4: [v41] disk export payload: {:.1} MB",
+                                meta.len() as f64 / 1048576.0
+                            );
+                        }
                     }
+                    ok
                 };
+                let t_store = Instant::now();
                 disk.store(prompt, signatures, digest, V41KvClass::Prompt, &mut save);
+                phase_log(phases, "disk store", t_store);
             }
         }
         // The turn export (item 4): the native saved T at the run's own
@@ -2018,7 +2037,8 @@ impl Model {
                     let mut sigs = vec![0u64; n as usize];
                     sigs[..signatures.len()].copy_from_slice(signatures);
                     let mut save = |p: &Path| -> bool {
-                        match c_path(p) {
+                        let t = Instant::now();
+                        let ok = match c_path(p) {
                             Some(c) => unsafe {
                                 ds4_bridge_v41_kvreuse_export(
                                     c.as_ptr(),
@@ -2026,9 +2046,21 @@ impl Model {
                                 ) != 0
                             },
                             None => false,
+                        };
+                        phase_log(phases, "disk export", t);
+                        if phases {
+                            if let Ok(meta) = std::fs::metadata(p) {
+                                eprintln!(
+                                    "ds4: [v41] disk export payload: {:.1} MB",
+                                    meta.len() as f64 / 1048576.0
+                                );
+                            }
                         }
+                        ok
                     };
+                    let t_store = Instant::now();
                     disk.store(&key, &sigs, digest, V41KvClass::Turn, &mut save);
+                    phase_log(phases, "disk store", t_store);
                 }
             }
         }
