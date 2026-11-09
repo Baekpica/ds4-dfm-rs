@@ -1782,8 +1782,18 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 /// the family constants; the trunk is trained at 262144 positions with no rope
 /// scaling, so the rotary sections must still cover the rotated half.
 fn validate_qwen35(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
+    // A grafted MTP artifact counts its draft head in block_count, the
+    // llama.cpp nextn convention: the trunk stays `n_layer` blocks and the
+    // trailing `nextn` blocks are the draft head.
+    let nextn = g.get_u32("qwen35.nextn_predict_layers").unwrap_or(0);
+    if nextn > 1 {
+        return Err(ValidateError::TokenKey(
+            "mismatch-u32",
+            "qwen35.nextn_predict_layers".into(),
+        ));
+    }
     let u32s = [
-        ("block_count", "qwen35.block_count", shape.n_layer),
+        ("block_count", "qwen35.block_count", shape.n_layer + nextn),
         ("embedding_length", "qwen35.embedding_length", shape.n_embd),
         (
             "feed_forward_length",

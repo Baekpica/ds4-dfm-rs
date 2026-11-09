@@ -5747,6 +5747,16 @@ typedef struct {
     ds4_tensor *gate[AXK2_EXPERTS], *up[AXK2_EXPERTS], *down[AXK2_EXPERTS];
 } ds4_axk2_layer;
 
+/* Bonsai's grafted Qwen3.8 nextn block (blk.<block_count-1>.*): one full
+ * attention + SwiGLU block, the two norms and the projection that fold the
+ * token embedding and the hidden state into it, and the shared head's norm.
+ * Bound only when qwen35.nextn_predict_layers is 1; the trunk never executes
+ * it. */
+typedef struct {
+    ds4_tensor *enorm, *hnorm, *eh_proj, *shared_head_norm;
+    ds4_layer_weights block;
+} ds4_qwen35_mtp_weights;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -5787,6 +5797,8 @@ typedef struct {
     ds4_tensor *qwen_mtp_fc_embedding_norm;
     ds4_tensor *qwen_mtp_fc_hidden_norm;
     ds4_layer_weights qwen_mtp;
+    /* Bonsai's grafted Qwen3.8 nextn block, when the artifact carries one. */
+    ds4_qwen35_mtp_weights qwen35_mtp;
     ds4_qwen_vision_weights qwen_vision;
     ds4_inkling_weights inkling;
     ds4_tensor *step37_rope_freqs;
@@ -7915,6 +7927,19 @@ static const float *ds4_hadamard_signs_for(uint32_t width) {
     return NULL;
 }
 
+/* The grafted nextn blocks (blk.<n_layer>.*) are stock Qwen weights in the
+ * original residual basis: the exporter never folded them and the draft must
+ * read them unrotated, so they are exempt from the fold coverage rule. */
+static bool qwen35_is_nextn_weight_name(ds4_str name) {
+    if (name.len < 6 || memcmp(name.ptr, "blk.", 4) != 0) return false;
+    uint32_t il = 0;
+    uint64_t i = 4;
+    for (; i < name.len && name.ptr[i] >= '0' && name.ptr[i] <= '9'; i++) {
+        il = il * 10u + (uint32_t)(name.ptr[i] - '0');
+    }
+    return i > 4 && i < name.len && name.ptr[i] == '.' && il >= DS4_N_LAYER;
+}
+
 /* A folded weight is one whose product consumes an activation that has to be
  * rotated first.  The transform is applied unconditionally for this family, so
  * a file that folds only some of its matmuls would silently run wrong math:
@@ -8135,6 +8160,7 @@ static void config_validate_hadamard(const ds4_model *m) {
         const ds4_tensor *t = &m->tensors[i];
         if (!qwen35_is_foldable_weight_name(t->name) || declared[i]) continue;
         if (ds4_streq(t->name, "token_embd.weight")) continue;
+        if (qwen35_is_nextn_weight_name(t->name)) continue;
         fprintf(stderr, "ds4: prism.hadamard leaves the matmul %.*s unfolded\n",
                 (int)t->name.len, t->name.ptr);
         exit(1);
@@ -8222,7 +8248,16 @@ static void ds4_rope_configure(uint32_t n_rot, double base, uint32_t native_ctx,
 static void config_validate_qwen35_model(const ds4_model *m) {
     g_ds4_shape = DS4_SHAPE_QWEN35;
 
-    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"), DS4_N_LAYER);
+    /* A grafted MTP artifact counts its draft head in block_count, exactly as
+     * llama.cpp's nextn convention does: the trunk stays DS4_N_LAYER blocks
+     * and the trailing nextn blocks are the draft head. */
+    uint32_t nextn = 0;
+    (void) model_get_u32(m, "qwen35.nextn_predict_layers", &nextn);
+    if (nextn > 1u) {
+        ds4_die("qwen35.nextn_predict_layers beyond 1 is not supported");
+    }
+    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"),
+                      DS4_N_LAYER + nextn);
     config_expect_u32("embedding_length", required_u32(m, "qwen35.embedding_length"), DS4_N_EMBD);
     config_expect_u32("feed_forward_length", required_u32(m, "qwen35.feed_forward_length"),
                       DS4_N_FF_DENSE);
@@ -10282,12 +10317,40 @@ static void weights_bind_qwen35_layer(ds4_layer_weights *l, const ds4_model *m, 
     l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
 }
 
+/* Bonsai's grafted MTP block is a full-attention layer, so it binds the
+ * attention layout directly: the trunk's periodic classifier (ds4_qwen35_
+ * layer_is_linear) would label block 64 a gated delta-net layer. */
+static void weights_bind_qwen35_mtp(ds4_weights *w, const ds4_model *m, uint32_t il) {
+    ds4_qwen35_mtp_weights *mtp = &w->qwen35_mtp;
+    ds4_layer_weights *l = &mtp->block;
+    l->attn_norm      = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->post_attn_norm = required_tensorf(m, "blk.%u.post_attention_norm.weight", il);
+    l->attn_q         = required_tensorf(m, "blk.%u.attn_q.weight", il);
+    l->attn_k         = required_tensorf(m, "blk.%u.attn_k.weight", il);
+    l->attn_v         = required_tensorf(m, "blk.%u.attn_v.weight", il);
+    l->attn_output    = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    l->attn_q_norm    = required_tensorf(m, "blk.%u.attn_q_norm.weight", il);
+    l->attn_k_norm    = required_tensorf(m, "blk.%u.attn_k_norm.weight", il);
+    l->ffn_gate       = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+    l->ffn_up         = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+    l->ffn_down       = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    mtp->enorm            = required_tensorf(m, "blk.%u.nextn.enorm.weight", il);
+    mtp->hnorm            = required_tensorf(m, "blk.%u.nextn.hnorm.weight", il);
+    mtp->eh_proj          = required_tensorf(m, "blk.%u.nextn.eh_proj.weight", il);
+    mtp->shared_head_norm = required_tensorf(m, "blk.%u.nextn.shared_head_norm.weight", il);
+}
+
 static void weights_bind_qwen35(ds4_weights *w, const ds4_model *m) {
     w->token_embd  = required_tensor(m, "token_embd.weight");
     w->output_norm = required_tensor(m, "output_norm.weight");
     w->output      = required_tensor(m, "output.weight");
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         weights_bind_qwen35_layer(&w->layer[il], m, il);
+    }
+    uint32_t nextn = 0;
+    (void) model_get_u32(m, "qwen35.nextn_predict_layers", &nextn);
+    if (nextn == 1u) {
+        weights_bind_qwen35_mtp(w, m, DS4_N_LAYER);
     }
     if (!g_host_bind_map) weights_validate_layout(w, m);
 }
