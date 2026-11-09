@@ -79372,6 +79372,21 @@ static int qwen35_session_commit(ds4_session *s, int keep, char *err, size_t err
     s->mtp_draft_valid = false;
     return 0;
 }
+#else /* DS4_NO_GPU */
+/* The CPU reference keeps no graph state to rewind: every sync is a cold
+ * prefill and no rewind copy is taken.  The callers are shared with the CUDA
+ * build, so the entry points exist in both. */
+static void qwen35_sync_capture(ds4_session *s, uint32_t pos) {
+    (void)s; (void)pos;
+}
+static uint32_t qwen35_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    (void)s; (void)prompt;
+    return 0;
+}
+static bool qwen35_sync_rewind(ds4_session *s, uint32_t keep) {
+    (void)s; (void)keep;
+    return false;
+}
 #endif
 
 #ifndef DS4_NO_GPU
