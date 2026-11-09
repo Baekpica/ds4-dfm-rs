@@ -110,7 +110,8 @@ fn read_value(f: &mut File, t: u32) -> io::Result<Vec<u8>> {
             let n = read_u64(f)?;
             let mut b = vec![0u8; 8];
             b.copy_from_slice(&n.to_le_bytes());
-            let mut s = vec![0u8; usize::try_from(n).map_err(|_| io::Error::other("string too long"))?];
+            let mut s =
+                vec![0u8; usize::try_from(n).map_err(|_| io::Error::other("string too long"))?];
             f.read_exact(&mut s)?;
             b.extend_from_slice(&s);
             Ok(b)
@@ -158,7 +159,12 @@ fn parse(path: &Path) -> io::Result<Gguf> {
         }
         let typ = read_u32(&mut f)?;
         let offset = read_u64(&mut f)?;
-        tensors.push(Tensor { name, dims, typ, offset });
+        tensors.push(Tensor {
+            name,
+            dims,
+            typ,
+            offset,
+        });
     }
 
     let header_end = f.stream_position()?;
@@ -263,8 +269,12 @@ fn plan(src: &Path, script_url: Option<&str>, size: Option<u64>) -> io::Result<(
     }
     let sizes = sizes_by_gap(&s);
     let mut total = 0u64;
-    let geometry = format!("source: data_start={} file_len={} tensors={}",
-                           s.data_start, s.file_len, s.tensors.len());
+    let geometry = format!(
+        "source: data_start={} file_len={} tensors={}",
+        s.data_start,
+        s.file_len,
+        s.tensors.len()
+    );
     if script_url.is_some() {
         /* The script goes to stdout alone, so `plan --script > fetch.sh` is
          * runnable; the geometry belongs on stderr. */
@@ -289,8 +299,14 @@ fn plan(src: &Path, script_url: Option<&str>, size: Option<u64>) -> io::Result<(
             let t = &s.tensors[i];
             let n = sizes.iter().find(|e| e.0 == i).map(|e| e.1).unwrap_or(0);
             total += n;
-            println!("{:<40} data_off={:<12} bytes={:<12} range={}-{}", t.name, t.offset, n,
-                     s.data_start + t.offset, s.data_start + t.offset + n - 1);
+            println!(
+                "{:<40} data_off={:<12} bytes={:<12} range={}-{}",
+                t.name,
+                t.offset,
+                n,
+                s.data_start + t.offset,
+                s.data_start + t.offset + n - 1
+            );
         }
     }
     println!("# mtp bytes total: {total}");
@@ -321,7 +337,11 @@ fn graft(base: &Path, src: &Path, out: &Path) -> io::Result<()> {
             e.raw[..4].copy_from_slice(&(old_blocks + 1).to_le_bytes());
             kv.push(e);
             if !b.kv.iter().any(|x| x.key == NEXTN_KEY) {
-                kv.push(Kv { key: NEXTN_KEY.to_string(), typ: GGUF_U32, raw: 1u32.to_le_bytes().to_vec() });
+                kv.push(Kv {
+                    key: NEXTN_KEY.to_string(),
+                    typ: GGUF_U32,
+                    raw: 1u32.to_le_bytes().to_vec(),
+                });
             }
             continue;
         }
@@ -358,7 +378,13 @@ fn graft(base: &Path, src: &Path, out: &Path) -> io::Result<()> {
     }
 
     /* ---- write ---- */
-    let mut w = BufWriter::new(OpenOptions::new().create(true).write(true).truncate(true).open(out)?);
+    let mut w = BufWriter::new(
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(out)?,
+    );
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
     w.write_all(&b.version.to_le_bytes())?;
     w.write_all(&(tensors.len() as u64).to_le_bytes())?;
@@ -371,7 +397,10 @@ fn graft(base: &Path, src: &Path, out: &Path) -> io::Result<()> {
     }
     let header_end = w.stream_position()?;
     let data_start = align_up(header_end, 32);
-    w.write_all(&vec![0u8; usize::try_from(data_start - header_end).unwrap()])?;
+    w.write_all(&vec![
+        0u8;
+        usize::try_from(data_start - header_end).unwrap()
+    ])?;
 
     for (i, &(off, n)) in layout.iter().enumerate() {
         let want = data_start + off;
@@ -393,8 +422,11 @@ fn graft(base: &Path, src: &Path, out: &Path) -> io::Result<()> {
     drop(w);
 
     let size = std::fs::metadata(out)?.len();
-    println!("wrote {out:?}: tensors={} kv={} data_start={data_start} size={size}",
-             tensors.len(), kv.len());
+    println!(
+        "wrote {out:?}: tensors={} kv={} data_start={data_start} size={size}",
+        tensors.len(),
+        kv.len()
+    );
     Ok(())
 }
 
@@ -402,14 +434,21 @@ fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("plan") if args.len() >= 2 => {
-            let url = args.iter().position(|a| a == "--script").map(|i| args[i + 1].as_str());
-            let size = args.iter().position(|a| a == "--size")
+            let url = args
+                .iter()
+                .position(|a| a == "--script")
+                .map(|i| args[i + 1].as_str());
+            let size = args
+                .iter()
+                .position(|a| a == "--size")
                 .and_then(|i| args[i + 1].parse::<u64>().ok());
             plan(Path::new(&args[1]), url, size)
         }
-        Some("graft") if args.len() == 4 => {
-            graft(Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]))
-        }
+        Some("graft") if args.len() == 4 => graft(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            Path::new(&args[3]),
+        ),
         _ => {
             eprintln!("usage: bonsai_graft_mtp plan <src.gguf> [--size N] [--script URL]");
             eprintln!("       bonsai_graft_mtp graft <base.gguf> <src.gguf> <out.gguf>");

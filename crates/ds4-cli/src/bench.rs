@@ -233,10 +233,7 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
     uses_distributed_replay(args)
         || matches!(
             family,
-            ModelFamily::Inkling
-                | ModelFamily::Step37
-                | ModelFamily::Ling3Vl
-                | ModelFamily::Qwen35
+            ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Qwen35
         )
 }
 
