@@ -160,7 +160,7 @@ default an unmapped id would fall back to.
 | | CUDA server | CPU server (reference) |
 | --- | --- | --- |
 | state | the CUDA graph session, same as `session` | the CPU reference session |
-| lanes | serial only (`--max-seqs`, batching, MTP refused by name) | serial only |
+| lanes | serial only (`--max-seqs` > 1 and batching refused; one two-row draft block per step) | serial only |
 | speed | ~1.4 s for a 36-token answer with 45 prompt tokens | ~3 s per forward |
 
 ```sh
