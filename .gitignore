@@ -310,3 +310,4 @@ tests/naive_banks
 /tests/gemma4_q4_decode
 /tests/gemma4_mtp_gate
 /tests/gemma4_ring
+tests/bonsai_dense_bench
