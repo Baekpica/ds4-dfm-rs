@@ -43,9 +43,11 @@
 //! its position. A hit therefore chunks its suffix from the checkpoint while
 //! a cold run chunks from zero, which that file names as an FP-level
 //! difference, and a greedy chain carries one near-tie flip into a different
-//! continuation. Its continue item gates the frontier token and reports the
-//! chain rather than failing on it: what reuse must not do is change the
-//! decision at the point it resumes.
+//! continuation. The continue item therefore gates the chain row by row
+//! against a floor measured from the same cold prompt at two prefill blocks
+//! (the native `--v41-chunk`), using each emitted position's full logits row
+//! from the engine's own dump: the hit may flip only a decision inside that
+//! floor, and nothing after the first such flip is comparable.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -65,6 +67,14 @@ use gemma4_mtp::{MTP_BLOCK_MIN, MTP_TEMPERATURE};
 
 /// Tokens decoded past each frontier.
 const DECODE_TOKENS: usize = 16;
+/// The V4.1 prefill block: the engine's `DS4_V41_CHUNK` and the native
+/// default.  The checklist splits on it, so a kept prefix repeats the fresh
+/// block arithmetic instead of starting a different one.
+const V41_BLOCK: i32 = 2048;
+/// The V4.1 chain floor's second prefill block: half a block moves the same
+/// rows' block boundaries without touching reuse, so the lead change it
+/// produces is the noise band the resumed chain is gated against.
+const V41_CHAIN_CHUNK: i32 = V41_BLOCK / 2;
 /// Length of the divergent filler X.
 const FILLER_TOKENS: usize = 16;
 /// A seeded source bank and a target.
@@ -811,37 +821,93 @@ fn admit(
 /// A hit resumes at the checkpoint's position, so its suffix prefills from
 /// there while a cold run chunks from zero; `ds4_ds41_kvreuse.inc` names that
 /// as an FP-level difference (block boundaries), the same class as changing
-/// the prefill chunk. A greedy chain turns one near-tie flip into a different
-/// continuation, so the chain past the first token is not comparable. What a
-/// hit must preserve is the frontier decision, the first token the reused and
-/// suffixed state emits against the cold run's; a divergence after it is
-/// reported in the detail, not failed.
-fn hit_streams(want: &[i32], got: Result<(i32, Vec<i32>)>) -> Measured {
-    let (kept, tokens) = match got {
-        Ok(got) => got,
-        Err(e) => return Measured::Refused(e.message),
-    };
+/// the prefill chunk.  Two cold runs at different blocks measure how far that
+/// class moves a row's top-1 lead: the largest change is the floor.  The hit
+/// may pick a different token only at a row it decides inside that floor; the
+/// rows after the first such divergence are for a different prefix and are
+/// not compared.  Anything else is reuse moving a decision.
+fn chain_gate(refs: &[Reference<'_>], got: &Rows, kept: i32) -> Measured {
+    let want = refs[0].1;
+    let floor = chain_floor(refs);
+    let comparable = want
+        .tokens
+        .iter()
+        .zip(refs.get(1).map_or(&[][..], |(_, r)| &r.tokens[..]))
+        .take_while(|(x, y)| x == y)
+        .count();
     if kept <= 0 {
         return Measured::Cold;
     }
-    let Some(first) = tokens.first() else {
-        return Measured::Wrong(format!("kept {kept}, no token emitted"));
-    };
-    if want.first() != Some(first) {
+    let rows = want.logits.len().min(got.logits.len());
+    if rows == 0 {
+        return Measured::Wrong(format!("kept {kept}, no row emitted"));
+    }
+    let mut diverge = None;
+    for i in 0..rows {
+        let want_top = argmax(&want.logits[i]);
+        let top = argmax(&got.logits[i]);
+        if top == want_top {
+            continue;
+        }
+        let lead = want.logits[i][want_top] - want.logits[i][top];
+        if lead <= floor {
+            diverge = Some((i, lead));
+            break;
+        }
         return Measured::Wrong(format!(
-            "kept {kept}, the frontier token differs: want {}, got {first}",
-            want.first().copied().unwrap_or(-1)
+            "kept {kept}, row {i}: picks {top} outside the floor \
+             (lead {lead:.3} > {floor:.3})"
         ));
     }
-    let matched = want.iter().zip(&tokens).take_while(|(a, b)| a == b).count();
-    let of = want.len().max(tokens.len());
-    if matched == of {
-        return Measured::Works(format!("kept {kept}, tokens {matched}/{of}"));
+    let of = want.logits.len().max(got.logits.len());
+    let same = want.logits.len() == got.logits.len();
+    let detail = match diverge {
+        Some((i, lead)) => format!(
+            "kept {kept}, rows {i}/{of} agree, row {i} near-tie {lead:.3} <= \
+             {floor:.3} (floor from {comparable} rows)"
+        ),
+        None if same => format!(
+            "kept {kept}, rows {rows}/{of} agree (floor {floor:.3} from \
+             {comparable} rows)"
+        ),
+        None => format!("kept {kept}, rows {rows}/{of}: the row counts differ"),
+    };
+    if diverge.is_some() || same {
+        Measured::Works(detail)
+    } else {
+        Measured::Wrong(detail)
     }
-    Measured::Works(format!(
-        "kept {kept}, tokens {matched}/{of}; frontier token {first} matches \
-         (a hit resumes the checkpoint's chunk boundary)"
-    ))
+}
+
+/// The floor a resumed chain may move within: how far a block-boundary
+/// change moves a row's top-1 lead, measured between the two cold runs.  Only
+/// rows whose prefix both runs still share count; after their first token
+/// divergence a row is a different prompt, not the same decision.
+fn chain_floor(refs: &[Reference<'_>]) -> f32 {
+    let [(_, a), (_, b), ..] = refs else {
+        return 0.0;
+    };
+    let common = a
+        .tokens
+        .iter()
+        .zip(&b.tokens)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut floor = 0f32;
+    for i in 0..=common {
+        let (Some(x), Some(y)) = (a.logits.get(i), b.logits.get(i)) else {
+            break;
+        };
+        let t = argmax(x);
+        let Some(u) = (0..x.len())
+            .filter(|&j| j != t)
+            .max_by(|&j, &k| x[j].total_cmp(&x[k]))
+        else {
+            continue;
+        };
+        floor = floor.max(((x[t] - x[u]) - (y[t] - y[u])).abs());
+    }
+    floor
 }
 
 fn streams(want: &[i32], got: Result<(i32, Vec<i32>)>) -> Measured {
@@ -1094,6 +1160,7 @@ fn v41_run(
     n: usize,
     checkpoint: Checkpoint,
     disk: Option<&mut ScratchKv>,
+    chunk: i32,
 ) -> Result<(i32, Vec<i32>)> {
     let mut opts = V41RunOptions {
         engram_dir: base.engram_dir,
@@ -1104,6 +1171,7 @@ fn v41_run(
         dspark: Some(0),
         kv_reuse: Some(checkpoint == Checkpoint::On),
         kv_disk: disk.map(|d| d as &mut dyn V41KvDisk),
+        chunk,
         sampling: Some(V41Sampling::default()),
         ..Default::default()
     };
@@ -1116,6 +1184,56 @@ fn v41_run(
     let n = i32::try_from(n).unwrap_or(i32::MAX);
     model.v41_generate(path, tokens, n, &mut opts, &mut emit, &mut progress)?;
     Ok((v41_kvreuse_last_reused(), out))
+}
+
+/// One greedy run with the full logits row behind every emitted position.
+/// `DS41_GEN_LOGITS` is the native dump (`ds4_ds41_draft.inc`: one
+/// `[n_vocab]` f32 row per emitted position, in emission order); the
+/// variable is restored afterwards, so an operator's own dump survives.
+fn v41_rows(
+    model: &Model,
+    path: &Path,
+    base: &V41RunOptions<'_>,
+    tokens: &[i32],
+    n: usize,
+    checkpoint: Checkpoint,
+    chunk: i32,
+) -> Result<(i32, Rows)> {
+    let out = scratch("v41-rows");
+    let prior = std::env::var_os("DS41_GEN_LOGITS");
+    std::env::set_var("DS41_GEN_LOGITS", &out);
+    let got = v41_run(model, path, base, tokens, n, checkpoint, None, chunk);
+    match prior {
+        Some(v) => std::env::set_var("DS41_GEN_LOGITS", v),
+        None => std::env::remove_var("DS41_GEN_LOGITS"),
+    }
+    let rows = read_rows(&out, model.shape().n_vocab as usize);
+    let _ = std::fs::remove_file(&out);
+    let (kept, tokens) = got?;
+    Ok((kept, Rows { logits: rows?, tokens }))
+}
+
+/// Reads a `DS41_GEN_LOGITS` dump: `vocab` floats per row, written by the
+/// host in its own byte order.
+fn read_rows(path: &Path, vocab: usize) -> Result<Vec<Vec<f32>>> {
+    let bytes = std::fs::read(path).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+    let stride = vocab * 4;
+    if stride == 0 || bytes.len() % stride != 0 {
+        return Err(fail(format!(
+            "{}: {} bytes is not whole {vocab}-float rows",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    let mut rows = Vec::with_capacity(bytes.len() / stride);
+    for row in bytes.chunks_exact(stride) {
+        rows.push(
+            row.chunks_exact(4)
+                .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+                .collect(),
+        );
+    }
+    Ok(rows)
 }
 
 /// V4.1 serves without a session or banks: its reuse is `v41_generate`'s
@@ -1134,18 +1252,24 @@ pub fn serving_check_v41(
         caps: caps_from_shape(model.shape()),
         ctx: 0,
         prompt: prompt.len(),
-        split: split_point(prompt.len(), 0),
-        grid: 0,
+        split: split_point(prompt.len(), V41_BLOCK as u32),
+        grid: V41_BLOCK as u32,
         mtp_bound: false,
         rows: Vec::new(),
     };
     let k = DECODE_TOKENS;
     let run = |tokens: &[i32], n: usize, checkpoint: Checkpoint, disk: Option<&mut ScratchKv>| {
-        v41_run(model, path, base, tokens, n, checkpoint, disk)
+        v41_run(model, path, base, tokens, n, checkpoint, disk, 0)
     };
     let (_, want_t) = run(prompt, k, Checkpoint::Off, None)?;
     let p = Prompts::new(prompt, list.split, &want_t);
-    let (_, want_u) = run(&p.u, k, Checkpoint::Off, None)?;
+    // Two cold arithmetics for the chain floor: the default prefill block and
+    // a narrower one.  Both are reuse-free, so the lead change they produce is
+    // the block-boundary band a resumed chain may move within.
+    let (_, ref_u) = v41_rows(model, path, base, &p.u, k, Checkpoint::Off, 0)?;
+    let (_, ref_alt) = v41_rows(model, path, base, &p.u, k, Checkpoint::Off, V41_CHAIN_CHUNK)?;
+    let want_u = &ref_u.tokens;
+    let refs: [Reference<'_>; 2] = [("prefill", &ref_u), ("chunk", &ref_alt)];
 
     let on = Checkpoint::On;
     let mut store = ScratchKv::default();
@@ -1157,24 +1281,30 @@ pub fn serving_check_v41(
             ));
             continue;
         }
-        let got = match item {
-            Item::Prefix => run(&p.t[..p.m], 1, on, None).and_then(|_| run(&p.t, k, on, None)),
-            Item::Rewind => run(&p.diverged, 1, on, None).and_then(|_| run(&p.t, k, on, None)),
-            Item::Continue => run(&p.t, k, on, None).and_then(|_| run(&p.u, k, on, None)),
-            // The middle run moves the in-memory checkpoint off T, so only
-            // the store can give U its prefix.
-            Item::SessionDisk => run(&p.t, 1, on, Some(&mut store))
-                .and_then(|_| run(&p.diverged, 1, on, None))
-                .and_then(|_| run(&p.u, k, on, Some(&mut store))),
-            _ => Err(fail("V4.1 has no session snapshot")),
-        };
-        let want = match item {
-            Item::Prefix | Item::Rewind => &want_t,
-            _ => &want_u,
-        };
-        let measured = match item {
-            Item::Continue => hit_streams(want, got),
-            _ => streams(want, got),
+        let measured = if item == Item::Continue {
+            match run(&p.t, k, on, None) {
+                Err(e) => Measured::Refused(e.message),
+                Ok(_) => match v41_rows(model, path, base, &p.u, k, on, 0) {
+                    Err(e) => Measured::Refused(e.message),
+                    Ok((kept, rows)) => chain_gate(&refs, &rows, kept),
+                },
+            }
+        } else {
+            let got = match item {
+                Item::Prefix => run(&p.t[..p.m], 1, on, None).and_then(|_| run(&p.t, k, on, None)),
+                Item::Rewind => run(&p.diverged, 1, on, None).and_then(|_| run(&p.t, k, on, None)),
+                // The middle run moves the in-memory checkpoint off T, so only
+                // the store can give U its prefix.
+                Item::SessionDisk => run(&p.t, 1, on, Some(&mut store))
+                    .and_then(|_| run(&p.diverged, 1, on, None))
+                    .and_then(|_| run(&p.u, k, on, Some(&mut store))),
+                _ => Err(fail("V4.1 has no session snapshot")),
+            };
+            let want = match item {
+                Item::Prefix | Item::Rewind => &want_t,
+                _ => want_u,
+            };
+            streams(want, got)
         };
         list.rows.push((item, measured));
     }
@@ -1369,27 +1499,42 @@ mod tests {
     }
 
     #[test]
-    fn hit_streams_gate_the_frontier_not_the_chain() {
-        let want = [1, 2, 3];
-        assert_eq!(hit_streams(&want, Ok((0, vec![1, 2, 3]))), Measured::Cold);
+    fn chain_gate_needs_a_decision_outside_the_floor() {
+        let rows = |logits: Vec<Vec<f32>>, tokens: Vec<i32>| Rows { logits, tokens };
+        let want = rows(vec![vec![1.0, 0.5, 0.0], vec![0.0, 2.0, 1.0]], vec![0, 1]);
+        // A second cold arithmetic at a narrower block picks token 1 at row 0.
+        let chunk = rows(vec![vec![1.0, 1.1, 0.0], vec![0.0, 2.0, 1.0]], vec![1, 1]);
+        let refs = [("prefill", &want), ("chunk", &chunk)];
+
+        assert_eq!(chain_gate(&refs, &want, 0), Measured::Cold);
         assert!(matches!(
-            hit_streams(&want, Ok((4, vec![1, 2, 3]))),
-            Measured::Works(_)
+            chain_gate(&refs, &want, 7),
+            Measured::Works(d) if d.contains("rows 2/2 agree")
         ));
-        // A chain that leaves the cold stream after the frontier is the
-        // chunk-boundary difference, reported, not failed.
+        // The chunk reference's own pick is that arithmetic, not reuse.
+        let picked = rows(vec![vec![1.0, 1.1, 0.0], vec![0.0, 2.0, 1.0]], vec![1, 1]);
+        assert!(matches!(chain_gate(&refs, &picked, 7), Measured::Works(_)));
+        // A row count difference is a different stopping decision.
+        let short = rows(want.logits[..1].to_vec(), vec![0]);
+        assert!(matches!(chain_gate(&refs, &short, 7), Measured::Wrong(_)));
+
+        // floor = |(1.0 - 0.7) - (1.0 - 0.0)| = 0.7; a stray pick 0.3 behind
+        // the reference top is inside it, a pick 0.9 behind is not.
+        let want = rows(vec![vec![1.0, 0.5, 0.7]], vec![0]);
+        let chunk = rows(vec![vec![1.0, 1.1, 0.0]], vec![1]);
+        let refs = [("prefill", &want), ("chunk", &chunk)];
+        let stray = rows(vec![vec![0.95, 0.2, 1.0]], vec![2]);
         assert!(matches!(
-            hit_streams(&want, Ok((4, vec![1, 9, 9]))),
-            Measured::Works(_)
+            chain_gate(&refs, &stray, 7),
+            Measured::Works(d) if d.contains("near-tie 0.300 <= 0.700")
         ));
-        // A different frontier token is what reuse must never do.
+        let wrong = rows(vec![vec![0.2, 0.1, 0.3, 0.9]], vec![3]);
+        let wide_want = rows(vec![vec![1.0, 0.5, 0.7, 0.1]], vec![0]);
+        let wide_chunk = rows(vec![vec![1.0, 1.1, 0.0, 0.1]], vec![1]);
+        let wide = [("prefill", &wide_want), ("chunk", &wide_chunk)];
         assert!(matches!(
-            hit_streams(&want, Ok((4, vec![9, 2, 3]))),
-            Measured::Wrong(_)
-        ));
-        assert!(matches!(
-            hit_streams(&want, Ok((4, Vec::new()))),
-            Measured::Wrong(_)
+            chain_gate(&wide, &wrong, 7),
+            Measured::Wrong(d) if d.contains("outside the floor")
         ));
     }
 
