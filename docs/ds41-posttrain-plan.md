@@ -51,7 +51,7 @@ Verified in this tree:
 | piece | state | evidence |
 | --- | --- | --- |
 | ②③ reader / merge / `base.fnv` gate | DONE | `crates/ds4-core/src/sidecar.rs`, `zchain.rs` (`n_amp_layers` `:148`, `k_range` `:154`) |
-| ③ amp APPLY at the forward tail | NOT PORTED, refused by name | `crates/ds4-core/src/v41_run.rs` (`zchain_load_for_run`, the refusal string "carries amp_Lnn.bin; the low-rank amplifier apply is not ported") |
+| ③ amp APPLY at the forward tail | NOT PORTED, refused by name | `crates/ds4-core/src/ds41_run.rs` (`zchain_load_for_run`, the refusal string "carries amp_Lnn.bin; the low-rank amplifier apply is not ported") |
 | `--posttrain` flag plumbing (CLI + server) | DONE | `crates/ds4-cli/src/lib.rs:227`, `crates/ds4-server/src/bin/ds4-server-rs.rs:262` |
 | native V4.1 forward + score + greedy generate | DONE | `ds41_forward.h` (`ds4_v41_score_ids`, `ds4_v41_generate_argmax`), `ds4_ds41_forward.inc`, `ds4_ds41_*.inc` |
 | native V4.1 GPU kernel aggregate | DONE for the inference families | `ds4_ds41_gpu.cuh:39-60` (include-order contract) |
@@ -449,7 +449,7 @@ Port scope: a device store for the merged amp rows (the Rust reader already
 merges: zchain.rs merge_amp, AMP_MAX_RANK = 8192, base.fnv gate), the apply
 kernel mirroring the engine's, the round_bf16 the engine applies, and the tail
 hook in ds4_ds41_forward.inc at the engine's own position. Then lift the
-refusal in crates/ds4-core/src/v41_run.rs (the error string "V4.1 zchain
+refusal in crates/ds4-core/src/ds41_run.rs (the error string "V4.1 zchain
 carries amp_Lnn.bin; the low-rank amplifier apply is not ported") and keep the
 existing unit test that names amp_Lnn.bin, retargeted to the new positive path.
 Gate: model-free device-apply vs a CPU reference on a synthetic amp_Lnn.bin

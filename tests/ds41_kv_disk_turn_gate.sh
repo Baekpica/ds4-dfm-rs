@@ -4,7 +4,7 @@
 # What it decides: whether the checkpoint this port takes when the run ends (T:
 # the prompt followed by the ids the state committed, ds4_ds41_kvreuse.inc,
 # v41_kvreuse_save_turn) survives a process boundary through the KVC disk store
-# (crates/ds4-kv; v41_disk.rs) and a FRESH process restores it as the frontier
+# (crates/ds4-kv; ds41_disk.rs) and a FRESH process restores it as the frontier
 # the run left -- the restart-resume the disk half exists for.  The in-process
 # half is gated by ds41_kv_post_gate.sh, the disk half's prompt class by
 # ds41_kv_disk_gate.sh; this gate is the two together: stop, start, continue.

@@ -159,7 +159,7 @@ pub trait DecodeIo {
         _prompt: &[i32],
         _n_predict: i32,
         _sampling: Option<ds4_core::V41Sampling>,
-        _images: Option<&ds4_core::v41_media::V41Images>,
+        _images: Option<&ds4_core::ds41_media::V41Images>,
         _greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         _emit: &mut dyn FnMut(i32) -> bool,
         _progress: &mut dyn FnMut(&str, i32, i32) -> bool,
@@ -171,7 +171,7 @@ pub trait DecodeIo {
     /// The V4.1 vision tower's geometry and placeholder id, read from the
     /// `--vision-gguf` sidecar (`core_validate_v41.c:48-66`); None on an engine
     /// with no sidecar, so a request never expands a placeholder it cannot run.
-    fn v41_vision(&self) -> Option<ds4_core::v41_media::V41VisionMeta> {
+    fn v41_vision(&self) -> Option<ds4_core::ds41_media::V41VisionMeta> {
         None
     }
     /// The last V4.1 run's speculation account (rounds, offered, accepted;
@@ -3355,7 +3355,7 @@ fn expand_v41_images(
     engine: &dyn DecodeIo,
     parsed: &ParsedRequest,
     tokens: &[i32],
-) -> Result<Option<ds4_core::v41_media::V41Images>, GenerateError> {
+) -> Result<Option<ds4_core::ds41_media::V41Images>, GenerateError> {
     let Some(meta) = engine.v41_vision() else {
         // No sidecar: an image request is refused by name, never silently
         // dropped (the engine's 400, 80296d3: "image_url 进不了 sink 时改为
@@ -3382,7 +3382,7 @@ fn expand_v41_images(
         }
     }
     let imgs =
-        ds4_core::v41_media::V41Images::expand(tokens, &order, &meta, engine.ctx().max(0) as usize)
+        ds4_core::ds41_media::V41Images::expand(tokens, &order, &meta, engine.ctx().max(0) as usize)
             .map_err(|_| {
                 GenerateError::BadRequest(
                     "invalid V4.1 images or expanded image request exceeds context/memory budget",
@@ -4365,7 +4365,7 @@ pub struct V41ServeRoute {
     pub posttrain: Option<String>,
     /// The `--vision-gguf` sidecar's tower geometry and placeholder id
     /// (core_validate_v41.c:48-66); None = text-only serving.
-    pub vision: Option<ds4_core::v41_media::V41VisionMeta>,
+    pub vision: Option<ds4_core::ds41_media::V41VisionMeta>,
 }
 
 #[cfg(feature = "native")]
@@ -4573,7 +4573,7 @@ impl DecodeIo for NativeDecode<'_> {
         prompt: &[i32],
         n_predict: i32,
         sampling: Option<ds4_core::V41Sampling>,
-        images: Option<&ds4_core::v41_media::V41Images>,
+        images: Option<&ds4_core::ds41_media::V41Images>,
         greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         emit: &mut dyn FnMut(i32) -> bool,
         progress: &mut dyn FnMut(&str, i32, i32) -> bool,
@@ -4592,7 +4592,7 @@ impl DecodeIo for NativeDecode<'_> {
         let mut disk = match (self.store.as_ref(), model_id, route.no_kv_reuse) {
             (Some(cell), Some(id), false) if ctx > 0 => {
                 store_guard = cell.borrow_mut();
-                Some(crate::v41_disk::V41Disk::new(&mut store_guard, id, ctx))
+                Some(crate::ds41_disk::V41Disk::new(&mut store_guard, id, ctx))
             }
             _ => None,
         };
@@ -4632,7 +4632,7 @@ impl DecodeIo for NativeDecode<'_> {
         ds4_core::v41_kvreuse_last_reused()
     }
 
-    fn v41_vision(&self) -> Option<ds4_core::v41_media::V41VisionMeta> {
+    fn v41_vision(&self) -> Option<ds4_core::ds41_media::V41VisionMeta> {
         self.v41.as_ref().and_then(|r| r.vision)
     }
 

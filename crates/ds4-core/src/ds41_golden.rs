@@ -22,7 +22,7 @@
 //!       cosine 0.999 or min row cosine 0.95 (gate :39-43);
 //!   (5) end-to-end: our patches through our tower, report only (gate :87-90).
 
-use crate::v41_media::{self, V41VisionMeta};
+use crate::ds41_media::{self, V41VisionMeta};
 use crate::{Error, Model, Result};
 use ds4_sys::{
     ds4_bridge_v41_has_vision, ds4_bridge_v41_vision_rows_free, ds4_bridge_v41_vision_run,
@@ -226,7 +226,7 @@ impl Model {
 
         // (1) the size account (gate :59-65): the plan for the golden's own
         // image dimensions.
-        let plan = v41_media::plan(golden.w, golden.h, &meta.config)
+        let plan = ds41_media::plan(golden.w, golden.h, &meta.config)
             .ok_or_else(|| gate_error("vision golden: plan failed"))?;
         let plan_ok = plan.n_vit_h == golden.n_vit_h
             && plan.n_vit_w == golden.n_vit_w
@@ -270,8 +270,8 @@ impl Model {
         }
 
         // (2)/(3): the port's preprocessing, the production path
-        // (v41_media::patches = decode + plan + PIL bicubic pad + patches).
-        let p = v41_media::patches(&image, &meta.config)?;
+        // (ds41_media::patches = decode + plan + PIL bicubic pad + patches).
+        let p = ds41_media::patches(&image, &meta.config)?;
         let mut ok = true;
 
         // (2) pixels, report only (see the module comment).

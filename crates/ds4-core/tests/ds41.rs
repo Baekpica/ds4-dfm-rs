@@ -11,7 +11,7 @@
 //! - mtp: 3 towers, 128 experts
 //!
 //! The tensor list is the artifact's published 1000 names
-//! (`fixtures/v41/artifact-names.txt`), so the catalog gate is exact set
+//! (`fixtures/ds41/artifact-names.txt`), so the catalog gate is exact set
 //! equality in both directions, not a spot check.
 
 use std::collections::HashSet;
@@ -245,7 +245,7 @@ fn inventory_from(names: &[String]) -> TensorInventory {
 }
 
 fn artifact_names() -> Vec<String> {
-    let raw = include_str!("fixtures/v41/artifact-names.txt");
+    let raw = include_str!("fixtures/ds41/artifact-names.txt");
     raw.lines().map(|s| s.to_string()).collect()
 }
 
@@ -253,7 +253,7 @@ fn artifact_names() -> Vec<String> {
 /// GGUF on 2026-10-08. This is the layout gate's ground truth: every spec
 /// must match the type and dims the artifact actually carries.
 fn artifact_inventory() -> TensorInventory {
-    let raw = include_str!("fixtures/v41/artifact-tensors.txt");
+    let raw = include_str!("fixtures/ds41/artifact-tensors.txt");
     let tensors = raw
         .lines()
         .map(|line| {

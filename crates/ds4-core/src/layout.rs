@@ -14,7 +14,7 @@ use crate::bind::{
 };
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory};
-use crate::v41::V41Wire;
+use crate::ds41::V41Wire;
 
 const T_F32: u32 = 0;
 const T_F16: u32 = 1;
@@ -3354,7 +3354,7 @@ pub fn expected_layouts_v41(
 
     if wire.mtp_towers != 0 {
         // One main_proj row block per target layer; the artifact measures
-        // three targets and three towers (tests/fixtures/v41).
+        // three targets and three towers (tests/fixtures/ds41).
         let n_target = if wire.mtp_targets.is_empty() {
             wire.mtp_towers as u64
         } else {

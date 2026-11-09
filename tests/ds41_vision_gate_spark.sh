@@ -5,7 +5,7 @@
 #
 #   1. golden gate: ./ds4 --image <img> --vision-golden <golden> runs the
 #      engine's four comparisons (the port's reader is
-#      crates/ds4-core/src/v41_golden.rs: plan account / pixels / patches /
+#      crates/ds4-core/src/ds41_golden.rs: plan account / pixels / patches /
 #      tower rows).  The port requires all three image/golden pairs.
 #   2. text invariance: the same prompt at temp 0 greedy 64 tokens, with and
 #      without --vision-gguf, must be byte-identical (the sidecar must not
@@ -27,7 +27,7 @@
 #      400 and the message that names the sidecar.
 #   6. the admission line (port addition for the record): a prefill whose 2x
 #      peak exceeds MemAvailable is refused with the serving admission's
-#      line (v41_run.rs:1875-1889, the engine's server_sched_v41.c:58), not
+#      line (ds41_run.rs:1875-1889, the engine's server_sched_v41.c:58), not
 #      attempted.
 #
 # usage: ds41_vision_gate_spark.sh [main gguf] [vision gguf] [zchain dir]
@@ -220,7 +220,7 @@ stop_server
 
 # ---- 6. the admission line (port addition for the record) ----
 # A prefill whose 2x peak exceeds MemAvailable is refused with the serving
-# admission's line (v41_run.rs:1875-1889, the engine's server_sched_v41.c:58),
+# admission's line (ds41_run.rs:1875-1889, the engine's server_sched_v41.c:58),
 # not attempted.  200k ids make the peak far exceed what is left once the
 # model is resident.
 log "== 6. admission line (200k-token prefill)"

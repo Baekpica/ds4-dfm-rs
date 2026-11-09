@@ -47,7 +47,7 @@ pub mod tool_stream;
 pub mod tools;
 pub mod trace;
 #[cfg(any(feature = "native", test))]
-mod v41_disk;
+mod ds41_disk;
 pub mod worker;
 pub mod worker_run;
 

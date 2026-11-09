@@ -15,6 +15,10 @@ mod beam_vq;
 mod bind;
 pub mod chat_template;
 mod dots3_mtp;
+mod ds41;
+pub mod ds41_golden;
+pub mod ds41_media;
+mod ds41_run;
 mod engram;
 mod gemma4_vq;
 mod gguf;
@@ -63,10 +67,6 @@ mod step37_mtp;
 mod tensors;
 mod tok;
 mod uring;
-mod v41;
-pub mod v41_golden;
-pub mod v41_media;
-mod v41_run;
 mod validate;
 mod vit_image;
 mod vq;
@@ -172,10 +172,10 @@ pub use tensors::{
     TensorInfo, TensorInventory,
 };
 pub use tok::{dump_cmd, dump_vocab_apply_tapes, ChatThinkMode, TokError, Vocab};
-pub use v41::{
+pub use ds41::{
     V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
 };
-pub use v41_run::{
+pub use ds41_run::{
     v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvClass, V41KvDisk, V41KvHit,
     V41RunOptions, V41Sampling,
 };
@@ -2631,7 +2631,7 @@ fn drop_model_native(raw: NonNull<ds4_bridge_model>) {
 impl Drop for Model {
     fn drop(&mut self) {
         if self.shape().variant == Variant::DeepSeek41Flash {
-            v41_run::clear_setup_cache();
+            ds41_run::clear_setup_cache();
         }
         drop_model_native(self.raw);
     }

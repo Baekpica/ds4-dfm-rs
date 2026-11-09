@@ -743,7 +743,7 @@ fn run_chat_turn(
 
 /// The engine's `--vision-golden` gate (cli_main.c:193-195): one `--image`
 /// and the VGLD fixture through the model's own tower
-/// (core_v41_vision_gate.c:44-94, ported in ds4_core::v41_golden).  Exit 0
+/// (core_v41_vision_gate.c:44-94, ported in ds4_core::ds41_golden).  Exit 0
 /// when every gating check passes, 1 on a failed verdict; a missing tower or
 /// an unreadable fixture is an error by name, the engine's early returns.
 fn run_v41_vision_golden(
@@ -757,7 +757,7 @@ fn run_v41_vision_golden(
     let vision_path = args.vision.as_deref().ok_or_else(|| {
         "ds4-rs: --vision-golden needs --vision-gguf <sidecar> (the tower weights)".to_string()
     })?;
-    let meta = ds4_core::v41_media::V41VisionMeta::read(vision_path).map_err(|e| e.to_string())?;
+    let meta = ds4_core::ds41_media::V41VisionMeta::read(vision_path).map_err(|e| e.to_string())?;
     let ok = model
         .v41_vision_golden(
             &meta,
@@ -772,7 +772,7 @@ fn run_v41_vision_golden(
 ///
 /// The generic dump carries a per-step top-k list (run_logprob_dump reads
 /// `session.top_logprobs`); the V4.1 bridge hands this route only the
-/// selected id (v41_run.rs's emit callback), so the record keeps the same
+/// selected id (ds41_run.rs's emit callback), so the record keeps the same
 /// envelope and the same `"selected":{"id":N}` field -- the field the proof
 /// harness hashes into selected_token_ids_md5 -- with `top_k` 0 and an empty
 /// list, and never claims a logit it does not have.
@@ -1741,7 +1741,7 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     }
 
     /* V4.1 (ds41): no ds4_session exists for this family -- the run IS the
-     * engine's one-shot generate with the host engram feed (v41_run.rs).  The
+     * engine's one-shot generate with the host engram feed (ds41_run.rs).  The
      * family's chat rendering is not ported yet, so the run input is the raw
      * token ids (the engine's --gen-ids). */
     if model.shape().variant == ds4_core::Variant::DeepSeek41Flash {

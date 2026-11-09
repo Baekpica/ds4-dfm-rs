@@ -8,7 +8,7 @@ the BF16 original weights for one image, and writes the preprocessing result
 and the aligner rows in the VGLD format, for ./ds4 --image <img>
 --vision-golden <golden> to compare segment by segment (the engine's
 src/core/core_v41_vision_gate.c; the port's reader is
-crates/ds4-core/src/v41_golden.rs).
+crates/ds4-core/src/ds41_golden.rs).
 
 Fixture generation only, outside any numeric chain: Python is allowed for
 external collection and golden generation, never for shipped logic.

@@ -65,7 +65,7 @@ The port has NOT ported that overlap. Unit P (2026-10-10, commit b7f5ad8)
 ported the batched reads themselves (`crates/ds4-core/src/uring.rs`,
 mirroring `core_v41_ering.c`) but keeps the block-synchronous shape: the
 feed's `prepare` runs every layer's round to completion before the block's
-GPU work starts (`crates/ds4-core/src/v41_run.rs` `prepare` ->
+GPU work starts (`crates/ds4-core/src/ds41_run.rs` `prepare` ->
 `prepare_round`; the feed contract `ds41_forward.h:41-53`, called at
 `ds4_ds41_forward.inc:1038`, consumed per layer at `:440-466`). At 354
 tokens that cost 1.3 s vs the engine's 1.247 s (gate, 2026-10-10); the

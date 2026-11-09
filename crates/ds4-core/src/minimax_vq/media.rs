@@ -8,7 +8,7 @@
 //! merged 2x2 group of patches and the end token; a video writes each frame
 //! pair's timestamp before its span.
 
-use crate::v41_media::pil_resize_rgb;
+use crate::ds41_media::pil_resize_rgb;
 
 pub const PATCH: u32 = 14;
 pub const MERGE: u32 = 2;

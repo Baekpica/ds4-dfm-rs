@@ -322,7 +322,7 @@ void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
  * `out` when it covers `cap`.  0 = no turn checkpoint. */
 uint32_t ds4_bridge_v41_kvreuse_turn_key(int32_t *out, uint32_t cap);
 /* The disk half (item 4): the payload export/import the Rust store drives
- * (crates/ds4-kv, v41_disk.rs).  export writes the named class's checkpoint
+ * (crates/ds4-kv, ds41_disk.rs).  export writes the named class's checkpoint
  * payload (meta + spans; the store's text block carries the tokens) to a
  * host-named path, 1 = written; import loads it back from (path, offset,
  * bytes) plus the token block the caller matched, 1 = loaded, into the slot
@@ -365,7 +365,7 @@ int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *
 int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert);
 void ds4_bridge_v41_zchain_rb_clear(void);
 /* The request's images (the engine's ds4_v41_images, core_v41.h:409-417).  The
- * Rust host owns preprocessing (crates/ds4-core/src/v41_media.rs) and the
+ * Rust host owns preprocessing (crates/ds4-core/src/ds41_media.rs) and the
  * prompt expansion: patches is the f32 [n_vit_h*n_vit_w][3*patch*patch] on the
  * bf16 grid the tower consumes, row_of maps the expanded prompt's positions to
  * embed rows (-1 = text), and n_rows is the sum of the span lengths.  Every

@@ -11,7 +11,7 @@
 //!   (ds4_ds41_kvreuse.inc), so this match only selects;
 //! - the trailer carries what the store cannot know: the payload ABI, the
 //!   packed-KV class, and the mount digest (the amplifier identity the
-//!   native drops the in-memory checkpoint on, v41_run.rs);
+//!   native drops the in-memory checkpoint on, ds41_run.rs);
 //! - the store's reason carries the checkpoint class: "cold" for a checkpoint
 //!   taken at the prompt end and "continued" for the turn checkpoint, the
 //!   frontier the run left (the reference's own names for these two stores,

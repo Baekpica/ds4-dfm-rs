@@ -212,7 +212,7 @@ pub struct V41RunOptions<'a> {
     /// for the run.  None = a text request (the prefill never touches the
     /// sidecar).  The image identity is folded into the KV digest separately
     /// (see `kv_state_digest`).
-    pub images: Option<&'a crate::v41_media::V41Images>,
+    pub images: Option<&'a crate::ds41_media::V41Images>,
 }
 
 impl Default for V41RunOptions<'_> {

@@ -254,7 +254,7 @@ DS41-specific: `test_deepseek41_server_stream` `:22759`,
   `rewrite_from_common` (`ds4-core/src/session.rs:143/:170`,
   `ds4-core/src/lib.rs:3038`), `Restore`/`RewriteKind`.
 - DS41 host surface: push route `generate.rs:3093`, KV checkpoint/prefix reuse
-  bridge (`ds4_bridge_v41_kvreuse_*`, used `v41_run.rs:1812-1840`), streaming
+  bridge (`ds4_bridge_v41_kvreuse_*`, used `ds41_run.rs:1812-1840`), streaming
   state for all three surfaces `generate.rs:3125-3140`.
 
 ### 3.2 Present but gated narrower than the reference
@@ -462,7 +462,7 @@ Q1. Does the DS41 route already participate in the continuation registry
 (`serve.rs:790`, `:934`, `crates/ds4-server/src/cont.rs`)? If yes, G2's live
 continuation half is narrower than it looks and Phase 1 shrinks.
 Q2. What does the native DS41 KV checkpoint do about a re-generate after a
-tool error: is the prefix reuse (`ds4-core/src/v41_run.rs:1819-1840`) enough to
+tool error: is the prefix reuse (`ds4-core/src/ds41_run.rs:1819-1840`) enough to
 make the second call cheap? Measure before choosing Phase 4's shape.
 Q3. Is exact DSML replay wanted under thinking on this artifact, or is the
 reference's thinking scoping (`find_tool_structural_text`, `:19661`, `:19685`)

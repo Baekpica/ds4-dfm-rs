@@ -149,7 +149,7 @@ off-accelerator n-gram table plus two MTP optimizations.
    at 1.3 s against the engine's 1.247 s for 354 tokens
    (docs/ds41-qwen38-serve-lessons.md:21-72). That gap is historical:
    `V41Feed` now submits asynchronously, waits per layer and prefetches the
-   next block in `crates/ds4-core/src/v41_run.rs`. It retains a synchronous
+   next block in `crates/ds4-core/src/ds41_run.rs`. It retains a synchronous
    fallback and diagnostic switches; recorded cross-block A/B evidence is in
    [the ds41 guide](deepseek41-flash.md#recorded-performance).
    The Qwen lease itself is the

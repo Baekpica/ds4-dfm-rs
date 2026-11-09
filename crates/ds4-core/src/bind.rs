@@ -7,7 +7,7 @@
 
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory, MAX_DIMS};
-use crate::v41::V41Wire;
+use crate::ds41::V41Wire;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindNeed {

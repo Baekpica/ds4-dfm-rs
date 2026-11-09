@@ -50,7 +50,7 @@ with no opt-in, no peer check and any readable directory as input, and it had
 not been exercised on the Spark.  It can return as its own change behind a boot
 flag with a served gate.  An amplifier change still drops both checkpoints, and
 the disk half is gated by the mount digest in its trailer
-(`crates/ds4-server/src/v41_disk.rs`), so another domain's checkpoint is never
+(`crates/ds4-server/src/ds41_disk.rs`), so another domain's checkpoint is never
 imported.
 
 ## The key is the state's positions, not the emitted ids
@@ -200,6 +200,6 @@ through the same binary (`--dump-tokens`) and drives the family's `--gen-ids`
 with `--engram-dir`, without which the run dies ENOENT on the artifact's
 recorded Engram shard paths (the converting host's); the eager arm is driven
 with `--no-graph`, because the v41 route sets the graph switch itself
-(`lib.rs:782`, `v41_run.rs:1739`), so a profile-level `DS4_CUDA_LAYER_GRAPHS=0`
+(`lib.rs:782`, `ds41_run.rs:1739`), so a profile-level `DS4_CUDA_LAYER_GRAPHS=0`
 cannot reach it and the arm would run captured.  A cell whose capture count
 contradicts its arm fails the run, so the parity cannot pass vacuously.

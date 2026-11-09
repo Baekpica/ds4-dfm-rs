@@ -29,7 +29,7 @@
  * Invalidation (:22): the KV was computed with the mounted amplifier, so the
  * engine drops the checkpoint on ds4_engine_v41_switch_plugins
  * (core_v41_state.c:95/:111).  The port has no switch event -- the Rust host
- * mounts the sidecar per run (v41_run.rs, v41_mount_zchain) -- so the mount
+ * mounts the sidecar per run (ds41_run.rs, v41_mount_zchain) -- so the mount
  * notes its identity here and the native drops when it changes
  * (v41_kvreuse_note_mount).
  *
@@ -49,7 +49,7 @@
  *
  * Port seam (named deviation): the engine memcpy's K.tok into st->hist
  * (:118) because its engram hash reads the token history from the state.  The
- * port's history is host-side (V41Feed/FeedCore.hist in v41_run.rs), so the
+ * port's history is host-side (V41Feed/FeedCore.hist in ds41_run.rs), so the
  * host seeds it from v41_kvreuse_peek before the run: same content, different
  * seam.  The restore re-runs the memcmp, so the native decision stays the
  * authority.  v41_kvreuse_peek answers with the same checkpoint the restore
@@ -62,7 +62,7 @@
  * tokens stay out of the payload -- the store's text block carries them (LE
  * i32) and the restore re-runs the memcmp, so the native decision stays the
  * only authority.  The mount identity and the payload ABI ride the store's
- * trailer (Rust side, v41_disk.rs), never the payload. */
+ * trailer (Rust side, ds41_disk.rs), never the payload. */
 
 static int g_v41_kv_reuse = 1;   /* the engine's g_ds4_v41_kv_reuse (core_v41_kvreuse.c:27) */
 void ds4_engine_v41_set_kv_reuse(int on) { g_v41_kv_reuse = on; }

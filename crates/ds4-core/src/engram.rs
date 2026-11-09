@@ -30,7 +30,7 @@ use std::path::Path;
 
 use crate::gguf::GgufFile;
 use crate::tensors::TensorInventory;
-use crate::v41::V41Wire;
+use crate::ds41::V41Wire;
 
 /// `V41_EDIO_ALIGN` (`core_v41.h:18`): the O_DIRECT alignment granularity.
 pub const EDIO_ALIGN: usize = 4096;

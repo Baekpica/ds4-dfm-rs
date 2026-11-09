@@ -99,7 +99,7 @@ int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_p
  * The engine's ds4_v41_images_prepare (core_v41_vision.c:186-218) does three
  * things: decode+preprocess each image into patches, build the request's image
  * struct, and expand the prompt.  The port splits that: the Rust host owns
- * preprocessing (crates/ds4-core/src/v41_media.rs) AND the prompt expansion
+ * preprocessing (crates/ds4-core/src/ds41_media.rs) AND the prompt expansion
  * (the renderer), so the native only assembles the struct from the
  * already-computed patches and the expanded prompt's per-position row map.
  *

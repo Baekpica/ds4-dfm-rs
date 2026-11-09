@@ -341,8 +341,8 @@ Measured state, before and after, on the Spark against the real artifact:
 | after (`0d3378d`) | `bind: slots=1000 bound=1000 required-missing=0`, `v41 wire: kv-sources=[2,8,14,20] index-sources=[2,8,14,20,24,28,32,36] engram=[1,14] towers=3 experts=128` |
 
 The catalog equals the artifact's published 1000 tensors in both directions;
-`crates/ds4-core/tests/v41.rs` holds that gate model-free (the artifact's names
-are a fixture, `tests/fixtures/v41/artifact-names.txt`, sha256
+`crates/ds4-core/tests/ds41.rs` holds that gate model-free (the artifact's names
+are a fixture, `tests/fixtures/ds41/artifact-names.txt`, sha256
 `a8b4a0e0385230df2e411c51c6586b92419867b5fa4b62fbf684ff249b0a2400`), and covers
 the wiring derivation, the refusals, and both tower expert forms.
 
@@ -358,7 +358,7 @@ size) and `v41-ndim` (the shared draft heads the engine checks nothing for),
 and `open_bind_plan` resolves, refuses and validates in one place for both open
 paths. Gate: the table matches the artifact's own tensor directory, type and
 dims for all 1000 tensors, as a model-free test over
-`tests/fixtures/v41/artifact-tensors.txt`; on the Spark against the real file
+`tests/fixtures/ds41/artifact-tensors.txt`; on the Spark against the real file
 the inspector now prints `layout: ok` and `bind: slots=1000 bound=1000
 required-missing=0` after `identify` and `validate: ok`.
 
@@ -1163,7 +1163,7 @@ gate reorder: the CLI reference runs before the server boot).
    ds4_bridge_v41_generate mirrors the engine's single-request server path
    1:1 (server_generate_v41.c:412-414: set_progress + generate_argmax with
    the emit callback; the req object is only for the --batch lanes). The
-   Rust route (crates/ds4-core/src/v41_run.rs) opens the feed (hash +
+   Rust route (crates/ds4-core/src/ds41_run.rs) opens the feed (hash +
    shard preads), sets the switches, and drives the callbacks through
    catch_unwind tramps; the CLI runs it on --gen-ids with the engine's own
    flag spellings. The serving contract row declares serial/none banks,
@@ -1384,7 +1384,7 @@ engine returns it).
    engine's 23.9 ms/token (14 rounds, 1.93/5). A --v41-prof run localized
    the prefill difference: the forward body is at parity (1224.7 ms
    total, layers ~1150, head 3.0 ms) and the ~3.1 s sits in the Rust
-   engram feed's prepare (crates/ds4-core/src/v41_run.rs:135: one
+   engram feed's prepare (crates/ds4-core/src/ds41_run.rs:135: one
    positioned read per row per layer), which the engine does with an
    io_uring batch (its boot line says "取行走 io_uring";
    core_v41_engram.c). The decode round's engram prep (24.668 ms, in the
@@ -1547,7 +1547,7 @@ Landed (`b7f5ad8`): `crates/ds4-core/src/uring.rs` mirrors
 `io_uring_setup` + SQ/CQ/SQE mmaps, one 2-block bounce slot per entry with
 the free-slot stack (`:82-88`), the push loop (`:89-112`), the GETEVENTS
 drain that keeps the queue full (`:122-144`), and the O_DIRECT
-aligned-superset read (`:96-108`). `v41_run.rs` keeps the engine's round
+aligned-superset read (`:96-108`). `ds41_run.rs` keeps the engine's round
 shape per engram layer (`core_v41_engram.c:238-254`): hash, one request
 per plane per row, one submit, one wait, with the row-range refusal of
 err=1 (`:247`). The serial loop stays as the non-Linux fallback (named
@@ -1944,7 +1944,7 @@ The owner's three questions, answered:
 
 (c) LOADED and TRAINED: LOAD is half-done.  The port reads, merges and
     fingerprints ②③ (`crates/ds4-core/src/sidecar.rs`, `zchain.rs`,
-    §6.6.4) and REFUSES the amp apply by name (`v41_run.rs:1013-1017`,
+    §6.6.4) and REFUSES the amp apply by name (`ds41_run.rs:1013-1017`,
     `amp_Lnn.bin ... not ported`).  The apply itself is small -- one GEMM
     pair + bf16 round at the engine's forward tail -- and rides the P4-7
     device stores (PT-2).  TRAINED is BLOCKED on the inference port
@@ -2002,7 +2002,7 @@ along the boundary the port already has:
    engine's shape verbatim; the suffix chunks from the checkpoint
    position, the engine's named FP caveat).
 3. Engram history -- the port's token history is host-side
-   (`v41_run.rs` `V41Feed`/`FeedCore.hist`; the native state has no
+   (`ds41_run.rs` `V41Feed`/`FeedCore.hist`; the native state has no
    `hist`), and the hash looks back 3 tokens across the checkpoint
    boundary (`core_v41_kvreuse.c:118`).  The engine memcpy's `K.tok` into
    `st->hist`; the port reproduces the same content through a read-only
@@ -2111,10 +2111,10 @@ invalid (never half; the request prefills cold, like a failed save).
 writes the turn entry under.  The restore gained one guard: an imported
 `mainh` span must hold at least the fresh state's own length.
 
-Host: the `V41KvDisk` trait in `crates/ds4-core/src/v41_run.rs` (`find`
+Host: the `V41KvDisk` trait in `crates/ds4-core/src/ds41_run.rs` (`find`
 answers the best candidate strictly longer than the in-memory prefix; `store`
 stages the native export through the store), so ds4-core stays
-store-agnostic; the implementation is `crates/ds4-server/src/v41_disk.rs`
+store-agnostic; the implementation is `crates/ds4-server/src/ds41_disk.rs`
 over the `KvStore` the server already owns (the field became a `RefCell`:
 the V4.1 route runs under the DecodeIo callbacks' shared borrow).  The find
 runs after the mount (that is where the digest is computed), the import only

@@ -455,7 +455,7 @@ pub fn patches(bytes: &[u8], cfg: &V41VisionConfig) -> Result<V41Patches> {
 /// Image payloads cannot be changed independently of their cache identities.
 ///
 /// ```compile_fail
-/// fn replace(images: &mut ds4_core::v41_media::V41Images) {
+/// fn replace(images: &mut ds4_core::ds41_media::V41Images) {
 ///     images.images.swap(0, 1);
 /// }
 /// ```

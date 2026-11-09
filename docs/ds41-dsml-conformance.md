@@ -502,7 +502,7 @@ built CLI, rendering `hi <|deepseek_image|> bye` reports `TOKENS 6366 223 129264
 104903`, against `TOKENS 6366 5212 121559 41629 104903` for the same text with
 plain ASCII bars — one image token at a text position. Nothing then counted it:
 the V4.1 image expansion, which is the only caller of the placeholder count
-(`crates/ds4-core/src/v41_media.rs:590` through
+(`crates/ds4-core/src/ds41_media.rs:590` through
 `crates/ds4-server/src/generate.rs:3121-3126`), is skipped whenever the request
 carries no image (`generate.rs:3107`). The engine behaves the same way
 (`core_v41_vision.c:189-193`, `server_parse_tools.c:290`), so the divergence the

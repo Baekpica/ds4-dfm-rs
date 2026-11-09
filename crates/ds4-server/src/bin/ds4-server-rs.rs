@@ -1146,7 +1146,7 @@ fn resolve_v41_route(
         // The V4.1 tower geometry + placeholder id, read from the sidecar the
         // probe already validated; the request expands the placeholder with it.
         vision: vision_path.map(|p| {
-            ds4_core::v41_media::V41VisionMeta::read(p)
+            ds4_core::ds41_media::V41VisionMeta::read(p)
                 .unwrap_or_else(|error| cli_error(&format!("--vision-gguf: {error}")))
         }),
     }

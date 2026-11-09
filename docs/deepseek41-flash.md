@@ -261,7 +261,7 @@ noted, all recorded in the port plan:
   (port plan §6.16-§6.19, §6.23).
 - Vision (V-0..V-6, 2026-10-13): the tower sidecar load and its hard
   name/shape checks, the GPU tower forward (`cuda/ds41_vision.cuh`), the Rust
-  preprocessing (`crates/ds4-core/src/v41_media.rs`), the image-set build and
+  preprocessing (`crates/ds4-core/src/ds41_media.rs`), the image-set build and
   the prefill injection seam (`ds4_ds41_vision.inc`), the DSML placeholder, the
   three image surfaces, and images inside tool results. The engine's golden
   gate passes on three fixtures with Spark-minted goldens; the record is
