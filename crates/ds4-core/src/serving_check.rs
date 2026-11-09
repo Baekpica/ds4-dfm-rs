@@ -1210,7 +1210,13 @@ fn v41_rows(
     let rows = read_rows(&out, model.shape().n_vocab as usize);
     let _ = std::fs::remove_file(&out);
     let (kept, tokens) = got?;
-    Ok((kept, Rows { logits: rows?, tokens }))
+    Ok((
+        kept,
+        Rows {
+            logits: rows?,
+            tokens,
+        },
+    ))
 }
 
 /// Reads a `DS41_GEN_LOGITS` dump: `vocab` floats per row, written by the

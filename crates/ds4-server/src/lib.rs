@@ -43,11 +43,11 @@ pub mod stream;
 mod tool_memory;
 #[cfg(any(feature = "native", test))]
 pub use tool_memory::{ExactReplay, ToolMemoryConfig};
+#[cfg(any(feature = "native", test))]
+mod ds41_disk;
 pub mod tool_stream;
 pub mod tools;
 pub mod trace;
-#[cfg(any(feature = "native", test))]
-mod ds41_disk;
 pub mod worker;
 pub mod worker_run;
 

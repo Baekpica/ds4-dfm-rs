@@ -5,9 +5,9 @@
 //! the name table native bind consumes and refuses open when a required
 //! tensor is missing from the host inventory.
 
+use crate::ds41::V41Wire;
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory, MAX_DIMS};
-use crate::ds41::V41Wire;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindNeed {

@@ -12,9 +12,9 @@ use crate::bind::{
     qwen4exp_layer_is_full_attention, solar_layer_is_gqa, BindPlan, DSPARK_MARKOV_RANK,
     DSPARK_N_LAYER,
 };
+use crate::ds41::V41Wire;
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory};
-use crate::ds41::V41Wire;
 
 const T_F32: u32 = 0;
 const T_F16: u32 = 1;
