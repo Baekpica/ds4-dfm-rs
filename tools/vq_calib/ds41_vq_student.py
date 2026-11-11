@@ -1,7 +1,8 @@
 """Routed experts of a DeepSeek-V4.1-Flash VQ conversion for the ds41_ref forward.
 
-`VQExperts(path)` reads DQVL v3 blobs from an assembled base GGUF or from a directory of
-`blob-LL.bin` files written by convert_layer_ds41.py (the next layer's bytes on a host
+`VQExperts(path)` reads DQVL v3 blobs from an assembled base GGUF, from a directory of a
+release's 40 parts, or from a directory of `blob-LL.bin` files written by
+convert_layer_ds41.py or convert_layer_ds41_hvq.py (the next layer's bytes on a host
 thread), decodes them on the device (ds41_vq_format layout: 12-bit LSB-first pairs plus the
 13th-bit plane) and hands the forward `expert(e) -> (w1, w3, w2)` in BF16,
 W = e4m3(cb[idx]) * f16 gain.
@@ -56,8 +57,13 @@ def decode_blob(blob, nexp=384, chunk=64):
 class VQExperts:
     def __init__(self, path, device='cuda'):
         self.path, self.dev = path, device
-        self.blobs = os.path.isdir(path)
-        self.g = None if self.blobs else fmt.open_base(path if path.endswith('.gguf') else None)
+        # a directory holds blob-LL.bin files or, without any, a release's byte-range parts
+        parts = os.path.isdir(path) and not any(f.startswith('blob-') for f in os.listdir(path))
+        self.blobs = os.path.isdir(path) and not parts
+        if parts:
+            self.g = fmt.open_base(fmt.default_parts(path))
+        else:
+            self.g = None if self.blobs else fmt.open_base(path if path.endswith('.gguf') else None)
         self.pool = ThreadPoolExecutor(1)
         self.pending = {}
 

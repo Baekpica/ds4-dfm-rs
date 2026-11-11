@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Assemble the DeepSeek-V4.1-Flash iVQ base: the published `vq8sh14-q4k-mtpnative` base
-with its 40 routed-expert DQVL v3 blobs replaced by convert_layer_ds41.py's, nothing else.
+"""Assemble the DeepSeek-V4.1-Flash iVQ / hVQ base: the published `vq8sh14-q4k-mtpnative` base
+with its 40 routed-expert DQVL v3 blobs replaced by convert_layer_ds41.py's (or
+convert_layer_ds41_hvq.py's), nothing else.
 
 0. check that the 40 receipts come from one variant (mode, gain refit, Lloyd iterations,
-   weighting) and one calibration run (receipts that record none, written before run ids,
-   only with --allow-unverified-calibration; listed in assemble-receipt.json);
+   weighting; for hVQ also t, damping and the rare-expert shrink) and one calibration run
+   (receipts that record none, written before run ids, only with
+   --allow-unverified-calibration; listed in assemble-receipt.json);
 1. copy the verified published base;
 2. patch `blk.{L}.ffn_exps_vq.blob` for L = 0..39 in place (each blob's SHA-256 must match
    its receipt and its DQVL header the published one; sizes are unchanged);
@@ -32,7 +34,7 @@ import ds41_vq_format as fmt
 NAME = 'DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf'
 PART_BASE, PART_EXTRA, NPART = 2838915985, 24, 40
 LAYERS = 40
-VARIANT_KEYS = ('mode', 'gain_refit', 'codebook_scope')
+VARIANT_KEYS = ('mode', 'gain_refit', 'codebook_scope', 'method', 't', 'damping')    # the last three: hVQ only
 WEIGHTING_KEYS = ('mode', 'shrink_tokens', 'col_floor', 'col_shrink', 'col_power')    # shrink_units is per layer
 UNCHANGED = {  # published SHA256SUMS
     'DeepSeek-V4.1-Flash.vision.gguf': '3a8b194a011e630e8e49a51b5f4e9821e48a9e5674e678d52c0302d6b164698c',
@@ -73,6 +75,7 @@ def variant_of(r):
     hist = (r.get('training') or {}).get('history')
     w = r.get('weighting') or {}
     return {**{k: r.get(k) for k in VARIANT_KEYS}, **{f'weighting.{k}': w.get(k) for k in WEIGHTING_KEYS},
+            'hessian.shrink_tokens': (r.get('hessian') or {}).get('shrink_tokens'),
             'stats_norm': r.get('stats_norm', 'sum'), 'lloyd_iterations': len(hist) if isinstance(hist, list) else None}
 
 
