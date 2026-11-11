@@ -9,6 +9,7 @@ held-out case into
              (targets after `<｜Assistant｜>` until the next `<｜User｜>` / `<｜System｜>`);
   prompt:    the remaining positions of chat cases,
 and reports KL(teacher ‖ student), top-1 agreement and NLL for each.
+The same regions are also reported per manifest domain in `by_domain`.
 """
 import argparse
 import json
@@ -22,6 +23,12 @@ from tokenizers import Tokenizer
 from ds41_ref import Source
 
 ROOT = '/models/deepseek-ai/DeepSeek-V4.1-Flash-1017'
+
+
+def averages(acc):
+    return {region: {name: {'tokens': q[0], 'kl': q[1] / q[0], 'top1': q[2] / q[0], 'nll': q[3] / q[0],
+                           'teacher_nll': q[4] / q[0]} for name, q in d.items() if q[0]}
+            for region, d in acc.items()}
 
 
 def main():
@@ -39,10 +46,13 @@ def main():
     head = Source(a.source).read(['head.weight'])['head.weight'].to(dev).float()
     t = load_file(a.teacher)
     st = {n: load_file(f) for n, f in (s.split('=', 1) for s in a.student)}
+    for name, f in st.items():
+        assert torch.equal(f['input_ids'], t['input_ids']) and torch.equal(f['offsets'], t['offsets']), name
     ids, off = t['input_ids'].long(), t['offsets']
     rows = json.load(open(a.manifest))['samples']
-    acc = {}
+    acc, domains = {}, {}
     for i, r in enumerate(rows):
+        domain = domains.setdefault(r.get('domain') or r.get('family') or 'unknown', {})
         s, e = int(off[i]), int(off[i + 1])
         seq = ids[s:e].tolist()
         if r.get('format') == 'chat':
@@ -68,20 +78,20 @@ def main():
             top = (ls.argmax(-1) == at).float()
             ns = -ls.gather(1, tgt[:, None])[:, 0]
             for region, m in (('generated', gen), ('prompt', ~gen), ('all', torch.ones_like(gen))):
-                q = acc.setdefault(region, {}).setdefault(name, [0, 0.0, 0.0, 0.0, 0.0])
-                q[0] += int(m.sum())
-                q[1] += float(kl[m].sum())
-                q[2] += float(top[m].sum())
-                q[3] += float(ns[m].sum())
-                q[4] += float(nt[m].sum())
+                values = [int(m.sum()), float(kl[m].sum()), float(top[m].sum()),
+                          float(ns[m].sum()), float(nt[m].sum())]
+                for bucket in (acc, domain):
+                    q = bucket.setdefault(region, {}).setdefault(name, [0, 0.0, 0.0, 0.0, 0.0])
+                    for j, value in enumerate(values):
+                        q[j] += value
             del ls
-    res = {region: {name: {'tokens': q[0], 'kl': q[1] / q[0], 'top1': q[2] / q[0], 'nll': q[3] / q[0],
-                           'teacher_nll': q[4] / q[0]} for name, q in d.items()} for region, d in acc.items()}
-    a.out.write_text(json.dumps(res, indent=1) + '\n')
+    res = averages(acc)
     for region, d in res.items():
         for name, v in d.items():
             print(f"{region:9s} {name:4s} tokens {v['tokens']:6d}  KL {v['kl']:.4f}  top-1 {100 * v['top1']:.2f}%  "
                   f"NLL {v['teacher_nll']:.3f} -> {v['nll']:.3f}")
+    res['by_domain'] = {name: averages(d) for name, d in domains.items()}
+    a.out.write_text(json.dumps(res, indent=1) + '\n')
 
 
 if __name__ == '__main__':

@@ -121,7 +121,7 @@ same K, offsets and sizes, so ds4-dfm-rs's `ds41` path loads the result unchange
 | `convert_layer_ds41.py`, `run_convert_ds41.sh` | one MoE layer -> one DQVL v3 blob + receipt (weighted Lloyd, column-weighted assignment, LS gains), with the published blob's errors alongside |
 | `assemble_ds41_ivq.py` | patches the 40 blobs into a copy of the published base, checks every other byte against it, cuts the 40 parts, SHA256SUMS |
 | `ds41_vq_student.py` | VQ experts for the forward, decoded on the GPU from a GGUF or blob directory |
-| `score_ds41.py`, `score_regions_ds41.py`, `report_ds41.py` | KL / top-1 / NLL per case; generated (raw text, assistant turns) vs prompt positions; family tables, route overlap, final-state cosine |
+| `score_ds41.py`, `score_regions_ds41.py`, `report_ds41.py` | KL / top-1 / NLL per case; generated (raw text, assistant turns) vs prompt positions, overall and per domain; family tables, route overlap, final-state cosine |
 | `measure_ds41.py` | per-layer routed-output error of students on the original's own inputs and routes (energy-weighted and per token) |
 | `--stats-norm token`, `build_calib_ds41.py --mix v2` | the two follow-up levers measured in docs/vq-calibration.md (per-token-normalized statistics `x2n`/`a2n`; a rebalanced multilingual calibration mix); neither changed the result |
 
@@ -164,20 +164,24 @@ the measurements are in [docs/vq-calibration.md](../../docs/vq-calibration.md).
 | `tests/test_ds41_hvq.py` | one GPU, synthetic: `t = 0` equals the iVQ kernels bit for bit, a pass equals FP64 GPTQ, feedback lowers the output error on correlated inputs, gain optimum, rank-deficient moments, panel size, DQVL round trip |
 
 ```sh
-SRC=/models/deepseek-ai/DeepSeek-V4.1-Flash-1017  W=/work/hvq
+W=hvq-work
+export OMP_NUM_THREADS=4
 IVQ=$W/base/ivq/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf   # assembled iVQ release (codebooks, comparison)
 VQ=$W/base/vq/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf     # assembled VQ release (the base that is patched)
 DSTATS=ivq-handoff/stats                                         # the iVQ release's statistics (D)
 python3 -I build_calib_ds41.py fetch --out $W/calib && python3 -I build_calib_ds41.py build --out $W/calib
 # 1. t = 0 reproduces the iVQ blobs (no moments needed)
-python3 convert_layer_ds41_hvq.py --layers 0,14 --d-stats $DSTATS --ivq $IVQ --out $W/t0 --t 0
+python3 convert_layer_ds41_hvq.py --layers 14 --d-stats $DSTATS --ivq $IVQ --out $W/t0 --t 0
 # 2. choose t and damping on a few layers (held-out inputs first)
 python3 sweep_hvq_ds41.py dump --data $W/calib/heldout.safetensors --layers 3,11,19,27 --out $W/sweep/dump
 python3 run_hvq_ds41.py --calib $W/calib/calib.safetensors --d-stats $DSTATS --ivq $IVQ --out $W/sweep/pilot \
-    --layers 3,11,19,27 --sweep-dump $W/sweep/dump --sweep-grid "0.5:0,1:0,0.75:0,0.25:0,0.9:0,0.75:0.01,0.75:0.1,1:0.01"
+    --layers 3,11,19,27 --sweep-dump $W/sweep/dump \
+    --sweep-grid "0.5:0,1:0,0.75:0,0.25:0,0.9:0,0.75:0.01,0.75:0.1,1:0.01,0.75:0:4096,1:0:4096" \
+    --engram-cache $W/engram-cache/w8
 python3 sweep_hvq_ds41.py choose --out $W/sweep/pilot
 # 3. all 40 layers with the chosen setting, then read every blob back
-python3 run_hvq_ds41.py --calib $W/calib/calib.safetensors --d-stats $DSTATS --ivq $IVQ --out $W/convert --t T --damp DAMP
+python3 run_hvq_ds41.py --calib $W/calib/calib.safetensors --d-stats $DSTATS --ivq $IVQ --out $W/convert \
+    --t 1 --damp 0 --hess-shrink 4096 --world 8 --engram-cache $W/engram-cache/w8
 python3 convert_layer_ds41_hvq.py --verify --layers 0-39 --out $W/convert
 # 4. patch the VQ base, cut the 40 parts
 python3 assemble_ds41_ivq.py --base $VQ --blobs $W/convert --out $W/publish/DeepSeek-V4.1-Flash-1017-hVQ-GGUF
@@ -196,6 +200,7 @@ python3 tests/test_axk2_vq_gpu.py --work /tmp/vq-test  # one GPU: weights == 1 b
 python3 tests/test_ds41_hvq.py                       # one GPU: hVQ t = 0 == the iVQ kernels, a pass == FP64 GPTQ,
                                                      # feedback on correlated inputs, gains, rank-deficient
                                                      # moments, DQVL round trip
+python3 tests/test_score_regions_ds41.py              # CPU: domain/region totals, generated masks, input alignment
 ```
 
 `test_axk2_vq_gpu.py` also checks the unweighted assignment against Beam-1.0's
