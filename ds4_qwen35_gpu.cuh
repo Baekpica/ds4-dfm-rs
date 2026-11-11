@@ -4,6 +4,7 @@
  * wrappers land with the forward graph. */
 
 #include "cuda/qwen35_primitives.cuh"
+#include "cuda/bonsai_pq2_gemm.cuh"
 
 namespace qwen35_gpu {
 

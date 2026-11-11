@@ -63,7 +63,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
 | [dots3-note Preview](#dots3-serving) | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings |
 | Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images |
-| [Prism Bonsai 2 27B](BONSAI.md) | `general.architecture=qwen35` | pinned PQ2_0 with Prism Hadamard-fold metadata; CPU reference and serial CUDA text; banks, snapshots, disk KV, drafting and media unsupported |
+| [Prism Bonsai 2 27B](BONSAI.md) | `general.architecture=qwen35` | pinned PQ2_0 with Prism Hadamard-fold metadata; CPU reference and serial CUDA text; the grafted nextn block drafts on the serial lane; banks, snapshots, disk KV and media unsupported |
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE |
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |

@@ -15,7 +15,9 @@
  *   3. rewind + feed-back: rewind to the prompt, then force the decoded ids
  *      back through the session (the stale-state replay path);
  *   4. invalidate + resync: the rebuild path;
- *   5. the context bound: a decode past the session's capacity fails instead of
+ *   5. snapshot round trip: the saved payload restores into a second session
+ *      that continues the same stream, and into one that extends the prompt;
+ *   6. the context bound: a decode past the session's capacity fails instead of
  *      reading outside the caches.
  *
  * The backend is DS4_TEST_BACKEND (cuda by default, cpu for the reference
@@ -191,6 +193,80 @@ static bool scenario_prefix_reuse(ds4_engine *e, const ds4_tokens *prompt, int s
     return ok;
 }
 
+/* 4. A prompt that leaves the live state (an agent client re-rendering the
+ * last answer, or a resent turn) resumes at the common prefix instead of
+ * prefilling from zero, and must produce what a cold run of it produces. */
+static bool scenario_common_prefix(ds4_engine *e, const ds4_tokens *prompt, int steps) {
+    ds4_session *s = NULL, *cold = NULL;
+    ds4_tokens trim = {0};
+    char err[200] = "";
+    int got[2] = {0}, warm[2] = {0}, fresh[2] = {0};
+    bool ok = true;
+    if (prompt->len < 3) {
+        report("common prefix: prompt long enough to diverge in", false);
+        return false;
+    }
+    if (ds4_session_create(&s, e, prompt->len + steps + 2) != 0 ||
+        ds4_session_sync(s, prompt, err, sizeof(err)) != 0) {
+        report("common prefix: session create and sync", false);
+        ds4_session_free(s);
+        return false;
+    }
+    if (step_decode(s, got, steps, err, sizeof(err)) != 0) {
+        printf("FAIL  common prefix: decode before the divergent sync failed: %s\n", err);
+        failures++;
+        ds4_session_free(s);
+        return false;
+    }
+    /* Every token but the last is shared with the live state. */
+    ds4_tokens_copy(&trim, prompt);
+    trim.v[trim.len - 1] = prompt->v[prompt->len - 1] == 0 ? 1 : 0;
+    const int keep = ds4_session_sync_keep(s, trim.v, trim.len);
+    if (keep <= 0) {
+        /* A sync of one chunk has no copy below the divergence (the captures
+         * sit at the last chunk's start and at its end).  The multichunk
+         * target sets DS4_QWEN35_PREFILL_CHUNK=2, where one exists. */
+        report("common prefix: no checkpoint below the divergence (single-chunk sync)", true);
+        ds4_tokens_free(&trim);
+        ds4_session_free(s);
+        return true;
+    }
+    report("common prefix: the sync resumes below the prompt", keep < trim.len);
+    if (ds4_session_sync(s, &trim, err, sizeof(err)) != 0) {
+        printf("FAIL  common prefix: the divergent sync failed: %s\n", err);
+        failures++;
+        ds4_tokens_free(&trim);
+        ds4_session_free(s);
+        return false;
+    }
+    if (step_decode(s, warm, 2, err, sizeof(err)) != 0) {
+        printf("FAIL  common prefix: decode after the divergent sync failed: %s\n", err);
+        failures++;
+        ds4_tokens_free(&trim);
+        ds4_session_free(s);
+        return false;
+    }
+    if (ds4_session_create(&cold, e, trim.len + 2) != 0 ||
+        ds4_session_sync(cold, &trim, err, sizeof(err)) != 0 ||
+        step_decode(cold, fresh, 2, err, sizeof(err)) != 0) {
+        printf("FAIL  common prefix: the cold comparison run failed: %s\n", err);
+        failures++;
+        ds4_tokens_free(&trim);
+        ds4_session_free(s);
+        ds4_session_free(cold);
+        return false;
+    }
+    ok = warm[0] == fresh[0] && warm[1] == fresh[1];
+    report("common prefix: the rewound session equals a cold run of the prompt", ok);
+    if (!ok) {
+        printf("      rewound %d %d, cold %d %d\n", warm[0], warm[1], fresh[0], fresh[1]);
+    }
+    ds4_tokens_free(&trim);
+    ds4_session_free(s);
+    ds4_session_free(cold);
+    return ok;
+}
+
 /* 3. Rewind to the prompt, then feed the decoded ids back: the trunk replays
  * the kept tokens, and the argmax after each feed must repeat the reference. */
 static bool scenario_rewind_replay(ds4_engine *e, const ds4_tokens *prompt, int steps,
@@ -279,7 +355,134 @@ static bool scenario_invalidate(ds4_engine *e, const ds4_tokens *prompt, int ste
     return ok;
 }
 
-/* 5. A decode past the session's context capacity is refused, not run. */
+/* 5. Snapshot round trip.  A session that has decoded saves the payload a
+ * finished request leaves; a second session restores it and must continue the
+ * same greedy stream, and a third restores it and extends the prompt, matching
+ * a cold run over that extension.  One session graph is live at a time, so each
+ * session is freed before the next is created. */
+static bool scenario_snapshot(ds4_engine *e, const ds4_tokens *prompt, int steps,
+                              bool on_cpu) {
+    /* The payload is the device graph's state; the CPU reference trunk keeps a
+     * different struct and has no codec, so the scenario reports nothing there. */
+    if (on_cpu) { return true; }
+    char err[256] = "";
+    const char *path = "test_qwen35_snapshot.bin";
+    const int ctx = prompt->len + steps + 4;
+    int stream[MAX_STEPS], saved_next[2] = {-1, -1}, restored_next[2] = {-1, -1};
+    int warm_ext = -1, cold_ext = -1;
+    uint64_t bytes = 0;
+    long size = -1;
+    bool ok = false;
+    ds4_session *s = NULL;
+
+    /* A: sync, decode, save at the rest point the decoded stream leaves. */
+    if (ds4_session_create(&s, e, ctx) != 0) { goto out; }
+    if (ds4_session_sync(s, prompt, err, sizeof(err)) != 0 ||
+        step_decode(s, stream, steps, err, sizeof(err)) != 0) {
+        printf("FAIL  snapshot: the decoded session failed: %s\n", err);
+        goto out;
+    }
+    bytes = ds4_session_payload_bytes(s);
+    report("snapshot: a decoded session is rest-point ready", bytes > 0);
+    if (!bytes) { goto out; }
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        printf("FAIL  snapshot: cannot open %s\n", path);
+        goto out;
+    }
+    const int save_rc = ds4_session_save_payload(s, fp, err, sizeof(err));
+    if (fclose(fp) != 0 || save_rc != 0) {
+        printf("FAIL  snapshot: save failed: %s\n", err);
+        goto out;
+    }
+    fp = fopen(path, "rb");
+    if (fp) {
+        if (fseek(fp, 0, SEEK_END) == 0) { size = ftell(fp); }
+        fclose(fp);
+    }
+    report("snapshot: the file carries the measured bytes",
+           size >= 0 && (uint64_t)size == bytes);
+    /* The saved session continues two tokens: that is the reference stream. */
+    if (step_decode(s, saved_next, 2, err, sizeof(err)) != 0) {
+        printf("FAIL  snapshot: the saved session could not continue: %s\n", err);
+        goto out;
+    }
+    ds4_session_free(s);
+    s = NULL;
+
+    /* B: restore and continue.  The state must be complete, not replayed. */
+    if (ds4_session_create(&s, e, ctx) != 0) { goto out; }
+    fp = fopen(path, "rb");
+    if (!fp) { goto out; }
+    const int load_rc = ds4_session_load_payload(s, fp, bytes, err, sizeof(err));
+    fclose(fp);
+    report("snapshot: the payload restores", load_rc == 0);
+    if (load_rc != 0) {
+        printf("      %s\n", err);
+        goto out;
+    }
+    if (step_decode(s, restored_next, 2, err, sizeof(err)) != 0) {
+        printf("FAIL  snapshot: the restored session could not decode: %s\n", err);
+        goto out;
+    }
+    const bool same =
+        restored_next[0] == saved_next[0] && restored_next[1] == saved_next[1];
+    report("snapshot: the restored stream continues identically", same);
+    if (!same) {
+        printf("      restored %d %d, saved %d %d\n",
+               restored_next[0], restored_next[1], saved_next[0], saved_next[1]);
+    }
+    ds4_session_free(s);
+    s = NULL;
+
+    /* C: restore, then extend.  The extension is the saved checkpoint plus the
+     * token the saved session produced next; a cold session on the same tokens
+     * is the reference.  This is the disk-store path: a restore followed by the
+     * next turn's prompt. */
+    int *ext = malloc((size_t)(prompt->len + steps + 1) * sizeof(*ext));
+    if (!ext) { goto out; }
+    int ext_len = 0;
+    for (int i = 0; i < prompt->len; i++) { ext[ext_len++] = prompt->v[i]; }
+    for (int i = 0; i < steps - 1; i++) { ext[ext_len++] = stream[i]; }
+    ext[ext_len++] = saved_next[0];
+    ds4_tokens extension = {.v = ext, .len = ext_len};
+
+    if (ds4_session_create(&s, e, ctx + 1) != 0) { free(ext); goto out; }
+    fp = fopen(path, "rb");
+    if (fp) {
+        if (ds4_session_load_payload(s, fp, bytes, err, sizeof(err)) == 0 &&
+            ds4_session_sync(s, &extension, err, sizeof(err)) == 0) {
+            warm_ext = ds4_session_argmax(s);
+        } else {
+            printf("FAIL  snapshot: restore-and-extend failed: %s\n", err);
+        }
+        fclose(fp);
+    }
+    ds4_session_free(s);
+    s = NULL;
+
+    if (ds4_session_create(&s, e, ctx + 1) != 0) { free(ext); goto out; }
+    if (ds4_session_sync(s, &extension, err, sizeof(err)) == 0) {
+        cold_ext = ds4_session_argmax(s);
+    } else {
+        printf("FAIL  snapshot: the cold extension run failed: %s\n", err);
+    }
+    ds4_session_free(s);
+    s = NULL;
+    ok = warm_ext >= 0 && warm_ext == cold_ext;
+    report("snapshot: a restored session extends like a cold run", ok);
+    if (!ok) {
+        printf("      restored-and-extended %d, cold %d\n", warm_ext, cold_ext);
+    }
+    free(ext);
+
+out:
+    ds4_session_free(s);
+    remove(path);
+    return ok;
+}
+
+/* 6. A decode past the session's context capacity is refused, not run. */
 static bool scenario_context_bound(ds4_engine *e, const ds4_tokens *prompt) {
     ds4_session *s = NULL;
     char err[200] = "";
@@ -368,7 +571,9 @@ int main(void) {
     scenario_plain(e, &prompt, steps, want);
     scenario_prefix_reuse(e, &prompt, steps, want);
     scenario_rewind_replay(e, &prompt, steps, want);
+    scenario_common_prefix(e, &prompt, steps);
     scenario_invalidate(e, &prompt, steps, want);
+    scenario_snapshot(e, &prompt, steps, on_cpu);
     scenario_context_bound(e, &prompt);
 
     if (long_pass) {
@@ -390,6 +595,7 @@ int main(void) {
                 scenario_prefix_reuse(e, &long_prompt, steps, want_long);
                 scenario_rewind_replay(e, &long_prompt, steps, want_long);
                 scenario_invalidate(e, &long_prompt, steps, want_long);
+                scenario_snapshot(e, &long_prompt, steps, on_cpu);
                 /* The row-exact attention kernel cuts a row's key range into
                  * splits = min(64, ceil(keys/32)) ranges and reduces them in
                  * attn_merge.  That changes the decode attention's reduction

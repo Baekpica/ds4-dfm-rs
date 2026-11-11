@@ -397,6 +397,18 @@ int ds4_mmq_q4_K_dense_raw(
     int           K,
     cudaStream_t  stream);
 
+/* Q6_K dense matmul.  Q6_K ships inside mixed artifacts (Bonsai's MTP block
+ * is 9 q6_k tensors), but mmq previously exposed it for MoE experts only.
+ * Same contract as ds4_mmq_q4_K_dense; K must be a multiple of 256. */
+int ds4_mmq_q6_K_dense(
+    const void  * W_q6_K,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 // MoE matmul entry points. For each (token, slot-within-token's-top-k) pair
 // the kernel computes:
 //

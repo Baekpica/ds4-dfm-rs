@@ -39,6 +39,17 @@
 #include "ds41_vq_fmt.h"      /* DQVL blob header/slot helpers for the vq-align copy */
 #include "cuda/q4_k.cuh"
 
+/* Bonsai (qwen35) dense PQ2_0 entries, defined by cuda/bonsai_pq2_gemm.cuh
+ * further down (it needs the stream helpers this file defines first). */
+extern "C" int ds4_gpu_bonsai_pq2_matmul(const void *w, const float *x,
+                                         int8_t *xq, float *xs, float *out,
+                                         uint32_t out_dim, uint32_t in_dim,
+                                         uint32_t rows, cudaStream_t stream);
+extern "C" int ds4_gpu_bonsai_pq2_rows(float *out, const void *w,
+                                       const int32_t *tokens, uint64_t row0,
+                                       uint32_t n_rows, uint32_t in_dim,
+                                       cudaStream_t stream);
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -21679,7 +21690,7 @@ extern "C" int ds4_gpu_embed_token_quant_tensor(
             model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
             ds4_tensor_device_idx(out), "pq2_0_token_embedding");
         if (!weights) return 0;
-        const int rc = ds4_mmq_pq2_0_rows_f32(
+        const int rc = ds4_gpu_bonsai_pq2_rows(
             (float *)out->ptr, weights, NULL, token, 1u, n_embd, ds4_current_stream());
         if (rc != 0) {
             fprintf(stderr, "ds4: PQ2_0 token embedding lookup failed (%d)\n", rc);
@@ -21743,7 +21754,7 @@ extern "C" int ds4_gpu_embed_tokens_quant_tensor(
             model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
             ds4_tensor_device_idx(out), "pq2_0_token_embedding_batch");
         if (!weights) return 0;
-        const int rc = ds4_mmq_pq2_0_rows_f32(
+        const int rc = ds4_gpu_bonsai_pq2_rows(
             (float *)out->ptr, weights, (const int32_t *)tokens->ptr,
             0u, n_tokens, n_embd, ds4_current_stream());
         if (rc != 0) {
@@ -26027,6 +26038,75 @@ extern "C" int ds4_gpu_matmul_q4_K_tensor(
     return 1;
 }
 
+/* Q6_K is 256 values per 210-byte block (2-byte fp16 scale, 16 int8
+ * sub-scales, 128 ql + 64 qh bytes).  The vendored MMQ template is the only
+ * dense Q6_K path -- unlike Q4_K there is no non-MMQ fallback -- so this
+ * entry does not consult ds4_cuda_use_mmq(): refusing here would leave the
+ * caller with no arm at all. */
+extern "C" int ds4_gpu_matmul_q6_K_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok) {
+    if (!out || !x || !model_map || in_dim == 0u || out_dim == 0u ||
+        n_tok == 0u || in_dim % 256u != 0u || in_dim > INT_MAX ||
+        out_dim > INT_MAX || n_tok > INT_MAX) {
+        return 0;
+    }
+    const uint64_t row_bytes = (in_dim / 256u) * 210u;
+    if (out_dim > UINT64_MAX / row_bytes ||
+        in_dim > UINT64_MAX / n_tok || out_dim > UINT64_MAX / n_tok) {
+        return 0;
+    }
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset ||
+        x->bytes < in_dim * n_tok * sizeof(float) ||
+        out->bytes < out_dim * n_tok * sizeof(float)) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const void *weight = cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "Q6_K dense");
+    if (!weight) return 0;
+    const int rc = ds4_mmq_q6_K_dense(
+        weight, (const float *)x->ptr, (float *)out->ptr,
+        (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream());
+    if (rc != 0) {
+        fprintf(stderr, "ds4: CUDA dense Q6_K MMQ failed (%d)\n", rc);
+        return 0;
+    }
+    return 1;
+}
+
+/* Bonsai's dense arm.  The family GEMV (cuda/bonsai_pq2_gemm.cuh) wins the
+ * one-row decode against the vendored MMVQ pair and the family GEMM loses the
+ * prefill to the vendored MMQ tiles, so the default routes by row count:
+ * <= BONSAI_FAMILY_ROWS to the family file, everything larger to MMQ.
+ *   DS4_BONSAI_DENSE=mmq     every size on the vendored path (the old default)
+ *   DS4_BONSAI_DENSE=family  every size on the family file
+ * Both measured in tests/bonsai_dense_bench.cu. */
+enum { BONSAI_FAMILY_ROWS = 8 };
+
+static int bonsai_dense_mode(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("DS4_BONSAI_DENSE");
+        if (env && strcmp(env, "mmq") == 0) {
+            cached = 0;
+        } else if (env && strcmp(env, "family") == 0) {
+            cached = 2;
+        } else {
+            cached = 1;
+        }
+    }
+    return cached;
+}
+
 extern "C" int ds4_gpu_matmul_pq2_0_tensor(
         ds4_gpu_tensor       *out,
         const void           *model_map,
@@ -26038,7 +26118,7 @@ extern "C" int ds4_gpu_matmul_pq2_0_tensor(
         uint64_t              n_tok) {
     if (!out || !x || !model_map || in_dim == 0u || out_dim == 0u ||
         n_tok == 0u || in_dim % 256u != 0u || in_dim > INT_MAX ||
-        out_dim > INT_MAX || n_tok > INT_MAX || !ds4_cuda_use_mmq()) {
+        out_dim > INT_MAX || n_tok > INT_MAX) {
         return 0;
     }
     const uint64_t row_bytes = (in_dim / 128u) * 34u;
@@ -26057,6 +26137,35 @@ extern "C" int ds4_gpu_matmul_pq2_0_tensor(
     const void *weight = cuda_resolve_weight_ptr(
         model_map, weight_offset, weight_bytes, tier, "PQ2_0 dense");
     if (!weight) return 0;
+    const int dense_mode = bonsai_dense_mode();
+    const bool try_family = dense_mode == 2 ||
+        (dense_mode == 1 && n_tok <= BONSAI_FAMILY_ROWS);
+    if (try_family) {
+        /* Shared activation scratch, sized for this call: int8 values then
+         * one f32 scale per 128-value block.  The family's fold already takes
+         * its scratch from the same pool. */
+        const uint64_t xn = (uint64_t) n_tok * in_dim;
+        const uint64_t sn = (uint64_t) n_tok * (in_dim / 128u);
+        const uint64_t qbytes = (xn + 15u) & ~15ull;
+        void *tmp = cuda_tmp_alloc(qbytes + sn * sizeof(float),
+                                   "Bonsai PQ2_0 activation");
+        if (tmp &&
+            ds4_gpu_bonsai_pq2_matmul(weight, (const float *)x->ptr,
+                                      (int8_t *)tmp,
+                                      (float *)((char *)tmp + qbytes),
+                                      (float *)out->ptr, (uint32_t)out_dim,
+                                      (uint32_t)in_dim, (uint32_t)n_tok,
+                                      cuda_decode_stream())) {
+            return 1;
+        }
+        fprintf(stderr, "ds4: Bonsai PQ2_0 family kernel refused "
+                        "%llux%llu over %llu tokens; using MMQ\n",
+                (unsigned long long)out_dim, (unsigned long long)in_dim,
+                (unsigned long long)n_tok);
+    }
+    if (!ds4_cuda_use_mmq()) {
+        return 0;
+    }
     /* A decode step projects a single row, and the tile GEMM pads it to a whole
      * 8-column tile, so the MMVQ GEMV takes n_tok <= 8 -- the same split ds4's
      * own Bonsai decode used (41 us per call there). */

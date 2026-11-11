@@ -46,6 +46,9 @@ const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
 // Gemma-4 carries two KV layouts: word 8 is the sliding-ring size and words
 // 9/10 are the per-layout row counts, so word 12 stays zero.
 const LAYOUT_GEMMA4: u32 = u32::from_le_bytes(*b"GVK4");
+// Bonsai (qwen35): positional fp16 k/v rows, the gated delta-net recurrences and
+// the grafted block's own prefix. Word 6 counts the block rows saved.
+const LAYOUT_QWEN35: u32 = u32::from_le_bytes(*b"BSN1");
 const MINIMAX_DRAFT_WINDOW: u32 = 4096;
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
@@ -70,6 +73,7 @@ pub enum PayloadLayout {
     MinimaxVq,
     Axk2Vq,
     Gemma4Vq,
+    Qwen35,
 }
 
 impl PayloadLayout {
@@ -96,6 +100,7 @@ impl PayloadLayout {
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
+            LAYOUT_QWEN35 => Self::Qwen35,
             _ => Self::DeepSeek,
         }
     }
@@ -121,6 +126,7 @@ impl PayloadLayout {
             Self::MinimaxVq => ModelFamily::MinimaxVq,
             Self::Axk2Vq => ModelFamily::Axk2Vq,
             Self::Gemma4Vq => ModelFamily::Gemma4Vq,
+            Self::Qwen35 => ModelFamily::Qwen35,
         }
     }
 
@@ -141,6 +147,7 @@ impl PayloadLayout {
                         | Self::MinimaxVq
                         | Self::Axk2Vq
                         | Self::Gemma4Vq
+                        | Self::Qwen35
                 ))
     }
 
@@ -407,6 +414,25 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("invalid Gemma-4 session payload token"));
             }
         }
+        // Bonsai: words 3/4/6/8/9/10 describe the native tensor lengths and the
+        // block rows saved; the host validates only the serialized timeline.
+        PayloadLayout::Qwen35 => {
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+                || p.fields[12] != p.token_count()
+            {
+                return Err(err("invalid Bonsai session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid Bonsai session payload token"));
+            }
+        }
         // QWN3 word 12 is the PLE convolution byte count, not live rows.
         PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
@@ -421,6 +447,52 @@ fn mimo_payload_magic_is_mimo() {
     fields[5] = LAYOUT_MIMO2_FP8;
     assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
     assert_eq!(PayloadLayout::Mimo2.family(), ModelFamily::Mimo2);
+}
+
+#[test]
+fn qwen35_payload_magic_is_bonsai() {
+    let mut fields = [0u32; U32_FIELDS];
+    fields[5] = LAYOUT_QWEN35;
+    assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Qwen35);
+    assert_eq!(PayloadLayout::Qwen35.family(), ModelFamily::Qwen35);
+}
+
+#[test]
+fn qwen35_prefix_validates_its_timeline() {
+    let fields = |tokens: u32, count: u32| {
+        [
+            MAGIC,
+            VERSION,
+            8192, // k/v rows the graph allocated
+            16,   // gated-attention layers
+            2,    // stands in for the layer count here
+            LAYOUT_QWEN35,
+            3, // block rows saved
+            tokens,
+            4096,      // k+v bytes per row
+            3_145_728, // recurrence bytes
+            122_880,   // conv-history bytes
+            248_320,   // vocab
+            count,
+        ]
+    };
+    let ok = HostPrefix {
+        fields: fields(3, 3),
+        tokens: vec![11, 22, 33],
+    };
+    assert!(validate_layout(&ok).is_ok());
+
+    let mismatched = HostPrefix {
+        fields: fields(3, 2),
+        tokens: vec![11, 22, 33],
+    };
+    assert!(validate_layout(&mismatched).is_err());
+
+    let out_of_vocab = HostPrefix {
+        fields: fields(2, 2),
+        tokens: vec![11, 248_320],
+    };
+    assert!(validate_layout(&out_of_vocab).is_err());
 }
 
 #[test]

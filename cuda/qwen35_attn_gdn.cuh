@@ -327,8 +327,10 @@ __global__ void attention_group(float *out, const float *q, const float *gate,
 }
 
 /* Depthwise causal convolution over T rows with the last K-1 columns of
- * history, optional silu activation, and optional history snapshots (used by
- * the checkpoint paths; the Bonsai graph passes neither). */
+ * history, optional silu activation, and optional history snapshots: the
+ * snapshot slots hold the history as it stands after the requested row, which
+ * is what a rejected MTP draft rolls back to (Bonsai passes them only for a
+ * verify). */
 __global__ void conv(float *x, float *history, const float *w, unsigned T,
                      unsigned C, unsigned K, bool activate,
                      float *snap, unsigned snap_t, float *snap2, unsigned snap2_t) {
@@ -508,14 +510,20 @@ static int qwen35_attn_launched(const char *what) {
 }
 
 extern "C" int ds4_gpu_qwen4_conv_stream_tensor(ds4_gpu_tensor *x, ds4_gpu_tensor *history,
-        const void *map, uint64_t size, uint64_t offset, uint32_t T, uint32_t C, uint32_t K, bool activate) {
+        const void *map, uint64_t size, uint64_t offset, uint32_t T, uint32_t C, uint32_t K, bool activate,
+        ds4_gpu_tensor *snap, uint32_t st, ds4_gpu_tensor *snap2, uint32_t st2) {
     using namespace qwen35_attn;
+    const uint64_t hist_bytes = (uint64_t)(K - 1) * C * 4;
     if (!T || !C || K < 2 || K > 4 || !qwen35_attn_tensor(x, (uint64_t)T * C * 4) ||
-        !qwen35_attn_tensor(history, (uint64_t)(K - 1) * C * 4)) return 0;
+        !qwen35_attn_tensor(history, hist_bytes) ||
+        (snap && !qwen35_attn_tensor(snap, hist_bytes)) ||
+        (snap2 && !qwen35_attn_tensor(snap2, hist_bytes))) return 0;
     const char *w = qwen35_attn_weight(map, size, offset, (uint64_t)C * K * 4);
     if (!w) return 0;
     conv<<<(C + 255) / 256, 256, 0, cuda_decode_stream()>>>((float *)x->ptr, (float *)history->ptr,
-        (const float *)w, T, C, K, activate, NULL, UINT_MAX, NULL, UINT_MAX);
+        (const float *)w, T, C, K, activate,
+        snap ? (float *)snap->ptr : NULL, snap ? st : UINT_MAX,
+        snap2 ? (float *)snap2->ptr : NULL, snap2 ? st2 : UINT_MAX);
     return qwen35_attn_launched("Bonsai conv");
 }
 

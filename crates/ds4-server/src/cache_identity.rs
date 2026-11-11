@@ -320,6 +320,19 @@ fn ple_inputs(
 mod tests {
     use super::*;
 
+    // A same-size rewrite inside one coarse-clock tick moves neither mtime nor
+    // ctime, and a large part is identified by its stat alone.  Advance the
+    // stamp so the change a test makes is visible on every filesystem.
+    fn rewrite_stamped(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn v41_dump_keeps_cache() {
         let identity = |path: &str| {
@@ -496,7 +509,7 @@ mod tests {
         assert_eq!(snapshot(&[manifest]).unwrap(), baseline);
         assert_eq!(inputs.len(), 3);
         let old = snapshot(&inputs).unwrap();
-        fs::write(&part, b"PART").unwrap();
+        rewrite_stamped(&part, b"PART");
         let changed = snapshot(&inputs).unwrap();
         assert_ne!(old, changed);
         fs::write(&scale, b"SCALE").unwrap();

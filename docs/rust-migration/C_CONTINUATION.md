@@ -62,5 +62,5 @@ checks the Rust hosts still lack, then tools with no Rust host.
 | Logit readouts | `argmax`, `top_logprobs` and `token_logprob` run in C on host logits. | Keep unless a host copy is measured free on decode. |
 | V4.1 run loop | EOS stop and frequency/presence/DRY penalties run in `ds4_ds41_*.inc`, with breakers built from C token text, mirroring `/data/YoungAi`. | Owner decision: the reference engine decides V4.1 behavior. |
 | `ds4-eval` | C-only DeepSeek benchmark evaluator; the main user of the deprecated C tokenizer, encoder and sampler. | Port to `ds4-cli`, checked by its `--self-test-extractors` and `--regrade-trace`, or retire. |
-| Bonsai diagnostics | `run-bonsai.sh` and `make bonsai-cuda-*` drive `ds4-c --first-token-test`. | `./ds4 --backend {cpu,cuda} --token-ids`, as `test-qwen35-rust-host` does. |
+| Bonsai diagnostics | `make bonsai-cuda-*` drives `ds4-c --first-token-test`. | `./ds4 --backend {cpu,cuda} --token-ids`, as `test-qwen35-rust-host` does. |
 | Metal imatrix collector, `--perplexity-file` | `ds4-c` on Metal only. | Retire with Metal or port. |

@@ -1810,11 +1810,20 @@ static bool ds4_model_is_qwen35(void) {
 }
 
 /* Prism Bonsai (qwen35) follows the same trunk pattern as qwen4exp, three
- * gated delta-net layers then one gated-attention layer, but every layer is
- * dense and the model carries no MTP block. */
+ * gated delta-net layers then one gated-attention layer, but every trunk layer
+ * is dense.  The one extra block a grafted artifact carries sits past the
+ * trunk (DS4_QWEN35_MTP_LAYER) and is not a linear layer. */
 static bool ds4_qwen35_layer_is_linear(uint32_t il) {
     return ds4_model_is_qwen35() && (il + 1u) % DS4_N_SWA_PERIOD != 0u;
 }
+
+/* Drafts one speculative cycle may propose.  The verify block is one row per
+ * draft plus the committed token, and both kernels that advance state
+ * (`gdn_scan`, `conv`) carry two snapshot slots, so a rejected block rolls
+ * back at most two rows deep: three verify rows, checkpoints after row 0 and
+ * after row 1. */
+#define DS4_QWEN35_MTP_DRAFTS 2u
+#define DS4_QWEN35_VERIFY_ROWS (1u + DS4_QWEN35_MTP_DRAFTS)
 
 #define QWEN4EXP_YARN_MAX_FACTOR 4u
 
@@ -5747,6 +5756,16 @@ typedef struct {
     ds4_tensor *gate[AXK2_EXPERTS], *up[AXK2_EXPERTS], *down[AXK2_EXPERTS];
 } ds4_axk2_layer;
 
+/* Bonsai's grafted Qwen3.8 nextn block (blk.<block_count-1>.*): one full
+ * attention + SwiGLU block, the two norms and the projection that fold the
+ * token embedding and the hidden state into it, and the shared head's norm.
+ * Bound only when qwen35.nextn_predict_layers is 1; the trunk never executes
+ * it. */
+typedef struct {
+    ds4_tensor *enorm, *hnorm, *eh_proj, *shared_head_norm;
+    ds4_layer_weights block;
+} ds4_qwen35_mtp_weights;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -5787,6 +5806,8 @@ typedef struct {
     ds4_tensor *qwen_mtp_fc_embedding_norm;
     ds4_tensor *qwen_mtp_fc_hidden_norm;
     ds4_layer_weights qwen_mtp;
+    /* Bonsai's grafted Qwen3.8 nextn block, when the artifact carries one. */
+    ds4_qwen35_mtp_weights qwen35_mtp;
     ds4_qwen_vision_weights qwen_vision;
     ds4_inkling_weights inkling;
     ds4_tensor *step37_rope_freqs;
@@ -7915,6 +7936,19 @@ static const float *ds4_hadamard_signs_for(uint32_t width) {
     return NULL;
 }
 
+/* The grafted nextn blocks (blk.<n_layer>.*) are stock Qwen weights in the
+ * original residual basis: the exporter never folded them and the draft must
+ * read them unrotated, so they are exempt from the fold coverage rule. */
+static bool qwen35_is_nextn_weight_name(ds4_str name) {
+    if (name.len < 6 || memcmp(name.ptr, "blk.", 4) != 0) return false;
+    uint32_t il = 0;
+    uint64_t i = 4;
+    for (; i < name.len && name.ptr[i] >= '0' && name.ptr[i] <= '9'; i++) {
+        il = il * 10u + (uint32_t)(name.ptr[i] - '0');
+    }
+    return i > 4 && i < name.len && name.ptr[i] == '.' && il >= DS4_N_LAYER;
+}
+
 /* A folded weight is one whose product consumes an activation that has to be
  * rotated first.  The transform is applied unconditionally for this family, so
  * a file that folds only some of its matmuls would silently run wrong math:
@@ -8135,6 +8169,7 @@ static void config_validate_hadamard(const ds4_model *m) {
         const ds4_tensor *t = &m->tensors[i];
         if (!qwen35_is_foldable_weight_name(t->name) || declared[i]) continue;
         if (ds4_streq(t->name, "token_embd.weight")) continue;
+        if (qwen35_is_nextn_weight_name(t->name)) continue;
         fprintf(stderr, "ds4: prism.hadamard leaves the matmul %.*s unfolded\n",
                 (int)t->name.len, t->name.ptr);
         exit(1);
@@ -8222,7 +8257,16 @@ static void ds4_rope_configure(uint32_t n_rot, double base, uint32_t native_ctx,
 static void config_validate_qwen35_model(const ds4_model *m) {
     g_ds4_shape = DS4_SHAPE_QWEN35;
 
-    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"), DS4_N_LAYER);
+    /* A grafted MTP artifact counts its draft head in block_count, exactly as
+     * llama.cpp's nextn convention does: the trunk stays DS4_N_LAYER blocks
+     * and the trailing nextn blocks are the draft head. */
+    uint32_t nextn = 0;
+    (void) model_get_u32(m, "qwen35.nextn_predict_layers", &nextn);
+    if (nextn > 1u) {
+        ds4_die("qwen35.nextn_predict_layers beyond 1 is not supported");
+    }
+    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"),
+                      DS4_N_LAYER + nextn);
     config_expect_u32("embedding_length", required_u32(m, "qwen35.embedding_length"), DS4_N_EMBD);
     config_expect_u32("feed_forward_length", required_u32(m, "qwen35.feed_forward_length"),
                       DS4_N_FF_DENSE);
@@ -10282,12 +10326,40 @@ static void weights_bind_qwen35_layer(ds4_layer_weights *l, const ds4_model *m, 
     l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
 }
 
+/* Bonsai's grafted MTP block is a full-attention layer, so it binds the
+ * attention layout directly: the trunk's periodic classifier (ds4_qwen35_
+ * layer_is_linear) would label block 64 a gated delta-net layer. */
+static void weights_bind_qwen35_mtp(ds4_weights *w, const ds4_model *m, uint32_t il) {
+    ds4_qwen35_mtp_weights *mtp = &w->qwen35_mtp;
+    ds4_layer_weights *l = &mtp->block;
+    l->attn_norm      = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->post_attn_norm = required_tensorf(m, "blk.%u.post_attention_norm.weight", il);
+    l->attn_q         = required_tensorf(m, "blk.%u.attn_q.weight", il);
+    l->attn_k         = required_tensorf(m, "blk.%u.attn_k.weight", il);
+    l->attn_v         = required_tensorf(m, "blk.%u.attn_v.weight", il);
+    l->attn_output    = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    l->attn_q_norm    = required_tensorf(m, "blk.%u.attn_q_norm.weight", il);
+    l->attn_k_norm    = required_tensorf(m, "blk.%u.attn_k_norm.weight", il);
+    l->ffn_gate       = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+    l->ffn_up         = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+    l->ffn_down       = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    mtp->enorm            = required_tensorf(m, "blk.%u.nextn.enorm.weight", il);
+    mtp->hnorm            = required_tensorf(m, "blk.%u.nextn.hnorm.weight", il);
+    mtp->eh_proj          = required_tensorf(m, "blk.%u.nextn.eh_proj.weight", il);
+    mtp->shared_head_norm = required_tensorf(m, "blk.%u.nextn.shared_head_norm.weight", il);
+}
+
 static void weights_bind_qwen35(ds4_weights *w, const ds4_model *m) {
     w->token_embd  = required_tensor(m, "token_embd.weight");
     w->output_norm = required_tensor(m, "output_norm.weight");
     w->output      = required_tensor(m, "output.weight");
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         weights_bind_qwen35_layer(&w->layer[il], m, il);
+    }
+    uint32_t nextn = 0;
+    (void) model_get_u32(m, "qwen35.nextn_predict_layers", &nextn);
+    if (nextn == 1u) {
+        weights_bind_qwen35_mtp(w, m, DS4_N_LAYER);
     }
     if (!g_host_bind_map) weights_validate_layout(w, m);
 }
@@ -23256,6 +23328,11 @@ static bool plain_graph_matmul_tensor(
     }
     if (weight->type == DS4_TENSOR_Q4_K) {
         return ds4_gpu_matmul_q4_K_tensor(
+                out, model->map, model->size, weight->abs_offset,
+                in_dim, out_dim, x, n_tokens) != 0;
+    }
+    if (weight->type == DS4_TENSOR_Q6_K) {
+        return ds4_gpu_matmul_q6_K_tensor(
                 out, model->map, model->size, weight->abs_offset,
                 in_dim, out_dim, x, n_tokens) != 0;
     }
@@ -48321,6 +48398,16 @@ typedef struct ds4_dots3_spec ds4_dots3_spec;
 /* Bonsai (qwen35) owns its graph and its CPU reference state as whole-struct
  * allocations defined far below; the session only holds pointers to them. */
 struct ds4_qwen35_gpu_graph;
+/* The family's snapshot codec (ds4_qwen35_payload.inc) sits beside the graph it
+ * serializes, far below the session payload dispatchers that call it. */
+static uint64_t qwen35_payload_bytes(const struct ds4_qwen35_gpu_graph *g, uint32_t n);
+static int qwen35_payload_save(struct ds4_qwen35_gpu_graph *g, const int *tokens,
+                               uint32_t n, const float *logits, FILE *fp,
+                               char *err, size_t errlen);
+static int qwen35_payload_restore(struct ds4_qwen35_gpu_graph *g, FILE *fp,
+                                  uint64_t *left,
+                                  const uint32_t *h, int **tokens_out, float *logits,
+                                  char *err, size_t errlen);
 struct ds4_qwen35_ref_state;
 
 /* Copies of a serial session's recurrent state pool a rewind resumes from
@@ -54997,6 +55084,10 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
 
 int ds4_engine_routed_quant_bits(ds4_engine *e) {
     if (!e) return 0;
+    /* Bonsai has no routed experts: the disk identity keys on its trunk
+     * weights, and PQ2_0 is the only trunk format the loader accepts
+     * (weights_validate_qwen35_layout), so it is the 2-bit class. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) return 2;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         const ds4_tensor *gate = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING
             ? (e->weights.inkling.layer[il].gate ? e->weights.inkling.layer[il].w13 : NULL)
@@ -55035,6 +55126,16 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1 &&
             !(disable && disable[0] == '1' && disable[1] == '\0');
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        /* Bonsai's drafter is one grafted block inside the trunk's own
+         * artifact (docs/BONSAI.md), not a second checkpoint, so it arms
+         * whenever the graft is present.  One draft already produces a
+         * two-row verify block. */
+        const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
+        return e->backend == DS4_BACKEND_CUDA &&
+            e->weights.qwen35_mtp.block.attn_norm != NULL && e->mtp_draft_tokens > 0 &&
+            !(disable && disable[0] == '1' && disable[1] == '\0');
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
         /* The drafter is a second checkpoint (`--mtp`), so it arms only when
          * its part is bound; the serial lane drafts (SpecLane::Serial).
@@ -55052,8 +55153,17 @@ int ds4_engine_mtp_draft_tokens(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         return e->mtp_draft_tokens < 3 ? e->mtp_draft_tokens : 3;
     }
-    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
-        ? 2 : e->mtp_draft_tokens;
+    /* The serial verifiers report their verify block's width: one speculative
+     * cycle there covers the committed row plus its drafts, and that is what a
+     * host gates the cycle on. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+        return 2;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        const int rows = 1 + (e->mtp_draft_tokens > 0 ? e->mtp_draft_tokens : 1);
+        return rows < (int)DS4_QWEN35_VERIFY_ROWS ? rows : (int)DS4_QWEN35_VERIFY_ROWS;
+    }
+    return e->mtp_draft_tokens;
 }
 
 const ds4_tokens *ds4_session_tokens(ds4_session *s) {
@@ -56340,9 +56450,14 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
 #endif
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
+#ifndef DS4_NO_GPU
     /* Bonsai's state is the gated delta-net recurrence, the conv history and
-     * the fp16 k/v rows, not the DeepSeek raw-swa layout a snapshot writes. */
-    if (ds4_session_is_qwen35(s)) return 0;
+     * the fp16 k/v rows; its codec is ds4_qwen35_payload.inc. */
+    if (ds4_session_is_qwen35(s)) {
+        return s->qwen35_graph
+            ? qwen35_payload_bytes(s->qwen35_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
+#endif
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
         if (!s->glm53_graph_ready ||
@@ -56540,6 +56655,14 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_qwen35(s)) {
+        if (!fp || !ds4_session_payload_bytes(s)) {
+            payload_set_err(err, errlen, "Bonsai has no snapshot-ready checkpoint");
+            return 1;
+        }
+        return qwen35_payload_save(s->qwen35_graph, s->checkpoint.v,
+            (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
     if (ds4_session_is_gemma4(s)) {
         if (!ds4_session_payload_bytes(s)) {
             payload_set_err(err, errlen, "Gemma-4 has no snapshot-ready checkpoint");
@@ -57077,9 +57200,6 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->checkpoint.len = 0;
         s->mtp_draft_valid = false;
         qwen35_session_reset(s);
-        payload_set_err(err, errlen,
-                        "Bonsai session snapshots are not implemented yet");
-        return 1;
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) {
@@ -57197,6 +57317,33 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     const uint32_t payload_version = h[1];
 #ifndef DS4_NO_GPU
+
+    if (ds4_session_is_qwen35(s)) {
+        if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
+        if (!s->qwen35_graph) {
+            payload_set_err(err, errlen, "Bonsai graph is not ready for restore");
+            return 1;
+        }
+        float *new_logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*new_logits));
+        int *tokens = NULL;
+        const int rc = qwen35_payload_restore(s->qwen35_graph, fp, &remaining, h,
+                                              &tokens, new_logits, err, errlen);
+        if (rc != 0) {
+            free(new_logits);
+            /* A partial restore leaves the recurrent state unusable. */
+            qwen35_session_reset(s);
+            return 1;
+        }
+        token_vec next = {0};
+        for (uint32_t i = 0; i < h[7]; i++) { token_vec_push(&next, tokens[i]); }
+        free(tokens);
+        token_vec_free(&s->checkpoint);
+        s->checkpoint = next;
+        memcpy(s->logits, new_logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        free(new_logits);
+        s->checkpoint_valid = true;
+        return 0;
+    }
 
     if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
     if (ds4_session_is_solar(s)) {
@@ -71886,8 +72033,10 @@ static uint32_t qwen35_prefill_chunk_tokens(uint32_t ctx) {
  * DeepSeek arrays and is too small for this family's 64 blocks: writing
  * lin_state[61..63] through it spills into lin_hist[0..2], and every field past
  * the bound then aliases another layer's tensor (a 15% hidden-state error and a
- * different greedy stream). */
-#define DS4_QWEN35_MAX_LAYER 64u
+ * different greedy stream).  One slot past the trunk holds the grafted MTP
+ * block's own k/v. */
+#define DS4_QWEN35_MAX_LAYER 65u
+#define DS4_QWEN35_MTP_LAYER 64u
 
 typedef struct ds4_qwen35_gpu_graph {
     uint32_t ctx_cap;      /* k/v rows: the whole context */
@@ -71907,8 +72056,43 @@ typedef struct ds4_qwen35_gpu_graph {
     ds4_gpu_tensor *h_row;
     ds4_gpu_tensor *lin_state[DS4_QWEN35_MAX_LAYER];
     ds4_gpu_tensor *lin_hist[DS4_QWEN35_MAX_LAYER];
+    /* Recurrent state and conv history as they stand after verify row 0 and
+     * after row 1, one pair each per gated delta-net layer.  A rejected block
+     * swaps the matching pair into place instead of replaying the committed
+     * rows; a swap leaves the other buffer as the next verify's checkpoint
+     * destination, overwritten at its row before it is read. */
+    ds4_gpu_tensor *lin_ckpt[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *lin_hckpt[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *lin_ckpt2[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *lin_hckpt2[DS4_QWEN35_MAX_LAYER];
     ds4_gpu_tensor *k_cache[DS4_QWEN35_MAX_LAYER];
     ds4_gpu_tensor *v_cache[DS4_QWEN35_MAX_LAYER];
+    /* A verify's logits, one row per block row, and their argmax.  Every row
+     * stays on the device: a greedy cycle reads only the ids, and a sampling
+     * one brings the rows over to draw with the host's sampler. */
+    ds4_gpu_tensor *verify, *verify_ids;
+    /* A draft cycle's verified rows and where its block started. */
+    int      trial[DS4_QWEN35_VERIFY_ROWS];
+    uint32_t trial_n, trial_start;
+    /* Grafted MTP block (blk.64) scratch.  e: enorm(embed(t)), hid:
+     * hnorm(h), cat: the concatenated eh_proj input, x: the block input,
+     * hidden: the trunk row the next draft pairs with its sampled token. */
+    ds4_gpu_tensor *mtp_e, *mtp_hid, *mtp_cat, *mtp_x, *mtp_hidden, *mtp_logits;
+    /* eh_proj's input for a batched fill: one row of enorm(embed(t)) and one
+     * of hnorm(h) per row, concatenated, so the chunk's weights are read once
+     * instead of once per row. */
+    ds4_gpu_tensor *mtp_cat_rows;
+    /* The block's own post-FFN hidden, which the next chained draft pairs with
+     * its proposal (the trunk row for that position does not exist yet). */
+    ds4_gpu_tensor *mtp_chain;
+    uint32_t mtp_pos;        /* rows of the MTP block's own k/v written */
+    bool     mtp_pending;    /* mtp_hidden holds a trunk row awaiting a token */
+    /* Drafts per cycle this graph can verify: 2 only when the engine asked for
+     * two and the second checkpoint pair was allocated. */
+    uint32_t mtp_drafts;
+    /* Byte size of one linear layer's recurrence and conv history: the parts a
+     * serial rewind copies when a prompt leaves the live state. */
+    uint64_t lin_state_bytes, lin_hist_bytes;
     ds4_gpu_tensor *signs[DS4_MAX_HADAMARD_SETS];
     uint32_t         sign_width[DS4_MAX_HADAMARD_SETS];
 } ds4_qwen35_gpu_graph;
@@ -71960,6 +72144,14 @@ static bool qwen35_graph_gemv(ds4_gpu_tensor *out, const ds4_model *m, const ds4
         rc = ds4_gpu_matmul_pq2_0_tensor(out, m->map, m->size, w->abs_offset, in_dim,
                                          out_dim, x, T);
         break;
+    case DS4_TENSOR_Q6_K:
+        rc = ds4_gpu_matmul_q6_K_tensor(out, m->map, m->size, w->abs_offset, in_dim,
+                                        out_dim, x, T);
+        break;
+    case DS4_TENSOR_Q8_0:
+        rc = ds4_gpu_matmul_q8_0_tensor(out, m->map, m->size, w->abs_offset, in_dim,
+                                        out_dim, x, T);
+        break;
     case DS4_TENSOR_BF16:
         rc = ds4_gpu_qwen35_matvec_bf16_tensor(out, x, m->map, m->size, w->abs_offset,
                                                in_dim, out_dim, T);
@@ -72008,13 +72200,37 @@ static bool qwen35_graph_add(ds4_gpu_tensor *dst, const ds4_gpu_tensor *src, uin
     return ds4_gpu_add_tensor(dst, dst, src, T * width) != 0;
 }
 
+/* Which row of a multi-row pass, if any, the gated delta-net state is
+ * checkpointed after.  Only a verify block asks for it: its rows past the
+ * accepted prefix have to be given back, and the state is recurrent.  A block
+ * of T rows needs the frontier after row 0 (keep 1) and, when it carries a
+ * second draft, after row 1 (keep 2); keep T commits as it stands. */
+enum qwen35_ckpt { QWEN35_CKPT_NONE, QWEN35_CKPT_ROW0, QWEN35_CKPT_ROW0_1 };
+
 /* Gated delta-net layer: four folded projections off one rotated activation,
  * the depthwise conv, the decay/beta prep, the chunked scan, the silu-gated
  * output norm, and the folded output projection over the grouped head order. */
 static bool qwen35_graph_linear(ds4_qwen35_gpu_graph *g, const ds4_model *m,
                                 const ds4_layer_weights *l, uint32_t il,
-                                const ds4_gpu_tensor *x, uint32_t T) {
+                                const ds4_gpu_tensor *x, uint32_t T,
+                                enum qwen35_ckpt ckpt) {
     const uint32_t Hv = DS4_N_LIN_V_HEAD, D = DS4_N_KDA_HEAD_DIM;
+    /* The two snapshot slots the kernels carry, and the row each one holds. */
+    ds4_gpu_tensor *snap[2] = {NULL, NULL}, *hck[2] = {NULL, NULL};
+    const uint32_t st[2] = {0u, 1u};
+    if (ckpt == QWEN35_CKPT_ROW0 || ckpt == QWEN35_CKPT_ROW0_1) {
+        snap[0] = g->lin_ckpt[il];
+        hck[0] = g->lin_hckpt[il];
+    }
+    if (ckpt == QWEN35_CKPT_ROW0_1) {
+        snap[1] = g->lin_ckpt2[il];
+        hck[1] = g->lin_hckpt2[il];
+    }
+    if (ckpt != QWEN35_CKPT_NONE &&
+        !(snap[0] && hck[0] && (ckpt == QWEN35_CKPT_ROW0 || (snap[1] && hck[1])))) {
+        fprintf(stderr, "ds4: Bonsai verify has no state checkpoint for layer %u\n", il);
+        return false;
+    }
 
     /* Four projections off one rotated activation. */
     if (!qwen35_graph_gemv_folded(g, g->qkv, m, l->lin_qkv, x, T, false) ||
@@ -72025,7 +72241,8 @@ static bool qwen35_graph_linear(ds4_qwen35_gpu_graph *g, const ds4_model *m,
     }
     if (!ds4_gpu_qwen4_conv_stream_tensor(g->qkv, g->lin_hist[il], m->map, m->size,
                                           l->lin_conv->abs_offset, T, DS4_N_LIN_CONV_DIM,
-                                          DS4_N_SSM_CONV, true)) {
+                                          DS4_N_SSM_CONV, true,
+                                          hck[0], st[0], hck[1], st[1])) {
         return false;
     }
     if (!ds4_gpu_qwen4_gdn_prep_tensor(g->qkv, g->ga, g->gb, m->map, m->size,
@@ -72034,7 +72251,8 @@ static bool qwen35_graph_linear(ds4_qwen35_gpu_graph *g, const ds4_model *m,
         return false;
     }
     if (!ds4_gpu_qwen4_gdn_scan_tensor(g->lin_o, g->lin_state[il], g->qkv, g->ga, g->gb,
-                                       T, DS4_N_LIN_K_HEAD, Hv, D, NULL, 0u, NULL, 0u)) {
+                                       T, DS4_N_LIN_K_HEAD, Hv, D,
+                                       snap[0], st[0], snap[1], st[1])) {
         return false;
     }
     if (!ds4_gpu_qwen35_gdn_out_tensor(g->lin_o, g->z, m->map, m->size,
@@ -72063,24 +72281,33 @@ static bool qwen35_attn_splitk_off(void) {
 
 /* Full-attention layer: folded q/k/v, per-head norms with the partial rope
  * and the raw gate, the fused GQA attention, and the folded output. */
+enum qwen35_matmul_fold { QWEN35_MATMUL_PLAIN, QWEN35_MATMUL_FOLDED };
+
 static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
                                    const ds4_layer_weights *l, uint32_t il,
-                                   const ds4_gpu_tensor *x, uint32_t pos0, uint32_t T) {
+                                   const ds4_gpu_tensor *x, uint32_t pos0, uint32_t T,
+                                   enum qwen35_matmul_fold fold) {
     const uint32_t H = DS4_N_HEAD, Hkv = DS4_N_HEAD_KV, D = DS4_N_HEAD_DIM;
-
-    if (!qwen35_graph_gemv_folded(g, g->qg, m, l->attn_q, x, T, false)) {
-        return false;
+    const bool folded = fold == QWEN35_MATMUL_FOLDED;
+    const char *stage = "q";
+    bool ok = folded ? qwen35_graph_gemv_folded(g, g->qg, m, l->attn_q, x, T, false)
+                     : qwen35_graph_gemv(g->qg, m, l->attn_q, x, T);
+    if (ok) {
+        stage = "kv";
+        ok = folded ? qwen35_graph_gemv_folded(g, g->kp, m, l->attn_k, x, T, false)
+                    : qwen35_graph_gemv(g->kp, m, l->attn_k, x, T);
+        if (ok) {
+            ok = folded ? qwen35_graph_gemv_folded(g, g->vp, m, l->attn_v, x, T, false)
+                        : qwen35_graph_gemv(g->vp, m, l->attn_v, x, T);
+        }
     }
-    if (!qwen35_graph_gemv_folded(g, g->kp, m, l->attn_k, x, T, false) ||
-        !qwen35_graph_gemv_folded(g, g->vp, m, l->attn_v, x, T, false)) {
-        return false;
-    }
-    if (!ds4_gpu_qwen35_attn_prep_tensor(
+    if (ok) {
+        stage = "prep";
+        ok = ds4_gpu_qwen35_attn_prep_tensor(
             g->q, g->gate, g->k_cache[il], g->v_cache[il], g->qg, g->kp, g->vp,
             g->pos3, m->map, m->size, l->attn_q_norm->abs_offset,
             l->attn_k_norm->abs_offset, T, H, Hkv, D, DS4_N_ROT, pos0,
-            g->ctx_cap, DS4_ROPE_FREQ_BASE, DS4_RMS_EPS)) {
-        return false;
+            g->ctx_cap, DS4_ROPE_FREQ_BASE, DS4_RMS_EPS) != 0;
     }
     /* The sigmoid gate rides inside the attention kernel (attn_prep kept the
      * raw second half of the q projection).  Two kernels serve this core and
@@ -72100,7 +72327,8 @@ static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
     const bool tokentile = T >= 32u && ds4_gpu_qwen4_attn_tokentile_available(
         g->k_cache[il], g->v_cache[il], T, H, Hkv, D);
     const uint32_t attn_batch = tokentile ? T : DS4_QWEN35_ATTN_ROWS;
-    for (uint32_t r0 = 0; r0 < T; r0 += attn_batch) {
+    stage = "core";
+    for (uint32_t r0 = 0; ok && r0 < T; r0 += attn_batch) {
         const uint32_t rt = T - r0 < attn_batch ? T - r0 : attn_batch;
         ds4_gpu_tensor *q = r0 ? ds4_gpu_tensor_view(g->q, (uint64_t)r0 * q_dim * sizeof(float),
                                                      (uint64_t)rt * q_dim * sizeof(float)) : g->q;
@@ -72108,7 +72336,7 @@ static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
                                                         (uint64_t)rt * q_dim * sizeof(float)) : g->gate;
         ds4_gpu_tensor *o = r0 ? ds4_gpu_tensor_view(g->o, (uint64_t)r0 * q_dim * sizeof(float),
                                                      (uint64_t)rt * q_dim * sizeof(float)) : g->o;
-        const bool ok = q && gate && o &&
+        ok = q && gate && o &&
             ds4_gpu_qwen4_attn_decode_tensor(o, q, gate, g->k_cache[il], g->v_cache[il],
                                              NULL, NULL,
                                              (tokentile || qwen35_attn_splitk_off())
@@ -72120,52 +72348,259 @@ static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
             ds4_gpu_tensor_free(gate);
             ds4_gpu_tensor_free(o);
         }
-        if (!ok) {
-            return false;
-        }
     }
-    return qwen35_graph_gemv_folded(g, g->blk, m, l->attn_output, g->o, T, false);
+    if (ok) {
+        stage = "out";
+        ok = folded ? qwen35_graph_gemv_folded(g, g->blk, m, l->attn_output, g->o, T, false)
+                    : qwen35_graph_gemv(g->blk, m, l->attn_output, g->o, T);
+    }
+    if (!ok) {
+        fprintf(stderr, "ds4: Bonsai attention failed at %s (layer %u, pos %u, rows %u)\n",
+                stage, il, pos0, T);
+    }
+    return ok;
 }
 
 /* Dense SwiGLU: down(silu(gate(x)) * up(x)); gate and up share one rotated
  * activation, and only the down projection's input is folded. */
 static bool qwen35_graph_ffn(ds4_qwen35_gpu_graph *g, const ds4_model *m,
                              const ds4_layer_weights *l, const ds4_gpu_tensor *x,
-                             uint32_t T) {
-    if (!qwen35_graph_gemv_folded(g, g->ffn_g, m, l->ffn_gate, x, T, false) ||
-        !qwen35_graph_gemv_folded(g, g->ffn_u, m, l->ffn_up, x, T, false)) {
+                             uint32_t T, enum qwen35_matmul_fold fold) {
+    const bool folded = fold == QWEN35_MATMUL_FOLDED;
+    if (!(folded ? qwen35_graph_gemv_folded(g, g->ffn_g, m, l->ffn_gate, x, T, false)
+                 : qwen35_graph_gemv(g->ffn_g, m, l->ffn_gate, x, T)) ||
+        !(folded ? qwen35_graph_gemv_folded(g, g->ffn_u, m, l->ffn_up, x, T, false)
+                 : qwen35_graph_gemv(g->ffn_u, m, l->ffn_up, x, T))) {
         return false;
     }
     if (!ds4_gpu_swiglu_tensor(g->ffn_g, g->ffn_g, g->ffn_u, T * DS4_N_FF_DENSE, 0.0f, 1.0f)) {
         return false;
     }
-    if (!qwen35_graph_fold(g, g->ffn_g, DS4_N_FF_DENSE, T, false)) return false;
+    if (folded && !qwen35_graph_fold(g, g->ffn_g, DS4_N_FF_DENSE, T, false)) {
+        return false;
+    }
     return qwen35_graph_gemv(g->blk, m, l->ffn_down, g->ffn_g, T);
 }
 
 static bool qwen35_graph_layer(ds4_qwen35_gpu_graph *g, const ds4_model *m,
-                               const ds4_weights *w, uint32_t il, uint32_t pos0, uint32_t T) {
+                               const ds4_weights *w, uint32_t il, uint32_t pos0, uint32_t T,
+                               enum qwen35_ckpt ckpt) {
     const ds4_layer_weights *l = &w->layer[il];
     const uint32_t E = DS4_N_EMBD;
 
     if (!qwen35_graph_norm(g, g->normed, m, l->attn_norm, g->h, T)) return false;
     if (ds4_qwen35_layer_is_linear(il)) {
-        if (!qwen35_graph_linear(g, m, l, il, g->normed, T)) return false;
+        if (!qwen35_graph_linear(g, m, l, il, g->normed, T, ckpt)) return false;
     } else {
-        if (!qwen35_graph_attention(g, m, l, il, g->normed, pos0, T)) return false;
+        if (!qwen35_graph_attention(g, m, l, il, g->normed, pos0, T,
+                                    QWEN35_MATMUL_FOLDED)) return false;
     }
     if (!qwen35_graph_add(g->h, g->blk, T, E)) return false;
 
     if (!qwen35_graph_norm(g, g->normed, m, l->post_attn_norm, g->h, T)) return false;
-    if (!qwen35_graph_ffn(g, m, l, g->normed, T)) return false;
+    if (!qwen35_graph_ffn(g, m, l, g->normed, T, QWEN35_MATMUL_FOLDED)) return false;
     return qwen35_graph_add(g->h, g->blk, T, E);
+}
+
+/* ---- Grafted MTP block (blk.64) ----------------------------------------
+ *
+ * One row of the block takes the pair (hnorm(h_i), enorm(embed(t_{i+1})))
+ * concatenated through eh_proj, runs a full-attention layer plus SwiGLU with
+ * its own fp16 k/v, and ends on the trunk's own output head.  That is the
+ * nextn module Qwen3.5 trains beside the trunk (checkpoint config:
+ * mtp_num_hidden_layers 1, mtp_use_dedicated_embeddings false).
+ *
+ * The block's matmul weights are Q6_K, grafted byte for byte from a stock
+ * Qwen3.8-27B GGUF (docs/BONSAI.md), so they are NOT Hadamard-folded: its
+ * matmuls are plain while the trunk's PQ2_0 weights are folded.  The residual
+ * stream is in the original basis -- the fold rotates each matmul's input, so
+ * W'(H a) = W a -- which is why the trunk's h feeds this block directly. */
+static bool qwen35_mtp_probe_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("DS4_QWEN35_MTP_PROBE");
+        enabled = v && v[0] ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
+/* The block tracks the prefix whenever the artifact carries it and drafting is
+ * armed: it has to hold the rows its next draft pairs with.  A diagnostic run
+ * that only reports the block's agreement (DS4_QWEN35_MTP_PROBE) is armed the
+ * same way, so the probe measures the shipping path. */
+static bool qwen35_graph_mtp_ready(const ds4_qwen35_gpu_graph *g, ds4_engine *e) {
+    return g->mtp_e != NULL && ds4_engine_has_mtp(e);
+}
+
+/* Write the block's k/v row at MTP position pos and leave the draft's logits
+ * in g->mtp_logits. */
+static bool qwen35_graph_mtp_row(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                 int token, const ds4_gpu_tensor *hidden,
+                                 uint32_t pos) {
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    const ds4_layer_weights *l = &w->qwen35_mtp.block;
+    const uint32_t E = DS4_N_EMBD;
+    const uint64_t row_bytes = (uint64_t)E * sizeof(float);
+    uint32_t id = (uint32_t)token;
+    const char *stage = "embed";
+    bool ok = ds4_gpu_tensor_write(g->tokens, 0, &id, sizeof(id)) &&
+              ds4_gpu_embed_tokens_quant_tensor(
+                  g->mtp_e, g->tokens, m->map, m->size, w->token_embd->abs_offset,
+                  w->token_embd->type, (uint32_t)w->token_embd->dim[1], 1u,
+                  (uint32_t)w->token_embd->dim[0]);
+    if (ok && g_hadamard.inverse_token_embd) {
+        stage = "unfold";
+        ds4_gpu_tensor *signs = qwen35_graph_signs(g, E);
+        ok = signs && ds4_gpu_qwen35_fold_inverse_tensor(g->mtp_e, E, 1u,
+                                                         g_hadamard.block_size, signs);
+    }
+    if (ok) {
+        stage = "norm";
+        ok = qwen35_graph_norm(g, g->blk, m, w->qwen35_mtp.enorm, g->mtp_e, 1u) &&
+             qwen35_graph_norm(g, g->mtp_hid, m, w->qwen35_mtp.hnorm, hidden, 1u) &&
+             ds4_gpu_tensor_copy(g->mtp_cat, 0, g->blk, 0, row_bytes) &&
+             ds4_gpu_tensor_copy(g->mtp_cat, row_bytes, g->mtp_hid, 0, row_bytes);
+    }
+    if (ok) {
+        stage = "eh_proj";
+        ok = qwen35_graph_gemv(g->mtp_x, m, w->qwen35_mtp.eh_proj, g->mtp_cat, 1u);
+    }
+    if (ok) {
+        stage = "attention";
+        ok = qwen35_graph_norm(g, g->blk, m, l->attn_norm, g->mtp_x, 1u) &&
+             qwen35_graph_attention(g, m, l, DS4_QWEN35_MTP_LAYER, g->blk, pos, 1u,
+                                    QWEN35_MATMUL_PLAIN) &&
+             qwen35_graph_add(g->blk, g->mtp_x, 1u, E) &&
+             ds4_gpu_tensor_copy(g->mtp_hid, 0, g->blk, 0, row_bytes);
+    }
+    if (ok) {
+        stage = "ffn";
+        ok = qwen35_graph_norm(g, g->normed, m, l->post_attn_norm, g->blk, 1u) &&
+             qwen35_graph_ffn(g, m, l, g->normed, 1u, QWEN35_MATMUL_PLAIN) &&
+             qwen35_graph_add(g->blk, g->mtp_hid, 1u, E) &&
+             qwen35_graph_norm(g, g->normed, m, w->qwen35_mtp.shared_head_norm, g->blk, 1u);
+    }
+    if (ok) {
+        /* The head is the trunk's own folded PQ2_0 output matrix. */
+        stage = "head";
+        ok = qwen35_graph_fold(g, g->normed, E, 1u, false) &&
+             qwen35_graph_gemv(g->mtp_logits, m, w->output, g->normed, 1u);
+    }
+    if (ok) {
+        /* A chained proposal pairs this row's own post-FFN hidden with the
+         * token it just proposed: the trunk row for that position does not
+         * exist yet. */
+        stage = "chain";
+        ok = ds4_gpu_tensor_copy(g->mtp_chain, 0, g->blk, 0, row_bytes);
+    }
+    if (!ok) {
+        fprintf(stderr, "ds4: MTP block failed at %s (token %d, pos %u)\n",
+                stage, token, pos);
+    }
+    return ok;
+}
+
+/* Consume the pending trunk row with the token just sampled: that row is the
+ * draft's own k/v row and leaves its logits in g->mtp_logits. */
+static bool qwen35_graph_mtp_draft(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                   int token) {
+    if (!g->mtp_pending) return false;
+    if (!qwen35_graph_mtp_row(g, e, token, g->mtp_hidden, g->mtp_pos)) return false;
+    g->mtp_pos++;
+    g->mtp_pending = false;
+    return true;
+}
+
+/* The block over T rows: the batch half of a fill.  Row i takes
+ * (hnorm(h_i), enorm(t_i)) through eh_proj and writes its own k/v at pos0+i.
+ * Only the attention half runs -- the FFN and trunk head produce nothing but
+ * the draft logits, which a fill never reads -- so a chunk reads the block's
+ * weights once instead of once per row.  The graph's multi-row scratch is
+ * reused: g->normed holds the embeddings, g->xt the energy norm (then
+ * eh_proj's row), g->blk the attention. */
+static bool qwen35_graph_mtp_rows(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                  const uint32_t *ids, uint32_t T, uint32_t pos0) {
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    const ds4_layer_weights *l = &w->qwen35_mtp.block;
+    const uint32_t E = DS4_N_EMBD;
+    const uint64_t row_bytes = (uint64_t)E * sizeof(float);
+
+    if (!ds4_gpu_tensor_write(g->tokens, 0, ids, (uint64_t)T * sizeof(uint32_t)) ||
+        !ds4_gpu_embed_tokens_quant_tensor(
+            g->normed, g->tokens, m->map, m->size, w->token_embd->abs_offset,
+            w->token_embd->type, (uint32_t)w->token_embd->dim[1], T,
+            (uint32_t)w->token_embd->dim[0])) {
+        return false;
+    }
+    if (g_hadamard.inverse_token_embd) {
+        ds4_gpu_tensor *signs = qwen35_graph_signs(g, E);
+        if (!signs || !ds4_gpu_qwen35_fold_inverse_tensor(g->normed, E, T,
+                                                          g_hadamard.block_size, signs)) {
+            return false;
+        }
+    }
+    /* Row i pairs trunk hidden row i with the token one ahead of it, so the
+     * caller passes ids + 1 and this view starts at the chunk's first row. */
+    ds4_gpu_tensor *hid = ds4_gpu_tensor_view(g->h, 0, (uint64_t)T * row_bytes);
+    bool ok = hid &&
+        qwen35_graph_norm(g, g->xt, m, w->qwen35_mtp.enorm, g->normed, T) &&
+        qwen35_graph_norm(g, g->lin_o, m, w->qwen35_mtp.hnorm, hid, T);
+    ds4_gpu_tensor_free(hid);
+    /* eh_proj's input is the pair concatenated per row. */
+    for (uint32_t i = 0; ok && i < T; i++) {
+        const uint64_t dst = (uint64_t)i * 2u * row_bytes;
+        ok = ds4_gpu_tensor_copy(g->mtp_cat_rows, dst, g->xt, (uint64_t)i * row_bytes,
+                                 row_bytes) &&
+             ds4_gpu_tensor_copy(g->mtp_cat_rows, dst + row_bytes, g->lin_o,
+                                 (uint64_t)i * row_bytes, row_bytes);
+    }
+    ok = ok && qwen35_graph_gemv(g->xt, m, w->qwen35_mtp.eh_proj, g->mtp_cat_rows, T) &&
+         qwen35_graph_norm(g, g->blk, m, l->attn_norm, g->xt, T) &&
+         qwen35_graph_attention(g, m, l, DS4_QWEN35_MTP_LAYER, g->blk, pos0, T,
+                                QWEN35_MATMUL_PLAIN) &&
+         qwen35_graph_add(g->blk, g->xt, T, E);
+    if (!ok) {
+        fprintf(stderr, "ds4: MTP block fill failed (rows %u at pos %u)\n", T, pos0);
+    }
+    return ok;
+}
+
+/* Fill the rows a finished trunk chunk completes: row i pairs hidden row i
+ * with the chunk's next token.  The chunk's last row has no next token yet,
+ * so it stays in g->mtp_hidden until the sampled one arrives. */
+static bool qwen35_graph_mtp_fill(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                  const uint32_t *ids, uint32_t n, uint32_t pos0) {
+    const uint64_t row_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    /* The row the previous chunk left pending is completed by this chunk's
+     * first token (or by the token a plain decode just forwarded), so the
+     * block's k/v stays contiguous across a chunked prefill. */
+    if (g->mtp_pending && g->mtp_pos + 1u == pos0) {
+        if (!qwen35_graph_mtp_row(g, e, ids[0], g->mtp_hidden, g->mtp_pos)) return false;
+        g->mtp_pos++;
+        g->mtp_pending = false;
+    }
+    if (n > 1u) {
+        if (!qwen35_graph_mtp_rows(g, e, ids + 1u, n - 1u, pos0)) return false;
+        g->mtp_pos = pos0 + n - 1u;
+    }
+    ds4_gpu_tensor *hid = ds4_gpu_tensor_view(
+        g->h, (uint64_t)(n - 1u) * row_bytes, row_bytes);
+    const bool ok = hid && ds4_gpu_tensor_copy(g->mtp_hidden, 0, hid, 0, row_bytes);
+    ds4_gpu_tensor_free(hid);
+    if (!ok) return false;
+    g->mtp_pending = true;
+    return true;
 }
 
 static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
     ds4_gpu_tensor *scratch[] = {
         g->h, g->normed, g->blk, g->xt, g->qkv, g->z, g->ga, g->gb, g->lin_o,
         g->qg, g->q, g->gate, g->kp, g->vp, g->o, g->ffn_g, g->ffn_u, g->logits,
-        g->tokens, g->pos3, g->h_row, g->attn_partial,
+        g->tokens, g->pos3, g->h_row, g->attn_partial, g->verify, g->verify_ids,
+        g->mtp_e, g->mtp_hid, g->mtp_cat, g->mtp_x, g->mtp_hidden, g->mtp_logits,
+        g->mtp_cat_rows, g->mtp_chain,
     };
     for (size_t i = 0; i < sizeof(scratch) / sizeof(scratch[0]); i++) {
         ds4_gpu_tensor_free(scratch[i]);
@@ -72174,11 +72609,18 @@ static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
     for (uint32_t il = 0; il < DS4_QWEN35_MAX_LAYER; il++) {
         ds4_gpu_tensor_free(g->lin_state[il]);
         ds4_gpu_tensor_free(g->lin_hist[il]);
+        ds4_gpu_tensor_free(g->lin_ckpt[il]);
+        ds4_gpu_tensor_free(g->lin_hckpt[il]);
+        ds4_gpu_tensor_free(g->lin_ckpt2[il]);
+        ds4_gpu_tensor_free(g->lin_hckpt2[il]);
         ds4_gpu_tensor_free(g->k_cache[il]);
         ds4_gpu_tensor_free(g->v_cache[il]);
     }
     memset(g, 0, sizeof(*g));
 }
+
+/* The family's snapshot codec: the state this graph owns, serialized. */
+#include "ds4_qwen35_payload.inc"
 
 /* One allocation per tensor the trunk reuses, plus the per-layer state: a
  * gated delta-net layer keeps its state and conv history, an attention layer
@@ -72223,8 +72665,10 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
     /* Worst case one attention call can hand the kernel: the row batch (see
      * DS4_QWEN35_ATTN_ROWS), every head, the dispatcher's split ceiling and the
      * two extra floats a partial record carries.  A token-tile batch is handed
-     * no partial buffer at all. */
-    const uint32_t attn_rows = T < DS4_QWEN35_ATTN_ROWS ? T : DS4_QWEN35_ATTN_ROWS;
+     * no partial buffer at all.  A verify block is one call over its own rows,
+     * so the buffer never sizes below that block. */
+    uint32_t attn_rows = T < DS4_QWEN35_ATTN_ROWS ? T : DS4_QWEN35_ATTN_ROWS;
+    if (attn_rows < DS4_QWEN35_VERIFY_ROWS) attn_rows = DS4_QWEN35_VERIFY_ROWS;
     g->attn_partial = ds4_gpu_tensor_alloc((uint64_t)attn_rows * DS4_N_HEAD *
                                            DS4_QWEN35_ATTN_SPLITS *
                                            (DS4_N_HEAD_DIM + 2u) * f32);
@@ -72234,11 +72678,34 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
     g->tokens = ds4_gpu_tensor_alloc((uint64_t)T * sizeof(uint32_t));
     g->h_row  = ds4_gpu_tensor_alloc((uint64_t)E * f32);
     g->pos3   = ds4_gpu_tensor_alloc((uint64_t)ctx_cap * 4 * sizeof(uint32_t));
+    g->verify = ds4_gpu_tensor_alloc((uint64_t)DS4_QWEN35_VERIFY_ROWS * DS4_N_VOCAB * f32);
+    g->verify_ids = ds4_gpu_tensor_alloc((uint64_t)DS4_QWEN35_VERIFY_ROWS * sizeof(int32_t));
+
+    /* The grafted MTP block allocates only when the artifact carries one. */
+    if (w->qwen35_mtp.block.attn_norm) {
+        const uint64_t kv = (uint64_t)ctx_cap * DS4_N_HEAD_KV * DS4_N_HEAD_DIM * sizeof(uint16_t);
+        g->k_cache[DS4_QWEN35_MTP_LAYER] = ds4_gpu_tensor_alloc(kv);
+        g->v_cache[DS4_QWEN35_MTP_LAYER] = ds4_gpu_tensor_alloc(kv);
+        g->mtp_e      = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+        g->mtp_hid    = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+        g->mtp_cat    = ds4_gpu_tensor_alloc((uint64_t)2u * E * f32);
+        g->mtp_x      = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+        g->mtp_hidden = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+        g->mtp_logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * f32);
+        g->mtp_cat_rows = ds4_gpu_tensor_alloc((uint64_t)T * 2u * E * f32);
+        g->mtp_chain = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+        /* A second draft needs a second checkpoint pair to roll back to. */
+        g->mtp_drafts = e->mtp_draft_tokens > 1 ? DS4_QWEN35_MTP_DRAFTS : 1u;
+    }
 
     bool ok = g->h && g->normed && g->blk && g->xt && g->qkv && g->z &&
               g->ga && g->gb && g->lin_o && g->qg && g->q && g->gate && g->kp && g->vp &&
               g->o && g->attn_partial && g->ffn_g && g->ffn_u && g->logits && g->tokens &&
-              g->pos3 && g->h_row;
+              g->pos3 && g->h_row && g->verify && g->verify_ids &&
+              (!w->qwen35_mtp.block.attn_norm ||
+               (g->k_cache[DS4_QWEN35_MTP_LAYER] && g->v_cache[DS4_QWEN35_MTP_LAYER] &&
+                g->mtp_e && g->mtp_hid && g->mtp_cat && g->mtp_x && g->mtp_hidden &&
+                g->mtp_logits && g->mtp_cat_rows && g->mtp_chain));
 
     /* Position table for the rope: this model carries one text position per
      * token, so all four sections share it. */
@@ -72255,10 +72722,29 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
         const ds4_layer_weights *l = &w->layer[il];
         if (!l->attn_norm) continue;
         if (ds4_qwen35_layer_is_linear(il)) {
-            g->lin_state[il] = ds4_gpu_tensor_alloc((uint64_t)Hv * D * D * f32);
-            g->lin_hist[il] = ds4_gpu_tensor_alloc(
-                (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32);
+            g->lin_state_bytes = (uint64_t)Hv * D * D * f32;
+            g->lin_hist_bytes = (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32;
+            g->lin_state[il] = ds4_gpu_tensor_alloc(g->lin_state_bytes);
+            g->lin_hist[il] = ds4_gpu_tensor_alloc(g->lin_hist_bytes);
+            /* A verify can only roll back what it checkpointed, and only an
+             * artifact that carries the grafted block ever verifies.  The
+             * second pair exists only for a two-draft block: it is 155 MB more
+             * that a one-draft cycle never touches. */
+            const bool drafting = w->qwen35_mtp.block.attn_norm != NULL;
+            const bool second = drafting && g->mtp_drafts > 1u;
+            if (drafting) {
+                g->lin_ckpt[il] = ds4_gpu_tensor_alloc((uint64_t)Hv * D * D * f32);
+                g->lin_hckpt[il] = ds4_gpu_tensor_alloc(
+                    (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32);
+            }
+            if (second) {
+                g->lin_ckpt2[il] = ds4_gpu_tensor_alloc((uint64_t)Hv * D * D * f32);
+                g->lin_hckpt2[il] = ds4_gpu_tensor_alloc(
+                    (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32);
+            }
             ok = g->lin_state[il] && g->lin_hist[il] &&
+                 (!drafting || (g->lin_ckpt[il] && g->lin_hckpt[il])) &&
+                 (!second || (g->lin_ckpt2[il] && g->lin_hckpt2[il])) &&
                  ds4_gpu_tensor_fill_f32(g->lin_state[il], 0.0f, (uint64_t)Hv * D * D) != 0 &&
                  ds4_gpu_tensor_fill_f32(g->lin_hist[il], 0.0f,
                                          (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM) != 0;
@@ -72272,6 +72758,42 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
     if (!ok) {
         fprintf(stderr, "ds4: Bonsai CUDA graph: allocation failed\n");
         qwen35_graph_free(g);
+        return false;
+    }
+    return true;
+}
+
+/* A pass's prologue, shared by the forward and the verify: validate and upload
+ * the token ids, embed them into g->h (the table is read inverse-folded), and
+ * let the grafted block consume the previous pass's last hidden row with the
+ * pass's first token before the trunk overwrites that row. */
+static bool qwen35_graph_embed_rows(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                    const int *tokens, uint32_t T, uint32_t *ids) {
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    for (uint32_t t = 0; t < T; t++) {
+        if (tokens[t] < 0 || tokens[t] >= (int)DS4_N_VOCAB) {
+            fprintf(stderr, "ds4: Bonsai token id %d is outside the vocabulary\n", tokens[t]);
+            return false;
+        }
+        ids[t] = (uint32_t)tokens[t];
+    }
+    if (!ds4_gpu_tensor_write(g->tokens, 0, ids, (uint64_t)T * sizeof(uint32_t))) return false;
+    if (!ds4_gpu_embed_tokens_quant_tensor(g->h, g->tokens, m->map, m->size,
+                                           w->token_embd->abs_offset, w->token_embd->type,
+                                           (uint32_t)w->token_embd->dim[1], T,
+                                           (uint32_t)w->token_embd->dim[0])) {
+        return false;
+    }
+    if (g_hadamard.inverse_token_embd) {
+        ds4_gpu_tensor *signs = qwen35_graph_signs(g, DS4_N_EMBD);
+        if (!signs || !ds4_gpu_qwen35_fold_inverse_tensor(g->h, DS4_N_EMBD, T,
+                                                          g_hadamard.block_size, signs)) {
+            return false;
+        }
+    }
+    if (qwen35_graph_mtp_ready(g, e) && g->mtp_pending &&
+        !qwen35_graph_mtp_draft(g, e, (int)ids[0])) {
         return false;
     }
     return true;
@@ -72291,34 +72813,12 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
         fprintf(stderr, "ds4: Bonsai CUDA graph: context of %u tokens is full\n", g->ctx_cap);
         return false;
     }
-    for (uint32_t t = 0; t < T; t++) {
-        if (tokens[t] < 0 || tokens[t] >= (int)DS4_N_VOCAB) {
-            fprintf(stderr, "ds4: Bonsai token id %d is outside the vocabulary\n", tokens[t]);
-            return false;
-        }
-        ids[t] = (uint32_t)tokens[t];
-    }
     const uint32_t pos0 = g->pos;
-
-    if (!ds4_gpu_tensor_write(g->tokens, 0, ids, (uint64_t)T * sizeof(uint32_t))) return false;
-    /* Token embeddings are read from the inverse-folded table. */
-    if (!ds4_gpu_embed_tokens_quant_tensor(g->h, g->tokens, m->map, m->size,
-                                           w->token_embd->abs_offset, w->token_embd->type,
-                                           (uint32_t)w->token_embd->dim[1], T,
-                                           (uint32_t)w->token_embd->dim[0])) {
-        return false;
-    }
-    if (g_hadamard.inverse_token_embd) {
-        ds4_gpu_tensor *signs = qwen35_graph_signs(g, DS4_N_EMBD);
-        if (!signs || !ds4_gpu_qwen35_fold_inverse_tensor(g->h, DS4_N_EMBD, T,
-                                                          g_hadamard.block_size, signs)) {
-            return false;
-        }
-    }
+    if (!qwen35_graph_embed_rows(g, e, tokens, T, ids)) return false;
 
     bool ok = ds4_gpu_begin_commands() != 0;
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
-        ok = qwen35_graph_layer(g, m, w, il, pos0, T);
+        ok = qwen35_graph_layer(g, m, w, il, pos0, T, QWEN35_CKPT_NONE);
     }
     if (ok && logits_out) {
         /* The head consumes the newest row only: copy it into the fixed row
@@ -72335,9 +72835,94 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
                                      logits_out, (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
         }
     }
+    /* MTP: the rows this chunk completes, after the head has consumed the
+     * chunk's hidden states. */
+    if (ok && qwen35_graph_mtp_ready(g, e)) {
+        ok = qwen35_graph_mtp_fill(g, e, ids, T, pos0);
+    }
     if (!ds4_gpu_flush_commands()) ok = false;
     if (ok) g->pos += T;
     return ok;
+}
+
+/* A draft block's verify pass: the same trunk over T rows, except that each
+ * gated delta-net layer checkpoints its recurrent state and conv history after
+ * row 0, and the head runs over every row.  The rows' logits land in g->verify
+ * and their argmax in g->verify_ids, so a greedy cycle brings back T integers
+ * instead of T vocabulary rows (a sampling one reads the rows and draws with
+ * the host's sampler).  Nothing here advances the grafted block: its rows pair
+ * with sampled tokens, which only the accepted prefix has. */
+static bool qwen35_graph_verify(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                const int *tokens, uint32_t T) {
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    uint32_t ids[DS4_QWEN35_VERIFY_ROWS];
+    if (!g || T < 2u || T > DS4_QWEN35_VERIFY_ROWS || T > g->cap_tokens) return false;
+    if (g->pos + T > g->ctx_cap) {
+        fprintf(stderr, "ds4: Bonsai CUDA graph: context of %u tokens is full\n", g->ctx_cap);
+        return false;
+    }
+    const uint32_t pos0 = g->pos;
+    if (!qwen35_graph_embed_rows(g, e, tokens, T, ids)) return false;
+
+    bool ok = ds4_gpu_begin_commands() != 0;
+    const enum qwen35_ckpt ckpt = T > 2u ? QWEN35_CKPT_ROW0_1 : QWEN35_CKPT_ROW0;
+    for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+        ok = qwen35_graph_layer(g, m, w, il, pos0, T, ckpt);
+    }
+    if (ok) {
+        /* One head pass over the block's rows: each row keeps the one-row
+         * head's own reduction, and the gemv writes exactly T rows into the
+         * multi-row buffer. */
+        ok = qwen35_graph_norm(g, g->normed, m, w->output_norm, g->h, T) &&
+             qwen35_graph_fold(g, g->normed, DS4_N_EMBD, T, false) &&
+             qwen35_graph_gemv(g->verify, m, w->output, g->normed, T) &&
+             ds4_gpu_argmax_rows_tensor(g->verify_ids, g->verify,
+                                        (uint32_t)DS4_N_VOCAB, T) != 0;
+    }
+    if (!ds4_gpu_flush_commands()) ok = false;
+    if (ok) g->pos += T;
+    return ok;
+}
+
+/* Commit `keep` of `rows` verified rows: the logits, the k/v rows and the state
+ * stand where the pass left them, so `keep == rows` is free and only a
+ * rejected row needs giving back.  That rollback is a buffer swap -- the
+ * checkpoint taken after row keep-1 becomes the state and the advanced state
+ * becomes the next checkpoint destination, overwritten at its row before it is
+ * read -- never a replay of the committed rows.  The grafted block then
+ * advances over the accepted rows alone, its row r pairing trunk row r with
+ * the next token. */
+static bool qwen35_graph_verify_keep(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                     const int *tokens, uint32_t keep, uint32_t rows,
+                                     uint32_t pos0) {
+    if (!g || rows < 2u || keep == 0u || keep > rows ||
+        rows > DS4_QWEN35_VERIFY_ROWS) {
+        return false;
+    }
+    if (keep < rows) {
+        ds4_gpu_tensor **state = keep == 1u ? g->lin_ckpt : g->lin_ckpt2;
+        ds4_gpu_tensor **hist = keep == 1u ? g->lin_hckpt : g->lin_hckpt2;
+        for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+            if (!g->lin_state[il]) continue;
+            ds4_gpu_tensor *swap = g->lin_state[il];
+            g->lin_state[il] = state[il];
+            state[il] = swap;
+            swap = g->lin_hist[il];
+            g->lin_hist[il] = hist[il];
+            hist[il] = swap;
+        }
+    }
+    g->pos = pos0 + keep;
+    if (!qwen35_graph_mtp_ready(g, e)) return true;
+    uint32_t ids[DS4_QWEN35_VERIFY_ROWS];
+    for (uint32_t i = 0; i < keep; i++) ids[i] = (uint32_t)tokens[i];
+    if (!qwen35_graph_mtp_fill(g, e, ids, keep, pos0)) return false;
+    /* The fill rewrote the prefix's rows with the trunk's own hidden states;
+     * any provisional draft row past it is rewritten by the next cycle, which
+     * starts exactly here. */
+    g->mtp_pos = pos0 + keep - 1u;
+    return true;
 }
 
 /* Zero the gated delta-net recurrent state and the conv history, and return to
@@ -72353,6 +72938,9 @@ static void qwen35_graph_reset(ds4_qwen35_gpu_graph *g) {
         if (g->lin_state[il]) ds4_gpu_tensor_fill_f32(g->lin_state[il], 0.0f, state_n);
         if (g->lin_hist[il]) ds4_gpu_tensor_fill_f32(g->lin_hist[il], 0.0f, hist_n);
     }
+    /* The block's prefix and its pending row belong to the dropped sequence. */
+    g->mtp_pos = 0;
+    g->mtp_pending = false;
     g->pos = 0;
 }
 
@@ -72541,17 +73129,47 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
     for (uint32_t t = 0; t < n_seq; t++) printf(" %d", seq[t]);
     printf("\n");
 
+#ifndef DS4_NO_GPU
+    const bool mtp_probe = on_gpu && !session_requested &&
+        qwen35_mtp_probe_enabled() && qwen35_graph_mtp_ready(&graph, e);
+#else
+    const bool mtp_probe = false;
+#endif
+    float *draft_logits = mtp_probe ? xmalloc((uint64_t)V * sizeof(float)) : NULL;
+    int probe_draft = -1;
+    uint32_t probe_n = 0, probe_hits = 0;
+
     for (uint32_t s = 0; s < steps; s++) {
         int best = 0;
         for (uint32_t i = 1; i < V; i++) {
             if (logits[i] > logits[best]) best = (int)i;
         }
+        if (probe_draft >= 0) {
+            probe_n++;
+            if (probe_draft == best) probe_hits++;
+        }
+        probe_draft = -1;
         size_t len = 0;
         char *txt = ds4_token_text(e, best, &len);
         printf("token %u: %d %s\n", n_seq + s, best, txt);
         fflush(stdout);
         free(txt);
         if (s + 1u < steps) {
+            /* The draft for the token after `best`, scored against the next
+             * iteration's own argmax.  It consumes the row the previous
+             * forward left pending, so the trunk below sees none. */
+#ifndef DS4_NO_GPU
+            if (mtp_probe && qwen35_graph_mtp_draft(&graph, e, best)) {
+                if (ds4_gpu_tensor_read(graph.mtp_logits, 0, draft_logits,
+                                        (uint64_t)V * sizeof(float))) {
+                    int d = 0;
+                    for (uint32_t i = 1; i < V; i++) {
+                        if (draft_logits[i] > draft_logits[d]) d = (int)i;
+                    }
+                    probe_draft = d;
+                }
+            }
+#endif
             if (session_requested) {
                 char serr[192] = "";
                 if (ds4_session_eval(sess, best, serr, sizeof(serr)) != 0 ||
@@ -72580,6 +73198,13 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
     if (session_requested) ds4_session_free(sess);
     else if (on_gpu) qwen35_graph_free(&graph);
     else ds4_qwen35_ref_state_free(&st);
+    if (mtp_probe) {
+        if (probe_n) {
+            fprintf(stderr, "ds4: MTP probe: draft argmax matched the trunk %u/%u (%.3f)\n",
+                    probe_hits, probe_n, (double)probe_hits / (double)probe_n);
+        }
+        free(draft_logits);
+    }
     free(logits);
     free(seq);
     return 0;
@@ -78521,6 +79146,250 @@ static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errl
 }
 
 #ifndef DS4_NO_GPU
+/* -------------------------------------------------------------------------
+ * Bonsai (qwen35) speculative cycle
+ *
+ * One cycle: the grafted block drafts one row from the trunk's last hidden
+ * state, the trunk verifies both rows in a single pass, and the accepted
+ * prefix commits.  Each verify row keeps the one-row decode's own reduction
+ * (the PQ2_0 family GEMM dots a row in the same order at any width up to
+ * eight), so a greedy stream matches the no-MTP one token for token; a
+ * sampling request draws its targets from those same rows with the host's
+ * sampler (sample-and-match).
+ * ------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+ * Bonsai (qwen35) serial rewind
+ *
+ * The trunk state is positional fp16 k/v rows plus, per linear layer, the
+ * gated delta-net recurrence and its conv history.  A prompt that leaves the
+ * live state keeps its common prefix: the k/v rows below it are untouched
+ * (attention never reads at or past the position), and the recurrence resumes
+ * from a copy taken at or below it, in the generic serial-ckpt slots every
+ * rewind-capable family uses.  The grafted block's rows follow the trunk: its
+ * prefix below the kept position holds the same tokens.
+ * ------------------------------------------------------------------------- */
+
+/* The rewindable parts, in layer order: one recurrence and one conv history
+ * per gated delta-net layer. */
+static uint32_t qwen35_sync_parts(const ds4_qwen35_gpu_graph *g, serial_part *parts) {
+    uint32_t n = 0;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!g->lin_state[il] || !g->lin_hist[il]) { continue; }
+        parts[n++] = (serial_part){g->lin_state[il], g->lin_state_bytes};
+        parts[n++] = (serial_part){g->lin_hist[il], g->lin_hist_bytes};
+    }
+    return n;
+}
+
+/* Copies the state as it stands after `pos` rows.  A failed copy only costs a
+ * cold prefill, so the caller does not act on it. */
+static void qwen35_sync_capture(ds4_session *s, uint32_t pos) {
+    if (!s->qwen35_graph) { return; }
+    serial_part parts[2u * DS4_QWEN35_MAX_LAYER];
+    const uint32_t n = qwen35_sync_parts(s->qwen35_graph, parts);
+    const int slot = n ? serial_ckpt_capture(s, parts, n, pos) : -1;
+    if (getenv("DS4_QWEN35_SYNC_LOG")) {
+        uint64_t bytes = 0;
+        for (uint32_t i = 0; i < n; i++) { bytes += parts[i].bytes; }
+        ds4_mem_observation o;
+        (void)ds4_gpu_mem_observe(&o);
+        fprintf(stderr,
+                "ds4: Bonsai capture at %u: %u parts, %llu B, usable %llu "
+                "(free %llu, floor %llu, sub %llu), slot %d, gen %llu\n",
+                pos, n, (unsigned long long)bytes,
+                (unsigned long long)ds4_mem_usable(),
+                (unsigned long long)o.free_bytes,
+                (unsigned long long)ds4_mem_floor_bytes(),
+                (unsigned long long)ds4_gpu_substrate_outstanding(), slot,
+                (unsigned long long)s->generation);
+    }
+}
+
+/* Rows a sync may resume at: the live position for an extension, else the
+ * deepest copy at or below the common prefix.  Zero prefills from the start.
+ * A pending draft row is the state every forward leaves behind, so it does not
+ * disqualify a resume: the tail prefill refills it from the kept position. */
+static uint32_t qwen35_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    /* DS4_QWEN35_SYNC_LOG prints the resume decision: which row the sync keeps
+     * and, when it rebuilds, the state that disqualified the live one. */
+    const bool log = getenv("DS4_QWEN35_SYNC_LOG") != NULL;
+    if (!g || !s->checkpoint_valid || g->trial_n ||
+        g->pos != (uint32_t)s->checkpoint.len) {
+        if (log) {
+            fprintf(stderr,
+                    "ds4: Bonsai sync cold: graph %d valid %d trial %u pos %u ckpt %d\n",
+                    g != NULL, s->checkpoint_valid, g ? g->trial_n : 0u,
+                    g ? g->pos : 0u, s->checkpoint.len);
+        }
+        return 0;
+    }
+    const uint32_t keep = session_keep_prefix(s, prompt);
+    if (keep == g->pos) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    if (log) {
+        fprintf(stderr, "ds4: Bonsai sync: common prefix %u of %d, slot %d at %u\n",
+                keep, prompt->len, slot, slot < 0 ? 0u : s->rewind.pos[slot]);
+    }
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
+/* Moves the trunk back to `keep` rows.  The k/v rows past it keep what the
+ * abandoned branch wrote; the tail being prefilled overwrites them.
+ *
+ * The block's rows [0, keep) are the same tokens, so they stay; the row at
+ * keep-1 is the one a fill never wrote (its chunk ended there), so a drafted
+ * cycle past this rewind reads one stale key/value row.  Only the drafts read
+ * it -- the committed tokens come from the trunk verify -- and the tail fill
+ * rewrites every row from `keep` on. */
+static bool qwen35_sync_rewind(ds4_session *s, uint32_t keep) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    serial_part parts[2u * DS4_QWEN35_MAX_LAYER];
+    const uint32_t n = qwen35_sync_parts(g, parts);
+    const int slot = serial_ckpt_find(s, keep);
+    if (!n || slot < 0 || !serial_ckpt_restore(s, slot, parts, n)) { return false; }
+    g->pos = keep;
+    if (g->mtp_pos > keep) { g->mtp_pos = keep; }
+    g->mtp_pending = false;
+    session_rewound(s, keep);
+    return true;
+}
+
+/* A cycle's failed step leaves the trunk state ahead of the checkpoint, and
+ * the gated delta-net state cannot be sliced: drop the checkpoint so the next
+ * decode replays it, as a failed plain decode does. */
+static void qwen35_trial_failed(ds4_session *s, char *err, size_t errlen, const char *why) {
+    s->checkpoint_valid = false;
+    s->checkpoint.len = 0;
+    if (s->qwen35_graph) s->qwen35_graph->trial_n = 0;
+    payload_set_err(err, errlen, why);
+}
+
+static int qwen35_session_trial(ds4_session *s, int first, int max_tokens,
+                                int *tokens, int *target, int capacity,
+                                char *err, size_t errlen) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    if (!g || !s->checkpoint_valid || g->trial_n ||
+        !qwen35_graph_mtp_ready(g, s->engine)) {
+        return 0;
+    }
+    /* How many proposals this cycle makes: what this graph allocated
+     * checkpoint pairs for, capped by what a block may hold. */
+    uint32_t drafts = g->mtp_drafts ? g->mtp_drafts : 1u;
+    const uint32_t pos0 = g->pos;
+    const uint32_t room = g->ctx_cap - pos0;
+    if (room < 2u || g->cap_tokens < 2u) return 0;
+    if (max_tokens < 2 || capacity < 2) return 0;
+    if (drafts > room - 1u) drafts = room - 1u;
+    if (drafts > g->cap_tokens - 1u) drafts = g->cap_tokens - 1u;
+    if (drafts > (uint32_t)(max_tokens - 1)) drafts = (uint32_t)(max_tokens - 1);
+    if (drafts > (uint32_t)(capacity - 1)) drafts = (uint32_t)(capacity - 1);
+    const uint32_t rows = 1u + drafts;
+    /* A cycle needs the block's pending row and the room for its rows. */
+    if (!g->mtp_pending || g->mtp_pos + 1u != pos0 || rows < 2u) {
+        return 0;
+    }
+    if (first < 0 || first >= (int)DS4_N_VOCAB) {
+        return 0;
+    }
+    tokens[0] = first;
+    /* The block's row for the previous trunk row, consumed with this token. */
+    if (!qwen35_graph_mtp_draft(g, s->engine, first) ||
+        !ds4_gpu_argmax_tensor(g->verify_ids, g->mtp_logits, (uint32_t)DS4_N_VOCAB) ||
+        !ds4_gpu_tensor_read(g->verify_ids, 0, &tokens[1], sizeof(tokens[1])) ||
+        tokens[1] < 0 || tokens[1] >= (int)DS4_N_VOCAB) {
+        qwen35_trial_failed(s, err, errlen, "Bonsai draft step failed");
+        return -1;
+    }
+    /* Each further proposal chains through the block's own hidden state: the
+     * trunk row for that position is exactly what the verify has not produced
+     * yet. */
+    for (uint32_t d = 1; d < rows - 1u; d++) {
+        if (!qwen35_graph_mtp_row(g, s->engine, tokens[d], g->mtp_chain, pos0 + d) ||
+            !ds4_gpu_argmax_tensor(g->verify_ids, g->mtp_logits, (uint32_t)DS4_N_VOCAB) ||
+            !ds4_gpu_tensor_read(g->verify_ids, 0, &tokens[d + 1u], sizeof(tokens[d + 1u])) ||
+            tokens[d + 1u] < 0 || tokens[d + 1u] >= (int)DS4_N_VOCAB) {
+            qwen35_trial_failed(s, err, errlen, "Bonsai chained draft failed");
+            return -1;
+        }
+        g->mtp_pos = pos0 + d;
+    }
+    if (!qwen35_graph_verify(g, s->engine, tokens, rows) ||
+        !ds4_gpu_tensor_read(g->verify_ids, 0, target,
+                             (uint64_t)rows * sizeof(*target))) {
+        qwen35_trial_failed(s, err, errlen, "Bonsai target verify failed");
+        return -1;
+    }
+    if (spec_sampling(&s->spec)) {
+        /* The sampler draws from the verify rows themselves; a greedy request
+         * keeps the argmax rows and never brings them over. */
+        float *host_rows = spec_host_buffer((size_t)rows * DS4_N_VOCAB);
+        if (!host_rows || !ds4_gpu_tensor_read(
+                g->verify, 0, host_rows,
+                (uint64_t)rows * DS4_N_VOCAB * sizeof(float))) {
+            qwen35_trial_failed(s, err, errlen, "Bonsai verify readback failed");
+            return -1;
+        }
+        spec_sample_rows(&s->spec, host_rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, rows,
+                         target);
+    }
+    memcpy(g->trial, tokens, (size_t)rows * sizeof(*tokens));
+    g->trial_start = pos0;
+    g->trial_n = rows;
+    ds4_metric_add(&ds4_metrics_get()->spec_drafts, rows - 1u);
+    return (int)rows;
+}
+
+/* Commit `keep` of the trial's rows and leave the kept frontier row's logits in
+ * the session, exactly where one plain decode of that row would leave them. */
+static int qwen35_session_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    ds4_qwen35_gpu_graph *g = s->qwen35_graph;
+    if (!g || !s->checkpoint_valid || !g->trial_n || keep < 1 ||
+        (uint32_t)keep > g->trial_n || g->pos != g->trial_start + g->trial_n ||
+        (uint32_t)s->checkpoint.len != g->trial_start) {
+        payload_set_err(err, errlen, "invalid Bonsai accepted prefix");
+        return 1;
+    }
+    if (!qwen35_graph_verify_keep(g, s->engine, g->trial, (uint32_t)keep,
+                                  g->trial_n, g->trial_start)) {
+        qwen35_trial_failed(s, err, errlen, "Bonsai draft rollback failed");
+        return 1;
+    }
+    if (!ds4_gpu_tensor_read(
+            g->verify, (uint64_t)(keep - 1) * DS4_N_VOCAB * sizeof(float),
+            s->logits, (uint64_t)DS4_N_VOCAB * sizeof(float))) {
+        qwen35_trial_failed(s, err, errlen, "Bonsai frontier readback failed");
+        return 1;
+    }
+    for (int i = 0; i < keep; i++) token_vec_push(&s->checkpoint, g->trial[i]);
+    if (keep > 1) ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint64_t)keep - 1u);
+    if (getenv("DS4_MTP_SPEC_LOG")) {
+        fprintf(stderr, "ds4: Bonsai MTP keep=%d/%u token=%d draft=%d pos=%u\n",
+                keep, g->trial_n, g->trial[0], g->trial[1], g->pos);
+    }
+    g->trial_n = 0;
+    s->mtp_draft_valid = false;
+    return 0;
+}
+#else /* DS4_NO_GPU */
+/* The CPU reference keeps no graph state to rewind: every sync is a cold
+ * prefill and no rewind copy is taken.  The callers are shared with the CUDA
+ * build, so the entry points exist in both. */
+static void qwen35_sync_capture(ds4_session *s, uint32_t pos) {
+    (void)s; (void)pos;
+}
+static uint32_t qwen35_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
+    (void)s; (void)prompt;
+    return 0;
+}
+static bool qwen35_sync_rewind(ds4_session *s, uint32_t keep) {
+    (void)s; (void)keep;
+    return false;
+}
+#endif
+
+#ifndef DS4_NO_GPU
 /* Motif-3: full layers keep every position; SWA rings must still hold the
  * window under the resume row. */
 static uint32_t motif3_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
@@ -78668,6 +79537,7 @@ int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     if (ds4_session_is_glm53(s)) { return (int)glm53_sync_keep(s, &prompt); }
     if (ds4_session_is_ling31(s)) { return s->ling31_graph_ready ? (int)ling31_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_gemma4(s)) { return s->gemma4_graph_ready ? (int)gemma4_sync_keep(s, &prompt) : 0; }
+    if (ds4_session_is_qwen35(s)) { return s->qwen35_graph ? (int)qwen35_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_qwen4exp(s)) { return (int)qwen4exp_sync_keep(s, &prompt); }
 #endif
     return -1;
@@ -78818,20 +79688,21 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                 return 1;
             }
         }
-        int start = 0;
-        /* A checkpoint the prompt extends continues where it stopped: the trunk
-         * state already ends at the checkpoint's last position. */
-        if (s->checkpoint_valid &&
-            qwen35_session_pos(s) == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
+        /* Resume at the common prefix when a copy exists at or below it (an
+         * agent client re-rendering the last answer, or a resent turn), and
+         * prefill from the start only when there is none. */
+        int start = (int)qwen35_sync_keep(s, prompt);
+        if (start > 0 && (uint32_t)start < qwen35_session_pos(s) &&
+            !qwen35_sync_rewind(s, (uint32_t)start)) {
+            start = 0;
+        }
+        if (start == 0) {
             qwen35_session_reset(s);
             s->generation++;
             s->checkpoint.len = 0;
             s->checkpoint_valid = false;
+        } else if (start == prompt->len) {
+            return 0;
         }
         while (start < prompt->len) {
             uint32_t chunk = (uint32_t)(prompt->len - start);
@@ -78843,6 +79714,12 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             if (chunk == 0) {
                 snprintf(err, errlen, "context is full");
                 return 1;
+            }
+            /* The last chunk's start and the sync's end are the two rows a
+             * later rewind resumes at: a resent turn keeps the first, a
+             * re-rendered continuation the second. */
+            if (start + (int)chunk == prompt->len && start > 0) {
+                qwen35_sync_capture(s, (uint32_t)start);
             }
             /* The state is only trustworthy once the whole chunk has landed. */
             s->checkpoint_valid = false;
@@ -78861,6 +79738,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                 s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
             }
         }
+        qwen35_sync_capture(s, (uint32_t)prompt->len);
         return 0;
     }
     if (s->distributed) {
@@ -80478,6 +81356,30 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         accepted[0] = first_token;
         return 1;
     }
+    if (ds4_session_is_qwen35(s)) {
+#if !defined(DS4_NO_GPU)
+        int tokens[DS4_QWEN35_VERIFY_ROWS], target[DS4_QWEN35_VERIFY_ROWS];
+        const int cap = accepted_cap < max_tokens ? accepted_cap : max_tokens;
+        const int n = qwen35_session_trial(s, first_token, cap, tokens, target,
+            (int)(sizeof(tokens) / sizeof(tokens[0])), err, errlen);
+        if (n < 0) { return -1; }
+        if (n) {
+            /* The longest candidate prefix whose rows match the trunk's own
+             * target; a stop token ends the accepted prefix, as the plain
+             * decode loop would. */
+            int keep = 1;
+            while (keep < n && tokens[keep] == target[keep - 1] &&
+                tokens[keep - 1] != eos_token &&
+                !ds4_token_is_stop(s->engine, tokens[keep - 1])) { keep++; }
+            if (qwen35_session_commit(s, keep, err, errlen)) { return -1; }
+            memcpy(accepted, tokens, (size_t)keep * sizeof(*accepted));
+            return keep;
+        }
+#endif
+        if (ds4_session_eval(s, first_token, err, errlen)) { return -1; }
+        accepted[0] = first_token;
+        return 1;
+    }
 #ifndef DS4_NO_GPU
     /* The Qwen and DeepSeek V4 serial verifiers below compare argmax rows; a
      * sampling session commits one target token (their bank lanes verify
@@ -80501,7 +81403,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
-        ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_beam(s) || ds4_session_is_minimax(s) || ds4_session_is_axk2(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
@@ -81967,6 +82869,23 @@ int ds4_test_pq2_0_ref_matvec(const void *blocks, uint64_t out_dim,
         out[r] = ref_row_dot(row, x, in_dim);
     }
     free(row);
+    return 0;
+}
+
+/* Q6_K reference entry point for the same test: the row dot the CPU path
+ * itself runs (ds4_vec_dot_q6_K_f32), so a CUDA layout error cannot hide
+ * behind a shared transcription of the format. */
+int ds4_test_q6_K_ref_matvec(const void *blocks, uint64_t out_dim,
+                             uint64_t in_dim, const float *x, float *out) {
+    if (!blocks || !x || !out || out_dim == 0 ||
+        in_dim == 0 || in_dim % QK_K != 0u) {
+        return 1;
+    }
+    const uint64_t row_blocks = in_dim / QK_K;
+    for (uint64_t r = 0; r < out_dim; r++) {
+        out[r] = ds4_vec_dot_q6_K_f32(
+                (int)in_dim, (const block_q6_K *)blocks + r * row_blocks, x);
+    }
     return 0;
 }
 
