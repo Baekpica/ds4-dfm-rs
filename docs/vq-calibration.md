@@ -451,3 +451,6 @@ used to accept or reject the build.
 **Cost.** One GPU and a 250 GB host: the residual streams of the 8 shards (139.4 GiB) rotate
 through one pinned arena, the Engram rows of every shard are gathered once, and each layer
 takes K=8192: mean collect 86.5 s, fit 104.3 s, pack/verify/write 28.6 s; K=4096: mean collect 90.1 s, fit 72.5 s, pack/verify/write 23.2 s (packing overlaps the following layer). The 40 layers took 2.00 h (7184.4 s); peak device memory 95.98 GiB collecting and 98.26 GiB converting; peak host RSS 177.70 GiB.
+
+The [dated verification and evaluation record](deepseek41-hvq-evaluation-2026-11-11.md) includes every layer,
+all 19 domains, the numerical floor, error tails and conversion cost.

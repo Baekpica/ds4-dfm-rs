@@ -33,6 +33,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | Guide | Covers |
 |---|---|
 | [VQ calibration](vq-calibration.md) | `tools/vq_calib/`: activation statistics, importance-weighted Lloyd for shared-codebook GVQ, 9/10-bit GVQ v2, the A.X-K2 VQ pipeline |
+| [DeepSeek V4.1 hVQ evaluation](deepseek41-hvq-evaluation-2026-11-11.md) | hVQ build identity, implementation checks, matched VQ/iVQ/hVQ fidelity, numerical floor and conversion cost |
 
 ## Models
 
