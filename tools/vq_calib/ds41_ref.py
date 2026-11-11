@@ -567,6 +567,9 @@ class Layer:
                 t['a2w'][e] += (w2d.float()[None] @ af)[0].double()
                 t['a2n'][e] += (af / af.mean(-1, keepdim=True).clamp_min(1e-30)).sum(0).double()
                 del xf, af
+                hess = getattr(stats, 'hess', None)        # per-expert second moments for hVQ (ds41_hess.LayerHess)
+                if hess is not None:
+                    hess.add(e, xe, act)
             y.index_add_(0, tok, F.linear(act_quant((we[:, None] * act).to(BF)), w2).float())
             del w1, w3, w2, xe, xq, g, u, act
         for c0 in range(0, N, 65536):
