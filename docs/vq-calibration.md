@@ -16,6 +16,106 @@ whose routed experts must fit 9 bits per 8 weights (10 on seven MoE
 layers, 16, 20, …, 40) to serve 262,144 tokens on one DGX Spark: ~1.14 BPW,
 below IQ1_S.
 
+## Methods and prior work
+
+Three conversions share one container. Each keeps the previous one's format
+and changes one thing; the sections below record each use.
+
+| Stage | Fit | Calibration data | Changes against the previous stage |
+|---|---|---|---|
+| VQ | Lloyd on the weights; RMS row gains | none | — |
+| iVQ | Lloyd, assignment and least-squares gains under a diagonal input second moment | per-expert `Σx²` | codebooks, indices, gains |
+| hVQ | iVQ's codebooks; block error feedback through the input correlation | per-expert `Σ x xᵀ` | indices, gains |
+
+The core of every stage has prior work. What is specific to this tree is the
+setting (one codebook shared by hundreds of experts, about 1.6 bits per
+weight, a 500B-class MoE converted on one GPU) and what was measured in it.
+
+**Format.** A row is one F16 gain times 8-weight codewords from a learned
+book; one E4M3 book serves every expert and the gate/up/down projections of
+a MoE layer. The recipe and the DQVL layout are YoungAi's; GVQ1 is this
+tree's container for it.
+
+- Vector and product quantization of network weights: Gong et al. (2014).
+- A per-row scale times a learned codebook over groups of 8 weights, fitted
+  on `XXᵀ`: AQLM (2024), the closest LLM precedent. PVQ (2024) splits
+  direction and amplitude with an implicit lattice code.
+- Fixed 8-weight lattice codes: llama.cpp IQ2 (E8-lattice grids), QuIP#
+  (E8P).
+- A second codebook on the residual (R13+8 on GLM-5.3, MiMo-V2.6 and
+  Gemma-4): residual quantization in Gong et al.; residual stages in QuIP#
+  and VPTQ; additive codebooks in AQLM.
+
+**iVQ.** The objective is a diagonally weighted distortion with weighted-mean
+centroids.
+
+- Hessian-weighted k-means: Choi et al. (2017), scalar, with the loss
+  Hessian's diagonal.
+- Activation-weighted k-means for product quantization of the output error:
+  Stock et al. (2020).
+- Fisher-diagonal k-means per output channel in LLMs: SqueezeLLM (2024).
+  Hessian-diagonal-weighted k-means initialization for vector codes: VPTQ
+  (2024).
+- An importance matrix `⟨a²⟩` with lattice codes over 8 weights (IQ1/IQ2;
+  IQ3 uses 4): llama.cpp's i-quants, which made the imatrix mandatory at 1–2
+  bits.
+
+Here the statistics are per routed expert while the codebook is shared, the
+gains are refit by weighted least squares, and rare experts are shrunk toward
+the layer profile.
+
+**hVQ.** The assignment is sequential rounding with error feedback.
+
+- GPTQ (2023): feedback from the Cholesky factor of `H⁻¹`, 1% dampening.
+- QuIP (2023), Theorem 6: GPTQ equals LDLQ, one Cholesky of `H` and no
+  inverse. hVQ's factor-of-`H` form is that statement.
+- QuIP# (2024), BlockLDLQ: g columns rounded together by a vector quantizer,
+  with block-LDL feedback. hVQ's 8-column step has this skeleton.
+- GPTVQ (2024): learned codebooks with d columns at a time (d ≤ 4, several
+  books per layer, codebook updates). hVQ keeps iVQ's books frozen.
+
+Four choices sit on top of that skeleton:
+
+| Choice | Known problem or family | Prior treatment | Here |
+|---|---|---|---|
+| `H_t = D½((1−t)I + tR)D½` | shrinking off-diagonals toward the diagonal: Schäfer and Strimmer (2005); DASH-Q (2026) defines `D + ρO` for quantization | DASH-Q takes ρ ≈ 0: off-diagonals are unstable at hundreds to thousands of samples. It sweeps ρ on a stability metric, never as a quantization setting | quality measured along t on four layers: steep fall to t ≈ 0.75, flat within 0.4% from 0.9 to 1; t = 1 used. D is iVQ's column weights, so `H_1` is the correlation under those weights, not the raw second moment |
+| token-normalized statistics | BOS and the first positions dominate the second moment | MiniCPM4's P-GPTQ drops the first four positions; QMoE masks special tokens; an llm-compressor report found that dropping BOS hurt on one model | every routed token divided by its own mean square: all kept, none dominant |
+| per-expert moments shrunk to the layer mean | rare experts have rank-deficient moments | QMoE raises dampening and falls back to plain rounding; MoEQuant rebalances the calibration data and weights tokens by gate score | pseudo-count 4096 toward the layer's mean per-token moment (gate/up) or the identity (down); no prior use found |
+| scale | error feedback on a very large MoE | QMoE: 1.6T parameters, 0.8 bits, under a day on one GPU, scalar ternary codes | 40 layers × 384 experts at about 1.6 bits, 2.0 h on one H200, a drop-in file |
+
+The t result runs against DASH-Q's conclusion in a different regime: vector
+codes with frozen books, 3.65M calibration tokens, layer-local output error.
+DASH-Q's own sample-size ablation shows scalar GPTQ not improving up to 8,192
+sequences, and AQLM reports its full-`XXᵀ` vector method improving up to
+4,096.
+
+**Not established.** No run of GPTVQ, QuIP# or AQLM on this model. No
+ablation that isolates token normalization, the shrink target or frozen
+against refit codebooks. One model; the pilot's held-out set also scores the
+final build. The literature search was limited: "no prior use found" is not a
+claim of absence.
+
+References: [Gong et al. 2014](https://arxiv.org/abs/1412.6115) ·
+[Choi et al. 2017](https://arxiv.org/abs/1612.01543) ·
+[Stock et al. 2020](https://arxiv.org/abs/1907.05686) ·
+[GPTQ](https://arxiv.org/abs/2210.17323) ·
+[SqueezeLLM](https://arxiv.org/abs/2306.07629) ·
+[QuIP](https://arxiv.org/abs/2307.13304) ·
+[QMoE](https://arxiv.org/abs/2310.16795) ·
+[AQLM](https://arxiv.org/abs/2401.06118) ·
+[QuIP#](https://arxiv.org/abs/2402.04396) ·
+[GPTVQ](https://arxiv.org/abs/2402.15319) ·
+[VPTQ](https://arxiv.org/abs/2409.17066) ·
+[PVQ](https://arxiv.org/abs/2410.16926) ·
+[MoEQuant](https://arxiv.org/abs/2505.03804) ·
+[MiniCPM4](https://arxiv.org/abs/2506.07900) ·
+[DASH-Q](https://arxiv.org/abs/2604.13806) ·
+[Schäfer and Strimmer 2005](https://strimmerlab.github.io/publications/journals/shrinkcov2005.pdf) ·
+llama.cpp [#4773](https://github.com/ggml-org/llama.cpp/pull/4773),
+[#4861](https://github.com/ggml-org/llama.cpp/pull/4861),
+[#5196](https://github.com/ggml-org/llama.cpp/pull/5196) ·
+llm-compressor [#3365](https://github.com/vllm-project/llm-compressor/pull/3365)
+
 ## Pipeline
 
 | Step | Tool | Output |
