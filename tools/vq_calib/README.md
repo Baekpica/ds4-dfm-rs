@@ -158,8 +158,8 @@ the measurements are in [docs/vq-calibration.md](../../docs/vq-calibration.md).
 | `ds41_hess.py` | per-expert token-normalized second moments of one MoE layer (`Σ x xᵀ / mean(x²)`, `Σ a aᵀ / mean(a²)`): FP64 Gram per chunk, FP32 sums, on the device; precision probe; digest |
 | `ds41_hvq.py`, `cuda/ds41_hvq.cu` | shrunk correlation, `H_t = D½((1−t)I + tR)D½ + damp`, its factor `V` (`H = V Vᵀ`), the panel kernel (8-column blocks in order, feedback through `V`, block metric `V_BB V_BBᵀ`) and the least-squares gain under `H_t` |
 | `convert_layer_ds41_hvq.py` | one MoE layer -> one DQVL v3 blob + receipt (`Job` construction, `fit`, `finish`); `--t 0` is the iVQ conversion bit for bit; `--verify` reads finished layers back |
-| `run_hvq_ds41.py` | one GPU, layer by layer: collect a layer's moments, convert it, drop the moments; the calibration shards' residual streams rotate through pinned host buffers; resumable |
-| `sweep_hvq_ds41.py` | the choice of `t` and damping: held-out per-token routed-output error of each setting on a few layers (`dump`, `run`, `choose`) |
+| `run_hvq_ds41.py` | one GPU, layer by layer: collect a layer's moments, convert it, drop the moments; the calibration shards' residual streams rotate through pinned host buffers; resumable. An Engram row cache (`--engram-cache`), saved moments (`--save-hess`) and sweep rows are reused only with the record of this run's inputs and refused otherwise |
+| `sweep_hvq_ds41.py` | the choice of `t` and damping: held-out per-token routed-output error of each setting on a few layers (`dump`, `run`, `choose`); every row carries its inputs (calibration run, column statistics, iVQ/VQ blob, held-out dump) and `choose` takes one calibration run |
 | `assemble_ds41_ivq.py` | also assembles hVQ blobs (the 40 receipts must share `t`, damping, shrink and the calibration run) |
 | `tests/test_ds41_hvq.py` | one GPU, synthetic: `t = 0` equals the iVQ kernels bit for bit, a pass equals FP64 GPTQ, feedback lowers the output error on correlated inputs, gain optimum, rank-deficient moments, panel size, DQVL round trip |
 
@@ -194,7 +194,8 @@ python3 tests/test_axk2_vq_format.py                 # CPU: GVQ v2 encode/decode
 python3 tests/test_run_guards.py                     # CPU: one statistics run per reduction, checkpoint and
                                                      # layer-range guards, converter reuse, statistics bound to
                                                      # the converted checkpoint, one calibration run for the
-                                                     # expert and non-expert parts of a release
+                                                     # expert and non-expert parts of a release; hVQ's Engram
+                                                     # row cache, saved moments and sweep rows bound to their inputs
 python3 tests/test_axk2_vq_gpu.py --work /tmp/vq-test  # one GPU: weights == 1 bit-identity, packing parity,
                                                        # weighted Lloyd, gain refit, throughput
 python3 tests/test_ds41_hvq.py                       # one GPU: hVQ t = 0 == the iVQ kernels, a pass == FP64 GPTQ,

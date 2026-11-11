@@ -314,6 +314,57 @@ rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, fake_shards, ca
 assert (cache / 'L01-s0-w.npy').stat().st_mtime_ns == stamp          # built once
 assert rh41.parse_probe('3:1,2;11:7') == {3: (1, 2), 11: (7,)} and rh41.parse_probe('') == {}
 print('run_hvq_ds41: Engram rows gathered once per shard equal the table rows: ok')
+# a cache gathered for other tokens or another checkpoint is refused, never served: same shard sizes
+# and the same first rows pass the per-shard probe in Collector.engram_rows
+moved = [SimpleNamespace(tokens=sh.tokens, hashes=sh.hashes.clone()) for sh in fake_shards]
+moved[1].hashes[-1, 0, 0] = (moved[1].hashes[-1, 0, 0] + 1) % 5000
+refused(lambda: rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, moved, cache),
+        'engram cache of other tokens', 'L01', 'shard 1')
+refused(lambda: rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, fake_shards, cache, 'other checkpoint'),
+        'engram cache of another source', 'L01', 'source')
+(cache / 'L14.json').unlink()                                          # a cache without its record
+refused(lambda: rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, fake_shards, cache),
+        'engram cache without a record', 'L14')
+print('run_hvq_ds41: an Engram row cache of other tokens or another checkpoint is refused: ok')
+
+# ---- run_hvq_ds41.py / sweep_hvq_ds41.py: saved moments and sweep rows belong to one experiment ----
+hd = tmp / 'hess' / 'layer-03'
+hd.mkdir(parents=True)
+assert not rh41.saved(hd, rid)
+(hd / 'meta.json').write_text(json.dumps({'run_id': rid, 'layer': 3}))
+assert rh41.saved(hd, rid)
+refused(lambda: rh41.saved(hd, 'a' * 64), 'moments of another run', 'layer-03', 'run')
+sw41 = rh41.sw
+inputs = {'calibration_run_id': rid, 'd_statistics_sha256': 'd' * 64, 'ivq_blob_sha256': 'b' * 64,
+          'vq_blob_sha256': None, 'held_out_sha256': 'f' * 64}
+grid = [(0.5, 0.0, 256.0), (1.0, 0.0, 4096.0)]
+sd = tmp / 'sweep'
+sd.mkdir()
+
+
+def sweep_rows(L, inputs, grid=grid):
+    rows = [{'layer': L, 'name': 'ivq', 't': None, 'damping': None, 'hess_shrink': None, 'median_tok': 0.2,
+             'energy_weighted': 0.1, 'inputs': inputs}]
+    rows += [{'layer': L, 'name': 'hvq', 't': t, 'damping': d, 'hess_shrink': h, 'median_tok': 0.1 + 0.01 * t,
+              'energy_weighted': 0.05, 'inputs': inputs} for t, d, h in grid]
+    (sd / f'sweep-{L:02d}.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+
+
+assert not rh41.swept(sd / 'sweep-03.jsonl', grid, inputs)                  # nothing swept yet
+sweep_rows(3, inputs)
+assert rh41.swept(sd / 'sweep-03.jsonl', grid, inputs)
+assert not rh41.swept(sd / 'sweep-03.jsonl', grid + [(0.75, 0.0, 256.0)], inputs)
+for key in inputs:
+    refused(lambda: rh41.swept(sd / 'sweep-03.jsonl', grid, {**inputs, key: 'e' * 64}), f'sweep rows of another {key}', key)
+sweep_rows(3, None)                                                    # rows written before the record existed
+refused(lambda: rh41.swept(sd / 'sweep-03.jsonl', grid, inputs), 'sweep rows without a record', 'sweep-03.jsonl')
+sweep_rows(3, inputs)
+sweep_rows(11, {**inputs, 'd_statistics_sha256': 'c' * 64, 'ivq_blob_sha256': 'a' * 64})   # per-layer inputs differ
+sw41.choose(SimpleNamespace(out=sd))
+assert json.loads((sd / 'choice.json').read_text())['chosen']['t'] == 0.5
+sweep_rows(11, {**inputs, 'calibration_run_id': 'a' * 64})
+refused(lambda: sw41.choose(SimpleNamespace(out=sd)), 'choice over two calibration runs', 'calibration_run_id')
+print('run_hvq_ds41, sweep_hvq_ds41: saved moments and sweep rows of another experiment are refused: ok')
 cg = tmp / 'cgroup'
 cg.mkdir()
 rh41.CGROUP = cg

@@ -31,6 +31,7 @@ layers to DIR (45.1 GiB each) for sweep_hvq_ds41.py run.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,7 +53,6 @@ import sweep_hvq_ds41 as sw
 
 def content_sha256(data):
     """sha256(input_ids bytes + offsets bytes): the calibration set's identity (file bytes vary with metadata order)."""
-    import hashlib
     return hashlib.sha256(data['input_ids'].numpy().tobytes() + data['offsets'].numpy().tobytes()).hexdigest()
 
 
@@ -83,8 +83,34 @@ class Pool:
 ENGRAM_WINDOW = 1 << 24      # table rows read at a time when the cache is built (4 GiB)
 
 
-def build_engram_cache(src, a, shards, out):
-    """Every shard's Engram table rows, gathered once into `out` (L{layer}-s{shard}-{w,s}.npy).
+def engram_identity(shards, li, source):
+    """What a layer's gathered rows depend on: the checkpoint and every shard's row ids."""
+    return {'source': source, 'shards': [hashlib.sha256(sh.hashes[:, li].contiguous().numpy().tobytes()).hexdigest()
+                                         for sh in shards]}
+
+
+def check_engram_cache(record, want, L):
+    """Raises unless `record` says the layer's cached rows were gathered for `want`. File names alone do not
+    say so: a second calibration set with shards of the same size would be served the first one's rows."""
+    if not record.exists():
+        raise ValueError(f'{record.parent}: L{L:02d} has rows and no record of the tokens and checkpoint they '
+                         'were gathered for; remove them or pass another --engram-cache')
+    have = json.loads(record.read_text())
+    if have == want:
+        return
+    diff = ['source'] if have.get('source') != want['source'] else []
+    old = have.get('shards', [])
+    if len(old) != len(want['shards']):
+        diff.append(f"{len(old)} shards, not {len(want['shards'])}")
+    diff += [f'shard {i}' for i, (x, y) in enumerate(zip(old, want['shards'])) if x != y]
+    raise ValueError(f"{record.parent}: L{L:02d} was gathered for other inputs ({', '.join(diff)}); "
+                     'remove it or pass another --engram-cache')
+
+
+def build_engram_cache(src, a, shards, out, source=''):
+    """Every shard's Engram table rows, gathered once into `out` (L{layer}-s{shard}-{w,s}.npy), with the
+    record of what they were gathered for (L{layer}.json: `source`, the checkpoint's fingerprint, and each
+    shard's row ids). Rows of other tokens or another checkpoint are refused, never reused.
 
     A layer's table is 98 GiB and the calibration tokens touch nearly all of its pages in hashed
     order. Read through a memory map that is fast only while the whole table stays in the page
@@ -93,7 +119,9 @@ def build_engram_cache(src, a, shards, out):
     out.mkdir(parents=True, exist_ok=True)
     for li, L in enumerate(a['engram_layer_ids']):
         names = [(out / f'L{L:02d}-s{r}-w.npy', out / f'L{L:02d}-s{r}-s.npy') for r in range(len(shards))]
+        record, want = out / f'L{L:02d}.json', engram_identity(shards, li, source)
         if all(w.exists() and s.exists() for w, s in names):
+            check_engram_cache(record, want, L)
             continue
         t0 = time.monotonic()
         table = src.memmap(f'layers.{L}.engram.embed.weight')
@@ -121,6 +149,7 @@ def build_engram_cache(src, a, shards, out):
                 np.save(tmp, rows[start:start + n])
                 tmp.rename(path)
             start += n
+        record.write_text(json.dumps(want) + '\n')
         del rows_w, rows_s
         emit({'phase': 'engram-cache', 'layer': L, 'rows': int(ids.size), 'seconds': round(time.monotonic() - t0, 1)})
 
@@ -193,7 +222,7 @@ class Collector:
         self.shards = [Shard(shard(off, r, world, max_tokens or None), ids, off, hasher, dev) for r in range(world)]
         self.tokens = sum(s.tokens for s in self.shards)
         if engram_cache is not None:
-            build_engram_cache(self.teacher.src, a, self.shards, engram_cache)
+            build_engram_cache(self.teacher.src, a, self.shards, engram_cache, source_fingerprint(source)[0])
         self.pool = Pool(world - 1, max(s.tokens for s in self.shards), a['hc_mult'], a['dim']) if world > 1 else None
         self.ropes = rope_tables(a, max(n for s in self.shards for _, n in s.seqs) + 8, dev)
         self.reader = ThreadPoolExecutor(1)
@@ -321,15 +350,22 @@ def parse_probe(text):
     return out
 
 
-def swept(path, grid):
-    """True when sweep-LL.jsonl already holds every setting of the grid."""
-    if not path.exists():
+def saved(path, run):
+    """True when `path` holds this collection run's moments; raises when it holds another run's."""
+    meta = path / 'meta.json'
+    if not meta.exists():
         return False
-    have = set()
-    for line in path.read_text().splitlines():
-        row = json.loads(line)
-        have.add((row['name'], row['t'], row['damping'], row['hess_shrink']))
-    return all(('hvq', *g) in have for g in grid)
+    have = json.loads(meta.read_text()).get('run_id')
+    if have != run:
+        raise ValueError(f'{path} holds the moments of another calibration run ({have}); this run is {run}')
+    return True
+
+
+def swept(path, grid, inputs):
+    """True when sweep-LL.jsonl already holds every setting of the grid for these inputs; rows made from
+    other inputs are refused (sw.settings_done)."""
+    have = sw.settings_done(path, inputs)
+    return path.exists() and all(('hvq', *g) in have for g in grid)
 
 
 def main():
@@ -378,12 +414,13 @@ def main():
             'calib_content_sha256': content_sha256(data), 'run': run}
     del data
     var = cv.Variant(a.t, a.damp, a.hess_shrink) if mode == 'convert' else None
-    todo = []
+    todo, inputs = [], {}
     for L in layers:
         if mode == 'save':
-            wanted = not (a.save_hess / f'layer-{L:02d}' / 'meta.json').exists()
+            wanted = not saved(a.save_hess / f'layer-{L:02d}', info['run_id'])
         elif mode == 'sweep':
-            wanted = not swept(a.out / f'sweep-{L:02d}.jsonl', grid)
+            inputs[L] = sw.sweep_inputs(L, info['run_id'], statistics(a.d_stats, L, 'imatrix'), a.ivq, a.vq, a.sweep_dump)
+            wanted = not swept(a.out / f'sweep-{L:02d}.jsonl', grid, inputs[L])
         else:
             st = statistics(a.d_stats, L, 'imatrix')
             wanted = not cv.reuse(L, a.out, {**var.want(), 'd_statistics_sha256': st[2], 'calibration_run_id': info['run_id']})
@@ -430,7 +467,8 @@ def main():
             emit({'layer': L, 'phase': 'saved', 'seconds': round(time.monotonic() - t1, 1)})
         elif mode == 'sweep':
             t1 = time.monotonic()
-            sw.sweep_layer(L, col.teacher, host, hess, sw.held_out_x(a.sweep_dump, L), st, a.ivq, a.vq, grid, a.out, hvq)
+            sw.sweep_layer(L, col.teacher, host, hess, sw.held_out_x(a.sweep_dump, L), st, a.ivq, a.vq, grid, a.out, hvq,
+                           inputs[L])
             emit({'layer': L, 'phase': 'swept', 'seconds': round(time.monotonic() - t1, 1)})
             del host
         else:

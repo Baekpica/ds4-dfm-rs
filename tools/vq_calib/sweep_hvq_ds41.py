@@ -14,6 +14,7 @@ This is a choice of hyperparameters, not an acceptance test: the chosen setting 
 all 40 layers whatever its distance from iVQ.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -30,6 +31,7 @@ from ds41_ref import BF, Engram, EngramHash, Layer, SeqState, Source, Teacher, r
 import ds41_vq_format as fmt
 from ds41_vq_student import VQExperts, decode_blob
 from measure_ds41 import MeasuredLayer, ROOT
+from reduce_stats import sha256_file
 
 PROJS = ('w1', 'w3', 'w2')
 
@@ -110,19 +112,49 @@ def parse_grid(text, shrink=256.0):
     return [(r[0], r[1], r[2] if len(r) > 2 else shrink) for r in rows]
 
 
-def sweep_layer(L, teacher, host, hess, x, st, ivq, vq, grid, out, hvq):
+def blob_sha256(base, L):
+    """SHA-256 of layer L's routed-expert blob in a VQ-format base: the bytes a fit starts from."""
+    f = cv.open_ivq(base)
+    info = f.tensor(f'blk.{L}.ffn_exps_vq.blob')
+    return hashlib.sha256(f.vf.pread(info.abs_offset, info.nbytes).tobytes()).hexdigest()
+
+
+def sweep_inputs(L, run, st, ivq, vq, dump):
+    """Everything a sweep row of layer L depends on besides its setting: the moments' calibration run
+    (None for a t = 0 grid, which reads none), the column statistics, the blobs and the held-out input.
+    Rows are reused and compared only under one such record."""
+    return {'calibration_run_id': run, 'd_statistics_sha256': st[2], 'ivq_blob_sha256': blob_sha256(ivq, L),
+            'vq_blob_sha256': blob_sha256(vq, L) if vq else None,
+            'held_out_sha256': sha256_file(dump / f'x-{L:02d}.safetensors')}
+
+
+def settings_done(path, inputs):
+    """The (name, t, damping, shrink) rows sweep-LL.jsonl holds; raises when a row was made from other
+    inputs, so a rerun with another calibration set, statistics, base or held-out dump is never skipped."""
+    done = set()
+    if not path.exists():
+        return done
+    for line in path.read_text().splitlines():
+        row = json.loads(line)
+        have = row.get('inputs') or {}
+        diff = sorted(k for k in inputs if have.get(k) != inputs[k])
+        if diff:
+            raise ValueError(f"{path.name} holds rows of another experiment (differs in: {', '.join(diff)}); "
+                             'use another --out')
+        done.add((row['name'], row['t'], row['damping'], row['hess_shrink']))
+    return done
+
+
+def sweep_layer(L, teacher, host, hess, x, st, ivq, vq, grid, out, hvq, inputs):
     """Every (t, damp, shrink) of `grid` on layer L: fit, then the held-out per-token error -> out/sweep-LL.jsonl.
 
     host: the layer's host tensors (Teacher.host_layer); hess: LayerHess; x: the held-out MoE input;
-    st: the iVQ release's statistics (D). Settings already in the file are skipped."""
+    st: the iVQ release's statistics (D); inputs: sweep_inputs, stamped into every row. Settings already
+    in the file for the same inputs are skipped."""
     dev = 'cuda'
     out.mkdir(parents=True, exist_ok=True)
     path = out / f'sweep-{L:02d}.jsonl'
-    done = set()
-    if path.exists():
-        for line in path.read_text().splitlines():
-            row = json.loads(line)
-            done.add((row['name'], row['t'], row['damping'], row['hess_shrink']))
+    done = settings_done(path, inputs)
     grid = [g for g in grid if ('hvq', *g) not in done]
     names = {d[0] for d in done}
     if not grid and 'ivq' in names:
@@ -133,7 +165,7 @@ def sweep_layer(L, teacher, host, hess, x, st, ivq, vq, grid, out, hvq):
 
     def emit_row(row):
         with path.open('a') as f:
-            f.write(json.dumps(row) + '\n')
+            f.write(json.dumps({**row, 'inputs': inputs}) + '\n')
         emit(row)
 
     # the published blobs on the same tokens
@@ -170,8 +202,10 @@ def run(a):
     L, grid = a.layer, parse_grid(a.grid, a.hess_shrink)
     teacher = Teacher(a.source, 'cuda')
     hess = LayerHess.load(a.hess / f'layer-{L:02d}', 'cuda') if any(g[0] for g in grid) else None
-    sweep_layer(L, teacher, teacher.host_layer(L), hess, held_out_x(a.dump, L), statistics(a.d_stats, L, 'imatrix'),
-                a.ivq, a.vq, grid, a.out, hv.Hvq())
+    st = statistics(a.d_stats, L, 'imatrix')
+    inputs = sweep_inputs(L, hess.meta.get('run_id') if hess is not None else None, st, a.ivq, a.vq, a.dump)
+    sweep_layer(L, teacher, teacher.host_layer(L), hess, held_out_x(a.dump, L), st, a.ivq, a.vq, grid, a.out, hv.Hvq(),
+                inputs)
 
 
 def choose(a):
@@ -181,6 +215,10 @@ def choose(a):
             r = json.loads(line)
             rows.setdefault(r['layer'], []).append(r)
     layers = sorted(rows)
+    # one choice, one calibration run: layers swept from different moments do not rank a setting together
+    runs = {(r.get('inputs') or {}).get('calibration_run_id') for rs in rows.values() for r in rs}
+    if len(runs) > 1:
+        raise ValueError(f'{a.out}: sweep rows of {len(runs)} calibration runs (calibration_run_id {sorted(map(str, runs))})')
     ivq = {L: next(r for r in rows[L] if r['name'] == 'ivq') for L in layers}
     table = {}
     for L in layers:
