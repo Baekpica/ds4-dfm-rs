@@ -282,3 +282,172 @@ The weighted Lloyd, the GVQ v2 container and the release tools are family
 independent. A new family needs its own `<family>_ref.py` layer forward with
 the `Stats` hooks (see `axk2_ref.py`), checked against transformers by a
 `selftest`, and a non-expert policy in `convert_nonexpert.py`.
+
+### Fourth use: hVQ, error feedback through the input correlation (DeepSeek-V4.1-Flash-1017)
+
+[Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF)
+tests the suspect the iVQ measurements left: the diagonal approximation. iVQ weighs column
+k of an expert matrix by D_k (the importance above) and ignores how input channels move
+together. hVQ uses the whole second moment of an expert's input, GPTQ / GPTVQ style: the
+8-column blocks the format fixes are quantized in order, and each block's error is fed
+forward into the targets of the columns not yet quantized.
+
+Only the indices and the row gains change. The codebooks are the iVQ release's bytes; K,
+offsets, sizes and the recipe id are unchanged, and every byte outside the 40
+routed-expert blobs is the VQ base's, so ds4-dfm-rs's `ds41` path loads the file as it
+loads VQ and iVQ (`ds41_inspect`: bind 1000/1000).
+
+**Definition.** For expert e and a projection with input second moment S (5120² for
+gate and up, which share an input and one factorization; 2304² for down):
+
+    R   = correlation of S                                   (unit diagonal)
+    H_t = D^1/2 ((1 - t) I + t R) D^1/2  + damp · mean(D) · I
+    H_t = V V^T,  V upper triangular                          (Cholesky of the reversed matrix)
+
+D is the iVQ release's column weights, unchanged (`imatrix`, col_power 0.75, shrink 256,
+floor 0.02, from the release's statistics). A row's output error is
+`(w − q) H_t (w − q)^T = ‖(w − q) V‖² = Σ_B ‖e_B‖²` with
+`e_B = (w_B − q_B) V_BB + Σ_{A<B} (w_A − q_A) V_AB`: block B's term depends on blocks
+A ≤ B only, so the blocks are chosen in ascending order, each to minimize its own term:
+
+    target   w~_B = w_B + r_B V_BB^-1,     r_B = Σ_{A<B} (w_A − q_A) V_AB
+    codeword c = argmin (w~_B / g − c) M_B (w~_B / g − c)^T,     M_B = V_BB V_BB^T
+
+This is GPTQ's update written with the factor of H instead of the factor of H⁻¹: one
+Cholesky per expert input, no inverse (`tests/test_ds41_hvq.py` drives the textbook
+inverse-factor form in FP64 with the kernel's choices: every choice is its optimum). The
+row gain g is fixed during a pass and refit afterwards by least squares under H_t,
+`g = w H_t ĉ^T / ĉ H_t ĉ^T`; as in iVQ there are two passes (RMS gains, refit, again).
+
+**t = 0 is iVQ.** H_0 = D has no feedback, M_B is the column weights, and the kernels add
+the off-diagonal terms as exact zeros to iVQ's own fused sums. `convert_layer_ds41_hvq.py
+--t 0` matches the published layer-14 iVQ blob byte for byte, and matches
+`convert_layer_ds41.py` run on the same host. Synthetic tests cover both bit widths.
+
+**Statistics.** Per expert, over the tokens routed to it, `Σ x x^T / mean(x²)` and
+`Σ a a^T / mean(a²)`: every token divided by its own mean square, as `x2n` / `a2n`,
+because raw sums describe the BOS and other massive tokens (above). Same calibration set
+(3,653,893 tokens) and teacher stream as iVQ, dealt into the same 8 shards; the diagonal
+statistics collected alongside agree with the iVQ release's to count_l1: maximum relative difference 0.0035; x2_profile_rel: maximum relative difference 0.147; a2_profile_rel: maximum relative difference 0.148. A layer's moments
+are 45.1 GiB (48.4 GB) in FP32 (40 layers: 1.9 TB), so `run_hvq_ds41.py` keeps them on the device
+only: collect a layer, convert it, drop them. Each chunk's Gram matrix is computed in FP64
+and added to an FP32 sum: in the archived pilot, against FP64 sums the correlations of twelve probed experts
+(29 to 497,852 routed tokens) differ by at most 2.1e-7 (all-FP32: 2.0e-6). The printed
+summary is retained; the raw precision-probe files were lost with the previous pod.
+
+The inputs are far from uncorrelated. The participation ratio `C² / ‖R‖_F²` of an expert's
+input correlation, C for uncorrelated channels, is 19.3–135.3 for gate/up (mean layer median 77.1, 5120 channels); 95.6–1009.1 for down (mean layer median 531.6, 2304 channels).
+
+**Rare experts** (the rarest of a layer saw 4 tokens) are shrunk before the
+correlation is taken, with a pseudo-count of tokens: gate/up toward the layer mean per
+token (experts share the hidden space), down toward the identity (an expert's channels are
+its own). No input matrix needed a further diagonal lift.
+
+**Choice of t, damping and shrink.** The pilot ran in the previous pod; its raw
+files were lost, and the table survives in the archived session output. The full
+build and final measurements below were run on the replacement pod.
+
+Chosen once, on layers 3, 11, 19 and 27, by the median
+over the 58,803 held-out tokens of the routed-output error (the original's inputs and
+routes, `sweep_hvq_ds41.py`), and applied to all 40 layers:
+
+Pilot executed in the previous pod; raw sweep JSONL and probe files were lost. The table and precision summaries below are recovered verbatim from the archived session output, not rerun on this pod.
+
+| t | damping | shrink (tokens) | Layer 3 (13-bit) | Layer 11 (13-bit) | Layer 19 (12-bit) | Layer 27 (12-bit) | Mean ratio to iVQ | Target energy, last quarter of the blocks (gate/up) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| VQ (weights only) | | | 0.2231 | 0.2612 | 0.2897 | 0.3683 | 1.091 | |
+| iVQ (t = 0) | | | 0.1936 | 0.2466 | 0.2589 | 0.3561 | 1.000 | 1.00 |
+| 0.25 | 0 | 256 | 0.1094 | 0.1899 | 0.1688 | 0.3032 | 0.7097 | 1.02 |
+| 0.5 | 0 | 256 | 0.0922 | 0.1746 | 0.1496 | 0.2908 | 0.6448 | 1.05 |
+| 0.75 | 0 | 256 | 0.0831 | 0.1666 | 0.1389 | 0.2853 | 0.6107 | 1.09 |
+| 0.9 | 0 | 256 | 0.0799 | 0.1649 | 0.1352 | 0.2857 | 0.6014 | 1.13 |
+| 1 | 0 | 256 | 0.0794 | 0.1653 | 0.1345 | 0.2883 | 0.6024 | 1.19 |
+| 0.75 | 0.01 | 256 | 0.0834 | 0.1670 | 0.1391 | 0.2854 | 0.6116 | 1.09 |
+| 1 | 0.01 | 256 | 0.0794 | 0.1652 | 0.1345 | 0.2878 | 0.6020 | 1.18 |
+| 0.75 | 0.1 | 256 | 0.0860 | 0.1687 | 0.1419 | 0.2858 | 0.6198 | 1.08 |
+| 0.75 | 0 | 4096 | 0.0837 | 0.1670 | 0.1397 | 0.2854 | 0.6127 | 1.09 |
+| **1** | **0** | **4096** | **0.0793** | **0.1647** | **0.1345** | **0.2863** | **0.6003** | 1.17 |
+
+
+The error falls with t up to the full correlation on layers 3–19 and changes little from
+0.75 on layer 27. Damping did not produce the lowest ratio in this grid: at t = 1 and
+shrink 256, damping 0.01 changes the mean ratio from 0.6024 to 0.6020; at t = 0.75,
+both tested damping values increase it. The pseudo-count also has a small effect.
+Feedback does push the later columns' targets away
+from the weights the codebook was fitted to (the archived pilot reported a mean squared norm in the last quarter of
+the block order of 1.17 times the weights' at t = 1), but that costs
+less than the feedback gains. The setting with the lowest mean ratio to iVQ, t = 1, no
+damping, pseudo-count 4096, was used; t = 0.9 and t = 1 with pseudo-count 256 are within
+0.4% of it.
+
+**Measurements.** Runpod, 1× H200 (sm_90, CUDA 13.2, torch 2.13), the reference forward,
+the 26 held-out cases (58,803 tokens). VQ and iVQ were measured again in the same runs,
+so their numbers differ slightly from the A100 ones above.
+
+| MoE layers | Per token (median): VQ → iVQ → hVQ | hVQ vs iVQ | Layers hVQ < iVQ | Energy-weighted: VQ → iVQ → hVQ | hVQ vs iVQ |
+|---|---:|---:|---:|---:|---:|
+| 0–13 (13-bit) | 0.239 → 0.215 → 0.115 | -46.4% | 14 of 14 | 0.220 → 0.164 → 0.074 | -55.0% |
+| 14–39 (12-bit) | 0.347 → 0.327 → 0.228 | -30.2% | 26 of 26 | 0.345 → 0.075 → 0.014 | -81.7% |
+| All 40 | 0.309 → 0.288 → 0.189 | -34.5% | 40 of 40 | 0.301 → 0.106 → 0.035 | -67.3% |
+
+| vs the original | Floor | VQ | iVQ | hVQ | hVQ vs iVQ |
+|---|---:|---:|---:|---:|---:|
+| Routed-expert error per layer, per token (median, mean of 40 layers) | — | 0.309 | 0.288 | 0.189 | -34.5% |
+| Routed-expert set overlap with the original (mean of layers 1–39) | — | 75.2% | 76.5% | 82.2% | +5.7 pt |
+| Final hidden state cosine | — | 0.778 | 0.798 | 0.869 | +0.071 |
+| KL, all positions | 0.037 | 0.370 | 0.352 | 0.273 | -22.3% |
+| KL, generated positions | 0.012 | 0.293 | 0.290 | 0.241 | -17.0% |
+| KL, prompt positions | 0.111 | 0.601 | 0.538 | 0.371 | -31.1% |
+| Same top-1, all positions | 95.6% | 82.42% | 82.41% | 84.67% | +2.26 pt |
+| Same top-1, generated positions | 96.3% | 82.39% | 82.22% | 84.39% | +2.17 pt |
+| NLL, all positions (original 1.260) | 1.259 | 1.236 | 1.252 | 1.387 | +0.14 |
+| NLL, generated positions (original 1.235) | 1.235 | 1.334 | 1.347 | 1.359 | +0.01 |
+
+| Held-out text | Tokens | KL: VQ → iVQ → hVQ | hVQ vs iVQ | Same top-1: VQ → iVQ → hVQ | NLL: original → VQ → iVQ → hVQ |
+|---|---:|---:|---:|---:|---:|
+| WikiText-2 | 4,096 | 0.497 → 0.482 → 0.419 | -13% | 78.6% → 78.5% → 80.4% | 1.12 → 1.43 → 1.41 → 1.42 |
+| Web en / ko / zh / ja / es | 10,346 | 0.377 → 0.403 → 0.350 | -13% | 75.3% → 74.4% → 76.8% | 1.90 → 2.05 → 2.11 → 2.11 |
+| Math web | 1,476 | 0.217 → 0.204 → 0.138 | -32% | 92.5% → 93.8% → 95.4% | 0.09 → 0.29 → 0.28 → 0.22 |
+| Code files (Python, C) | 4,094 | 0.109 → 0.103 → 0.087 | -15% | 96.7% → 96.4% → 97.0% | 0.10 → 0.17 → 0.16 → 0.15 |
+| Chat ko / zh / ja | 6,047 | 0.264 → 0.237 → 0.134 | -44% | 84.4% → 85.1% → 89.2% | 1.11 → 1.10 → 1.09 → 1.15 |
+| Reasoning (think) | 6,142 | 0.157 → 0.139 → 0.084 | -40% | 88.2% → 88.4% → 91.6% | 0.87 → 0.81 → 0.83 → 0.88 |
+| Instruction following | 1,517 | 0.323 → 0.333 → 0.326 | -2% | 79.8% → 80.5% → 81.9% | 0.98 → 0.99 → 1.01 → 1.08 |
+| Tool calls / agents (DSML) | 2,659 | 1.330 → 1.015 → 0.563 | -45% | 69.8% → 71.3% → 76.5% | 2.37 → 1.26 → 1.42 → 2.61 |
+| SWE agentless | 1,923 | 1.059 → 1.024 → 0.800 | -22% | 71.5% → 72.2% → 75.0% | 2.25 → 1.37 → 1.36 → 2.47 |
+| Competitive programming (think) | 4,095 | 0.397 → 0.391 → 0.195 | -50% | 79.7% → 80.5% → 85.7% | 1.21 → 1.03 → 1.01 → 1.22 |
+| Long 8K (web, finance) | 16,382 | 0.292 → 0.290 → 0.275 | -5% | 84.7% → 84.3% → 84.8% | 1.23 → 1.29 → 1.29 → 1.35 |
+
+The direct routed-output error falls in all 40 layers under both summaries. The mean
+per-layer median falls from 0.2876 to 0.1885 (34.5%); the mean energy-weighted ratio
+falls from 0.1061 to 0.0347 (67.3%). The median reduction is largest in layers 0–2
+(79.1%, 61.6% and 60.6%) and smallest in layers 26, 30 and 27 (18.7%, 18.9% and
+19.6%). The large energy-weighted gain gives more influence to the massive routed
+outputs; the median describes a typical token within each layer. The error tails
+also fall, although an average 2.2% of tokens per layer have higher error than iVQ.
+Plain weight error rises 21.5% and the diagonal-weighted error rises 32.0%, while
+the directly measured routed outputs become closer to the original.
+
+The final prediction distribution also moves closer to the original: generated-position
+KL falls 17.0%, top-1 agreement rises 2.17 percentage points, final hidden-state cosine
+rises from 0.7985 to 0.8692, and mean route-set overlap rises from 76.55% to 82.23%.
+All-position KL is lower in 18 of 19 domains; long finance rises from 0.1606 to
+0.1659. Generated-position KL is lower in 17 of the 18 domains with generated
+targets; instruction-following chat rises slightly, from 0.3263 to 0.3280.
+The long-finance case has no generated targets. The original's batching floor is
+0.0368 KL over all positions and 0.0120 over generated positions; this is a
+measurement of numerical variation, not a statistical confidence interval.
+
+NLL on the actual held-out text worsens: 1.3466 → 1.3589 at generated positions
+(+0.9%), and 1.2517 → 1.3869 over all positions (+10.8%). The largest all-position
+NLL increases are in tool/agent and SWE cases, while raw math and code improve.
+KL measures agreement with the original distribution; NLL scores the particular
+target tokens, so the two need not move together. These results support improved
+fidelity to the original, with a measured NLL tradeoff. They are teacher-forced
+measurements of routed-expert substitutions: the non-expert body is the original
+checkpoint, so the GGUF's q4_K body and MTP are not evaluated by these scores.
+The same held-out set also selected the pilot setting. No quality threshold was
+used to accept or reject the build.
+
+**Cost.** One GPU and a 250 GB host: the residual streams of the 8 shards (139.4 GiB) rotate
+through one pinned arena, the Engram rows of every shard are gathered once, and each layer
+takes K=8192: mean collect 86.5 s, fit 104.3 s, pack/verify/write 28.6 s; K=4096: mean collect 90.1 s, fit 72.5 s, pack/verify/write 23.2 s (packing overlaps the following layer). The 40 layers took 2.00 h (7184.4 s); peak device memory 95.98 GiB collecting and 98.26 GiB converting; peak host RSS 177.70 GiB.
