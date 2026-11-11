@@ -548,6 +548,28 @@ checkpoint, so the GGUF's q4_K body and MTP are not evaluated by these scores.
 The same held-out set also selected the pilot setting. No quality threshold was
 used to accept or reject the build.
 
+**On DGX Spark.** The released GGUFs, q4_K body included, through the engine's
+teacher-forced score entry on GB10 (2,048-row blocks), same 26 cases, against the
+original's reference logits:
+
+| vs the original, generated positions | Floor | VQ | iVQ | hVQ | hVQ - iVQ (95% interval over cases) |
+|---|---:|---:|---:|---:|---:|
+| KL | 0.012 | 0.302 | 0.296 | 0.247 | -0.050 (-0.062 to -0.038) |
+| Same top-1 as the original | 96.3% | 81.96% | 81.87% | 84.02% | +2.1 pt (+1.5 to +3.0) |
+| Top-1 is the text's token (original 71.72%) | 71.71% | 68.95% | 68.80% | 69.47% | +0.7 pt (+0.2 to +1.2) |
+| NLL (original 1.235) | 1.235 | 1.340 | 1.348 | 1.360 | +0.012 (-0.003 to +0.031) |
+| Entropy (original 0.816) | 0.818 | 1.155 | 1.077 | 0.889 | -0.188 (-0.229 to -0.143) |
+
+The full GGUF adds 0.004–0.010 KL to each of the three, so the q4_K body and the
+engine's arithmetic leave the comparison as the reference forward measured it.
+Generated-position KL is lower under hVQ in all 18 domains with generated targets.
+The NLL difference is inside its interval and has a cause: hVQ is nearly as sharp
+as the original, iVQ is flatter. Where the original's top-1 is the text's token
+(72% of generated positions) hVQ scores 0.290 against iVQ's 0.350; where it is
+not, hVQ follows the original (4.07 against its 3.98) and iVQ hedges (3.88).
+The artifact passes `ds4 --serving-check` and answers on every wire:
+[record](deepseek41-hvq-evaluation-2026-11-11.md#on-dgx-spark-gb10).
+
 **Cost.** One GPU and a 250 GB host: the residual streams of the 8 shards (139.4 GiB) rotate
 through one pinned arena, the Engram rows of every shard are gathered once, and each layer
 takes K=8192: mean collect 86.5 s, fit 104.3 s, pack/verify/write 28.6 s; K=4096: mean collect 90.1 s, fit 72.5 s, pack/verify/write 23.2 s (packing overlaps the following layer). The 40 layers took 2.00 h (7184.4 s); peak device memory 95.98 GiB collecting and 98.26 GiB converting; peak host RSS 177.70 GiB.

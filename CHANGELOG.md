@@ -8,6 +8,14 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds hVQ to `tools/vq_calib/` (PR #146): the DeepSeek-V4.1-Flash-1017 iVQ
+  codes reassigned by 8-column error feedback through each expert's input
+  correlation, with iVQ's codebooks and the file layout unchanged. It made
+  [Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF).
+  Against iVQ the released GGUF on DGX Spark moves generated-position KL to
+  the original from 0.296 to 0.247 and top-1 agreement from 81.9% to 84.0%.
+  [VQ calibration](docs/vq-calibration.md) gains the method, its prior work
+  and the measurements.
 - Adds Gemma-4 26B A4B VQ (`gemma4_vq`), contributed by jlFN (PR #141):
   the R13+8 release directory, sliding and full GQA with optional E4M3
   full-layer rows, banks, partial reuse, disk KV and snapshots qualified by

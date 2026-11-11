@@ -1,6 +1,7 @@
 # Evaluation: DeepSeek-V4.1-Flash-1017 hVQ
 
 Mean per-layer median routed-output error 0.2876 → 0.1885 (-34.5%); generated-position KL 0.2899 → 0.2408 (-17.0%). Generated-position NLL 1.3466 → 1.3589 (+0.9%).
+On DGX Spark with the released GGUF: generated-position KL 0.2963 → 0.2467 (-16.7%), same top-1 as the original 81.87% → 84.02%, NLL 1.3484 → 1.3603; the serving checklist passes ([below](#on-dgx-spark-gb10)).
 
 ## Build identity and verification
 
@@ -44,7 +45,8 @@ The complete `ci-rust` gate is therefore **not recorded as passed**.
 No runtime or test source was changed for these environment findings.
 The full conversion and evaluation commands are in the [release recipe](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF/blob/main/RECIPE.md).
 The loader check establishes metadata/layout/binding compatibility; it does not
-establish a DGX Spark GPU-forward or serving qualification. The repository's
+establish a DGX Spark GPU-forward or serving qualification; that is recorded
+[below](#on-dgx-spark-gb10). The repository's
 older official-continuation scorer for DeepSeek V4/Metal was not run; this record
 uses the requested V4.1-1017 reference-forward comparisons below.
 
@@ -300,3 +302,132 @@ A zero-token row has no generated-position targets; its metrics are undefined, n
 Totals: collect 59.3 min, fit 55.7 min (assign 37.9), pack/verify/write 16.7 min (beside the next layer). Peak GPU 96.0 GiB collecting, 98.3 GiB converting; peak host RSS 178 GiB.
 
 Teacher stream vs the iVQ statistics (min / mean / max over layers): count_l1 9.88e-05 / 2.57e-03 / 3.50e-03; x2_rel 1.56e-04 / 2.12e-02 / 1.29e-01; a2_rel 9.21e-06 / 8.42e-03 / 3.57e-02; x2_profile_rel 2.29e-04 / 3.36e-02 / 1.47e-01; a2_profile_rel 5.57e-04 / 3.30e-02 / 1.48e-01
+
+## On DGX Spark (GB10)
+
+November 11, 2026, one DGX Spark: GB10, CUDA 13.4, driver 615.71.10,
+`nvidia-clocks.service` active (300–2,200 MHz). Runtime: this branch at `13e9a49f` (engine sources of `main` at `502019da`),
+`make cuda-spark`, `ds4-server` SHA-256 `7ba9c33f8493a23853573925435b64fec64f2bc09b2bcf63e84a30d359a26299`.
+Artifact: the published parts, assembled to SHA-256 `d000e791…52df`; the vision
+sidecar and both Engram shards are the iVQ release's files by SHA-256. Every
+model run went through `tools/host_memory_guard.py` (2 GiB reserve and trip),
+one model at a time.
+
+### The full GGUF against the original (engine, teacher-forced)
+
+The reference measurements above replace the routed experts inside the
+original body. This one runs the released files: q4_K body, engine arithmetic.
+The engine's score entry (`ds4_v41_score_ids`, 2,048-row blocks, the Rust
+host's engram feed) wrote every position's logits for the same 26 cases; a
+host tool outside the tree drove it. The original's logits are its saved
+reference final states times `head.weight` (BF16, original checkpoint at
+`1bae0e10`). That scoring reproduces the reference table above to every
+printed digit.
+
+| vs the original | Floor | VQ | iVQ | hVQ | hVQ vs iVQ |
+|---|---:|---:|---:|---:|---:|
+| KL, all positions | 0.037 | 0.379 | 0.362 | 0.277 | -23.4% |
+| KL, generated positions | 0.012 | 0.302 | 0.296 | 0.247 | -16.7% |
+| KL, prompt positions | 0.111 | 0.613 | 0.561 | 0.370 | -34.0% |
+| Same top-1, all positions | 95.6% | 82.06% | 82.09% | 84.38% | +2.29 pt |
+| Same top-1, generated positions | 96.3% | 81.96% | 81.87% | 84.02% | +2.15 pt |
+| Top-1 is the text's token, generated (original 71.72%) | 71.71% | 68.95% | 68.80% | 69.47% | +0.67 pt |
+| NLL, all positions (original 1.260) | 1.259 | 1.240 | 1.252 | 1.383 | +0.131 |
+| NLL, generated positions (original 1.235) | 1.235 | 1.340 | 1.348 | 1.360 | +0.012 |
+| Entropy, generated positions (original 0.816) | 0.818 | 1.155 | 1.077 | 0.889 | -0.188 |
+
+The floor column is the reference forward's own (the original batched two
+ways); the engine cannot run the original checkpoint. 58,777 scored
+positions, 44,157 generated.
+
+- **The released file keeps the gain.** Against the reference substitution
+  the full GGUF adds 0.004–0.010 KL to each of the three; NLL moves by at
+  most 0.004. The engine's top-1 is the reference forward's at 94.1%, 93.7%
+  and 93.3% of positions (VQ, iVQ, hVQ).
+- **Paired, hVQ minus iVQ, generated positions** (95% interval, 2,000
+  bootstrap resamples of the 26 cases): KL -0.050 (-0.062 to -0.038); same
+  top-1 +2.1 pt (+1.5 to +3.0); top-1 is the text's token +0.7 pt (+0.2 to
+  +1.2); NLL +0.012 (-0.003 to +0.031).
+- **Breadth.** Generated-position KL is lower under hVQ in all 18 domains
+  with generated targets; all-position KL in 25 of the 26 cases.
+- **Why NLL does not follow KL.** hVQ's distributions are nearly as sharp as
+  the original's; VQ's and iVQ's are flatter (entropy row). Where the
+  original's top-1 is the text's token (31,669 generated positions) the NLL
+  is 0.154 for the original, 0.350 for iVQ and 0.290 for hVQ. Where it is not
+  (12,488), hVQ follows the original, 4.07 against 3.98, and the flatter iVQ
+  hedges, 3.88. The median generated-position NLL is 0.086, 0.222 and 0.131.
+  Prompt positions repeat this at scale: the original scores 1.335 there and
+  hVQ, the closer copy, 1.452 against iVQ's 0.961.
+
+| Held-out text, generated positions | Positions | KL: VQ → iVQ → hVQ | hVQ vs iVQ | Same top-1: VQ → iVQ → hVQ | Top-1 is the text's token: original → VQ → iVQ → hVQ |
+|---|---:|---:|---:|---:|---:|
+| WikiText-2 | 4,096 | 0.488 → 0.480 → 0.420 | -13% | 78.8% → 78.2% → 80.4% | 74.5% → 67.8% → 68.0% → 69.0% |
+| Web en / ko / zh / ja / es | 18,537 | 0.407 → 0.415 → 0.372 | -10% | 75.1% → 74.5% → 75.9% | 58.5% → 55.5% → 55.3% → 55.4% |
+| Math web | 1,476 | 0.238 → 0.213 → 0.146 | -31% | 92.2% → 92.8% → 95.1% | 97.8% → 91.4% → 91.7% → 94.0% |
+| Code files (Python, C) | 4,094 | 0.111 → 0.111 → 0.090 | -18% | 96.4% → 96.0% → 96.9% | 97.7% → 95.7% → 95.1% → 95.8% |
+| Chat ko / zh / ja | 4,827 | 0.191 → 0.164 → 0.090 | -45% | 86.1% → 87.1% → 91.1% | 77.2% → 75.3% → 75.4% → 76.6% |
+| Reasoning (think) | 5,713 | 0.131 → 0.117 → 0.069 | -41% | 89.1% → 89.4% → 92.0% | 79.4% → 79.2% → 78.4% → 79.0% |
+| Instruction following | 1,477 | 0.322 → 0.326 → 0.325 | -1% | 80.2% → 80.4% → 80.8% | 74.1% → 71.0% → 70.9% → 73.1% |
+| Tool calls / agents (DSML) | 639 | 0.177 → 0.156 → 0.072 | -54% | 88.9% → 88.3% → 92.3% | 80.4% → 83.7% → 82.5% → 82.0% |
+| SWE agentless | 260 | 0.185 → 0.147 → 0.101 | -31% | 83.1% → 86.5% → 91.5% | 76.5% → 76.5% → 76.2% → 73.1% |
+| Competitive programming (think) | 3,038 | 0.222 → 0.188 → 0.102 | -46% | 83.2% → 84.1% → 88.8% | 74.4% → 71.7% → 72.6% → 74.5% |
+
+### Serving
+
+`ds4 --cuda -m MODEL --engram-dir DIR --serving-check --prompt-file
+tests/long_context_essay_prompt.txt` (prompt 5,615 tokens, split 2,807):
+
+| Category | Item | Declared | Result | Detail |
+|---|---|---|---|---|
+| reuse | prefix | qualified | works | kept 2,807, tokens 16/16 |
+| reuse | rewind | — | no | prefilled from zero |
+| reuse | continue | qualified | works | kept 5,630, tokens 16/16 |
+| disk | session | qualified | works | kept 5,615, tokens 16/16 |
+| snapshot, banks | — | — | no | V4.1 serves one sequence without snapshots |
+
+Result: pass (works 3, FAIL 0, WRONG 0, undeclared 0), the iVQ artifact's
+result in the [November 2 record](benchmarks/serving-checklist-2026-11-02/README.md).
+
+`ds4-server` with `--engram-dir`, `--vision-gguf`, `--mem-budget-mb 110000
+--mem-floor-gb 2`: the model was resident 153 s after launch, MemAvailable
+10.5 GiB after boot and 6.4 GiB at its lowest over the session (it includes a
+66,608-token prefill), memory PSI full avg10 0.00 throughout. Requests sent
+`temperature` 1.0 and `top_p` 1.0. One request per surface, all answered as
+expected:
+
+| Surface | Request | Result |
+|---|---|---|
+| `/v1/chat/completions` | Korean question, no thinking field | one-sentence answer, `stop`, no reasoning |
+| thinking | `thinking: {type: enabled}`, 17 × 23 | reasoning closed, content `391`, `stop` |
+| stream | SSE, usage included | 20 deltas, strict UTF-8, `[DONE]` |
+| tools | one function, then its result | `tool_calls` with valid JSON arguments; second turn answers from the result |
+| vision | 224 × 224 PNG, base64 | names the left half's colour |
+| prefix reuse | second turn of a conversation | 19 of 27 prompt tokens cached |
+| `/v1/messages`, `/v1/responses`, `/v1/completions` | one short request each | 200 with the expected text |
+| long context | 24,027-token prompt, one fact planted an eighth of the way in | exact recall; prefill 1,153.9 tok/s |
+
+A seeded set at temperature 1.0, the same seeds for both artifacts on the
+same binary:
+
+| 44 requests per artifact | iVQ | hVQ |
+|---|---:|---:|
+| Thinking arithmetic (en, ko): exact answer | 24 / 24 | 24 / 24 |
+| Thinking closed and finished with `stop` | 24 / 24 | 24 / 24 |
+| Mean completion tokens of those | 128 | 63 |
+| Tool call valid (name, city, unit) | 12 / 12 | 12 / 12 |
+| Chat ko / en / zh / ja, code, translation: `stop` | 8 / 8 | 8 / 8 |
+
+One full-prefill pass on hVQ (`speed-bench/ds41_spark_sweep.sh`, attach
+mode, temperature 0, 128 tokens, MTP auto, clocks 2,184–2,190 MHz): 957.6 /
+35.0 tok/s prefill / decode at 2K, 1,134.6 / 32.0 at 8K, 1,156.6 / 36.4 at
+16K, 1,043.4 / 32.6 at 32K and 980.0 / 34.6 at 64K, 2.10–2.25 tokens per
+step. iVQ was not paired: the two files share every tensor shape and kernel.
+
+### Limits
+
+- One host, one pass of each measurement.
+- The held-out set is the one the pilot setting was chosen on.
+- The seeded set is small and its tasks are easy: it shows no gross failure
+  (unclosed thinking, malformed calls, loops), not a ranking.
+- Not measured: long sampled generations, task benchmarks, MTP acceptance by
+  workload, more than one image.
