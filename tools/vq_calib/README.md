@@ -144,6 +144,45 @@ near-tied routes amplify it), and its prompt positions are untrained; measure th
 reference's own floor and use `score_regions_ds41.py` before reading small differences
 (docs/vq-calibration.md).
 
+## DeepSeek-V4.1-Flash hVQ (error feedback through the input correlation)
+
+These produced
+[Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF):
+the iVQ release with the indices and row gains of its 40 routed-expert blobs refitted by
+GPTQ-style error feedback through each expert's input second moment. Codebooks, K, offsets
+and sizes are the iVQ release's, so the `ds41` path loads it unchanged. The definition and
+the measurements are in [docs/vq-calibration.md](../../docs/vq-calibration.md).
+
+| File | Role |
+|---|---|
+| `ds41_hess.py` | per-expert token-normalized second moments of one MoE layer (`Σ x xᵀ / mean(x²)`, `Σ a aᵀ / mean(a²)`): FP64 Gram per chunk, FP32 sums, on the device; precision probe; digest |
+| `ds41_hvq.py`, `cuda/ds41_hvq.cu` | shrunk correlation, `H_t = D½((1−t)I + tR)D½ + damp`, its factor `V` (`H = V Vᵀ`), the panel kernel (8-column blocks in order, feedback through `V`, block metric `V_BB V_BBᵀ`) and the least-squares gain under `H_t` |
+| `convert_layer_ds41_hvq.py` | one MoE layer -> one DQVL v3 blob + receipt (`open`, `fit`, `finish`); `--t 0` is the iVQ conversion bit for bit; `--verify` reads finished layers back |
+| `run_hvq_ds41.py` | one GPU, layer by layer: collect a layer's moments, convert it, drop the moments; the calibration shards' residual streams rotate through pinned host buffers; resumable |
+| `sweep_hvq_ds41.py` | the choice of `t` and damping: held-out per-token routed-output error of each setting on a few layers (`dump`, `run`, `choose`) |
+| `assemble_ds41_ivq.py` | also assembles hVQ blobs (the 40 receipts must share `t`, damping, shrink and the calibration run) |
+| `tests/test_ds41_hvq.py` | one GPU, synthetic: `t = 0` equals the iVQ kernels bit for bit, a pass equals FP64 GPTQ, feedback lowers the output error on correlated inputs, gain optimum, rank-deficient moments, panel size, DQVL round trip |
+
+```sh
+SRC=/models/deepseek-ai/DeepSeek-V4.1-Flash-1017  W=/work/hvq
+IVQ=$W/base/ivq/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf   # assembled iVQ release (codebooks, comparison)
+VQ=$W/base/vq/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf     # assembled VQ release (the base that is patched)
+DSTATS=ivq-handoff/stats                                         # the iVQ release's statistics (D)
+python3 -I build_calib_ds41.py fetch --out $W/calib && python3 -I build_calib_ds41.py build --out $W/calib
+# 1. t = 0 reproduces the iVQ blobs (no moments needed)
+python3 convert_layer_ds41_hvq.py --layers 0,14 --d-stats $DSTATS --ivq $IVQ --out $W/t0 --t 0
+# 2. choose t and damping on a few layers (held-out inputs first)
+python3 sweep_hvq_ds41.py dump --data $W/calib/heldout.safetensors --layers 3,11,19,27 --out $W/sweep/dump
+python3 run_hvq_ds41.py --calib $W/calib/calib.safetensors --d-stats $DSTATS --ivq $IVQ --out $W/sweep/pilot \
+    --layers 3,11,19,27 --sweep-dump $W/sweep/dump --sweep-grid "0.5:0,1:0,0.75:0,0.25:0,0.9:0,0.75:0.01,0.75:0.1,1:0.01"
+python3 sweep_hvq_ds41.py choose --out $W/sweep/pilot
+# 3. all 40 layers with the chosen setting, then read every blob back
+python3 run_hvq_ds41.py --calib $W/calib/calib.safetensors --d-stats $DSTATS --ivq $IVQ --out $W/convert --t T --damp DAMP
+python3 convert_layer_ds41_hvq.py --verify --layers 0-39 --out $W/convert
+# 4. patch the VQ base, cut the 40 parts
+python3 assemble_ds41_ivq.py --base $VQ --blobs $W/convert --out $W/publish/DeepSeek-V4.1-Flash-1017-hVQ-GGUF
+```
+
 ## Tests
 
 ```sh
@@ -154,9 +193,12 @@ python3 tests/test_run_guards.py                     # CPU: one statistics run p
                                                      # expert and non-expert parts of a release
 python3 tests/test_axk2_vq_gpu.py --work /tmp/vq-test  # one GPU: weights == 1 bit-identity, packing parity,
                                                        # weighted Lloyd, gain refit, throughput
+python3 tests/test_ds41_hvq.py                       # one GPU: hVQ t = 0 == the iVQ kernels, a pass == FP64 GPTQ,
+                                                     # feedback on correlated inputs, gains, rank-deficient
+                                                     # moments, DQVL round trip
 ```
 
 `test_axk2_vq_gpu.py` also checks the unweighted assignment against Beam-1.0's
 `beam_vq_convert.cu` at K = 4096 when `--beam-cu` points to it (skipped
-otherwise). Build outputs (`cuda/libaxk2_vq_convert_sm*.so`, `native/`) are
-not tracked.
+otherwise). Build outputs (`cuda/libaxk2_vq_convert_sm*.so`, `cuda/libds41_hvq_sm*.so`,
+`native/`) are not tracked.

@@ -34,7 +34,7 @@ from axk2_vq_gpu import GpuVq
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'cuda/ds41_hvq.cu'
 DIM = 8
-NMET = DIM + DIM * (DIM - 1) // 2
+NMET = DIM + DIM * DIM
 ASSIGNMENT = ('8-column blocks in ascending order; block target w + r V_BB^-1 with r the feedback of the earlier '
               'blocks through V (H_t = V V^T, V upper triangular); nearest codeword under V_BB V_BB^T; '
               'ties to the lowest index')
@@ -79,12 +79,6 @@ def correlation(s, count, prior, shrink):
     return r, diag
 
 
-def participation(r):
-    """C^2 / ||R||_F^2 of correlation matrices r [P, C, C]: C for uncorrelated channels, 1 for one direction."""
-    c = r.shape[-1]
-    return (c * c) / r.square().sum((-2, -1))
-
-
 def hessian(col, r, t, damp):
     """H_t [P, C, C] FP64 from column weights col [P, C] (F32) and correlations r.
     The diagonal is col (+ damp * mean(col)) exactly; the off-diagonal part is
@@ -105,16 +99,17 @@ def factor(h):
 
 def block_tables(v):
     """Per 8-column block of V [P, C, C] (FP64): the inverse of its diagonal block
-    [P, C/8, 64] and the metric V_BB V_BB^T as 8 diagonal + 28 doubled upper entries
-    [P, C/8, 36], both F32."""
+    [P, C/8, 64] and the metric M = V_BB V_BB^T as its diagonal followed by 2 M with a
+    zero diagonal [P, C/8, 8 + 64], both F32."""
     p, c, _ = v.shape
     nblk = c // DIM
     blocks = v.view(p, nblk, DIM, nblk, DIM).diagonal(dim1=1, dim2=3).permute(0, 3, 1, 2).contiguous()
     eye = torch.eye(DIM, dtype=v.dtype, device=v.device).expand(p, nblk, DIM, DIM)
     inv = torch.linalg.solve_triangular(blocks, eye, upper=True)
     metric = blocks @ blocks.mT
-    upper = torch.triu_indices(DIM, DIM, offset=1, device=v.device)
-    met = torch.cat([metric.diagonal(dim1=-2, dim2=-1), 2.0 * metric[:, :, upper[0], upper[1]]], -1)
+    diag = metric.diagonal(dim1=-2, dim2=-1)
+    off = 2.0 * (metric - torch.diag_embed(diag))
+    met = torch.cat([diag, off.reshape(p, nblk, DIM * DIM)], -1)
     return inv.reshape(p, nblk, DIM * DIM).float().contiguous(), met.float().contiguous()
 
 
@@ -194,36 +189,38 @@ class Hvq:
         _, gains = self.vq.normalize(w.view(p * rows, cols))
         return gains.view(p, rows).contiguous()
 
-    def quantize(self, w, cb, h, v, passes=2, info=None):
+    def quantize(self, w, cb, h, v, passes=2, drift=None):
         """Two passes as iVQ: RMS gains, assign, refit, assign, refit.
         w [P, rows, cols] F32, h [P, cols, cols] FP64 and its factor v (FP64).
-        Returns (ids int32 [P, rows, cols/8], gains F16 [P, rows]); a dict passed as `info`
-        receives the last pass's target drift."""
+        Returns (ids int32 [P, rows, cols/8], gains F16 [P, rows]). `drift` (a list) receives the
+        last pass's target_energy."""
         vinv, met = block_tables(v)
         v32 = v.float().contiguous()
         gains = self.rms_gains(w)
         ids = None
         for i in range(passes):
             ids, res = self.run_pass(w, gains, v32, vinv, met, cb)
-            if info is not None and i == passes - 1:
-                info['target_drift'] = self.target_drift(w, res, v32, vinv)
+            if drift is not None and i == passes - 1:
+                drift.append(self.target_energy(w, res, ids, gains, v32, vinv, cb))
             del res
             self.refit(w, ids, cb, h, gains)
         return ids, gains
 
     @staticmethod
-    def target_drift(w, res, v, vinv, tail=0.25):
-        """How far the feedback moves the targets from the weights the codebook was fitted to: the squared norm
-        of the corrected targets w~ over the last `tail` of the block order, relative to the weights' there.
-        With e = (w - q) V, block B's target is q_B + e_B V_BB^-1."""
+    def target_energy(w, res, ids, gains, v32, vinv, cb):
+        """How far the feedback moves the vectors the codebook is asked to code: per block position,
+        the mean squared norm of the normalized corrected target (w + r V_BB^-1) / g, and of the
+        normalized weights w / g it replaces -> ([cols/8], [cols/8]) FP64. Equal without feedback.
+        The target is rebuilt from the pass: codeword + (res V)_B V_BB^-1 / g."""
         p, rows, cols = w.shape
         nblk = cols // DIM
-        b0 = int(nblk * (1 - tail))
-        c0 = b0 * DIM
-        e = torch.bmm(res, v[:, :, c0:].contiguous()).view(p, rows, nblk - b0, DIM)
-        back = torch.einsum('prbi,pbij->prbj', e, vinv.view(p, nblk, DIM, DIM)[:, b0:]).reshape(p, rows, cols - c0)
-        target = w[:, :, c0:] - res[:, :, c0:] + back
-        return float(target.double().square().sum() / w[:, :, c0:].double().square().sum())
+        g = gains.float()[:, :, None, None]
+        live = g > 0
+        err = torch.bmm(res, v32).view(p, rows, nblk, DIM)
+        move = torch.einsum('prja,pjad->prjd', err, vinv.view(p, nblk, DIM, DIM))
+        target = cb[ids.long()] + torch.where(live, move / g, torch.zeros_like(move))
+        source = torch.where(live, w.view(p, rows, nblk, DIM) / g, torch.zeros_like(move))
+        return target.square().sum(-1).double().mean((0, 1)), source.square().sum(-1).double().mean((0, 1))
 
     def restore(self, ids, gains, cb):
         """W^ [P, rows, cols] F32 = f32(gain) * codeword, as the runtime decodes."""
@@ -231,10 +228,7 @@ class Hvq:
         return cb[ids.long()].reshape(p, rows, nblk * DIM) * gains.float()[:, :, None]
 
 
-def output_error(diff, h, chunk=4):
-    """sum over rows of d H d^T for d = diff [P, rows, cols] (F32), H [P, cols, cols] FP64 -> [P] FP64."""
-    out = torch.empty(diff.shape[0], dtype=torch.float64, device=diff.device)
-    for s in range(0, diff.shape[0], chunk):
-        d = diff[s:s + chunk].double()
-        out[s:s + chunk] = (torch.bmm(d, h[s:s + chunk]) * d).sum((-2, -1))
-    return out
+def output_error(diff, h):
+    """sum over rows of d H d^T for d = diff [P, rows, cols] (F32) and H [P, cols, cols] -> [P] FP64.
+    The products run in FP32 (a diagnostic: ~1e-6 relative), the row sums add up in FP64."""
+    return (torch.bmm(diff, h.float()) * diff).sum(-1).double().sum(-1)

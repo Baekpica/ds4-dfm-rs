@@ -15,6 +15,8 @@ import collect_stats as cs
 import run_ds41
 import convert_layer as cl
 import convert_layer_ds41 as cl41
+import convert_layer_ds41_hvq as hvq41
+import run_hvq_ds41 as rh41
 import assemble_release as ar
 import assemble_ds41_ivq as a41
 
@@ -259,6 +261,73 @@ assert cl41.reuse(20, b, want)                                   # older receipt
 refused(lambda: cl41.reuse(20, b, want), 'blob that is not the receipt\'s', 'sha256')
 print('convert_layer_ds41: reuse refused for any other variant, statistics or blob: ok')
 
+# ---- convert_layer_ds41_hvq.py reuse ----------------------------------------------------------
+bh = tmp / 'ds41-hvq'
+bh.mkdir()
+hvar = hvq41.Variant(0.5, 0.01)
+hwant = {**hvar.want(), 'd_statistics_sha256': 'd' * 64, 'calibration_run_id': rid}
+
+
+def hvq_receipt(L, **over):
+    r = {'layer': L, 'tensor': f'blk.{L}.ffn_exps_vq.blob', 'K': 4096, 'sha256': hashlib.sha256(blob).hexdigest(),
+         'method': 'hvq', 't': 0.5, 'damping': 0.01, 'mode': 'imatrix', 'gain_refit': 'ls', 'codebook_scope': 'shared',
+         'weighting': {'mode': 'imatrix', 'shrink_tokens': 256.0, 'shrink_units': 256.0 + L, 'col_floor': 0.02,
+                       'col_shrink': 0.0, 'col_power': 0.75, 'tensor_scale': None},
+         'hessian': {'sha256': 'e' * 64, 'shrink_tokens': 256.0}, 'stats_norm': 'sum',
+         'd_statistics_sha256': 'd' * 64, 'statistics_sha256': 'e' * 64,
+         'calibration_run_id': rid, 'calibration_set_sha256': 'c' * 64, 'weight_error': {}}
+    r.update(over)
+    return r
+
+
+(bh / 'blob-20.bin').write_bytes(blob)
+assert not hvq41.reuse(21, bh, hwant)
+(bh / 'receipt-20.json').write_text(json.dumps(hvq_receipt(20)))
+assert hvq41.reuse(20, bh, hwant)
+for key, value in (('t', 0.75), ('damping', 0.0), ('hessian_shrink_tokens', 64.0), ('col_power', 1.0), ('shrink_tokens', 64.0),
+                   ('col_floor', 0.05), ('d_statistics_sha256', 'a' * 64), ('calibration_run_id', 'a' * 64)):
+    refused(lambda: hvq41.reuse(20, bh, {**hwant, key: value}), f'hvq reuse with other {key}', key)
+(bh / 'receipt-20.json').write_text(json.dumps(ds41_receipt(20)))            # an iVQ receipt is not an hVQ layer
+refused(lambda: hvq41.reuse(20, bh, hwant), 'hvq reuse of an iVQ layer', 'method')
+(bh / 'receipt-20.json').write_text(json.dumps(hvq_receipt(20)))
+(bh / 'blob-20.bin').write_bytes(blob[:-1] + b'\0')
+refused(lambda: hvq41.reuse(20, bh, hwant), 'hvq blob that is not the receipt\'s', 'sha256')
+print('convert_layer_ds41_hvq: reuse refused for any other t, damping, shrink, statistics, run or blob: ok')
+
+# ---- run_hvq_ds41.py: pinned arena and Engram row cache ----------------------------------------
+import numpy as np
+gen = np.random.default_rng(5)
+tables = {f'layers.{L}.engram.embed.{k}': gen.integers(0, 256, (5000, n), dtype=np.uint8) for L in (1, 14) for k, n in (('weight', 16), ('scale', 2))}
+fake_src = SimpleNamespace(memmap=lambda name: tables[name])
+fake_shards = [SimpleNamespace(tokens=n, hashes=torch.from_numpy(gen.integers(0, 5000, (n, 2, 3)))) for n in (7, 40, 13)]
+rh41.ENGRAM_WINDOW = 512                                         # several windows, some without rows
+cache = tmp / 'engram-cache'
+rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, fake_shards, cache)
+for li, L in enumerate((1, 14)):
+    for r, sh in enumerate(fake_shards):
+        ids = sh.hashes[:, li].reshape(-1).numpy()
+        for k in ('w', 's'):
+            got = np.load(cache / f'L{L:02d}-s{r}-{k}.npy')
+            assert np.array_equal(got, tables[f'layers.{L}.engram.embed.' + ('weight' if k == 'w' else 'scale')][ids]), (L, r, k)
+stamp = (cache / 'L01-s0-w.npy').stat().st_mtime_ns
+rh41.build_engram_cache(fake_src, {'engram_layer_ids': [1, 14]}, fake_shards, cache)
+assert (cache / 'L01-s0-w.npy').stat().st_mtime_ns == stamp          # built once
+assert rh41.parse_probe('3:1,2;11:7') == {3: (1, 2), 11: (7,)} and rh41.parse_probe('') == {}
+print('run_hvq_ds41: Engram rows gathered once per shard equal the table rows: ok')
+cg = tmp / 'cgroup'
+cg.mkdir()
+rh41.CGROUP = cg
+for limit, used, want in (('1000', '950', '110'), ('1000', '880', None), ('max', '950', None)):
+    (cg / 'memory.max').write_text(limit + '\n')
+    (cg / 'memory.current').write_text(used + '\n')
+    (cg / 'memory.reclaim').unlink(missing_ok=True)
+    rh41.relieve_memory()
+    got = (cg / 'memory.reclaim').read_text() if (cg / 'memory.reclaim').exists() else None
+    assert got == want, (limit, used, got)
+rh41.CGROUP = tmp / 'no-cgroup'
+rh41.relieve_memory()                                            # no cgroup files: nothing to do
+print('run_hvq_ds41: page cache handed back above 90% of a container limit, untouched otherwise: ok')
+
 # ---- assemblers: one calibration run -----------------------------------------------------------
 rec = {l: {'calibration_run_id': rid, 'calibration_set_sha256': 'c' * 64} for l in range(4)}
 assert ar.calibration_of(rec, False) == {'run_id': rid, 'calibration_set_sha256': 'c' * 64, 'unverified_layers': []}
@@ -300,6 +369,16 @@ write_receipts(**{str(L): {'calibration_run_id': None, 'calibration_set_sha256':
 refused(lambda: a41.load_receipts(d41, False), 'ds41 legacy receipts without the flag', '--allow-unverified-calibration')
 assert a41.load_receipts(d41, True)[2] == {'run_id': None, 'calibration_set_sha256': None, 'unverified_layers': list(range(40))}
 print('assemblers: mixed calibration runs refused, legacy receipts only with the flag: ok')
+for L in range(40):
+    (d41 / f'receipt-{L:02d}.json').write_text(json.dumps(hvq_receipt(L)))
+_, vh, ch = a41.load_receipts(d41, False)
+assert (vh['method'], vh['t'], vh['damping'], vh['hessian.shrink_tokens']) == ('hvq', 0.5, 0.01, 256.0) and ch['run_id'] == rid
+for key, value in (('t', 0.9), ('damping', 0.1), ('hessian', {'shrink_tokens': 64.0}), ('method', None)):
+    (d41 / 'receipt-07.json').write_text(json.dumps(hvq_receipt(7, **{key: value})))
+    refused(lambda: a41.load_receipts(d41, True), f'hvq layers with mixed {key}', 'different variants')
+(d41 / 'receipt-07.json').write_text(json.dumps(hvq_receipt(7, calibration_run_id='a' * 64)))
+refused(lambda: a41.load_receipts(d41, True), 'hvq mixed calibration runs', 'different calibration runs')
+print('assemble_ds41_ivq: hVQ layers must share t, damping, shrink and the calibration run: ok')
 # ---- statistics bound to the converted checkpoint (source directory and revision) ---------------
 rs.check_source(None, '/any')                                          # legacy run: nothing to compare
 run = {'source': os.path.realpath('/m/A'), 'source_revision': 'r1'}

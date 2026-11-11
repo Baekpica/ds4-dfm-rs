@@ -16,18 +16,13 @@
 //     metric  M_B  = V_BB V_BB^T          (8 x 8)
 //     pick    c    = argmin (w~_B / g - c) M_B (w~_B / g - c)^T
 //
-// With a diagonal H this is axk2_vq_convert.cu's column-weighted assignment
-// bit for bit: r stays zero, M_B is the column weights, and the distance adds
-// its off-diagonal terms (exact zeros) after the same fused diagonal sum.
+// The distance is split as diagonal + off-diagonal,
 //
-// The off-diagonal part of the distance is expanded, so a codeword costs 8
-// products instead of 35:
+//     d(c) = sum_k M_kk (x_k - c_k)^2  +  c M' c^T - 2 (M' x) . c   (+ x M' x^T, dropped)
 //
-//     2 sum_{a<b} M_ab (x_a - c_a)(x_b - c_b) = Q(x) - c . lin + Q(c)
-//     lin_a = sum_{b != a} 2 M_ab x_b      (per row and block)
-//     Q(c)  = 2 sum_{a<b} M_ab c_a c_b     (per codeword and block, shared by the rows)
-//
-// Q(x) is the same for every codeword and is dropped.
+// M' = M_B without its diagonal. With a diagonal H this is axk2_vq_convert.cu's
+// column-weighted assignment bit for bit: r stays zero, M_B is the column
+// weights, and the second part is an exact zero added to the same fused sum.
 // Copyright (c) 2026 The ds4.c authors; MIT (see LICENSE-YoungAi).
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -35,8 +30,7 @@
 #include <math.h>
 
 constexpr int DIM = 8;
-constexpr int NOFF = DIM * (DIM - 1) / 2;   // 28 strictly upper metric entries
-constexpr int NMET = DIM + NOFF;            // 36 per block: diagonal, then doubled upper
+constexpr int NMET = DIM + DIM * DIM;       // per block: metric diagonal, then 2 M with a zero diagonal
 constexpr int TILE = 1024;                  // codewords per shared-memory tile (32 KiB)
 constexpr int MAX_PANEL = 16;               // blocks per launch (128 columns)
 constexpr int PANEL_COLS = MAX_PANEL * DIM;
@@ -52,7 +46,7 @@ __global__ void hvq_panel_kernel(const float* __restrict__ w, const float* __res
                                  const float* __restrict__ met, const float* __restrict__ cb,
                                  int* __restrict__ ids, int rows, int cols, int k, int j0, int j1) {
     __shared__ float4 words4[TILE * 2];
-    __shared__ float qtile[TILE];
+    __shared__ float zt[TILE];                     // c M' c^T of the staged codewords
     __shared__ float vrow[DIM][PANEL_COLS];
     __shared__ float coef[DIM * DIM + NMET];
 
@@ -97,67 +91,56 @@ __global__ void hvq_panel_kernel(const float* __restrict__ w, const float* __res
             for (int a = 0; a <= d; ++a) { t = fmaf(r[lo + a], coef[a * DIM + d], t); }
             x[d] = g > 0.f ? (w8[d] + t) / g : 0.f;
         }
-        float md[DIM], mo[NOFF];
+        // u = 2 M' x: the cross term's row vector.
+        const float* m2 = coef + DIM * DIM + DIM;
+        float md[DIM], u[DIM];
         #pragma unroll
-        for (int d = 0; d < DIM; ++d) { md[d] = coef[DIM * DIM + d]; }
-        #pragma unroll
-        for (int t = 0; t < NOFF; ++t) { mo[t] = coef[DIM * DIM + DIM + t]; }
-
-        // Linear term of the off-diagonal part: lin_a = sum_{b != a} (2 M_ab) x_b.
-        float lin[DIM];
-        #pragma unroll
-        for (int a = 0; a < DIM; ++a) { lin[a] = 0.f; }
-        {
-            int t = 0;
+        for (int a = 0; a < DIM; ++a) {
+            md[a] = coef[DIM * DIM + a];
+            float t = 0.f;
             #pragma unroll
-            for (int a = 0; a < DIM - 1; ++a) {
-                #pragma unroll
-                for (int b = a + 1; b < DIM; ++b) {
-                    lin[a] = fmaf(mo[t], x[b], lin[a]);
-                    lin[b] = fmaf(mo[t], x[a], lin[b]);
-                    ++t;
-                }
-            }
+            for (int b = 0; b < DIM; ++b) { t = fmaf(m2[a * DIM + b], x[b], t); }
+            u[a] = t;
         }
 
         float best = INFINITY;
         int index = 0;
-        const float4* cb4 = reinterpret_cast<const float4*>(cb);
         for (int base = 0; base < k; base += TILE) {
             const int tile = k - base < TILE ? k - base : TILE;
             __syncthreads();
-            // Stage the tile and each codeword's own off-diagonal form Q(c).
+            for (int t = threadIdx.x; t < tile * 2; t += blockDim.x) {
+                words4[t] = reinterpret_cast<const float4*>(cb)[base * 2 + t];
+            }
+            __syncthreads();
             for (int i = threadIdx.x; i < tile; i += blockDim.x) {
-                const float4 c0 = cb4[(base + i) * 2], c1 = cb4[(base + i) * 2 + 1];
-                words4[2 * i] = c0;
-                words4[2 * i + 1] = c1;
+                const float4 c0 = words4[2 * i], c1 = words4[2 * i + 1];
                 const float c[DIM] = {c0.x, c0.y, c0.z, c0.w, c1.x, c1.y, c1.z, c1.w};
-                float q = 0.f;
-                int t = 0;
+                float z = 0.f;
                 #pragma unroll
                 for (int a = 0; a < DIM - 1; ++a) {
                     float p = 0.f;
                     #pragma unroll
-                    for (int b = a + 1; b < DIM; ++b) { p = fmaf(mo[t++], c[b], p); }
-                    q = fmaf(c[a], p, q);
+                    for (int b = a + 1; b < DIM; ++b) { p = fmaf(m2[a * DIM + b], c[b], p); }
+                    z = fmaf(c[a], p, z);
                 }
-                qtile[i] = q;
+                zt[i] = z;
             }
             __syncthreads();
             for (int i = 0; i < tile; ++i) {
                 const float4 c0 = words4[2 * i], c1 = words4[2 * i + 1];
                 const float c[DIM] = {c0.x, c0.y, c0.z, c0.w, c1.x, c1.y, c1.z, c1.w};
-                float distance = 0.f, dot = 0.f;
-                // The diagonal first, as axk2_vq_convert.cu's weighted distance.
+                float distance = 0.f;
+                // The diagonal, as axk2_vq_convert.cu's weighted distance.
                 #pragma unroll
                 for (int d = 0; d < DIM; ++d) {
                     const float delta = x[d] - c[d];
                     distance = fmaf(md[d] * delta, delta, distance);
                 }
-                // Then Q(c) - c . lin; exact zeros when H is diagonal.
+                // The off-diagonal part; an exact zero when H is diagonal.
+                float cross = zt[i];
                 #pragma unroll
-                for (int d = 0; d < DIM; ++d) { dot = fmaf(c[d], lin[d], dot); }
-                distance += qtile[i] - dot;
+                for (int d = 0; d < DIM; ++d) { cross = fmaf(-u[d], c[d], cross); }
+                distance += cross;
                 // Ascending codeword order gives the lowest index on ties.
                 if (distance < best) { best = distance; index = base + i; }
             }
@@ -227,7 +210,7 @@ __global__ void hvq_refit_kernel(const float* __restrict__ w, const int* __restr
 static bool valid_k(int k) { return k >= 8 && k <= 8192; }
 
 // w, res [problems, rows, cols]; rpan [problems, rows, (j1 - j0) * 8]; gains [problems, rows];
-// v [problems, cols, cols]; vinv [problems, cols / 8, 64]; met [problems, cols / 8, 36];
+// v [problems, cols, cols]; vinv [problems, cols / 8, 64]; met [problems, cols / 8, 72];
 // cb [k, 8]; ids [problems, rows, cols / 8].
 extern "C" int hvq_panel(const float* w, const float* rpan, float* res, const __half* gains,
                          const float* v, const float* vinv, const float* met, const float* cb,
@@ -235,7 +218,7 @@ extern "C" int hvq_panel(const float* w, const float* rpan, float* res, const __
                          cudaStream_t stream) {
     if (problems <= 0 || rows <= 0 || cols <= 0 || cols % DIM || !valid_k(k)) { return int(cudaErrorInvalidValue); }
     if (j0 < 0 || j1 <= j0 || j1 > cols / DIM || j1 - j0 > MAX_PANEL) { return int(cudaErrorInvalidValue); }
-    const dim3 grid(unsigned((rows + THREADS - 1) / THREADS), unsigned(problems));
+    const dim3 grid((unsigned)((rows + THREADS - 1) / THREADS), (unsigned)problems);
     hvq_panel_kernel<<<grid, THREADS, 0, stream>>>(w, rpan, res, gains, v, vinv, met, cb, ids, rows, cols, k, j0, j1);
     return int(cudaGetLastError());
 }
@@ -246,10 +229,9 @@ extern "C" int hvq_refit(const float* w, const int* ids, const float* cb, const 
                          const double* noff, const double* doff, __half* gains, int problems,
                          int rows, int cols, cudaStream_t stream) {
     if (problems <= 0 || rows <= 0 || cols <= 0 || cols % DIM) { return int(cudaErrorInvalidValue); }
-    const dim3 grid(static_cast<unsigned>(rows), static_cast<unsigned>(problems));
+    const dim3 grid((unsigned)rows, (unsigned)problems);
     hvq_refit_kernel<<<grid, 256, 0, stream>>>(w, ids, cb, hdiag, noff, doff, gains, rows, cols);
     return int(cudaGetLastError());
 }
 
 extern "C" int hvq_max_panel() { return MAX_PANEL; }
-

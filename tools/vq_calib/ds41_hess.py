@@ -17,9 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 
+import numpy as np
 import torch
-from safetensors import safe_open
-from safetensors.torch import save_file
 
 NORMALIZATION = 'token: each routed token x x^T (a a^T) divided by its own mean square, summed per expert'
 PRECISION = 'chunk Gram matrices in FP64 (<= 32768 tokens), per-expert sums in FP32'
@@ -39,7 +38,7 @@ class LayerHess:
         self.aa = torch.zeros((experts, inter, inter), dtype=torch.float32, device=device)
         self.count = torch.zeros(experts, dtype=torch.int64, device=device)
         self.meta = {}
-        self.mean = None
+        self.mean = self.summary = None
         z = lambda n: torch.zeros((n, n), dtype=torch.float64, device=device)
         z32 = lambda n: torch.zeros((n, n), dtype=torch.float32, device=device)
         self.probe = {e: {'xx64': z(dim), 'aa64': z(inter), 'xx32': z32(dim), 'aa32': z32(inter)} for e in probe}
@@ -91,59 +90,66 @@ class LayerHess:
         return self.mean
 
     # ---------------------------------------------------------------- record
-    def digest(self, threads=4, group=8, stream=None):
-        """SHA-256 over the per-expert SHA-256 of xx, then aa (F32 little endian), then count (int64).
-        The sums leave the device through one pinned buffer per shape; `stream` keeps the copies off the
-        stream other work runs on."""
+    def digest(self, threads=16, group=16):
+        """SHA-256 over the per-expert SHA-256 of xx, then aa (F32 little endian), then count (int64)."""
         h = hashlib.sha256()
         with ThreadPoolExecutor(threads) as ex:
             for t in (self.xx, self.aa):
-                if not t.shape[0]:
-                    continue
-                buf = torch.empty((min(group, t.shape[0]),) + tuple(t.shape[1:]), dtype=torch.float32, pin_memory=True)
+                stage = torch.empty((group, *t.shape[1:]), dtype=t.dtype, pin_memory=t.is_cuda)
+                host = stage.numpy()
                 for s in range(0, t.shape[0], group):
-                    part = t[s:s + group]
-                    host = buf[:part.shape[0]]
-                    if stream is None:
-                        host.copy_(part)
-                    else:
-                        with torch.cuda.stream(stream):
-                            host.copy_(part)
-                    for d in ex.map(lambda a: hashlib.sha256(a).digest(), host.numpy()):
+                    n = min(group, t.shape[0] - s)
+                    stage[:n].copy_(t[s:s + n])
+                    for d in ex.map(lambda i: hashlib.sha256(host[i]).digest(), range(n)):
                         h.update(d)
-                del buf
         h.update(self.count.cpu().numpy().tobytes())
         return h.hexdigest()
 
-    def digest_async(self):
-        """digest() on a host thread and a side stream, so a fit can read the sums meanwhile. -> Future."""
-        torch.cuda.synchronize()
-        return ThreadPoolExecutor(1).submit(self.digest, 4, 8, torch.cuda.Stream())
+    def effective_rank(self, key):
+        """Participation ratio C^2 / ||R||_F^2 of each expert's raw correlation R (C columns): C for
+        uncorrelated channels, 1 for a single direction. -> [min, median, max] over the routed experts."""
+        t, ranks = getattr(self, key), []
+        for e in range(t.shape[0]):
+            if int(self.count[e]) == 0:
+                continue
+            s = t[e].double()
+            d = s.diagonal().clamp_min(1e-300)
+            ranks.append(float(s.shape[0] ** 2 / (s * s / d[:, None] / d[None, :]).sum()))
+        r = torch.tensor(ranks, dtype=torch.float64)
+        return [round(float(v), 1) for v in (r.min(), r.median(), r.max())]
 
     def describe(self):
-        c = self.count.double()
-        return {'normalization': NORMALIZATION, 'precision': PRECISION, 'tokens_routed': int(c.sum()),
+        if self.summary is None:
+            c = self.count.double()
+            self.summary = {
+                'normalization': NORMALIZATION, 'precision': PRECISION, 'tokens_routed': int(c.sum()),
                 'count_min': int(c.min()), 'count_median': float(c.median()), 'count_max': int(c.max()),
-                'experts_below_dim': int((c < self.xx.shape[1]).sum()), 'experts_below_inter': int((c < self.aa.shape[1]).sum())}
+                'experts_below_dim': int((c < self.xx.shape[1]).sum()), 'experts_below_inter': int((c < self.aa.shape[1]).sum()),
+                'effective_rank': {'xx': self.effective_rank('xx'), 'aa': self.effective_rank('aa')}}
+        return self.summary
 
-    def save(self, path, meta=None):
-        save_file({'xx': self.xx.cpu(), 'aa': self.aa.cpu(), 'count': self.count.cpu()}, str(path),
-                  metadata={'meta': json.dumps({**self.meta, **(meta or {})})})
+    def save(self, path, meta=None, group=16):
+        """Directory `path`: xx.npy, aa.npy, count.npy, meta.json, written a few experts at a time."""
+        path.mkdir(parents=True, exist_ok=True)
+        for key in ('xx', 'aa'):
+            t = getattr(self, key)
+            out = np.lib.format.open_memmap(path / f'{key}.npy', mode='w+', dtype=np.float32, shape=tuple(t.shape))
+            for s in range(0, t.shape[0], group):
+                out[s:s + group] = t[s:s + group].cpu().numpy()
+            out.flush()
+            del out
+        np.save(path / 'count.npy', self.count.cpu().numpy())
+        (path / 'meta.json').write_text(json.dumps({**self.meta, **(meta or {})}) + '\n')
 
     @classmethod
-    def load(cls, path, device='cuda'):
-        with safe_open(str(path), 'pt') as f:
-            meta = json.loads((f.metadata() or {}).get('meta', '{}'))
-            count = f.get_tensor('count')
-            xs, as_ = f.get_slice('xx'), f.get_slice('aa')
-            e, dim, _ = xs.get_shape()
-            inter = as_.get_shape()[1]
-            self = cls(0, dim, inter, device)
-            self.xx = torch.empty((e, dim, dim), dtype=torch.float32, device=device)
-            self.aa = torch.empty((e, inter, inter), dtype=torch.float32, device=device)
-            for s in range(0, e, 32):
-                self.xx[s:s + 32] = xs[s:s + 32].to(device)
-                self.aa[s:s + 32] = as_[s:s + 32].to(device)
-        self.count = count.to(device)
-        self.meta = meta
+    def load(cls, path, device='cuda', group=16):
+        xx, aa = (np.load(path / f'{key}.npy', mmap_mode='r') for key in ('xx', 'aa'))
+        self = cls(0, xx.shape[1], aa.shape[1], device)
+        self.xx = torch.empty(xx.shape, dtype=torch.float32, device=device)
+        self.aa = torch.empty(aa.shape, dtype=torch.float32, device=device)
+        for src, dst in ((xx, self.xx), (aa, self.aa)):
+            for s in range(0, src.shape[0], group):
+                dst[s:s + group] = torch.from_numpy(np.ascontiguousarray(src[s:s + group])).to(device)
+        self.count = torch.from_numpy(np.load(path / 'count.npy')).to(device)
+        self.meta = json.loads((path / 'meta.json').read_text())
         return self

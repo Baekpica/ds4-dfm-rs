@@ -5,7 +5,9 @@ and routes, no propagation between layers), next to the iVQ blob on the same tok
 
   dump    one teacher pass over the held-out set; saves the MoE input x of the listed layers
   run     one layer: its second moments (run_hvq_ds41.py --save-hess), its held-out x, and
-          every `t:damp` of --grid -> sweep-LL.jsonl (settings already there are skipped)
+          every `t:damp` of --grid -> sweep-LL.jsonl (settings already there are skipped);
+          run_hvq_ds41.py --sweep-layers does the same in the collecting process, where the
+          moments already are on the device
   choose  the setting with the lowest mean ratio to iVQ over the layers swept
 
 This is a choice of hyperparameters, not an acceptance test: the chosen setting is applied to
@@ -101,30 +103,33 @@ def token_errors(layer, x, students):
     return out
 
 
-def run(a):
+def parse_grid(text, shrink=256.0):
+    """'0.5:0,1:0.01,0.75:0:4096' -> [(0.5, 0.0, 256.0), (1.0, 0.01, 256.0), (0.75, 0.0, 4096.0)]:
+    t, damping and optionally the rare-expert pseudo-count."""
+    rows = [[float(v) for v in g.split(':')] for g in text.split(',')]
+    return [(r[0], r[1], r[2] if len(r) > 2 else shrink) for r in rows]
+
+
+def sweep_layer(L, teacher, host, hess, x, st, ivq, vq, grid, out, hvq):
+    """Every (t, damp, shrink) of `grid` on layer L: fit, then the held-out per-token error -> out/sweep-LL.jsonl.
+
+    host: the layer's host tensors (Teacher.host_layer); hess: LayerHess; x: the held-out MoE input;
+    st: the iVQ release's statistics (D). Settings already in the file are skipped."""
     dev = 'cuda'
-    L = a.layer
-    path = a.out / f'sweep-{L:02d}.jsonl'
-    a.out.mkdir(parents=True, exist_ok=True)
-    done = {}
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f'sweep-{L:02d}.jsonl'
+    done = set()
     if path.exists():
         for line in path.read_text().splitlines():
             row = json.loads(line)
-            done[(row['t'], row['damping'], row.get('hess_shrink', 256.0))] = row
-    grid = [tuple(float(v) for v in g.split(':')) for g in a.grid.split(',')]
-    grid = [g for g in grid if (g[0], g[1], a.hess_shrink) not in done]
-    if not grid and 'ivq' in {r.get('name') for r in done.values()}:
+            done.add((row['name'], row['t'], row['damping'], row['hess_shrink']))
+    grid = [g for g in grid if ('hvq', *g) not in done]
+    names = {d[0] for d in done}
+    if not grid and 'ivq' in names:
         return
-    teacher = Teacher(a.source, dev)
-    args = teacher.a
-    host = teacher.host_layer(L)
     w = teacher.layer(L, host)
-    x = load_file(str(a.dump / f'x-{L:02d}.safetensors'))['x'].to(dev)
-    case_of = torch.zeros(x.shape[0], dtype=torch.long, device=dev)
-    layer = MeasuredLayer(args, L, w, [None, None], None, students={}, case_of=case_of, acc={})
-    st = statistics(a.d_stats, L, 'imatrix')
-    hess = LayerHess.load(a.hess / f'layer-{L:02d}.safetensors', dev)
-    hvq = hv.Hvq()
+    layer = MeasuredLayer(teacher.a, L, w, [None, None], None, students={},
+                          case_of=torch.zeros(x.shape[0], dtype=torch.long, device=dev), acc={})
 
     def emit_row(row):
         with path.open('a') as f:
@@ -132,31 +137,41 @@ def run(a):
         emit(row)
 
     # the published blobs on the same tokens
-    base = {'ivq': VQExperts(a.ivq, dev).layer(L)}
-    if a.vq:
-        base['vq'] = VQExperts(a.vq, dev).layer(L)
-    if (0.0, 0.0, 256.0) not in done or done[(0.0, 0.0, 256.0)].get('name') != 'ivq':
+    if 'ivq' not in names:
+        base = {'ivq': VQExperts(ivq, dev).layer(L)}
+        if vq:
+            base['vq'] = VQExperts(vq, dev).layer(L)
         for name, err in token_errors(layer, x, base).items():
-            if name == 'ivq':
-                emit_row({'layer': L, 'name': 'ivq', 't': 0.0, 'damping': 0.0, 'hess_shrink': 256.0, **err})
-            else:
-                emit_row({'layer': L, 'name': name, 't': -1.0, 'damping': -1.0, 'hess_shrink': -1.0, **err})
-    del base
-    torch.cuda.empty_cache()
-    for t, damp in grid:
+            emit_row({'layer': L, 'name': name, 't': None, 'damping': None, 'hess_shrink': None, **err})
+        del base
+        torch.cuda.empty_cache()
+    for t, damp, hess_shrink in grid:
         t0 = time.monotonic()
-        var = cv.Variant(t, damp, a.hess_shrink)
-        job = cv.Job(L, st, var, a.ivq, cv.HostExperts(host, L))
+        job = cv.Job(L, st, cv.Variant(t, damp, hess_shrink), ivq, cv.HostExperts(host, L))
         job.fit(hess if t != 0 else None, hvq, measure=cv.Measure.ERRORS)
         cand = student(job.cb, {p: torch.from_numpy(job.idx[p]).to(dev) for p in PROJS},
                        {p: torch.from_numpy(job.gains[p]).to(dev).float() for p in PROJS})
         err = token_errors(layer, x, {'hvq': cand})['hvq']
-        emit_row({'layer': L, 'name': 'hvq', 't': t, 'damping': damp, 'hess_shrink': a.hess_shrink, **err,
-                  'output_error': job.rec['output_error'], 'changed_from_ivq': job.rec['changed_from_ivq'],
+        emit_row({'layer': L, 'name': 'hvq', 't': t, 'damping': damp, 'hess_shrink': hess_shrink, **err,
+                  'output_error': job.rec['output_error'], 'target_energy_by_quarter': job.rec['target_energy_by_quarter'],
+                  'changed_from_ivq': job.rec['changed_from_ivq'],
                   'identical_to_ivq': job.rec['identical_to_ivq'], 'factorization': job.rec['factorization'],
                   'fit_seconds': round(job.fit_seconds, 1), 'seconds': round(time.monotonic() - t0, 1)})
         del job, cand
         torch.cuda.empty_cache()
+
+
+def held_out_x(dump, L, dev='cuda'):
+    return load_file(str(dump / f'x-{L:02d}.safetensors'))['x'].to(dev)
+
+
+def run(a):
+    """One layer from second moments saved by run_hvq_ds41.py --save-hess."""
+    L, grid = a.layer, parse_grid(a.grid, a.hess_shrink)
+    teacher = Teacher(a.source, 'cuda')
+    hess = LayerHess.load(a.hess / f'layer-{L:02d}', 'cuda') if any(g[0] for g in grid) else None
+    sweep_layer(L, teacher, teacher.host_layer(L), hess, held_out_x(a.dump, L), statistics(a.d_stats, L, 'imatrix'),
+                a.ivq, a.vq, grid, a.out, hv.Hvq())
 
 
 def choose(a):
@@ -172,7 +187,7 @@ def choose(a):
         for r in rows[L]:
             if r['name'] != 'hvq':
                 continue
-            key = (r['t'], r['damping'], r.get('hess_shrink', 256.0))
+            key = (r['t'], r['damping'], r['hess_shrink'])
             table.setdefault(key, {})[L] = r
     full = {k: v for k, v in table.items() if set(v) == set(layers)}
     score = {k: sum(v[L]['median_tok'] / ivq[L]['median_tok'] for L in layers) / len(layers) for k, v in full.items()}
@@ -187,7 +202,7 @@ def choose(a):
     (a.out / 'choice.json').write_text(json.dumps(out, indent=1) + '\n')
     print(json.dumps(out['chosen']))
     for s in out['settings']:
-        print(f"t {s['t']:<5} damp {s['damping']:<5} ratio {s['mean_ratio_to_ivq']:.4f}  " +
+        print(f"t {s['t']:<5} damp {s['damping']:<5} shrink {s['hess_shrink']:<6} ratio {s['mean_ratio_to_ivq']:.4f}  " +
               '  '.join(f"L{L}: {s['median_tok'][L]:.4f}" for L in layers))
 
 
@@ -207,7 +222,7 @@ def main():
     r.add_argument('--d-stats', type=Path, required=True)
     r.add_argument('--ivq', required=True)
     r.add_argument('--vq', default='', help='the weights-only VQ base, for the record')
-    r.add_argument('--grid', required=True, help='t:damp,t:damp,...')
+    r.add_argument('--grid', required=True, help='t:damp[:shrink],...')
     r.add_argument('--hess-shrink', type=float, default=256.0)
     r.add_argument('--out', type=Path, required=True)
     c = sub.add_parser('choose')

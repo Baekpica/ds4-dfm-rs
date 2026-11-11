@@ -15,21 +15,15 @@ token-normalized second moments (ds41_hess.py), rare experts shrunk toward the l
 
 t = 0 needs no second moments and reproduces the iVQ conversion: same indices, same gains.
 
-A conversion is a Job in three steps, so a driver that also collects the moments
-(run_hvq_ds41.py) holds the device only for the middle one: open (the iVQ blob: codebook,
-its indices and gains for the comparison), fit (device), finish (host: pack, strict decode
-round trip, write, receipt).
-
 A finished layer (blob-LL.bin + receipt-LL.json) is reused only if the blob matches its
 receipt and the receipt was made for the requested variant, column statistics and
-calibration run; otherwise the converter raises. `--verify` reads finished layers back.
+calibration run; otherwise the converter raises.
 """
 import argparse
 from dataclasses import dataclass
 import enum
 import hashlib
 import json
-import os
 from pathlib import Path
 import resource
 import time
@@ -51,16 +45,16 @@ GROUPS = {'x': ('w1', 'w3'), 'a': ('w2',)}      # projections sharing an input: 
 BATCH = {'x': 16, 'a': 48}                      # experts per launch
 JITTER = 1e-8                                   # first diagonal lift (x mean) when a factorization fails
 JITTER_STEPS = 8
-FULL_METRIC = 'D^1/2 R D^1/2'                   # H_t at t = 1 without damping: the measured second moment
 RANK_DEFICIENCY = ('pseudo-count shrink of the token-normalized sums before the correlation: gate/up toward the '
                    'layer mean per token, (S_e + s M) / (n_e + s); down toward the identity at the expert\'s own '
                    'mean diagonal, (S_e + s m_e I) / (n_e + s)')
 
 
 class Measure(enum.IntEnum):
-    NONE = 0        # indices and gains only
-    ERRORS = 1      # + output errors under H_t of the new blob and the published one, what changed
-    FULL = 2        # + weight-space errors, errors under the full second moment, target drift
+    """What fit_layer records beside the indices and gains."""
+    NONE = 0        # nothing
+    ERRORS = 1      # output error under H_t and under D^1/2 R D^1/2
+    ALL = 2         # and the weight-space errors of convert_layer_ds41.py's receipts
 
 
 @dataclass(frozen=True)
@@ -88,18 +82,6 @@ def open_ivq(path):
     """The iVQ release as one virtual file: an assembled GGUF or the directory of its 40 parts."""
     path = Path(path)
     return fmt.open_base(fmt.default_parts(str(path)) if path.is_dir() else str(path))
-
-
-class HostExperts:
-    """LayerExperts from the layer's host tensors a collector already read (no second read of the shard)."""
-
-    def __init__(self, host, L, dev='cuda'):
-        prefix = f'layers.{L}.ffn.experts.'
-        self.t = {k: v.to(dev) for k, v in host.items() if k.startswith(prefix)}
-        self.L = L
-        self.read_seconds = 0.0
-
-    get = LayerExperts.get
 
 
 def factor_safe(h):
@@ -138,20 +120,12 @@ class ErrorSums:
         if old is not None:
             row['old'] += float(hv.output_error(w - old, h).sum())
 
-    def alias(self, key, src):
-        self.v[key] = dict(self.v[src])
-
     def summary(self, has_old):
         return {k: {'hvq': r['new'] / r['energy'], 'ivq': r['old'] / r['energy'] if has_old else None}
                 for k, r in self.v.items()}
 
 
-def spread(values):
-    t = torch.tensor(values, dtype=torch.float64)
-    return {'min': float(t.min()), 'median': float(t.median()), 'max': float(t.max())}
-
-
-def fit_layer(lx, wt, hess, cb, var, hvq, old=None, stats=None, log=None, measure=Measure.FULL):
+def fit_layer(lx, wt, hess, cb, var, hvq, old=None, stats=None, log=None, measure=Measure.ALL):
     """Indices and gains of every expert of one layer.
 
     lx: LayerExperts; wt: Weighting (D); hess: LayerHess or None (t = 0 only); cb [K, 8] F32;
@@ -165,10 +139,8 @@ def fit_layer(lx, wt, hess, cb, var, hvq, old=None, stats=None, log=None, measur
     errs = ErrorSums()
     changed = {p: {'indices': 0, 'gains': 0} for p in SHAPES}
     seconds = {'weights': 0.0, 'hessian': 0.0, 'factor': 0.0, 'assign': 0.0, 'measure': 0.0}
-    ratio, drift = {g: [] for g in GROUPS}, {}
     lifted, lift = 0, 0.0
-    full = measure >= Measure.FULL
-    same_metric = var.t == 1.0 and var.damp == 0.0
+    drift = {g: [] for g in GROUPS}
     t_all = time.monotonic()
 
     def tick(key, t0):
@@ -191,57 +163,59 @@ def fit_layer(lx, wt, hess, cb, var, hvq, old=None, stats=None, log=None, measur
             else:
                 r, _ = hv.correlation((hess.xx if group == 'x' else hess.aa)[e0:e0 + len(es)],
                                       hess.count[e0:e0 + len(es)], prior, var.hess_shrink)
-                ratio[group] += hv.participation(r).tolist()
             h = hv.hessian(col, r, var.t, var.damp)
             t0 = tick('hessian', t0)
             v, n_lift, top = factor_safe(h)
             lifted, lift = lifted + n_lift, max(lift, top)
             t0 = tick('factor', t0)
-            info = {} if full and hess is not None and e0 == 0 else None
-            ids, g = hvq.quantize(w, cb, h, v, info=info)
-            if info:
-                drift[group] = info['target_drift']
+            ids, g = hvq.quantize(w, cb, h, v, drift=drift[group] if measure >= Measure.ERRORS else None)
             del v
             t0 = tick('assign', t0)
+            dec = hvq.restore(ids, g, cb)
             dec_old = None
             if old is not None:
                 dec_old = torch.stack([torch.cat([old[0][old[1][p][e].long()].flatten(1) * old[2][p][e][:, None]
                                                   for p in projs]) for e in es])
             if measure >= Measure.ERRORS:
-                dec = hvq.restore(ids, g, cb)
                 errs.add(f'{group}:H_t', w, dec, dec_old, h)
-                if full and hess is not None and not same_metric:
-                    errs.add(f'{group}:{FULL_METRIC}', w, dec, dec_old, hv.hessian(col, r, 1.0, 0.0))
+                if hess is not None:
+                    errs.add(f'{group}:D^1/2 R D^1/2', w, dec, dec_old, hv.hessian(col, r, 1.0, 0.0))
             row0 = 0
             for p in projs:
                 rows = SHAPES[p][0]
                 for i, e in enumerate(es):
                     ip, gp = ids[i, row0:row0 + rows], g[i, row0:row0 + rows]
-                    if full:
+                    if measure == Measure.ALL:
                         m_new.add(e, p, w[i, row0:row0 + rows], dec[i, row0:row0 + rows])
                     if old is not None:
-                        if full:
+                        if measure == Measure.ALL:
                             m_old.add(e, p, w[i, row0:row0 + rows], dec_old[i, row0:row0 + rows])
                         changed[p]['indices'] += int((ip != old[1][p][e]).sum())
                         changed[p]['gains'] += int((gp.float() != old[2][p][e]).sum())
                     idx[p][e] = ip.to(torch.int16).cpu().numpy()
                     gains[p][e] = gp.cpu().numpy()
                 row0 += rows
-            del w, h, r, ids, g, dec_old
+            del w, h, r, ids, g, dec, dec_old
             t0 = tick('measure', t0)
             if log is not None and (e0 // BATCH[group]) % 6 == 5:
                 log({'phase': 'assign', 'group': group, 'experts': es[-1] + 1,
                      'seconds': round(time.monotonic() - t_all, 1)})
-        if full and hess is not None and same_metric:
-            errs.alias(f'{group}:{FULL_METRIC}', f'{group}:H_t')
     total = {p: {'indices': idx[p].size, 'gains': gains[p].size} for p in SHAPES}
+    # target energy over source energy by quarter of the block order (1.0 without feedback): whether
+    # feedback pushes the later columns' targets away from what the codebook was fitted to
+    quarters = {}
+    for group, rows in drift.items():
+        if not rows:
+            continue
+        tgt, src = (torch.stack([r[i] for r in rows]).mean(0) for i in (0, 1))
+        cut = [len(tgt) * q // 4 for q in range(5)]
+        quarters[group] = [float(tgt[cut[q]:cut[q + 1]].sum() / src[cut[q]:cut[q + 1]].sum()) for q in range(4)]
     record = {'seconds': {k: round(s, 2) for k, s in seconds.items()},
               'factorization': {'experts_lifted': lifted, 'largest_lift_x_mean': lift},
-              'participation_ratio': {g: spread(v) for g, v in ratio.items() if v} or None,
-              'target_drift': drift or None,
               'output_error': errs.summary(old is not None) if measure >= Measure.ERRORS else None,
-              'weight_error': {'hvq': m_new.summary() if full else None,
-                               'ivq': m_old.summary() if full and old is not None else None},
+              'target_energy_by_quarter': quarters or None,
+              'weight_error': {'hvq': m_new.summary() if measure == Measure.ALL else None,
+                               'ivq': m_old.summary() if measure == Measure.ALL and old is not None else None},
               'changed_from_ivq': {p: {k: changed[p][k] / total[p][k] for k in changed[p]} for p in SHAPES}
               if old is not None else None,
               'identical_to_ivq': all(changed[p][k] == 0 for p in SHAPES for k in changed[p]) if old is not None else None}
@@ -271,131 +245,107 @@ def reuse(L, out_dir, want):
     return True
 
 
-class Job:
-    """One layer: open (this constructor), fit, finish."""
+class HostExperts(LayerExperts):
+    """LayerExperts from a layer the collector already holds in host memory."""
 
-    def __init__(self, L, st, var, ivq, experts):
-        """st: convert_layer_ds41.statistics() of the iVQ release's statistics (D); experts: LayerExperts
-        or HostExperts of the layer."""
-        self.t0 = time.monotonic()
-        self.L, self.var, self.ivq = L, var, str(ivq)
+    def __init__(self, host, L, dev='cuda'):
+        self.t = {k: v.to(dev) for k, v in host.items() if f'layers.{L}.ffn.experts.' in k}
+        self.L = L
+        self.read_seconds = 0.0
+
+
+class Job:
+    """One layer's conversion in three steps, so the driver can pack and write in the background:
+    open (the published blob and D), fit (device), finish (pack, decode check, write, receipt)."""
+
+    def __init__(self, L, st, var, ivq, lx=None):
+        self.L, self.var, self.ivq, self.t0 = L, var, ivq, time.monotonic()
         self.K = 8192 if L < 14 else 4096
-        self.name = f'blk.{L}.ffn_exps_vq.blob'
-        self.stats, self.stat_files, self.stats_sha = st[0], st[1], st[2]
+        self.stats, self.stat_files, self.stats_sha, _, _ = st
         self.wt = Weighting('imatrix', self.stats, shrink_tokens=var.shrink_tokens, col_floor=var.col_floor,
                             col_power=var.col_power)
+        self.name = f'blk.{L}.ffn_exps_vq.blob'
         # the published iVQ blob: its codebook is kept, its indices and gains are the comparison
-        g = open_ivq(ivq)
-        info = g.tensor(self.name)
-        raw = g.vf.pread(info.abs_offset, info.nbytes)
-        self.nbytes = int(info.nbytes)
+        info = open_ivq(ivq).tensor(self.name)
+        raw = open_ivq(ivq).vf.pread(info.abs_offset, info.nbytes)
         self.old = decode_blob(torch.from_numpy(raw).cuda())
         lay = fmt.blob_layout(EXPERTS, self.K, SHAPES)
         self.cb_bytes = raw[lay.cb_off:lay.cb_off + self.K * 8].reshape(self.K, 8).copy()
         self.cb = torch.from_numpy(fmt.e4m3_decode(self.cb_bytes)).cuda().contiguous()
         assert torch.equal(self.cb, self.old[0]), 'codebook decode'
-        self.ivq_sha = hashlib.sha256(raw).hexdigest()
-        self.header = raw[:16].copy()
-        self.experts = experts
-        self.hess_sha, self.hess_info = 'none', {'normalization': 'none (t = 0)'}
-        self.idx = self.gains = self.rec = None
-        self.fit_seconds, self.peak_fit = 0.0, 0
+        self.ivq_sha = hashlib.sha256(raw.tobytes()).hexdigest()
+        self.header, self.nbytes = raw[:16].copy(), info.nbytes
+        self.lx = lx if lx is not None else LayerExperts(Source(ROOT), L)
+        emit({'layer': L, 'phase': 'read', 'seconds': round(time.monotonic() - self.t0, 1), 'K': self.K, 't': var.t,
+              'damping': var.damp})
 
-    def sibling(self, var):
-        """Another variant of the same layer on the same device tensors (the choice of t)."""
-        if (var.col_power, var.shrink_tokens, var.col_floor) != (self.var.col_power, self.var.shrink_tokens, self.var.col_floor):
-            raise ValueError('siblings share the column weights D')
-        other = object.__new__(Job)
-        other.__dict__.update(self.__dict__)
-        other.var, other.t0 = var, time.monotonic()
-        other.idx = other.gains = other.rec = None
-        return other
-
-    def fit(self, hess, hvq, measure=Measure.FULL, digest=True, log=None):
-        """hess: LayerHess of this layer or None (t = 0). The moments' SHA-256 is taken beside the fit."""
-        torch.cuda.synchronize()
+    def fit(self, hess, hvq, measure=Measure.ALL):
         torch.cuda.reset_peak_memory_stats()
         t0 = time.monotonic()
-        pending = hess.digest_async() if hess is not None and digest else None
-        log = log or (lambda r: emit({'layer': self.L, **r}))
-        self.idx, self.gains, self.rec = fit_layer(self.experts, self.wt, hess, self.cb, self.var, hvq, self.old,
-                                                   self.stats, log, measure)
-        if hess is not None:
-            self.hess_info = {**hess.describe(), **hess.meta}
-        if pending is not None:
-            self.hess_sha = pending.result()
-        torch.cuda.synchronize()
+        self.hess = {'sha256': hess.digest() if hess is not None else 'none', 'shrink_tokens': self.var.hess_shrink,
+                     'rank_deficiency': RANK_DEFICIENCY,
+                     **(hess.describe() if hess is not None else {'normalization': 'none (t = 0)'}),
+                     **(hess.meta if hess is not None else {})}
+        self.idx, self.gains, self.rec = fit_layer(self.lx, self.wt, hess, self.cb, self.var, hvq, self.old, self.stats,
+                                                   lambda r: emit({'layer': self.L, **r}), measure)
         self.fit_seconds = time.monotonic() - t0
-        self.peak_fit = torch.cuda.max_memory_allocated()
+        self.peak_fit = torch.cuda.max_memory_allocated() / 2 ** 30
+        del self.lx, self.old
+        return self
 
-    def release(self):
-        """Drop the device tensors (shared with siblings)."""
-        self.experts = self.old = self.cb = None
-
-    def student(self, dev='cuda'):
-        """expert(e) -> (w1, w3, w2) in BF16 from the fitted indices and gains, as VQExperts decodes a blob."""
-        cb = torch.from_numpy(fmt.e4m3_decode(self.cb_bytes)).to(dev)
-        idx = {p: torch.from_numpy(self.idx[p]).to(dev) for p in SHAPES}
-        gains = {p: torch.from_numpy(self.gains[p]).to(dev).float() for p in SHAPES}
-
-        def expert(e):
-            return tuple((cb[idx[p][e].long()].flatten(1) * gains[p][e][:, None]).to(torch.bfloat16)
-                         for p in ('w1', 'w3', 'w2'))
-        return expert
-
-    def finish(self, out_dir, run=None, collect=None, strict=True):
-        """Pack, decode round trip, write blob-LL.bin and receipt-LL.json. Host only.
-        run: the second-moment collection's record; collect: its time and memory for this layer."""
-        t_pack = time.monotonic()
-        L, name, rec = self.L, self.name, self.rec
-        blob = fmt.pack_vq_layer(L=L, cb_bytes=self.cb_bytes, gains=self.gains, idx=self.idx)
+    def finish(self, out_dir, run=None, strict_decode=True, collect=None, device_check=True):
+        """collect: the driver's record of this layer's second-moment collection (seconds, peak memory).
+        device_check=False keeps this step off the device (the driver runs it beside the next layer)."""
+        L, var, t0 = self.L, self.var, time.monotonic()
+        idx, gains, rec = self.idx, self.gains, self.rec
+        blob = fmt.pack_vq_layer(L=L, cb_bytes=self.cb_bytes, gains=gains, idx=idx)
         assert blob.size == self.nbytes, (blob.size, self.nbytes)
         assert np.array_equal(blob[:16], self.header), 'DQVL header'
-        if strict:
-            # every expert through the strict reader, and the reader's layer packed again
-            chk = fmt.decode_vq_blob(blob, name, idx_dtype=np.int16)
+        # decode round trip of every expert: the forward's device decoder, then the strict reader
+        if device_check:
+            dcb, didx, dgain = decode_blob(torch.from_numpy(blob).cuda())
+            assert torch.equal(dcb, self.cb)
+            for p in SHAPES:
+                assert torch.equal(didx[p], torch.from_numpy(idx[p]).cuda()), (L, p, 'indices')
+                assert torch.equal(dgain[p], torch.from_numpy(gains[p]).cuda().float()), (L, p, 'gains')
+            del dcb, didx, dgain
+        if strict_decode:
+            chk = fmt.decode_vq_blob(blob, self.name)
             assert np.array_equal(chk.cb_bytes, self.cb_bytes)
             for p in SHAPES:
-                assert np.array_equal(chk.idx[p], self.idx[p]), (L, p, 'indices (strict reader)')
-                assert np.array_equal(chk.gains[p].view(np.uint16), self.gains[p].view(np.uint16)), (L, p, 'gains (strict reader)')
+                assert np.array_equal(chk.idx[p], idx[p]), (L, p, 'indices (strict reader)')
+                assert np.array_equal(chk.gains[p].view(np.uint16), gains[p].view(np.uint16)), (L, p, 'gains (strict reader)')
             del chk
-        digest = hashlib.sha256(blob).hexdigest()
+        digest = hashlib.sha256(blob.tobytes()).hexdigest()
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f'blob-{L:02d}.bin'
         tmp = path.with_suffix('.tmp')
-        with open(tmp, 'wb') as f:
-            f.write(memoryview(blob))
-            f.flush()
-            os.fsync(f.fileno())
-            os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+        blob.tofile(tmp)
         tmp.rename(path)
-        pack_seconds = time.monotonic() - t_pack
-
+        pack_seconds = time.monotonic() - t0
         run, collect = run or {}, collect or {}
         receipt = {
-            'layer': L, 'tensor': name, 'K': self.K, 'bits': 13 if self.K == 8192 else 12, 'bytes': int(blob.size),
+            'layer': L, 'tensor': self.name, 'K': self.K, 'bits': 13 if self.K == 8192 else 12, 'bytes': int(blob.size),
             'sha256': digest,
-            'method': 'hvq', 'assignment': hv.ASSIGNMENT, 't': self.var.t, 'damping': self.var.damp,
+            'method': 'hvq', 'assignment': hv.ASSIGNMENT, 't': var.t, 'damping': var.damp,
             'gain_refit': 'ls', 'gain_refit_metric': hv.GAIN_REFIT, 'mode': 'imatrix', 'codebook_scope': 'shared',
             'codebook': {'source': 'iVQ release blob, bytes unchanged',
-                         'sha256': hashlib.sha256(self.cb_bytes).hexdigest(), 'ivq_blob_sha256': self.ivq_sha,
-                         'ivq_base': self.ivq},
+                         'sha256': hashlib.sha256(self.cb_bytes.tobytes()).hexdigest(),
+                         'ivq_blob_sha256': self.ivq_sha, 'ivq_base': str(self.ivq)},
             'weighting': self.wt.describe(), 'stats_norm': 'sum',
             'd_statistics': self.stat_files, 'd_statistics_sha256': self.stats_sha,
-            'hessian': {'sha256': self.hess_sha, 'shrink_tokens': self.var.hess_shrink,
-                        'rank_deficiency': RANK_DEFICIENCY, **self.hess_info,
-                        'participation_ratio': rec['participation_ratio']},
-            'statistics_sha256': self.hess_sha,
+            'hessian': self.hess, 'statistics_sha256': self.hess['sha256'],
             'calibration_run_id': run.get('run_id'), 'calibration_set_sha256': run.get('calib_sha256'),
             'calibration_content_sha256': run.get('calib_content_sha256'), 'calibration_run': run.get('run'),
+            **{k: rec[k] for k in ('factorization', 'output_error', 'target_energy_by_quarter', 'weight_error',
+                                   'changed_from_ivq', 'identical_to_ivq')},
+            'decode_round_trip': ' + '.join(n for n, on in (('device decoder', device_check), ('strict reader', strict_decode))
+                                            if on) + ', every expert',
             'collection': collect or None,
-            **{k: rec[k] for k in ('factorization', 'target_drift', 'output_error', 'weight_error', 'changed_from_ivq',
-                                   'identical_to_ivq')},
-            'decode_round_trip': 'strict reader, every expert' if strict else 'not checked',
             'seconds': (collect.get('seconds') or 0.0) + self.fit_seconds + pack_seconds,
-            'timing': {**rec['seconds'], 'fit': round(self.fit_seconds, 2), 'pack_verify_write': round(pack_seconds, 2),
-                       'collect': collect.get('seconds')},
-            'peak_gpu_gib': {'collect': collect.get('peak_gpu_gib'), 'convert': round(self.peak_fit / 2 ** 30, 2)},
+            'timing': {'collect': collect.get('seconds'), **rec['seconds'], 'fit': round(self.fit_seconds, 2),
+                       'pack_verify_write': round(pack_seconds, 2)},
+            'peak_gpu_gib': {'collect': collect.get('peak_gpu_gib'), 'convert': round(self.peak_fit, 2)},
             'peak_host_rss_gib': round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20, 2),
             'tools': source_hashes(),
         }
@@ -408,27 +358,28 @@ class Job:
         return receipt
 
 
-def verify(L, out_dir, ivq, deep):
-    """A finished layer read back from the disk: the blob is the receipt's, has the iVQ blob's header, size
-    and codebook bytes; with `deep` every expert goes through the strict reader and packs to the same bytes."""
+def convert(L, out_dir, st, hess, var, ivq, run=None, strict_decode=True):
+    """st: convert_layer_ds41.statistics() of the iVQ release's statistics (D);
+    hess: LayerHess of this layer or None (t = 0); run: the second-moment collection run record."""
+    return Job(L, st, var, ivq).fit(hess, hv.Hvq()).finish(out_dir, run, strict_decode)
+
+
+def verify(L, out_dir):
+    """A finished layer read back: the blob is its receipt's, and the forward's device decoder and the
+    strict reader return the same indices, gains and codebook for every expert."""
     r = json.loads((out_dir / f'receipt-{L:02d}.json').read_text())
     blob = np.fromfile(out_dir / f'blob-{L:02d}.bin', dtype=np.uint8)
-    name = f'blk.{L}.ffn_exps_vq.blob'
-    K = 8192 if L < 14 else 4096
-    lay = fmt.blob_layout(EXPERTS, K, SHAPES)
-    g = open_ivq(ivq)
-    info = g.tensor(name)
-    head = g.vf.pread(info.abs_offset, lay.body)
-    ok = {'sha256': hashlib.sha256(blob).hexdigest() == r['sha256'], 'tensor': r['tensor'] == name,
-          'size': blob.size == info.nbytes == lay.total, 'header': bool(np.array_equal(blob[:16], head[:16])),
-          'codebook': bool(np.array_equal(blob[lay.cb_off:lay.cb_off + K * 8], head[lay.cb_off:lay.cb_off + K * 8]))}
-    if deep:
-        layer = fmt.decode_vq_blob(blob, name, idx_dtype=np.int16)
-        ok['repack'] = bool(np.array_equal(fmt.pack_vq_layer(layer), blob))
-        ok['finite_gains'] = all(bool(np.isfinite(layer.gains[p].astype(np.float32)).all()) for p in SHAPES)
-    emit({'layer': L, 'phase': 'verify', **ok})
-    if not all(ok.values()):
-        raise SystemExit(f'layer {L}: {[k for k, v in ok.items() if not v]} failed')
+    assert hashlib.sha256(blob.tobytes()).hexdigest() == r['sha256'] and blob.size == r['bytes'], (L, 'sha256')
+    chk = fmt.decode_vq_blob(blob, r['tensor'])
+    assert chk.L == L and chk.K == r['K'] and chk.nexp == EXPERTS and chk.shapes == SHAPES, (L, 'header')
+    assert hashlib.sha256(chk.cb_bytes.tobytes()).hexdigest() == r['codebook']['sha256'], (L, 'codebook')
+    cb, idx, gains = decode_blob(torch.from_numpy(blob).cuda())
+    assert torch.equal(cb, torch.from_numpy(chk.cb).cuda())
+    for p in SHAPES:
+        assert torch.equal(idx[p].int(), torch.from_numpy(chk.idx[p]).cuda()), (L, p, 'indices')
+        assert torch.equal(gains[p], torch.from_numpy(chk.gains[p].astype(np.float32)).cuda()), (L, p, 'gains')
+        assert bool(torch.isfinite(gains[p]).all()) and float(gains[p].min()) >= 0.0, (L, p, 'gain range')
+    emit({'layer': L, 'phase': 'verified', 'sha256': r['sha256'], 'K': chk.K, 't': r.get('t'), 'damping': r.get('damping')})
 
 
 def parse_layers(text):
@@ -442,40 +393,33 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--layers', required=True, help='comma list or a-b range')
     p.add_argument('--d-stats', type=Path, help="the iVQ release's statistics (column weights D)")
-    p.add_argument('--ivq', required=True, help='iVQ release: assembled GGUF or the directory of its parts')
+    p.add_argument('--ivq', help='iVQ release: assembled GGUF or the directory of its parts')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--t', type=float, help='0 = iVQ (no feedback) .. 1 = the full correlation')
+    p.add_argument('--verify', action='store_true', help='read finished layers back instead of converting')
     p.add_argument('--damp', type=float, default=0.0, help='diagonal lift of H_t, x mean(D)')
     p.add_argument('--hess-shrink', type=float, default=256.0, help='pseudo-count of the rare-expert prior')
-    p.add_argument('--hess', type=Path, help='directory with layer-LL.safetensors second moments (t > 0)')
+    p.add_argument('--hess', type=Path, help='directory with layer-LL/ second moments (t > 0)')
     p.add_argument('--no-strict-decode', action='store_true')
-    p.add_argument('--verify', action='store_true', help='read finished layers back instead of converting')
-    p.add_argument('--deep', action='store_true', help='--verify: strict decode and repack of every expert')
     a = p.parse_args()
+    torch.backends.cuda.matmul.allow_tf32 = False
     if a.verify:
         for L in parse_layers(a.layers):
-            verify(L, a.out, a.ivq, a.deep)
+            verify(L, a.out)
         return
-    if a.t is None or a.d_stats is None:
-        raise SystemExit('--t and --d-stats are required to convert')
-    torch.backends.cuda.matmul.allow_tf32 = False
+    if a.d_stats is None or a.ivq is None or a.t is None:
+        p.error('--d-stats, --ivq and --t are required to convert')
     var = Variant(a.t, a.damp, a.hess_shrink)
-    hvq = hv.Hvq()
     for L in parse_layers(a.layers):
         st = statistics(a.d_stats, L, 'imatrix')
-        hess = LayerHess.load(a.hess / f'layer-{L:02d}.safetensors') if a.hess else None
-        run = hess.meta if hess is not None else {}
+        hess = LayerHess.load(a.hess / f'layer-{L:02d}') if a.hess else None
+        run = (hess.meta if hess is not None else {})
         want = {**var.want(), 'd_statistics_sha256': st[2], 'calibration_run_id': run.get('run_id')}
         if reuse(L, a.out, want):
             continue
-        job = Job(L, st, var, a.ivq, LayerExperts(Source(ROOT), L))
-        emit({'layer': L, 'phase': 'read', 'seconds': round(time.monotonic() - job.t0, 1), 'K': job.K, 't': var.t,
-              'damping': var.damp})
-        job.fit(hess, hvq)
-        job.release()
+        convert(L, a.out, st, hess, var, a.ivq, run, not a.no_strict_decode)
         del hess
         torch.cuda.empty_cache()
-        job.finish(a.out, run, None, not a.no_strict_decode)
 
 
 if __name__ == '__main__':

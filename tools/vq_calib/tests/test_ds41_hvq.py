@@ -16,6 +16,7 @@
  8. DQVL v3 pack -> strict decode round trip of hVQ indices and gains (12- and 13-bit).
 """
 import os
+from pathlib import Path
 import sys
 import tempfile
 
@@ -55,19 +56,17 @@ def profile(p, cols, seed):
     return (col / col.mean(-1, keepdim=True)).float().contiguous().to(DEV)
 
 
-def correlated(n, cols, rho, seed, rank=0, draw=0):
-    """n tokens with AR(1) channel correlation rho (plus `rank` shared factors), FP64. The column
-    scales and the factor loadings belong to `seed`; `draw` picks the sample from that distribution."""
-    gs = torch.Generator().manual_seed(seed)
-    scale = torch.rand(cols, generator=gs, dtype=torch.float64) * 1.5 + 0.25
-    load = torch.randn(rank, cols, generator=gs, dtype=torch.float64) if rank else None
-    g = torch.Generator().manual_seed(seed * 7919 + 1 + draw)
+def correlated(n, cols, rho, seed, rank=0, law=7):
+    """n tokens (sample `seed`) of one input law: AR(1) channel correlation rho, plus `rank`
+    shared factors, times per-channel scales; `law` seeds the loadings and scales. FP64."""
+    g, fixed = torch.Generator().manual_seed(seed), torch.Generator().manual_seed(law)
     z = torch.randn(n, cols, generator=g, dtype=torch.float64)
     x = z.clone()
     for c in range(1, cols):
         x[:, c] = rho * x[:, c - 1] + (1 - rho * rho) ** 0.5 * z[:, c]
     if rank:
-        x = x + torch.randn(n, rank, generator=g, dtype=torch.float64) @ load
+        x = x + torch.randn(n, rank, generator=g, dtype=torch.float64) @ torch.randn(rank, cols, generator=fixed, dtype=torch.float64)
+    scale = torch.rand(cols, generator=fixed, dtype=torch.float64) * 1.5 + 0.25
     return (x * scale).to(DEV)
 
 
@@ -187,7 +186,7 @@ def test_feedback(h):
         pool, _ = h.vq.normalize(w[0].contiguous())
         _, _, cbf, _ = h.vq.train(pool, k, 8)
         cb = cbf.to(torch.float8_e4m3fn).float().contiguous()
-        x, fresh = correlated(n, cols, rho, 31, rank), correlated(n, cols, rho, 31, rank, draw=1)
+        x, fresh = correlated(n, cols, rho, 31, rank), correlated(n, cols, rho, 32, rank)
         s, cnt = moments(x)
         col = s[0].diagonal() / s[0].diagonal().mean()
         col = col.float()[None].contiguous()
@@ -334,12 +333,19 @@ def test_moments():
     check(float((hs.layer_mean().cpu() - mean).norm() / mean.norm()) < 1e-6, 'layer mean per token')
     with tempfile.TemporaryDirectory() as d:
         hs.meta = {'run_id': 'r'}
-        hs.save(os.path.join(d, 'layer-00.safetensors'), {'layer': 0})
-        back = LayerHess.load(os.path.join(d, 'layer-00.safetensors'), DEV)
+        hs.save(Path(d) / 'layer-00', {'layer': 0})
+        back = LayerHess.load(Path(d) / 'layer-00', DEV)
         check(torch.equal(back.xx, hs.xx) and torch.equal(back.aa, hs.aa) and torch.equal(back.count, hs.count)
               and back.meta == {'run_id': 'r', 'layer': 0} and back.digest() == hs.digest(), 'save / load / digest')
     hs.xx[2, 0, 0] += 1
     check(back.digest() != hs.digest(), 'digest sees one changed element')
+    flat = LayerHess(2, 8, 4, DEV)
+    flat.count += 5
+    flat.xx[0], flat.aa[0] = torch.eye(8, device=DEV), torch.eye(4, device=DEV)      # uncorrelated: rank = columns
+    flat.xx[1], flat.aa[1] = torch.ones(8, 8, device=DEV), torch.ones(4, 4, device=DEV)   # one direction: rank 1
+    d = flat.describe()
+    check(d['effective_rank'] == {'xx': [1.0, 1.0, 8.0], 'aa': [1.0, 1.0, 4.0]} and d['count_median'] == 5.0,
+          'effective rank: columns for uncorrelated channels, 1 for a single direction')
 
 
 # ----------------------------------------------------------------------------- 8

@@ -397,6 +397,7 @@ class Stats:
         self.t = {'tokens': z(1), 'count': torch.zeros(E, dtype=torch.int64, device=device),
                   'w1': z(E), 'w2': z(E), 'x2': z(E, H), 'x2w': z(E, H), 'a2': z(E, Fm), 'a2w': z(E, Fm),
                   'x2n': z(E, H), 'a2n': z(E, Fm), 'ffn_in': z(H), 'shared_a': z(Fm)}
+        self.hess = None                 # optional per-expert second moments (ds41_hess.LayerHess)
 
 
 # ----------------------------------------------------------------------------- layer
@@ -567,9 +568,8 @@ class Layer:
                 t['a2w'][e] += (w2d.float()[None] @ af)[0].double()
                 t['a2n'][e] += (af / af.mean(-1, keepdim=True).clamp_min(1e-30)).sum(0).double()
                 del xf, af
-                hess = getattr(stats, 'hess', None)        # per-expert second moments for hVQ (ds41_hess.LayerHess)
-                if hess is not None:
-                    hess.add(e, xe, act)
+                if stats.hess is not None:
+                    stats.hess.add(e, xe, act)
             y.index_add_(0, tok, F.linear(act_quant((we[:, None] * act).to(BF)), w2).float())
             del w1, w3, w2, xe, xq, g, u, act
         for c0 in range(0, N, 65536):
