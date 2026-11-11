@@ -157,7 +157,7 @@ the measurements are in [docs/vq-calibration.md](../../docs/vq-calibration.md).
 |---|---|
 | `ds41_hess.py` | per-expert token-normalized second moments of one MoE layer (`Σ x xᵀ / mean(x²)`, `Σ a aᵀ / mean(a²)`): FP64 Gram per chunk, FP32 sums, on the device; precision probe; digest |
 | `ds41_hvq.py`, `cuda/ds41_hvq.cu` | shrunk correlation, `H_t = D½((1−t)I + tR)D½ + damp`, its factor `V` (`H = V Vᵀ`), the panel kernel (8-column blocks in order, feedback through `V`, block metric `V_BB V_BBᵀ`) and the least-squares gain under `H_t` |
-| `convert_layer_ds41_hvq.py` | one MoE layer -> one DQVL v3 blob + receipt (`open`, `fit`, `finish`); `--t 0` is the iVQ conversion bit for bit; `--verify` reads finished layers back |
+| `convert_layer_ds41_hvq.py` | one MoE layer -> one DQVL v3 blob + receipt (`Job` construction, `fit`, `finish`); `--t 0` is the iVQ conversion bit for bit; `--verify` reads finished layers back |
 | `run_hvq_ds41.py` | one GPU, layer by layer: collect a layer's moments, convert it, drop the moments; the calibration shards' residual streams rotate through pinned host buffers; resumable |
 | `sweep_hvq_ds41.py` | the choice of `t` and damping: held-out per-token routed-output error of each setting on a few layers (`dump`, `run`, `choose`) |
 | `assemble_ds41_ivq.py` | also assembles hVQ blobs (the 40 receipts must share `t`, damping, shrink and the calibration run) |

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """DeepSeek-V4.1-Flash hVQ on one GPU, layer by layer: collect a layer's per-expert second
 moments (ds41_hess.py), convert the layer (convert_layer_ds41_hvq.py), drop the moments.
-A layer's moments are 48 GiB in FP32 (384 x 5120^2 + 384 x 2304^2); 40 layers would be
+A layer's moments are 45.1 GiB (48.4 GB) in FP32 (384 x 5120^2 + 384 x 2304^2); 40 layers would be
 1.9 TB, so they stay on the device and never reach the disk.
 
 Same teacher stream as the iVQ statistics: the FP4/FP8 original through ds41_ref, the
 calibration sequences dealt into `--world` token-balanced shards exactly as
 `run_ds41.py collect` deals them to its ranks (the iVQ run had 8), so every forward batch
 is one the iVQ collector ran. The shards' residual streams wait in pinned host memory
-(41 KiB per token) and take turns on the device, one layer at a time:
+(40 KiB per token) and take turns on the device, one layer at a time:
 
     layer L weights -> for each shard: host -> device, forward (+ moments), device -> host
                     -> fit layer L (device) -> pack / decode check / write (host thread)
@@ -18,15 +18,16 @@ and calibration run is not converted again and its moments are not collected; th
 still runs through it, because later layers read its output. The loop stops after the
 last layer that is still wanted.
 
-Host memory: the streams of all but one shard in one pinned arena (41 KiB per token, rounded up
+Host memory: the streams of all but one shard in one pinned arena (40 KiB per token, rounded up
 to a power of two: 128 GiB for the 3.65M-token set in 8 shards), the attention state, and two
 layers of pinned weights (~20 GiB): 170 GiB resident. Under a container limit the run hands
-clean page cache back before the limit is reached (relieve_memory).
+clean page cache back before the limit is reached when cgroup reclaim is writable
+(relieve_memory); otherwise an external cache keeper is needed.
 
 `--sweep-grid` fits every `t:damp` of the grid on the listed layers and scores each on
 held-out tokens (sweep_hvq_ds41.py) while the layer's moments are on the device, instead of
 converting: the choice of t and damping. `--save-hess DIR` writes the moments of the listed
-layers to DIR (48 GiB each) for sweep_hvq_ds41.py run.
+layers to DIR (45.1 GiB each) for sweep_hvq_ds41.py run.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
