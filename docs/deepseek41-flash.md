@@ -313,8 +313,10 @@ goes from 956.2 / 1,032.4 / 934.9 / 861.7 tok/s at 2K / 8K / 32K / 64K to
 graph. The [dense-chain follow-up](deepseek41-optimization-2026-11-12-dense.md)
 moves the prefill q4_K projections to the GLM VQ family's FP16 tensor-core
 kernel (`glmvq_q4p`, a named deviation with F16 weights): another 14.5–16%
-at 2K–32K, 1,293.1 / 1,624.0 / 1,680.9 tok/s at 2K / 8K / 32K. The records
-below are V4.1 Flash with its code GR sidecar on earlier builds.
+at 2K–32K, 1,293.1 / 1,624.0 / 1,680.9 tok/s at 2K / 8K / 32K; the
+[2K–64K record after both](benchmarks/ds41-hvq-spark-64k-2026-11-12-dense/README.md)
+has the graph. The records below are V4.1 Flash with its code GR sidecar on
+earlier builds.
 
 The head campaign
 ([ds41-spark-head-2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md))

@@ -20,7 +20,8 @@ final runs at the same frontiers):
 | 64K (66,608) | 1,500.9 | 1,643.2 | (all three runs stalled) |
 
 Kernel sum per 2,048-row block of a 64K prefill: 1,301 → 1,135 ms (−12.8%).
-Decode kernels are unchanged.
+Decode kernels are unchanged. The [2K–64K record on `main` 58738c04](benchmarks/ds41-hvq-spark-64k-2026-11-12-dense/README.md)
+has three fresh 32-frontier sweeps after both PRs and the graph.
 
 ## Conditions
 
