@@ -5415,6 +5415,7 @@ int ds4_gpu_v41_vision_unfold_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *
 int ds4_gpu_v41_row_select_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *src, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
 int ds4_gpu_v41_rows_zero_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
 int ds4_gpu_v41_add_tensor(ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n);
+int ds4_gpu_v41_add_round_tensor(ds4_gpu_tensor *y, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n);
 int ds4_gpu_v41_scale_round_tensor(ds4_gpu_tensor *x, uint64_t n, float s);
 int ds4_gpu_v41_expand_hc_tensor(ds4_gpu_tensor *hc, const ds4_gpu_tensor *x, uint32_t n_embd, uint32_t n_hc, uint32_t n_tok);
 int ds4_gpu_v41_hc_mix_tensor(ds4_gpu_tensor *mix, const ds4_gpu_tensor *hc, const void *model_map, uint64_t model_size,

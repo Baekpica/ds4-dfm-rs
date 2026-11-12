@@ -1018,10 +1018,8 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
              !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) return false;
     if (tail) {   /* decode batch: reduce + add + bf16 round in one launch (same order, bit-identical) */
         if (!ds4_gpu_v41_moe_tail_tensor(st->y, st->so, st->rw, n, DS4_N_EXPERT_USED, E)) return false;
-    } else {
-        if (!ds4_gpu_tensor_copy(st->y, 0, st->routed, 0, (uint64_t)n * E * 4)) return false;
-        if (!ds4_gpu_v41_add_tensor(st->y, st->so, (uint64_t)n * E)) return false;
-        if (!ds4_gpu_v41_round_bf16_tensor(st->y, (uint64_t)n * E)) return false;
+    } else if (!ds4_gpu_v41_add_round_tensor(st->y, st->routed, st->so, (uint64_t)n * E)) {
+        return false;
     }
     return true;
 
