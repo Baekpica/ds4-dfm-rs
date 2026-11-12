@@ -1,0 +1,15 @@
+{
+  "title": "DeepSeek V4.1 Flash 1017 · hVQ",
+  "subtitle": "One DGX Spark / GB10 · 2K–64K full-prefill sweep · 2026-11-12",
+  "heading": "DeepSeek V4.1 Flash 1017 hVQ: 2K–64K throughput",
+  "labels": {
+    "base": "main 2f7a19e5",
+    "final": "feat/perf-ds41-flash 2ad7267a"
+  },
+  "footer": [
+    "Curves: per-frontier medians; band: min–max of the three runs after; legend: median of run means.",
+    "Full prompt prefill + up to 128 greedy tokens · zero KV reuse · actual input counts in the report",
+    "1017 Engram · automatic MTP · CUDA graphs · fresh server per run · 300–2200 MHz",
+    "After: Engram prefetch sizing · index scores and routed experts on tensor cores (E4M3 activations)"
+  ]
+}

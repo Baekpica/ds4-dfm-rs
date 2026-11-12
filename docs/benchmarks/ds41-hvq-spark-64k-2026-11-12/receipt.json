@@ -1,0 +1,576 @@
+{
+  "base": [
+    {
+      "run": "base-1",
+      "server_sha256": "d79bb4b735538b95102c82ec0912f160de09877b7bdf85764599ac3dcb79d4e0",
+      "started": "2026-11-12T16:19:15+09:00",
+      "finished": "2026-11-12T16:43:31+09:00",
+      "boot_seconds": 152.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "ca765ead580707f803f9990beae7c6a8e6bef205489f757fc7d474ae25aaa796",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4087,
+      "prefill_tps_mean": 950.7,
+      "decode_tps_mean": 32.32,
+      "request_clock_mhz": {
+        "min": 2187,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 1283,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 7.14,
+        "max_psi_full_avg10": 0.0,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1904,
+        "skipped_rounds": 796,
+        "accepted_per_round": 1.002,
+        "yield_per_round": 2.002,
+        "round_ms": 59.46
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 2,
+          "pos": 2048,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 15,
+          "pos": 26624,
+          "layer": 1,
+          "seconds": 1.9
+        },
+        {
+          "request": 18,
+          "pos": 28672,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 18,
+          "pos": 34816,
+          "layer": 14,
+          "seconds": 0.6
+        },
+        {
+          "request": 20,
+          "pos": 26624,
+          "layer": 1,
+          "seconds": 1.9
+        },
+        {
+          "request": 22,
+          "pos": 26624,
+          "layer": 1,
+          "seconds": 1.9
+        },
+        {
+          "request": 26,
+          "pos": 53248,
+          "layer": 1,
+          "seconds": 0.6
+        },
+        {
+          "request": 29,
+          "pos": 51200,
+          "layer": 1,
+          "seconds": 2.0
+        }
+      ]
+    },
+    {
+      "run": "base-2",
+      "server_sha256": "d79bb4b735538b95102c82ec0912f160de09877b7bdf85764599ac3dcb79d4e0",
+      "started": "2026-11-12T18:03:57+09:00",
+      "finished": "2026-11-12T18:28:20+09:00",
+      "boot_seconds": 156.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "0efc305f196a7f3aa7e41a075b01daa265a7f641f8de3e1e6a713c091e1f416c",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4087,
+      "prefill_tps_mean": 956.52,
+      "decode_tps_mean": 32.38,
+      "request_clock_mhz": {
+        "min": 2184,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 1286,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 6.96,
+        "max_psi_full_avg10": 0.0,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1914,
+        "skipped_rounds": 782,
+        "accepted_per_round": 0.996,
+        "yield_per_round": 1.996,
+        "round_ms": 59.29
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 10,
+          "pos": 10240,
+          "layer": 14,
+          "seconds": 1.0
+        },
+        {
+          "request": 10,
+          "pos": 12288,
+          "layer": 1,
+          "seconds": 1.4
+        },
+        {
+          "request": 16,
+          "pos": 2048,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 21,
+          "pos": 26624,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 21,
+          "pos": 26624,
+          "layer": 14,
+          "seconds": 0.7
+        },
+        {
+          "request": 22,
+          "pos": 16384,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 23,
+          "pos": 40960,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 28,
+          "pos": 12288,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 28,
+          "pos": 43008,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 28,
+          "pos": 43008,
+          "layer": 14,
+          "seconds": 0.5
+        }
+      ]
+    },
+    {
+      "run": "base-3",
+      "server_sha256": "d79bb4b735538b95102c82ec0912f160de09877b7bdf85764599ac3dcb79d4e0",
+      "started": "2026-11-12T18:28:20+09:00",
+      "finished": "2026-11-12T18:52:45+09:00",
+      "boot_seconds": 156.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "e6a8d1f98e87a4b2ea4ff7a24c1953d1c2356e467867b0c44e3f7b3fb9a1ec07",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4087,
+      "prefill_tps_mean": 955.55,
+      "decode_tps_mean": 32.38,
+      "request_clock_mhz": {
+        "min": 2184,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 1285,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 6.93,
+        "max_psi_full_avg10": 0.0,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1913,
+        "skipped_rounds": 795,
+        "accepted_per_round": 0.994,
+        "yield_per_round": 1.994,
+        "round_ms": 59.21
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 12,
+          "pos": 10240,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 14,
+          "pos": 12288,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 14,
+          "pos": 12288,
+          "layer": 14,
+          "seconds": 0.6
+        },
+        {
+          "request": 14,
+          "pos": 16384,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 14,
+          "pos": 16384,
+          "layer": 14,
+          "seconds": 0.5
+        },
+        {
+          "request": 19,
+          "pos": 8192,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 20,
+          "pos": 8192,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 20,
+          "pos": 12288,
+          "layer": 1,
+          "seconds": 1.9
+        },
+        {
+          "request": 23,
+          "pos": 40960,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 26,
+          "pos": 14336,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 27,
+          "pos": 55296,
+          "layer": 1,
+          "seconds": 0.8
+        },
+        {
+          "request": 28,
+          "pos": 10240,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 32,
+          "pos": 18432,
+          "layer": 1,
+          "seconds": 2.0
+        },
+        {
+          "request": 32,
+          "pos": 18432,
+          "layer": 14,
+          "seconds": 0.6
+        }
+      ]
+    }
+  ],
+  "final": [
+    {
+      "run": "final-1",
+      "server_sha256": "8324196a4a8b854dcb844766647167f465f92e6a55d3cd04bf36e6ee9fd5756d",
+      "started": "2026-11-12T17:12:31+09:00",
+      "finished": "2026-11-12T17:29:32+09:00",
+      "boot_seconds": 150.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "4b82a2e9a5109d1d805a941e0a73c9ff21d1bf0cefde967ed98a3c5958597a09",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4096,
+      "prefill_tps_mean": 1447.77,
+      "decode_tps_mean": 32.03,
+      "request_clock_mhz": {
+        "min": 2184,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 856,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 7.39,
+        "max_psi_full_avg10": 0.0,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1921,
+        "skipped_rounds": 839,
+        "accepted_per_round": 0.966,
+        "yield_per_round": 1.966,
+        "round_ms": 58.99
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 6,
+          "pos": 0,
+          "layer": 14,
+          "seconds": 0.9
+        },
+        {
+          "request": 11,
+          "pos": 10240,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 13,
+          "pos": 22528,
+          "layer": 14,
+          "seconds": 1.0
+        },
+        {
+          "request": 16,
+          "pos": 30720,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 20,
+          "pos": 38912,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 21,
+          "pos": 38912,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 29,
+          "pos": 53248,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 32,
+          "pos": 8192,
+          "layer": 14,
+          "seconds": 1.2
+        }
+      ]
+    },
+    {
+      "run": "final-2",
+      "server_sha256": "8324196a4a8b854dcb844766647167f465f92e6a55d3cd04bf36e6ee9fd5756d",
+      "started": "2026-11-12T17:29:32+09:00",
+      "finished": "2026-11-12T17:46:44+09:00",
+      "boot_seconds": 156.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "76738130036821a67e2486224256837c35a31e38170b4267c29a78bd0b66d05e",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4096,
+      "prefill_tps_mean": 1450.61,
+      "decode_tps_mean": 32.13,
+      "request_clock_mhz": {
+        "min": 2184,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 861,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 7.45,
+        "max_psi_full_avg10": 0.0,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1921,
+        "skipped_rounds": 859,
+        "accepted_per_round": 0.964,
+        "yield_per_round": 1.964,
+        "round_ms": 58.77
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 18,
+          "pos": 32768,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 20,
+          "pos": 2048,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 23,
+          "pos": 2048,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 25,
+          "pos": 8192,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 26,
+          "pos": 36864,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 29,
+          "pos": 36864,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 30,
+          "pos": 10240,
+          "layer": 14,
+          "seconds": 1.2
+        }
+      ]
+    },
+    {
+      "run": "final-3",
+      "server_sha256": "8324196a4a8b854dcb844766647167f465f92e6a55d3cd04bf36e6ee9fd5756d",
+      "started": "2026-11-12T17:46:45+09:00",
+      "finished": "2026-11-12T18:03:56+09:00",
+      "boot_seconds": 156.2,
+      "boot_arguments": "--vision-gguf $MODEL_DIR/DeepSeek-V4.1-Flash.vision.gguf --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check",
+      "csv_sha256": "ccd17535e0b47c3d3897ce7c098d5305a0de4be8ce19918cb53d7ae110311564",
+      "requests": 32,
+      "prefill_tokens": 1091005,
+      "cached_tokens": 0,
+      "generated_tokens": 4096,
+      "prefill_tps_mean": 1448.34,
+      "decode_tps_mean": 32.11,
+      "request_clock_mhz": {
+        "min": 2184,
+        "median": 2190.0,
+        "max": 2190
+      },
+      "all_clock_samples_mhz": {
+        "count": 864,
+        "min": 2177,
+        "max": 2197
+      },
+      "guard": {
+        "min_available_gib": 7.27,
+        "max_psi_full_avg10": 0.18,
+        "exit_status": 0
+      },
+      "speculation": {
+        "rounds": 1921,
+        "skipped_rounds": 865,
+        "accepted_per_round": 0.964,
+        "yield_per_round": 1.964,
+        "round_ms": 58.81
+      },
+      "prefill_blocks": 560,
+      "stalled_blocks": [
+        {
+          "request": 11,
+          "pos": 12288,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 20,
+          "pos": 20480,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 20,
+          "pos": 28672,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 23,
+          "pos": 28672,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 26,
+          "pos": 47104,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 28,
+          "pos": 26624,
+          "layer": 14,
+          "seconds": 0.8
+        },
+        {
+          "request": 31,
+          "pos": 47104,
+          "layer": 14,
+          "seconds": 1.2
+        },
+        {
+          "request": 32,
+          "pos": 53248,
+          "layer": 14,
+          "seconds": 1.2
+        }
+      ]
+    }
+  ]
+}
