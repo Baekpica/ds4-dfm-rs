@@ -132,7 +132,7 @@ __global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const floa
 // up on both sides, then rounds once; an unclamped layer passes +inf.
 // OAI: MiniMax's swigluoai, min(g, l) * sigmoid(1.702 min(g, l)) *
 // (clamp(u, -l, l) + 1) in F32, rounded once.
-enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU, GLMVQ_CLAMP_OAI };
+enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU, GLMVQ_CLAMP_OAI, GLMVQ_CLAMP_BOTH };
 
 template <glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float limit) {
@@ -146,6 +146,11 @@ __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float 
         const float u = fminf(fmaxf(up, -limit), limit);
         const float silu = fminf(__fdiv_rn(gate, glmvq_add(1.0f, expf(-gate))), limit);
         return glmvq_round(glmvq_mul(silu, u));
+    } else if constexpr (CLAMP == GLMVQ_CLAMP_BOTH) {
+        // DeepSeek V4.1's Expert: both inputs clamped, one BF16 round.
+        const float g = fminf(gate, limit);
+        const float u = fminf(fmaxf(up, -limit), limit);
+        return glmvq_round(glmvq_mul(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))), u));
     } else {
         const float g = fminf(gate, limit);
         const float u = fminf(fmaxf(up, -limit), limit);

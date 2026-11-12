@@ -65,19 +65,23 @@ extern "C" int ds4_gpu_v41_set_gr_override(uint32_t layer, const float *host, ui
 #define V41_VQN_PAD 2048u
 
 /* ---- per-layer slot header cache (cuda_vq_prefill.inc.cu:74-136) ----
- * off=0 -> slot absent.  nbit = ceil(log2(nc)), floor 1. */
-typedef struct { uint64_t off; uint32_t dim, nc, nbit; } vqp_slot_hdr;
+ * off=0 -> slot absent.  nbit = ceil(log2(nc)), floor 1.  cb_off and v3 are
+ * the port's additions for the FP8 arm (ds41_vq_prefill_fp8.cuh): the layer
+ * book's blob offset, and whether the payload is the v3 layout that arm
+ * reads (12-bit main stream, E4M3 book, a plane exactly on 13-bit books). */
+typedef struct { uint64_t off, cb_off; uint32_t dim, nc, nbit, v3; } vqp_slot_hdr;
 static vqp_slot_hdr *g_vqp_hdr[64];   /* [layer] -> [e*3+which] */
-static v41_scratch g_vqp_hdr_dev;     /* [n_total*3][6] u32: off(2) magic dim|nc rows cols */
+#define VQP_HDR_WORDS 10u             /* off(2) magic dim|nc rows cols flags main-bits cb_off(2) */
+static v41_scratch g_vqp_hdr_dev;     /* [n_total*3][VQP_HDR_WORDS] u32 */
 
 __global__ static void vqp_copy_hdr_kernel(uint32_t *dst, const uint8_t *blob, uint32_t n_total) {
     const uint32_t e = blockIdx.x, w = threadIdx.x;
     if (e >= n_total || w >= 3u) return;
     uint64_t off; memcpy(&off, blob + 16 + ((size_t)e * 3 + w) * 8, 8);
-    uint32_t *d = dst + ((size_t)e * 3 + w) * 6;
+    uint32_t *d = dst + ((size_t)e * 3 + w) * VQP_HDR_WORDS;
     memcpy(d, &off, 8);
-    if (off) memcpy(d + 2, blob + off, 16);
-    else d[2] = d[3] = d[4] = d[5] = 0;
+    if (off) memcpy(d + 2, blob + off, 32);
+    else memset(d + 2, 0, 32);
 }
 
 static int vqp_hdr_build(uint32_t layer, const uint8_t *blob, uint32_t n_total,
@@ -85,19 +89,19 @@ static int vqp_hdr_build(uint32_t layer, const uint8_t *blob, uint32_t n_total,
     if (layer >= 64u) return 0;
     if (g_vqp_hdr[layer]) return 1;
     const uint64_t n = (uint64_t)n_total * 3u;
-    uint32_t *dst = (uint32_t *)v41_grow(&g_vqp_hdr_dev, n * 6u * sizeof(uint32_t), "vq prefill hdr");
+    uint32_t *dst = (uint32_t *)v41_grow(&g_vqp_hdr_dev, n * VQP_HDR_WORDS * sizeof(uint32_t), "vq prefill hdr");
     if (!dst) return 0;
     vqp_copy_hdr_kernel<<<n_total, 4, 0, ds4_current_stream()>>>(dst, blob, n_total);
     if (!cuda_ok(cudaGetLastError(), "vq prefill hdr copy launch")) return 0;
-    uint32_t *raw = (uint32_t *)malloc((size_t)n * 6u * sizeof(uint32_t));
+    uint32_t *raw = (uint32_t *)malloc((size_t)n * VQP_HDR_WORDS * sizeof(uint32_t));
     vqp_slot_hdr *tab = (vqp_slot_hdr *)calloc((size_t)n, sizeof(vqp_slot_hdr));
     if (!raw || !tab ||
-        cudaMemcpy(raw, dst, (size_t)n * 6u * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaMemcpy(raw, dst, (size_t)n * VQP_HDR_WORDS * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
         (void)cudaGetLastError(); free(raw); free(tab); return 0;
     }
     int bad = 0;
     for (uint64_t k = 0; k < n; k++) {
-        const uint32_t *d = raw + k * 6u;
+        const uint32_t *d = raw + k * VQP_HDR_WORDS;
         uint64_t off; memcpy(&off, d, 8);
         tab[k].off = off;
         if (!off) continue;
@@ -120,6 +124,11 @@ static int vqp_hdr_build(uint32_t layer, const uint8_t *blob, uint32_t n_total,
         }
         uint32_t nb = 0; while ((1u << nb) < n16) nb++; if (nb < 1u) nb = 1u;
         tab[k].dim = d16; tab[k].nc = n16; tab[k].nbit = nb;
+        if (ver == 3u) {   /* v41_vq_open<1>'s layout checks (ds41_vq_row.cuh), for the FP8 arm's host-built items */
+            const uint32_t flags = d[6], main_bits = d[7];
+            memcpy(&tab[k].cb_off, d + 8, 8);
+            tab[k].v3 = main_bits == 12u && (flags & 1u) && ((flags & 2u) != 0u) == (nb > 12u);
+        }
     }
     free(raw);
     if (bad) { free(tab); return 0; }
@@ -152,6 +161,16 @@ __global__ static void vqp_reduce_kernel(float *out, const float *ys, const int3
 static int vqp_fused_run(const uint8_t *blob, const uint32_t *cnt, const uint32_t *off_h, uint32_t n_total_expert,
                          uint32_t nvalid, uint32_t IN, uint32_t MID, uint32_t OUT, uint32_t nc, float clamp,
                          const float *x, const int32_t *perm, uint32_t n_expert, uint32_t layer_index, uint32_t ver);
+
+/* The FP8 tensor-core arm (ds41_vq_prefill_fp8.cuh, the port's own): whether
+ * it takes this layer, and its run from the sorted pairs to the reduced
+ * output.  Returns 0 = failure. */
+static bool vqf_takes(uint32_t layer, const uint8_t *blob, const vqp_slot_hdr *tab, uint32_t n_total,
+                      uint32_t IN, uint32_t MID, uint32_t OUT, const float *gr);
+static int vqf_run(float *out, const uint8_t *blob, const vqp_slot_hdr *tab, const uint32_t *cnt, const uint32_t *off_h,
+                   uint32_t n_total, uint32_t nvalid, uint32_t IN, uint32_t MID, uint32_t OUT, float clamp,
+                   const float *x, const int32_t *perm, const int32_t *inv, const float *rw, uint32_t n_expert,
+                   uint32_t n_tokens, uint32_t layer_index);
 
 /* ---- the prefill scheduler (cuda_vq_prefill.inc.cu:139-218) ----
  * Host-side counting sort, then the fused/tensor-core run, then the reduce.
@@ -203,7 +222,11 @@ static int cuda_vq_moe_prefill_gemm(
             perm_h[pos] = (int32_t)k;
             inv_h[k] = (int32_t)pos;
         }
-        if (!v41_grow(&g_vqp.ys, ((uint64_t)nvalid + V41_VQN_PAD) * OUT * sizeof(float), "vq prefill ys") ||
+        /* v3 layers in the aligned device copy take the FP8 tensor cores
+         * (named deviation, ds41_vq_prefill_fp8.cuh); it keeps its own bf16 ys. */
+        const float *gr = g_v41_gr[layer_index < 64u ? layer_index : 0];
+        const bool fp8 = ver == 3u && vqf_takes(layer_index, blob, tab, n_total_expert, IN, MID, OUT, gr);
+        if ((!fp8 && !v41_grow(&g_vqp.ys, ((uint64_t)nvalid + V41_VQN_PAD) * OUT * sizeof(float), "vq prefill ys")) ||
             !v41_grow(&g_vqp.perm, (uint64_t)nvalid * sizeof(int32_t), "vq prefill perm") ||
             !v41_grow(&g_vqp.inv, npair * sizeof(int32_t), "vq prefill inv")) break;
         (void)ne_max;   /* the fused run accumulates per work item, not per max expert width */
@@ -226,6 +249,12 @@ static int cuda_vq_moe_prefill_gemm(
         }
         if (bad) break;
         (void)model_map; (void)down_offset; (void)down_expert_bytes;
+        if (fp8) {
+            ok = vqf_run((float *)out->ptr, blob, tab, cnt, off, n_total_expert, nvalid, IN, MID, OUT, clamp,
+                         (const float *)x->ptr, (const int32_t *)g_vqp.perm.p, (const int32_t *)g_vqp.inv.p,
+                         (const float *)weights->ptr, n_expert, n_tokens, layer_index);
+            break;
+        }
         if (!vqp_fused_run(blob, cnt, off, n_total_expert, nvalid, IN, MID, OUT,
                            tab[0].nc, clamp, (const float *)x->ptr, (const int32_t *)g_vqp.perm.p, n_expert, layer_index, ver)) break;
         vqp_reduce_kernel<<<dim3((OUT + 255u) / 256u, n_tokens, 1), 256, 0, ds4_current_stream()>>>(
