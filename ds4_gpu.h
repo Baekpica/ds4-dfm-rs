@@ -5477,9 +5477,11 @@ int ds4_gpu_v41_win_ring_snap_tensor(ds4_gpu_tensor *win, ds4_gpu_tensor *snap, 
  * (cuda/ds41_indexer.cuh, src/cuda/cuda_v41_indexer.inc.cu).  The candidate
  * list is the C2 compact form: [0] = selected block count, then ascending
  * block numbers; when a list is passed to score/topk, score rows are the
- * compact width ns = min(cand_cap*cand_bs, ng).  The s8 mma score variant
- * (--idx-mma) is not ported: ds4_gpu_v41_set_indexer_mma records the flag and
- * the score entry refuses by name while it is on. */
+ * compact width ns = min(cand_cap*cand_bs, ng).  Eager prefill blocks score
+ * on tensor cores (the engine's s8 mma variant, cuda/ds41_indexer_mma.cuh;
+ * DS4_DS41_IDX_MMA=0 restores the scalar kernel);
+ * ds4_gpu_v41_set_indexer_mma(1) is the engine's --idx-mma: every eager
+ * width takes it.  Captured steps keep the scalar kernel. */
 int ds4_gpu_v41_indexer_score_tensor(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k,
         const ds4_gpu_tensor *weights, const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap,
         uint32_t n_tok, uint32_t pos0, uint32_t ng, uint32_t n_head, uint32_t dk, uint32_t ratio,
