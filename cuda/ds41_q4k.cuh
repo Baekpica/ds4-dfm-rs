@@ -334,6 +334,101 @@ static int v41_q4k_gemm(const void *model_map, uint64_t model_size, uint64_t off
     return 1;
 }
 
+/* Prefill projections on FP16 tensor cores (glmvq_q4p, cuda/glm_vq_q4p.cuh,
+ * the GLM VQ family's kernel).  Why: the cuBLAS route above dequantizes the
+ * whole weight to a BF16 copy on every call, converts the input and rounds
+ * the output in separate passes, and its GEMMs run at 52-58% of the BF16 peak
+ * (nsys, 64K hVQ prefill: 15 ms per layer for these seven projections).  The
+ * q4p producer warps dequantize each Q4_K row once into MMA fragments; the
+ * epilogue writes the BF16-rounded F32 value the round pass wrote.
+ *
+ * Numerics, a named deviation from the engine (bf16(w) x bf16(x) on cuBLAS):
+ * weights round to F16 twice, fp16(fp16(q S) - M), half the error of one BF16
+ * rounding against the exact Q4_K value; BF16-valued inputs are exact in
+ * F16's normal range.  Only rounded projections (round_out) of one group
+ * take it: the head (unrounded logits) and grouped wo_a stay on cuBLAS.
+ * DS4_DS41_Q4P=0 keeps every projection on cuBLAS. */
+struct ds41_bf16f { float v; };   /* an F32 slot holding the BF16-rounded value */
+template<> __device__ __forceinline__ ds41_bf16f glmvq_cast<ds41_bf16f>(float value) { return {v41_bf16r(value)}; }
+
+static int v41_q4p_on(void) {
+    static int on = -1;
+    if (on >= 0) { return on; }
+    const char *env = getenv("DS4_DS41_Q4P");
+    on = !(env && !strcmp(env, "0"));
+    if (!on) { return 0; }
+    const void *kernels[] = {(const void *)glmvq_q4p<true, ds41_bf16f>, (const void *)glmvq_q4p<false, ds41_bf16f>};
+    for (const void *kernel : kernels) {
+        if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM) != cudaSuccess) { on = 0; }
+    }
+    (void)cudaGetLastError();
+    fprintf(stderr, "ds4: [ds41] prefill q4_K projections %s\n", on ? "on FP16 tensor cores (glmvq_q4p)" : "*stay on cuBLAS: shared memory cannot be raised*");
+    return on;
+}
+
+/* Whether a tensor's Q4_K scales fit q4p's folded F16 range
+ * (glmvq_q4p_check): checked once per tensor, keyed by its device address.
+ * The check reads back one flag: prefill blocks only, never under capture. */
+#define V41_Q4P_SLOTS 1024u
+static struct { const uint8_t *w; int ok; } g_v41_q4p_seen[V41_Q4P_SLOTS];
+static v41_scratch g_v41_q4p_flag, g_v41_q4p_x;
+static int v41_q4p_scales_fit(const uint8_t *w, uint64_t blocks) {
+    uint32_t h = (uint32_t)(((uintptr_t)w >> 4) % V41_Q4P_SLOTS);
+    for (uint32_t i = 0; i < V41_Q4P_SLOTS && g_v41_q4p_seen[h].w; i++, h = (h + 1u) % V41_Q4P_SLOTS) {
+        if (g_v41_q4p_seen[h].w == w) { return g_v41_q4p_seen[h].ok; }
+    }
+    if (g_v41_q4p_seen[h].w) { return 0; }   /* table full: cuBLAS */
+
+    uint32_t *flag = (uint32_t *)v41_grow(&g_v41_q4p_flag, sizeof(uint32_t), "v41 q4p check");
+    if (!flag) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    uint32_t bad = 1;
+    (void)cudaMemsetAsync(flag, 0, sizeof(uint32_t), stream);
+    glmvq_q4p_check<<<(unsigned)((blocks + 255u) / 256u), 256, 0, stream>>>(w, blocks, flag);
+    (void)cudaMemcpyAsync(&bad, flag, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+    const int ok = cudaStreamSynchronize(stream) == cudaSuccess && !bad;
+    (void)cudaGetLastError();
+    if (!ok) { fprintf(stderr, "ds4: [ds41] a q4_K tensor's scales leave q4p's F16 range; it stays on cuBLAS\n"); }
+    g_v41_q4p_seen[h].w = w;
+    g_v41_q4p_seen[h].ok = ok;
+    return ok;
+}
+
+/* A q4_K matrix q4p can take (`groups` of rows x cols, contiguous): its
+ * device address in *w.  1 taken, 0 failed, -1 not taken (cuBLAS runs). */
+static int v41_q4p_weight(const void *model_map, uint64_t model_size, uint64_t off, uint64_t cols, uint64_t rows,
+                          uint32_t groups, const uint8_t **w) {
+    if (!v41_q4p_on() || cols > UINT32_MAX || rows > UINT32_MAX || !glmvq_q4p_fits((uint32_t)rows, (uint32_t)cols)) { return -1; }
+    const uint64_t blocks = groups * rows * (cols / V41_Q4K_BLK);
+    if (off > model_size || blocks * V41_Q4K_BYTES > model_size - off) { return 0; }
+    *w = (const uint8_t *)cuda_model_range_ptr(model_map, off, blocks * V41_Q4K_BYTES, "v41 q4p");
+    if (!*w) { return 0; }
+    /* The producers and the check load 16-byte pieces. */
+    return ((uintptr_t)*w & 15u) || !v41_q4p_scales_fit(*w, blocks) ? -1 : 1;
+}
+
+/* x [n][cols] (BF16-valued F32) as q4p's FP16 operand in `scratch`. */
+static int v41_q4p_input(v41_scratch *scratch, const float *x, uint32_t n_tok, uint32_t cols, glmvq_q4p_input *in) {
+    void *p = v41_grow(scratch, glmvq_q4p_bytes(n_tok, cols), "v41 q4p x");
+    if (!p) { return 0; }
+    *in = glmvq_q4p_layout(p, n_tok, cols);
+    return cuda_ok(glmvq_q4p_prepare(*in, x, n_tok, cols, ds4_current_stream()), "v41 q4p prep");
+}
+
+static int v41_q4p_run(const uint8_t *w, const glmvq_q4p_input &in, float *out, uint64_t rows, uint64_t cols, uint32_t n_tok) {
+    return cuda_ok(glmvq_q4p_gemm(w, in, (ds41_bf16f *)out, (uint32_t)rows, (uint32_t)cols, n_tok, ds4_current_stream()), "v41 q4p");
+}
+
+/* One projection on q4p: 1 done, 0 failed, -1 not taken (cuBLAS runs). */
+static int v41_q4p_gemm(const void *model_map, uint64_t model_size, uint64_t off, uint64_t in_dim, uint64_t out_dim,
+                        const float *x, float *out, uint32_t n_tok) {
+    const uint8_t *w = NULL;
+    const int take = v41_q4p_weight(model_map, model_size, off, in_dim, out_dim, 1u, &w);
+    if (take <= 0) { return take; }
+    glmvq_q4p_input in;
+    return v41_q4p_input(&g_v41_q4p_x, x, n_tok, (uint32_t)in_dim, &in) && v41_q4p_run(w, in, out, out_dim, in_dim, n_tok);
+}
+
 /* The q4_K entries (cuda_v41_q4k.inc.cu:392-433).  n <= 8 takes the GEMV,
  * n > 8 the prefill GEMM above. */
 extern "C" int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
@@ -349,6 +444,11 @@ extern "C" int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *mo
          * step; the node diff against the engine, docs/ds41-perf-2026-10-11.md). */
         return v41_q4k_gemv(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr, (uint32_t)in_dim,
                             (float *)out->ptr, (uint32_t)out_dim, n_tok, 1u, 0u, 0u, round_out, "v41 q4k gemv");
+    }
+    if (round_out) {
+        const int q4p = v41_q4p_gemm(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr,
+                                     (float *)out->ptr, n_tok);
+        if (q4p >= 0) { return q4p; }
     }
     if (!v41_q4k_gemm(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr,
                       (float *)out->ptr, n_tok, 1u, (uint32_t)in_dim, (uint32_t)out_dim, round_out, "v41 q4k gemm")) {

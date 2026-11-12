@@ -24,6 +24,7 @@
 /tests/test_ds41_sample
 /tests/test_ds41_pick
 /tests/test_ds41_indexer
+/tests/test_ds41_q4p
 /tests/test_ds41_moe
 /tests/test_ds41_fp8
 /tests/test_ds41_engram
