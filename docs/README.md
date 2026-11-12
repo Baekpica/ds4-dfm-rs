@@ -191,8 +191,9 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
 - **DeepSeek V4.1:** [November 12 prefill rounds](deepseek41-optimization-2026-11-12.md),
-  [the dense chain that followed](deepseek41-optimization-2026-11-12-dense.md) and the
-  [hVQ 2K–64K before/after sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md),
+  [the dense chain that followed](deepseek41-optimization-2026-11-12-dense.md), the
+  [hVQ 2K–64K before/after sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md) and
+  [the sweep after both](benchmarks/ds41-hvq-spark-64k-2026-11-12-dense/README.md),
   [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
   [vision weight staging: paired TTFT, decode costs and multi-image gates, October 14](benchmarks/ds41-vision-staging-2026-10-14/README.md),
   [warm-path campaign: the asset-open cache, October 13](benchmarks/ds41-warmpath-2026-10-13/README.md),
