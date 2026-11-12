@@ -247,6 +247,7 @@ Prefill kernel switches, read once per process:
 |---|---|
 | `DS4_DS41_IDX_MMA=0` | Prefill index scores on the scalar kernel instead of the s8 tensor-core kernel (bit-identical logits in the model) |
 | `DS4_DS41_VQ_FP8=0` | Prefill routed experts on the BF16 tensor-core kernels instead of the E4M3 arm |
+| `DS4_DS41_Q4P=0` | Prefill q4_K projections on cuBLAS over a BF16 weight copy instead of the FP16 tensor-core kernel (`glmvq_q4p`) |
 | `DS41_FEED_NO_PREFETCH` (set) | No cross-block Engram prefetch |
 
 Details: [env vars](../misc/cuda-env-vars.md#deepseek-v41-prefill-kernels).
@@ -309,8 +310,11 @@ engine's BF16 activations, gated on teacher-forced KL and NLL). Full prefill
 goes from 956.2 / 1,032.4 / 934.9 / 861.7 tok/s at 2K / 8K / 32K / 64K to
 1,122.2 / 1,414.7 / 1,457.8 / 1,508.7; the
 [2K–64K sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md) has the
-graph. The records below are V4.1 Flash with its code GR sidecar on earlier
-builds.
+graph. The [dense-chain follow-up](deepseek41-optimization-2026-11-12-dense.md)
+moves the prefill q4_K projections to the GLM VQ family's FP16 tensor-core
+kernel (`glmvq_q4p`, a named deviation with F16 weights): another 14.5–16%
+at 2K–32K, 1,293.1 / 1,624.0 / 1,680.9 tok/s at 2K / 8K / 32K. The records
+below are V4.1 Flash with its code GR sidecar on earlier builds.
 
 The head campaign
 ([ds41-spark-head-2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md))

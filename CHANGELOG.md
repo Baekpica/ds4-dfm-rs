@@ -8,6 +8,14 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- DeepSeek V4.1 prefill is another 14.5–16% faster at 2K–32K: q4_K
+  projections of prefill blocks run on the GLM VQ family's FP16 tensor-core
+  kernel (`glmvq_q4p`) instead of cuBLAS over a per-call BF16 weight copy,
+  kv/q_a and gate/up share one prepared input, wo_a and wo_b run as one
+  entry, and the MoE tail is one pass. Weights round to F16 (a named
+  deviation; teacher-forced KL and NLL to the original stay inside their
+  intervals). `DS4_DS41_Q4P=0` restores cuBLAS.
+  [Rounds](docs/deepseek41-optimization-2026-11-12-dense.md).
 - DeepSeek V4.1 prefill is 17% (2K) to 75% (64K) faster on DGX Spark,
   measured on the 1017 hVQ artifact: 956.2 / 1,032.4 / 861.7 tok/s at 2K /
   8K / 64K become 1,122.2 / 1,414.7 / 1,508.7. The Engram prefetch buffer
