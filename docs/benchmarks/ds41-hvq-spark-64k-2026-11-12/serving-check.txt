@@ -1,0 +1,17 @@
+serving checklist: DeepSeek41Flash (DeepSeek4) prompt 5615 split 2807
+  category  item      declared   result             detail
+  reuse     prefix    qualified  works              kept 2807, tokens 16/16
+  reuse     rewind    -          no                 prefilled from zero: nothing kept
+  reuse     continue  qualified  works              kept 5630, tokens 16/16
+  disk      session   qualified  works              kept 5615, tokens 16/16
+  snapshot  session   -          no                 V4.1 has no session snapshot
+  banks     warm      -          no                 V4.1 serves one sequence: no banks
+  banks     fork      -          no                 V4.1 serves one sequence: no banks
+  banks     partial   -          no                 V4.1 serves one sequence: no banks
+  banks     disk      -          no                 V4.1 serves one sequence: no banks
+  banks     width     -          no                 V4.1 serves one sequence: no banks
+  mtp       lossless             no check yet       declared Embedded qualified Serial
+  context   limit                no check yet       declared max - qualified -
+  prompt    limit                no check yet       declared qualified -
+  media     lane                 no check yet       declared banks
+result: pass (works 3, FAIL 0, WRONG 0, undeclared 0)
