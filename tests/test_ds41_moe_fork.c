@@ -54,6 +54,10 @@ static int ds4_gpu_v41_routed_moe_tensor(ds4_gpu_tensor *out, ...) { return step
 static int ds4_gpu_v41_mtp_moe_tensor(ds4_gpu_tensor *out, ...) { return step_ok(); }
 static int ds4_gpu_v41_moe_tail_tensor(ds4_gpu_tensor *out, ...) { return step_ok(); }
 static int ds4_gpu_v41_add_round_tensor(ds4_gpu_tensor *out, ...) { return step_ok(); }
+/* The prefill pair entry: not taken at decode widths, a launcher above. */
+static int v41_tproj_pair(const ds4_model *m, ds4_gpu_tensor *out_a, const ds4_tensor *wa, uint64_t dim_a,
+                          ds4_gpu_tensor *out_b, const ds4_tensor *wb, uint64_t dim_b, uint64_t in_dim,
+                          const ds4_gpu_tensor *x, uint32_t n) { return n <= DS4_V41_GEMV_MAX_TOK ? -1 : step_ok(); }
 
 #include "ds41_moe_under_test.inc"
 

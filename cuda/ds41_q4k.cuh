@@ -345,9 +345,9 @@ static int v41_q4k_gemm(const void *model_map, uint64_t model_size, uint64_t off
  * Numerics, a named deviation from the engine (bf16(w) x bf16(x) on cuBLAS):
  * weights round to F16 twice, fp16(fp16(q S) - M), half the error of one BF16
  * rounding against the exact Q4_K value; BF16-valued inputs are exact in
- * F16's normal range.  Only rounded projections (round_out) of one group
- * take it: the head (unrounded logits) and grouped wo_a stay on cuBLAS.
- * DS4_DS41_Q4P=0 keeps every projection on cuBLAS. */
+ * F16's normal range.  Rounded projections (round_out) take it, wo_a and
+ * wo_b through their own entry; the head (unrounded logits) stays on
+ * cuBLAS.  DS4_DS41_Q4P=0 keeps every projection on cuBLAS. */
 struct ds41_bf16f { float v; };   /* an F32 slot holding the BF16-rounded value */
 template<> __device__ __forceinline__ ds41_bf16f glmvq_cast<ds41_bf16f>(float value) { return {v41_bf16r(value)}; }
 
@@ -357,6 +357,7 @@ static int v41_q4p_on(void) {
     const char *env = getenv("DS4_DS41_Q4P");
     on = !(env && !strcmp(env, "0"));
     if (!on) { return 0; }
+    if (glmvq_q4p_init() != cudaSuccess) { on = 0; }   /* the BF16-output instances (wo_a's planes) */
     const void *kernels[] = {(const void *)glmvq_q4p<true, ds41_bf16f>, (const void *)glmvq_q4p<false, ds41_bf16f>};
     for (const void *kernel : kernels) {
         if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM) != cudaSuccess) { on = 0; }
@@ -427,6 +428,92 @@ static int v41_q4p_gemm(const void *model_map, uint64_t model_size, uint64_t off
     if (take <= 0) { return take; }
     glmvq_q4p_input in;
     return v41_q4p_input(&g_v41_q4p_x, x, n_tok, (uint32_t)in_dim, &in) && v41_q4p_run(w, in, out, out_dim, in_dim, n_tok);
+}
+
+/* Two projections of one input (kv and q_a, the shared gate and up): one
+ * prepared operand for both.  1 done, 0 failed, -1 not taken. */
+extern "C" int ds4_gpu_v41_matmul_q4k_pair_tensor(ds4_gpu_tensor *out_a, uint64_t off_a, uint64_t dim_a,
+                                                  ds4_gpu_tensor *out_b, uint64_t off_b, uint64_t dim_b,
+                                                  const void *model_map, uint64_t model_size, uint64_t in_dim,
+                                                  const ds4_gpu_tensor *x, uint32_t n_tok) {
+    if (n_tok <= V41_GEMV_MAX_TOK || !out_a || !out_b || !x || x->bytes < (uint64_t)n_tok * in_dim * 4 ||
+        out_a->bytes < (uint64_t)n_tok * dim_a * 4 || out_b->bytes < (uint64_t)n_tok * dim_b * 4) { return -1; }
+    const uint8_t *wa = NULL, *wb = NULL;
+    const int ta = v41_q4p_weight(model_map, model_size, off_a, in_dim, dim_a, 1u, &wa);
+    const int tb = ta > 0 ? v41_q4p_weight(model_map, model_size, off_b, in_dim, dim_b, 1u, &wb) : ta;
+    if (ta <= 0 || tb <= 0) { return ta < 0 || tb < 0 ? -1 : 0; }
+    glmvq_q4p_input in;
+    return v41_q4p_input(&g_v41_q4p_x, (const float *)x->ptr, n_tok, (uint32_t)in_dim, &in) &&
+           v41_q4p_run(wa, in, (float *)out_a->ptr, dim_a, in_dim, n_tok) &&
+           v41_q4p_run(wb, in, (float *)out_b->ptr, dim_b, in_dim, n_tok);
+}
+
+/* q4p's prep (glmvq_q4p_prep) over pieces: operand row (token t = x, group
+ * g = y) is `segs` pieces of `seg` values, piece s at
+ * in + g in_group + t in_token + s in_seg; it lands at
+ * xh + g out_group + t segs seg with its scale at xscale[g n + t]. */
+template <typename T>
+__global__ static void __launch_bounds__(GLMVQ_Q4P_PREP) v41_q4p_prep_seg(const T *in, uint64_t in_token, uint64_t in_group,
+        uint64_t in_seg, uint32_t segs, uint32_t seg, __half *xh, float *xscale, uint64_t out_group, uint32_t n_tok) {
+    __shared__ float peaks[GLMVQ_Q4P_PREP / 32];
+    const uint32_t t = blockIdx.x, g = blockIdx.y, lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const T *x = in + g * in_group + t * in_token;
+    __half *out = xh + g * out_group + (uint64_t)t * segs * seg;
+    float peak = 0.0f;
+    for (uint32_t s = 0; s < segs; s++) { peak = fmaxf(peak, glmvq_q4p_row(x + s * in_seg, out + s * seg, seg / 4, 1.0f)); }
+    for (uint32_t k = 16; k; k >>= 1) { peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, k)); }
+    if (!lane) { peaks[warp] = peak; }
+    __syncthreads();
+    peak = fmaxf(fmaxf(peaks[0], peaks[1]), fmaxf(peaks[2], peaks[3]));
+    int e = 0;
+    if (peak > GLMVQ_Q4P_RANGE) {
+        frexpf(peak / GLMVQ_Q4P_RANGE, &e);
+        for (uint32_t s = 0; s < segs; s++) { glmvq_q4p_row(x + s * in_seg, out + s * seg, seg / 4, ldexpf(1.0f, -e)); }
+    }
+    if (!threadIdx.x) { xscale[(uint64_t)g * n_tok + t] = ldexpf(1.0f, e - GLMVQ_Q4P_SHIFT); }
+}
+
+/* The attention output pair on q4p (n > 8): wo_a, block-diagonal (`groups`
+ * of group_dim -> rank), then wo_b (groups rank -> out_dim).  The heads are
+ * prepared as one operand plane per group, each group's BF16 output lands
+ * in its own plane, and wo_b's prep reads the planes back as rows.  Same
+ * values as the two projections one by one: wo_a's output is the BF16 the
+ * round pass wrote.  1 done, 0 failed, -1 not taken. */
+static v41_scratch g_v41_q4p_planes, g_v41_q4p_x2;
+extern "C" int ds4_gpu_v41_out_proj_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+                                               uint64_t off_a, uint64_t off_b, uint32_t groups, uint64_t group_dim,
+                                               uint64_t rank, uint64_t out_dim, const ds4_gpu_tensor *heads, uint32_t n_tok) {
+    const uint64_t in_all = groups * group_dim, low = groups * rank;
+    if (n_tok <= V41_GEMV_MAX_TOK || !out || !heads || heads->bytes < (uint64_t)n_tok * in_all * 4 ||
+        out->bytes < (uint64_t)n_tok * out_dim * 4 || (rank % 4u)) { return -1; }
+    const uint8_t *wa = NULL, *wb = NULL;
+    const int ta = v41_q4p_weight(model_map, model_size, off_a, group_dim, rank, groups, &wa);
+    const int tb = ta > 0 ? v41_q4p_weight(model_map, model_size, off_b, low, out_dim, 1u, &wb) : ta;
+    if (ta <= 0 || tb <= 0) { return ta < 0 || tb < 0 ? -1 : 0; }
+
+    const cudaStream_t stream = ds4_current_stream();
+    void *xa = v41_grow(&g_v41_q4p_x, glmvq_q4p_bytes(n_tok * groups, (uint32_t)group_dim), "v41 q4p x");
+    __nv_bfloat16 *planes = (__nv_bfloat16 *)v41_grow(&g_v41_q4p_planes, (uint64_t)n_tok * low * 2u, "v41 q4p wo_a planes");
+    void *xb = v41_grow(&g_v41_q4p_x2, glmvq_q4p_bytes(n_tok, (uint32_t)low), "v41 q4p wo_b x");
+    if (!xa || !planes || !xb) { return 0; }
+
+    /* Group g's operand: plane g of [groups][n][group_dim]. */
+    const glmvq_q4p_input ia = glmvq_q4p_layout(xa, n_tok * groups, (uint32_t)group_dim);
+    v41_q4p_prep_seg<<<dim3(n_tok, groups), GLMVQ_Q4P_PREP, 0, stream>>>((const float *)heads->ptr, in_all, group_dim, 0u, 1u,
+        (uint32_t)group_dim, ia.xh, ia.xscale, (uint64_t)n_tok * group_dim, n_tok);
+    if (!cuda_ok(cudaGetLastError(), "v41 q4p wo_a prep")) { return 0; }
+    const uint64_t wg = rank * (group_dim / V41_Q4K_BLK) * V41_Q4K_BYTES;
+    for (uint32_t g = 0; g < groups; g++) {
+        const glmvq_q4p_input in = {ia.xh + (uint64_t)g * n_tok * group_dim, ia.xscale + (uint64_t)g * n_tok};
+        if (!cuda_ok(glmvq_q4p_gemm(wa + g * wg, in, planes + (uint64_t)g * n_tok * rank, (uint32_t)rank,
+                                    (uint32_t)group_dim, n_tok, stream), "v41 q4p wo_a")) { return 0; }
+    }
+
+    /* wo_b's operand row t: the groups' planes at row t, in group order. */
+    const glmvq_q4p_input ib = glmvq_q4p_layout(xb, n_tok, (uint32_t)low);
+    v41_q4p_prep_seg<<<dim3(n_tok, 1), GLMVQ_Q4P_PREP, 0, stream>>>((const __nv_bfloat16 *)planes, rank, 0u, (uint64_t)n_tok * rank,
+        groups, (uint32_t)rank, ib.xh, ib.xscale, 0u, n_tok);
+    return cuda_ok(cudaGetLastError(), "v41 q4p wo_b prep") && v41_q4p_run(wb, ib, (float *)out->ptr, out_dim, low, n_tok);
 }
 
 /* The q4_K entries (cuda_v41_q4k.inc.cu:392-433).  n <= 8 takes the GEMV,

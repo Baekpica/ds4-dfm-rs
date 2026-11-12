@@ -5384,6 +5384,15 @@ int ds4_gpu_side_join(void);
 int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
         const ds4_gpu_tensor *x, uint32_t n_tok, int round_out);
+/* Prefill (n > 8) q4p entries: 1 done, 0 failed, -1 not taken (run the
+ * projections one by one).  The pair shares one prepared input; the output
+ * pair runs attn_output_a and attn_output_b without materializing `low`. */
+int ds4_gpu_v41_matmul_q4k_pair_tensor(ds4_gpu_tensor *out_a, uint64_t off_a, uint64_t dim_a,
+        ds4_gpu_tensor *out_b, uint64_t off_b, uint64_t dim_b, const void *model_map, uint64_t model_size,
+        uint64_t in_dim, const ds4_gpu_tensor *x, uint32_t n_tok);
+int ds4_gpu_v41_out_proj_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t off_a, uint64_t off_b, uint32_t groups, uint64_t group_dim, uint64_t rank, uint64_t out_dim,
+        const ds4_gpu_tensor *heads, uint32_t n_tok);
 int ds4_gpu_v41_grouped_matmul_q4k_tensor(ds4_gpu_tensor *low, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t n_groups, uint64_t group_dim, uint64_t rank,
         const ds4_gpu_tensor *heads, uint32_t n_tok, int round_out);
