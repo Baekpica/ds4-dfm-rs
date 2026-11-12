@@ -19,7 +19,8 @@ Full prompt prefill, tok/s, medians of three fresh server processes per build:
 | 32K (32,749) | 934.9 | 1,457.8 | +55.9% |
 | 64K (66,608) | 861.7 | 1,508.7 | +75.1% |
 
-Time to first token at 64K falls from 77.4 s to 44.2 s. Decode kernels are
+Over the 32 frontiers of the 2K–64K record the run mean rises from 955.5 to
+1,448.3 tok/s (+51.6%). Time to first token at 64K falls from 77.4 s to 44.2 s. Decode kernels are
 untouched; [Decode](#decode) covers what a prefill value change does to it.
 The [2K–64K record](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md) has
 the 32-frontier sweeps and the graph.
@@ -176,19 +177,20 @@ tokens, and the drafter's acceptance follows the text.
 | | FP8 | 31.98 | 0.985 | 11.0 |
 | 32 prompts, 256–8,192 tokens | BF16 | 32.09 | 0.900 | 11.8 |
 | | FP8 | 31.94 | 0.883 | 11.4 |
-| 32 frontiers, 2K–64K | BF16 (`main`) | 32.32 | 1.002 | 8.3 |
-| | FP8 | 32.08 | 0.965 | 8.9 |
+| 32 frontiers, 2K–64K, three runs each | BF16 (`main`) | 32.36 | 0.997 | 8.1 |
+| | FP8 | 32.09 | 0.965 | 9.0 |
 
 Five prompts cannot separate a text effect from an arithmetic one. Paired by
 prompt, the 32 short prompts differ by -0.15 tok/s (standard error 0.24) and
--0.017 accepted drafts (0.023); the 32 sweep frontiers by -0.23 tok/s (0.38)
-and -0.037 accepted drafts (0.041), FP8 ahead on 16 of 32. Neither shows a
+-0.017 accepted drafts (0.023); the 32 sweep frontiers by -0.27 tok/s (0.37)
+and -0.033 accepted drafts (0.040), FP8 ahead on 15 of 32. Neither shows a
 decode cost.
 
 ## Limits
 
 - One block in about a hundred waits 0.8–2.0 s on an Engram round, at layer
-  1 or 14, in every build (the sweep record's receipt lists each). The reads are
+  1 or 14, in every build (55 of 3,360 blocks in the sweep record, whose
+  receipt lists each). The reads are
   O_DIRECT, memory pressure stayed at zero and no reader path has such a
   timeout: the cause is below the engine and not isolated. It costs a
   frontier up to 15% in one run; medians hide most of it, the raw CSVs keep it.
