@@ -70,6 +70,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [IQuest-Q1](iquest-q1.md) | Canonical mixed weights, hybrid Q8 KV, embedded MTP and pending Spark gates |
 | [DeepSeek V4.1 Flash](ds4-dfm-model-families.md#deepseek-v41-flash-release-scope) | Serial lane, metadata context, sidecar/engram mounts and the embedded MTP contract |
 | [DeepSeek V4.1 Flash (ds41)](deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
+| [DeepSeek V4.1 prefill rounds](deepseek41-optimization-2026-11-12.md) | Engram prefetch sizing, tensor-core index scores, FP8 tensor-core experts: paired throughput, the numerical gate against a chunk-size floor, what a value change does to MTP decode |
 | [DeepSeek V4.1 Flash (plan)](deepseek41-port-plan.md) | Proposal: the vq8sh14 artifact, the C engine as source of truth, the gap inventory and the golden-set gate |
 | [DeepSeek V4.1 post-train (plan)](ds41-posttrain-plan.md) | The ③ producer, judge, apply and supervising HTTP API: units, ports and gates |
 | [MiniMax-H3](minimax-h3/README.md) | BF16 video/audio diffusion: model files, build, CLI, reference and validation |
@@ -188,7 +189,9 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [session state](releases/bonsai-session-2026-09-30.md),
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
-- **DeepSeek V4.1:** [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
+- **DeepSeek V4.1:** [November 12 prefill rounds](deepseek41-optimization-2026-11-12.md) and the
+  [hVQ 2K–64K before/after sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md),
+  [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
   [vision weight staging: paired TTFT, decode costs and multi-image gates, October 14](benchmarks/ds41-vision-staging-2026-10-14/README.md),
   [warm-path campaign: the asset-open cache, October 13](benchmarks/ds41-warmpath-2026-10-13/README.md),
   [2K–64K Prefill/Decode tables and graph, October 13](benchmarks/ds41-spark-64k-2026-10-13/README.md),

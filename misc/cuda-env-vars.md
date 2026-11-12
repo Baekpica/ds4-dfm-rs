@@ -58,6 +58,19 @@ text-only and fully reused image prefixes never allocate it. Pin allocation
 failure falls back to direct uploads. Admission includes the window's size.
 This changes no weight residency policy, tensor order or arithmetic.
 
+## DeepSeek V4.1 prefill kernels
+
+`DS4_DS41_IDX_MMA=0` scores prefill index keys on the scalar kernel instead
+of the s8 tensor-core kernel (`cuda/ds41_indexer_mma.cuh`). Decode, verify
+and captured steps use the scalar kernel either way. `DS4_DS41_VQ_FP8=0`
+keeps prefill routed experts on the BF16 tensor-core kernels instead of the
+E4M3 arm (`cuda/ds41_vq_prefill_fp8.cuh`), which quantizes expert inputs to
+E4M3 per 128 dims. Both are read once per process. With both at 0, prefill
+logits equal the build before them bit for bit; the index switch alone
+leaves them identical too (26 held-out cases, 58,777 positions). The
+[November 12 rounds](../docs/deepseek41-optimization-2026-11-12.md) record
+the paired throughput and the numerical gate.
+
 ## DeepSeek V4.1 rollback diagnostic
 
 `DS41_ROLLBACK_CHECK=1` synchronizes after every speculative rollback and

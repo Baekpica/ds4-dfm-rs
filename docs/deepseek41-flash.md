@@ -241,6 +241,16 @@ Native knobs: `DS4_V41_CHUNK`, `DS4_V41_CKV_BYTES`, `DS4_V41_IDXK_BYTES`,
 `DS4_V41_MKCACHE_SLOTS`. There is no settable prefill chunk on the port yet
 (`serving.rs:1616-1620`).
 
+Prefill kernel switches, read once per process:
+
+| Switch | Effect |
+|---|---|
+| `DS4_DS41_IDX_MMA=0` | Prefill index scores on the scalar kernel instead of the s8 tensor-core kernel (bit-identical logits in the model) |
+| `DS4_DS41_VQ_FP8=0` | Prefill routed experts on the BF16 tensor-core kernels instead of the E4M3 arm |
+| `DS41_FEED_NO_PREFETCH` (set) | No cross-block Engram prefetch |
+
+Details: [env vars](../misc/cuda-env-vars.md#deepseek-v41-prefill-kernels).
+
 ## Port status and gates
 
 Subsystems closed, each on the Spark against the source-built oracle unless
@@ -289,6 +299,18 @@ decode residual (~4% of wall, in the verify step; docs/ds41-perf-2026-10-11.md
 "Limits and open boundaries").
 
 ## Recorded performance
+
+The [November 12 prefill rounds](deepseek41-optimization-2026-11-12.md) are
+the current prefill record, on the 1017 hVQ artifact: the Engram prefetch
+buffer grows with the block, index scores run on the engine's s8 tensor-core
+kernel by default (the engine keeps it opt-in), and prefill routed experts
+run on FP8 tensor cores with E4M3 activations (a named deviation from the
+engine's BF16 activations, gated on teacher-forced KL and NLL). Full prefill
+goes from 956.2 / 1,032.4 / 934.9 / 861.7 tok/s at 2K / 8K / 32K / 64K to
+1,122.2 / 1,414.7 / 1,457.8 / 1,508.7; the
+[2K–64K sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md) has the
+graph. The records below are V4.1 Flash with its code GR sidecar on earlier
+builds.
 
 The head campaign
 ([ds41-spark-head-2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md))
@@ -407,6 +429,8 @@ the candidates and gates are port plan §6.21.
 Read first-hand before a new candidate:
 
 - [Port plan](deepseek41-port-plan.md) and [port inventory](deepseek41-port-inventory.md)
+- [Prefill rounds, 2026-11-12](deepseek41-optimization-2026-11-12.md) and their
+  [hVQ 2K–64K sweep](benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md)
 - [Five-case benchmark, 2026-10-13](benchmarks/ds41-spark-2026-10-13/README.md)
 - [Review qualification, 2026-10-13](benchmarks/ds41-spark-review-2026-10-13/README.md)
 - [64K campaign, 2026-10-13](benchmarks/ds41-spark-64k-2026-10-13/README.md)
