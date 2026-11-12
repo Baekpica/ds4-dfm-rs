@@ -476,6 +476,32 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   fit a + b/rows (b = the 1.95 GB/layer expert stream), yet 4,096-row
   chunks lost 6.4% at 8K and doubled the 2.9 GiB workspace (cause not
   isolated). Measure the whole prefill before moving the chunk cap.
+- **Size a buffer a server keeps at each use.** ds41's Engram prefetch
+  buffer kept the size of the first block declared; a 464-token tail
+  declared first left every later 2,048-token block without a prefetch
+  (0.25 s per block, 10-12% of prefill, for the life of the process).
+  One prompt per CLI process never showed it: when a server runs slower
+  than the CLI, diff the per-layer times of the same prompt.
+- **4-bit mantissas times power-of-two scales are an exact INT8 MMA.**
+  ds41's index scores (E2M1 q and keys, one scale per 32 dims) on s8
+  tensor cores are exact per block in s32: a 2,048-row block at 59K took
+  841 -> 50 ms of scores, logits identical in the model.
+- **Run a borrowed kernel's test at the borrower's shape first.**
+  MiniMax's expert kernel indexed its 13th-bit plane ring by the unit's
+  stage number; ds41's 2,304 columns (18 stages, 4n + 2) rewrote an
+  entry two stages early and 0.7% of down outputs were wrong. MiniMax's
+  24 and 48 stages never reached it.
+- **Read the official activation format before keeping BF16.** DeepSeek
+  V4.1 quantizes GEMM inputs to FP8. E4M3 activations on unconverted
+  codewords took ds41's prefill experts 30.1 -> 16.8 ms per 2,048-row
+  layer; KL to the original stayed at 0.277 and the pairwise KL (0.020)
+  beside the chunk-size switch (0.015).
+- **A value change moves greedy text, and with it MTP decode.** After
+  FP8 prefill experts, 5 sweep frontiers decoded 34.1 -> 32.0 tok/s with
+  equal round times: other continuations, other draft acceptance. 32
+  prompts showed no change (32.09 vs 31.94, se 0.24). Compare decode
+  after a prefill change over many prompts, and read rounds, accepted
+  drafts and round time, not tok/s alone.
 
 # Agent Notes
 

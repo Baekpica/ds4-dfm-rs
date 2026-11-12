@@ -115,7 +115,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
-        pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-engram test-ds41-forward \
+        pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-indexer test-ds41-engram test-ds41-forward \
         rust-bridge ds4-rs ds4-bench-rs ds4-server-rs test-kv-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-session-parity
 
 # The C host executables are deprecated: Rust owns host behavior
@@ -908,7 +908,7 @@ ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(META
 # MB, 20 MB without; identical SASS); loading it costs 143 MiB of host
 # memory against 62. CUDA_LINEINFO=-lineinfo restores it for profiling.
 CUDA_LINEINFO ?=
-ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_gemma4_gpu.cuh ds4_gemma4_map.inc ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h cuda/gemma4_primitives.cuh cuda/gemma4_head.cuh cuda/gemma4_router.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_fp8.cuh cuda/gemma4_attn_fast.cuh cuda/gemma4_attn_tile.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh cuda/gemma_vq_decode.cuh cuda/gemma_vq_prefill.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_moe_persist.cuh cuda/gemma4_q4_decode.cuh cuda/gemma4_cpu_moe.cuh ds4_gemma4_ref.h ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
+ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_gemma4_gpu.cuh ds4_gemma4_map.inc ds4_gemma4.h ds4_gemma4_knobs.h ds4_gemma4_vq.h ds4_gemma4_plan.h cuda/gemma4_primitives.cuh cuda/gemma4_head.cuh cuda/gemma4_router.cuh cuda/gemma4_attn.cuh cuda/gemma4_attn_fp8.cuh cuda/gemma4_attn_fast.cuh cuda/gemma4_attn_tile.cuh cuda/gemma4_attn_mma.cuh cuda/gemma4_attn_split.cuh cuda/gemma4_attn_split_mma.cuh cuda/gemma_vq_decode.cuh cuda/gemma_vq_prefill.cuh cuda/gemma4_moe_fused.cuh cuda/gemma4_moe_persist.cuh cuda/gemma4_q4_decode.cuh cuda/gemma4_cpu_moe.cuh ds4_gemma4_ref.h ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_vq_prefill_fp8.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_indexer_mma.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
 	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(CUDA_LINEINFO) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) $(DEPFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -1155,6 +1155,15 @@ tests/test_ds41_moe: tests/test_ds41_moe.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
 .PHONY: test-ds41-moe
 test-ds41-moe: tests/test_ds41_moe
 	./tests/test_ds41_moe tests/fixtures/ds41/vq/moe.blob tests/fixtures/ds41/vq/moe.cases.txt tests/fixtures/ds41/vq/moe.ref.f32
+
+# DeepSeek V4.1 (ds41) indexer score gate (model-free): the tensor-core kernel
+# a prefill block takes against the scalar kernel, row by row.
+tests/test_ds41_indexer: tests/test_ds41_indexer.cu ds4_gpu.h ds41_kvfmt.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_indexer.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-indexer
+test-ds41-indexer: tests/test_ds41_indexer
+	./tests/test_ds41_indexer
 
 # DeepSeek V4.1 (ds41) fp8_32x32 gate: the tower/engram-wkv entries
 # (plain, round-out, grouped) against the Rust emulation
@@ -2154,9 +2163,12 @@ tests/test_minimax_artifacts: tests/test_minimax_artifacts.c ds4.c ds4.h ds4_min
 test-minimax-artifacts: tests/test_minimax_artifacts
 	./tests/test_minimax_artifacts
 
+# The second run is DeepSeek V4.1's shape: 18 input stages on down, an odd
+# number of 13th-bit plane words per unit.
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
+	DS4_MW_H=5120 DS4_MW_F=2304 DS4_MW_E=384 DS4_MW_USED=6 DS4_MW_ROWS=2048 ./tests/test_minimax_mma8w
 
 # MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
 tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
@@ -2728,7 +2740,7 @@ BUILD_PROGRAMS := \
     tests/test_dots3_checkpoint tests/test_dots3_cuda tests/test_dots3_loader tests/test_dots3_mtp \
     tests/test_dots3_mtp_guards tests/test_dots3_resident tests/test_dots3_tokenizer \
     tests/test_ds41_bridge_lifetime tests/test_ds41_engram tests/test_ds41_forward \
-    tests/test_ds41_fp8 tests/test_ds41_generate tests/test_ds41_kv_import tests/test_ds41_moe \
+    tests/test_ds41_fp8 tests/test_ds41_generate tests/test_ds41_indexer tests/test_ds41_kv_import tests/test_ds41_moe \
     tests/test_ds41_pick tests/test_ds41_sample tests/test_ds41_vq tests/test_eos_sampling \
     tests/test_exaone_batch tests/test_exaone_checkpoint tests/test_exaone_forward \
     tests/test_exaone_kernels tests/test_exaone_partial tests/test_exaone_ref \

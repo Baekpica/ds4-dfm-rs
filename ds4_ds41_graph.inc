@@ -38,7 +38,8 @@
  *    and picks next[i] = slot[4i].  The state is per request, so dev_sample
  *    and spec_q are constants for the life of its graphs.
  *  - the --idx-mma indexer scratch prepare (core_decode_graph.c:179) has no
- *    counterpart (the indexer mma is not ported).
+ *    counterpart: captured steps keep the scalar score kernel
+ *    (v41_idx_mma_use, cuda/ds41_indexer.cuh).
  *  - DS41_NO_GRAPH=1 disables the graph (the engine's
  *    ds4_engine_v41_set_graph(0); the CLI flags land with the serving unit).
  */
@@ -228,7 +229,7 @@ static bool dg_capture(ds4_engine *e, ds4_v41_state *st, uint32_t n) {
         if (cng && !ds4_gpu_v41_candidate_scratch_prepare(n, (cng + cbs - 1u) / cbs)) return false;
     }
     /* (The engine also prepares the --idx-mma indexer scratch here,
-     * core_decode_graph.c:179; the port's indexer mma is not ported.) */
+     * core_decode_graph.c:179; the port's captured steps score scalar.) */
     st->graph = 1; st->graph_pos_lo = in->lo; st->graph_pos_cap = cap;
     st->egraph_uploaded = 0;   /* P2: a fresh capture pass records every engram layer's flag wait + upload (core_decode_graph.c:180) */
     if (!ds4_gpu_decode_graph_capture_begin()) { st->graph = 0; return false; }

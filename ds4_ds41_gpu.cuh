@@ -46,6 +46,7 @@ typedef struct {
 #include "cuda/ds41_vq_prefill.cuh"        /* P4-5: the prefill scheduler (hdr cache, counting sort, reduce) */
 #include "cuda/ds41_vq_prefill_fused.cuh"  /* P4-5: the v2 fused prefill arm (decode-is-the-multiply) */
 #include "cuda/ds41_vq_prefill_mma.cuh"    /* P4-5: the v3 tensor-core prefill arms (vqm tile + vqs register-direct) */
+#include "cuda/ds41_vq_prefill_fp8.cuh"    /* the v3 FP8 tensor-core prefill arm (E4M3 activations, MiniMax's warp-specialized kernels) */
 #include "cuda/ds41_fp8blk.cuh"   /* P4-3: fp8_32x32 decode (towers + engram wkv) */
 #include "cuda/ds41_engram.cuh"   /* P4-3: the engram gate + read-path device pieces */
 #include "cuda/ds41_q4k.cuh"      /* P4-4: the q4_K skeleton GEMV + embedding */
@@ -54,6 +55,7 @@ typedef struct {
 #include "cuda/ds41_attn.cuh"     /* P4-4: rope, act_quant, KV pack, window ring, the scalar attn fallback */
 #include "cuda/ds41_attn_mma.cuh" /* P4-5: the sparse-attn mma family (seg decode, prefill, split-K, merge) + the entry */
 #include "cuda/ds41_indexer.cuh"  /* P4-4: the indexer three-piece (score / candidate blocks / topk) */
+#include "cuda/ds41_indexer_mma.cuh"  /* the tensor-core score (prefill blocks; the engine's --idx-mma variant) */
 #include "cuda/ds41_router.cuh"   /* P4-4: the router (sqrtsoftplus + bias topk) and SwiGLU */
 #include "cuda/ds41_draft.cuh"    /* P5/E1: the DSpark draft towers (dense MoE, mainh ring, markov rows/cache) */
 #include "cuda/ds41_graph.cuh"    /* E3: the decode-step CUDA graph primitives (capture/launch/free, PDL edges) */

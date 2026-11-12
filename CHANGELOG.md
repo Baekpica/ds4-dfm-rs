@@ -8,6 +8,21 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- DeepSeek V4.1 prefill is 17% (2K) to 75% (64K) faster on DGX Spark,
+  measured on the 1017 hVQ artifact: 956.2 / 1,032.4 / 861.7 tok/s at 2K /
+  8K / 64K become 1,122.2 / 1,414.7 / 1,508.7. The Engram prefetch buffer
+  no longer keeps the size of the first block a server process declared
+  (a short first prompt cost every later block 0.25 s); prefill index
+  scores run on the engine's s8 tensor-core kernel (`DS4_DS41_IDX_MMA=0`
+  restores the scalar kernel); prefill routed experts run on FP8 tensor
+  cores with E4M3 activations (`DS4_DS41_VQ_FP8=0` restores BF16). The
+  first two leave logits bit-identical; the third is gated on
+  teacher-forced KL and NLL against a chunk-size noise floor and changes
+  greedy continuations. The shared warp-specialized expert kernel
+  mis-indexed its 13th-bit plane ring on inputs of 4n + 2 stages; MiniMax
+  and MiMo shapes were not affected.
+  [Rounds](docs/deepseek41-optimization-2026-11-12.md),
+  [sweep](docs/benchmarks/ds41-hvq-spark-64k-2026-11-12/README.md).
 - Adds hVQ to `tools/vq_calib/` (PR #146): the DeepSeek-V4.1-Flash-1017 iVQ
   codes reassigned by 8-column error feedback through each expert's input
   correlation, with iVQ's codebooks and the file layout unchanged. It made

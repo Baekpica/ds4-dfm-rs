@@ -10,9 +10,10 @@ typedef struct {
     struct { const ds4_tensor *ffn_exp_probs_b_vl; } layer[DS4_MAX_LAYER];
 } ds4_weights;
 typedef struct {
-    void *qwen_ple_cuda, *qwen_ple_store;
+    void *qwen_ple_cuda, *qwen_ple_store, *gemma4_stream;
     int glm53_stream, vocab, mimo2_media, mtp_ready, dspark_ready;
     ds4_weights weights;
+    struct { void *gemma4_mtp; } mtp_weights;
     ds4_model model, mtp_model, dspark_model, vision_model, audio_model;
     void *directional_steering_dirs, *directional_steering_file;
 } ds4_engine;
@@ -32,6 +33,7 @@ static void ds4_gpu_cleanup(void) { tensors_at_cleanup += g_live_tensors; }
 #define ds4_qwen38_ple_cuda_destroy(...) ((void)0)
 #define ds4_ple_store_close(...) ((void)0)
 #define glm53_stream_cancel(...) ((void)0)
+#define gemma4_stream_free(...) ((void)0)
 #define weights_free(...) ((void)0)
 #define vocab_free(...) ((void)0)
 #define ds4_threads_shutdown(...) ((void)0)

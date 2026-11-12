@@ -259,9 +259,12 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     }
                 }
                 if (!(kt & 1u)) {
-                    // R13: entry (kt / 2) % 2 is next rewritten four stages on,
-                    // after the consumers released a later slot.
-                    const uint32_t dst = RES ? slot + o_plane : planes_s + ((kt / 2) & 1u) * MW_PL + o_plane;
+                    // R13: an entry is next rewritten four stages on, after
+                    // the consumers released a later slot. The ring counter
+                    // picks it: a unit of 4n + 2 stages (2,304 columns) ends
+                    // on the entry its successor starts with, and counting
+                    // per unit rewrote that entry two stages early.
+                    const uint32_t dst = RES ? slot + o_plane : planes_s + ((ringc / 2) & 1u) * MW_PL + o_plane;
                     asm volatile("cp.async.ca.shared.global [%0], [%1], 4;" :: "r"(dst), "l"(g_plane + 4 * (kt / 2))
                         : "memory");
                 }
@@ -335,7 +338,7 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     }
                     uint32_t e = e_odd[n];
                     if (!(kt & 1u)) {
-                        e = *(const uint32_t *)((RES ? stage + IX : planes + ((kt / 2) & 1u) * MW_PL) +
+                        e = *(const uint32_t *)((RES ? stage + IX : planes + ((ringc / 2) & 1u) * MW_PL) +
                             r * GLMVQ_MMA8_PLANE);
                         e_odd[n] = e >> 16;
                     }

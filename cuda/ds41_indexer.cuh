@@ -21,10 +21,9 @@
  * index" rule holds unchanged.
  *
  * ★Named port deviations (P4-4)★:
- *   - the s8 mma score variant (cuda_v41_indexer_mma.inc.cu) is NOT ported;
- *     ds4_gpu_v41_set_indexer_mma records the flag and the score entry refuses
- *     by name while it is on (the engine keeps the switch for A/B judgment
- *     only, default off);
+ *   - the s8 mma score variant (cuda_v41_indexer_mma.inc.cu) lives in
+ *     ds41_indexer_mma.cuh; eager prefill blocks take it by default, where
+ *     the engine keeps it behind --idx-mma (v41_idx_mma_use below);
  *   - the engine's candidate scratch is per decode lane (DS4_GPU_MAX_LANES,
  *     concurrent captured decode graphs); the port has no lane concept yet —
  *     one static slot, named here because the day lanes land this must split.
@@ -117,11 +116,33 @@ __global__ static void v41_indexer_score_kernel(float *score, const float *q, co
     }
 }
 
-/* The mma score switch (cuda_v41_indexer.inc.cu:95-99).  Kept so the flag has
- * one owner; the port has no mma variant, and the score entry below refuses by
- * name while the flag is on. */
+/* The tensor-core score (ds41_indexer_mma.cuh, included after this file) and
+ * the engine's switch for it (cuda_v41_indexer.inc.cu:94-99). */
+static int v41_indexer_score_mma_launch(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *weights,
+                                        const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap, uint32_t n_tok, uint32_t pos0,
+                                        uint32_t ng, uint32_t n_head, uint32_t dk, uint32_t ratio, const ds4_gpu_tensor *posd);
 static int g_v41_idx_mma = 0;
 void ds4_gpu_v41_set_indexer_mma(int on) { g_v41_idx_mma = on ? 1 : 0; }
+
+/* Which eager launches take the tensor-core score.  Named deviation: the
+ * engine routes by --idx-mma alone (default off); here a prefill block takes
+ * it by default, because its 2,048 rows x every visible group grow with the
+ * context (35% of a block at 60K), and DS4_DS41_IDX_MMA=0 restores the scalar
+ * kernel.  Decode and verify widths stay scalar unless the switch is on.
+ * Captured steps stay scalar: the q scratch would have to grow before the
+ * capture (core_decode_graph.c:179), which is not wired. */
+static bool v41_idx_mma_use(uint32_t n_tok, uint32_t n_head, uint32_t dk, const ds4_gpu_tensor *posd) {
+    static int off = -1;
+    if (off < 0) {
+        const char *env = getenv("DS4_DS41_IDX_MMA");
+        off = env && !strcmp(env, "0");
+    }
+    if (posd) { return false; }
+    if (g_v41_idx_mma) { return true; }
+    const bool shape = (n_head == 32u || n_head == 64u) && dk == 128u;
+
+    return !off && shape && n_tok > V41_GEMV_MAX_TOK;
+}
 
 extern "C" int ds4_gpu_v41_indexer_score_tensor(ds4_gpu_tensor *score, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k,
                                                 const ds4_gpu_tensor *weights, const ds4_gpu_tensor *cand_list, uint32_t cand_bs, uint32_t cand_cap,
@@ -132,9 +153,8 @@ extern "C" int ds4_gpu_v41_indexer_score_tensor(ds4_gpu_tensor *score, const ds4
     if (posd && n_tok > 8u) return 0;   /* graph path: pure decode 1 row or a verify batch <= 8 rows */
     if (ng == 0) return 1;
     if (cand_list && (cand_bs == 0u || cand_cap == 0u)) return 0;
-    if (g_v41_idx_mma) {
-        fprintf(stderr, "ds4: [ds41] the indexer s8 mma score variant is not ported (scalar kernel only)\n");
-        return 0;
+    if (v41_idx_mma_use(n_tok, n_head, dk, posd)) {
+        return v41_indexer_score_mma_launch(score, q, k, weights, cand_list, cand_bs, cand_cap, n_tok, pos0, ng, n_head, dk, ratio, posd);
     }
     /* One block = 8 warps x V41_IDX_G groups; more groups = more blocks
      * (65535 is CUDA's grid.y hard cap; the kernel wraps by grid stride).
