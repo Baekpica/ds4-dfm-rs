@@ -894,9 +894,8 @@ impl V41Feed {
     /// already hides behind the layers between L1 and L14.
     ///
     /// A provider that cannot prefetch right now (the synchronous protocol,
-    /// the kill switch, a block larger than the shadow) returns Ok and the
-    /// next block simply runs without prefetch; Err is the sticky failure
-    /// path and stops the run.
+    /// the kill switch) returns Ok and the next block simply runs without
+    /// prefetch; Err is the sticky failure path and stops the run.
     pub fn prefetch_next(&mut self, pos0: u32, tokens: &[i32]) -> std::result::Result<(), String> {
         if let Some(e) = &self.err {
             return Err(e.clone());
@@ -908,10 +907,9 @@ impl V41Feed {
         let end = start + tokens.len();
         let need = tokens.len() * self.cols as usize * self.stride as usize;
         let mut c = self.core.lock().unwrap();
+        // The worker writes the shadow only while it holds this lock, so no
+        // read is in flight here; a finished prefetch survives the resize.
         if c.shadow.len() < need {
-            if !c.shadow.is_empty() {
-                return Ok(()); // never grow: the worker may be mid-write
-            }
             c.shadow.resize(need, 0);
         }
         c.splice_hist(start, tokens);
@@ -1039,10 +1037,11 @@ struct FeedCore {
     /// The cross-block prefetch buffer: one block's layer-0 rows in the
     /// native slot layout `[n][cols][stride]`, filled by the worker during
     /// the previous block's tail and copied into the native's slot 0 at the
-    /// next prepare.  Sized once, at the first declaration, and never grown:
-    /// only the last chunk is smaller than the cap, so no later block can
-    /// need more, and a grow could move the buffer under the worker's
-    /// in-flight reads.
+    /// next prepare.  It grows to the largest declared block.  The server
+    /// keeps it across requests, and sizing it once left every later full
+    /// block without a prefetch after a first short one (a prompt's tail):
+    /// each block then waited ~0.25 s on its first engram layer.  The worker
+    /// writes it only under the core lock, where a declaration grows it.
     shadow: Vec<u8>,
 }
 
@@ -2307,6 +2306,89 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A feed on the async protocol with no shard behind it: enough for the
+    /// declaration bookkeeping.
+    fn feed_fixture(cols: u32, stride: u32) -> V41Feed {
+        let core = FeedCore {
+            ring: None,
+            hash: EngramHash {
+                token_map: Vec::new(),
+                multipliers: Vec::new(),
+                primes: Vec::new(),
+                offsets: Vec::new(),
+                max_ngram: 2,
+                heads: 1,
+                pad: 0,
+                n_vocab: 0,
+            },
+            shards: Vec::new(),
+            weight_off: Vec::new(),
+            scale_off: Vec::new(),
+            rows: Vec::new(),
+            head_dim: 0,
+            cols,
+            stride,
+            hist: Vec::new(),
+            image_mask: Vec::new(),
+            shadow: Vec::new(),
+        };
+        let ctl = Ctl {
+            go: false,
+            done: 0,
+            err: None,
+            pf: None,
+        };
+
+        V41Feed {
+            core: Arc::new(Mutex::new(core)),
+            worker: None,
+            ctl: Arc::new((Mutex::new(ctl), Condvar::new())),
+            async_on: true,
+            has_ring: false,
+            ring_cap: 0,
+            cols,
+            stride,
+            n_layers: 1,
+            io_mode: false,
+            prev_worker: false,
+            started: vec![false],
+            joined: vec![false],
+            block_start: 0,
+            block_end: 0,
+            bases: Vec::new(),
+            err: None,
+            next: None,
+            prefetch_off: false,
+            wait_delay_us: None,
+            wait_withhold: false,
+            sources: Vec::new(),
+        }
+    }
+
+    /// The server keeps the feed's assets across requests, so a short block
+    /// declared first (one prompt's tail) must not cap the prefetch buffer:
+    /// the next prompt's full blocks are prefetched too.
+    #[test]
+    fn prefetch_grows_with_block() {
+        const COLS: u32 = 3;
+        const STRIDE: u32 = 8;
+        const TAIL: usize = 4;
+        let tokens = [7i32; 16];
+        let mut feed = feed_fixture(COLS, STRIDE);
+
+        feed.prefetch_next(0, &tokens[..TAIL]).unwrap();
+        assert_eq!(feed.next.take(), Some((0, TAIL)));
+
+        feed.prefetch_next(TAIL as u32, &tokens).unwrap();
+        assert_eq!(
+            feed.next,
+            Some((TAIL, TAIL + tokens.len())),
+            "a block larger than the first declared one lost its prefetch"
+        );
+        let need = tokens.len() * (COLS * STRIDE) as usize;
+        assert!(feed.core.lock().unwrap().shadow.len() >= need);
     }
 
     fn mount_fixture(dir: &Path) -> Model {
