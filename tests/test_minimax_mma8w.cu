@@ -3,6 +3,9 @@
  * 4,096-row production chunk) at production shapes:
  * 128 experts x (6144 -> 3072 -> 6144), top-4, 13-bit books with and
  * without the GVR8 residual. Random books, indices and routes; no model.
+ * DS4_MW_H / DS4_MW_F / DS4_MW_E / DS4_MW_USED select another shape
+ * (DeepSeek V4.1: 5120 / 2304 / 384 / 6, whose down input is 18 stages:
+ * an odd number of plane words per unit).
  * Gate rows, up scales, E4M3 down inputs (un-permuted) and down rows must
  * agree bit for bit; each kernel's time and MMA rate are printed.
  * DS4_MW_ITERS=N repeats the timed launches (default 5); DS4_MW_ONLY=gate|
@@ -17,7 +20,8 @@
 #include <random>
 #include <vector>
 
-enum { H = 6144, F = 3072, E = 128, USED = 4, OLD_BM = 256, OLD_BT = 64 };
+enum { OLD_BM = 256, OLD_BT = 64 };
+static uint32_t H = 6144, F = 3072, E = 128, USED = 4;
 static uint32_t ROWS = 4096;
 // Distinct weight sets behind the 128 experts (DS4_MW_SETS; 1 keeps every
 // expert's index stream in L2, which separates DRAM from kernel limits).
@@ -91,7 +95,7 @@ static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, co
     // Sources for glmvq_mma8_kernel: [projection][expert].
     std::vector<glmvq_source> src(3 * E);
     for (int p = 0; p < 3; p++) {
-        for (int e = 0; e < E; e++) {
+        for (uint32_t e = 0; e < E; e++) {
             const matrix_set &s = sets[e % SETS];
             const uint32_t rows = p == 2 ? H : F, cols = p == 2 ? F : H;
             src[p * E + e] = {nullptr, nullptr, {s.main[p], s.plane[p], book, s.gain[p], rows, cols, GLMVQ_E4M3,
@@ -232,6 +236,10 @@ int main() {
     const int iters = getenv("DS4_MW_ITERS") ? atoi(getenv("DS4_MW_ITERS")) : 5;
     if (getenv("DS4_MW_SETS")) { SETS = atoi(getenv("DS4_MW_SETS")); }
     if (getenv("DS4_MW_ROWS")) { ROWS = (uint32_t)atoi(getenv("DS4_MW_ROWS")); }
+    if (getenv("DS4_MW_H")) { H = (uint32_t)atoi(getenv("DS4_MW_H")); }
+    if (getenv("DS4_MW_F")) { F = (uint32_t)atoi(getenv("DS4_MW_F")); }
+    if (getenv("DS4_MW_E")) { E = (uint32_t)atoi(getenv("DS4_MW_E")); }
+    if (getenv("DS4_MW_USED")) { USED = (uint32_t)atoi(getenv("DS4_MW_USED")); }
     const char *only = getenv("DS4_MW_ONLY");
     const auto book_h = make_book(8192), res_h = make_book(GLMVQ_RES_WORDS);
     const auto *book = (const uint8_t *)dev(book_h.size(), book_h.data());

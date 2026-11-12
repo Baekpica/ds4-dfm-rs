@@ -2163,9 +2163,12 @@ tests/test_minimax_artifacts: tests/test_minimax_artifacts.c ds4.c ds4.h ds4_min
 test-minimax-artifacts: tests/test_minimax_artifacts
 	./tests/test_minimax_artifacts
 
+# The second run is DeepSeek V4.1's shape: 18 input stages on down, an odd
+# number of 13th-bit plane words per unit.
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
+	DS4_MW_H=5120 DS4_MW_F=2304 DS4_MW_E=384 DS4_MW_USED=6 DS4_MW_ROWS=2048 ./tests/test_minimax_mma8w
 
 # MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
 tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
