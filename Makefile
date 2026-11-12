@@ -115,7 +115,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
-        pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-indexer test-ds41-engram test-ds41-forward \
+        pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-indexer test-ds41-q4p test-ds41-engram test-ds41-forward \
         rust-bridge ds4-rs ds4-bench-rs ds4-server-rs test-kv-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-session-parity
 
 # The C host executables are deprecated: Rust owns host behavior
@@ -1164,6 +1164,15 @@ tests/test_ds41_indexer: tests/test_ds41_indexer.cu ds4_gpu.h ds41_kvfmt.h $(DS4
 .PHONY: test-ds41-indexer
 test-ds41-indexer: tests/test_ds41_indexer
 	./tests/test_ds41_indexer
+
+# The q4_K prefill projections: glmvq_q4p by default, cuBLAS under the switch.
+tests/test_ds41_q4p: tests/test_ds41_q4p.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_q4p.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-q4p
+test-ds41-q4p: tests/test_ds41_q4p
+	./tests/test_ds41_q4p
+	DS4_DS41_Q4P=0 ./tests/test_ds41_q4p
 
 # DeepSeek V4.1 (ds41) fp8_32x32 gate: the tower/engram-wkv entries
 # (plain, round-out, grouped) against the Rust emulation
@@ -2740,7 +2749,7 @@ BUILD_PROGRAMS := \
     tests/test_dots3_checkpoint tests/test_dots3_cuda tests/test_dots3_loader tests/test_dots3_mtp \
     tests/test_dots3_mtp_guards tests/test_dots3_resident tests/test_dots3_tokenizer \
     tests/test_ds41_bridge_lifetime tests/test_ds41_engram tests/test_ds41_forward \
-    tests/test_ds41_fp8 tests/test_ds41_generate tests/test_ds41_indexer tests/test_ds41_kv_import tests/test_ds41_moe \
+    tests/test_ds41_fp8 tests/test_ds41_generate tests/test_ds41_indexer tests/test_ds41_kv_import tests/test_ds41_moe tests/test_ds41_q4p \
     tests/test_ds41_pick tests/test_ds41_sample tests/test_ds41_vq tests/test_eos_sampling \
     tests/test_exaone_batch tests/test_exaone_checkpoint tests/test_exaone_forward \
     tests/test_exaone_kernels tests/test_exaone_partial tests/test_exaone_ref \

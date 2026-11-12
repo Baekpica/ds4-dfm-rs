@@ -530,6 +530,15 @@ static bool v41_tproj(const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor 
     fprintf(stderr, "ds4: [v41] skeleton matmul: fp4x32 weights are not ported yet (P4-5); this artifact is q4_K\n");
     return false;
 }
+/* Two q4_K projections of one input on prefill blocks (one prepared input):
+ * 1 done, 0 failed, -1 not taken (the caller runs v41_tproj twice). */
+static int v41_tproj_pair(const ds4_model *m, ds4_gpu_tensor *out_a, const ds4_tensor *wa, uint64_t dim_a,
+                          ds4_gpu_tensor *out_b, const ds4_tensor *wb, uint64_t dim_b, uint64_t in_dim,
+                          const ds4_gpu_tensor *x, uint32_t n) {
+    if (n <= DS4_V41_GEMV_MAX_TOK || wa->type != DS4_TENSOR_Q4_K || wb->type != DS4_TENSOR_Q4_K) { return -1; }
+    return ds4_gpu_v41_matmul_q4k_pair_tensor(out_a, wa->abs_offset, dim_a, out_b, wb->abs_offset, dim_b,
+                                              m->map, m->size, in_dim, x, n);
+}
 static bool v41_embed(const ds4_model *m, ds4_gpu_tensor *out, const ds4_gpu_tensor *tok,
                       const ds4_tensor *w, uint64_t n_vocab, uint32_t n, uint64_t dim) {
     if (w->type == DS4_TENSOR_Q4_K)
@@ -867,14 +876,17 @@ static bool v41_attn_in(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
      * draft term (core_v41_attn.c:296); n > 8 prefill shares scratch and
      * stays serial */
     const int fork = n <= DS4_V41_GEMV_MAX_TOK && ds4_gpu_side_mark() && ds4_gpu_side_begin();
+    /* Prefill blocks: kv and q_a first, from one prepared xn. */
+    const int pair = v41_tproj_pair(m, st->kv, l->attn_kv, HD, st->qr, l->attn_q_a, Q, E, st->xn, n);
+    if (pair == 0) { if (fork) (void)ds4_gpu_side_join(); return false; }
     /* window kv: wkv -> bf16 -> kv_norm -> rope(last 64 dims) -> fp8 act_quant(32 blocks) -> window rows [SWA, SWA+n) */
-    if (!v41_tproj(m, st->kv, l->attn_kv, E, HD, st->xn, n, 1) ||
+    if ((pair < 0 && !v41_tproj(m, st->kv, l->attn_kv, E, HD, st->xn, n, 1)) ||
         !ds4_gpu_v41_rms_norm_tensor(st->kvn, st->kv, m->map, m->size, l->attn_kv_a_norm->abs_offset, HD, n, DS4_RMS_EPS) ||
         !v41_rope(st->kvn, st->pos, n, 1, HD, ratio, false) ||
         !ds4_gpu_v41_act_quant_fp8_tensor(st->kvn, n, HD, 32)) { if (fork) (void)ds4_gpu_side_join(); return false; }
     if (fork) (void)ds4_gpu_side_main();
     /* q path: q_a -> bf16 -> q_norm -> q_b -> bf16 -> rope(absolute position) */
-    if (!v41_tproj(m, st->qr, l->attn_q_a, E, Q, st->xn, n, 1) ||
+    if ((pair < 0 && !v41_tproj(m, st->qr, l->attn_q_a, E, Q, st->xn, n, 1)) ||
         !ds4_gpu_v41_rms_norm_tensor(st->qrn, st->qr, m->map, m->size, l->attn_q_a_norm->abs_offset, Q, n, DS4_RMS_EPS) ||
         !v41_tproj(m, st->q, l->attn_q_b, Q, (uint64_t)NH * HD, st->qrn, n, 1) ||
         !v41_rope(st->q, st->pos, n, NH, HD, ratio, false)) { if (fork) (void)ds4_gpu_side_join(); return false; }
@@ -928,6 +940,13 @@ static bool v41_attn_out(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
     const uint32_t ratio = ds4_layer_compress_ratio(il);
     if (!v41_rope(st->o, st->pos, n, NH, HD, ratio, true)) return false;
     const uint32_t grp = NH / DS4_N_OUT_GROUP;
+    /* Prefill blocks: wo_a and wo_b in one q4p entry (no `low` round trip). */
+    if (n > DS4_V41_GEMV_MAX_TOK && l->attn_output_a->type == DS4_TENSOR_Q4_K && l->attn_output_b->type == DS4_TENSOR_Q4_K) {
+        const int done = ds4_gpu_v41_out_proj_q4k_tensor(st->attn_out, m->map, m->size, l->attn_output_a->abs_offset,
+                                                         l->attn_output_b->abs_offset, DS4_N_OUT_GROUP, (uint64_t)grp * HD,
+                                                         DS4_N_LORA_O, E, st->o, n);
+        if (done >= 0) { return done > 0; }
+    }
     if (!v41_tproj_grouped(m, st->low, l->attn_output_a, DS4_N_OUT_GROUP,
                            (uint64_t)grp * HD, DS4_N_LORA_O, st->o, n, 1)) return false;
     /* wo_b must go through the dispatcher: a direct fp4x32 call would read a
@@ -1012,16 +1031,19 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
                                        E, FF, E, st->sel, st->rw, DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, st->xn, il, n)) { goto fork_fail; }
     /* shared expert: w1/w3 -> bf16 -> swiglu(clamp) -> bf16 -> w2 -> bf16 */
     if (fork) { if (!ds4_gpu_side_join()) return false; }
-    else if (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
-             !v41_tproj(m, st->su, l->ffn_up_shexp, E, FF, st->xn, n, 1) ||
-             !ds4_gpu_v41_swiglu_tensor(st->sh, st->sg, st->su, n, FF, DS4_SWIGLU_CLAMP_EXP) ||
-             !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) return false;
+    else {
+        /* gate and up from one prepared xn on prefill blocks */
+        const int pair = v41_tproj_pair(m, st->sg, l->ffn_gate_shexp, FF, st->su, l->ffn_up_shexp, FF, E, st->xn, n);
+        if (pair == 0 ||
+            (pair < 0 && (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
+                          !v41_tproj(m, st->su, l->ffn_up_shexp, E, FF, st->xn, n, 1))) ||
+            !ds4_gpu_v41_swiglu_tensor(st->sh, st->sg, st->su, n, FF, DS4_SWIGLU_CLAMP_EXP) ||
+            !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) return false;
+    }
     if (tail) {   /* decode batch: reduce + add + bf16 round in one launch (same order, bit-identical) */
         if (!ds4_gpu_v41_moe_tail_tensor(st->y, st->so, st->rw, n, DS4_N_EXPERT_USED, E)) return false;
-    } else {
-        if (!ds4_gpu_tensor_copy(st->y, 0, st->routed, 0, (uint64_t)n * E * 4)) return false;
-        if (!ds4_gpu_v41_add_tensor(st->y, st->so, (uint64_t)n * E)) return false;
-        if (!ds4_gpu_v41_round_bf16_tensor(st->y, (uint64_t)n * E)) return false;
+    } else if (!ds4_gpu_v41_add_round_tensor(st->y, st->routed, st->so, (uint64_t)n * E)) {
+        return false;
     }
     return true;
 

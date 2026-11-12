@@ -5384,6 +5384,15 @@ int ds4_gpu_side_join(void);
 int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
         const ds4_gpu_tensor *x, uint32_t n_tok, int round_out);
+/* Prefill (n > 8) q4p entries: 1 done, 0 failed, -1 not taken (run the
+ * projections one by one).  The pair shares one prepared input; the output
+ * pair runs attn_output_a and attn_output_b without materializing `low`. */
+int ds4_gpu_v41_matmul_q4k_pair_tensor(ds4_gpu_tensor *out_a, uint64_t off_a, uint64_t dim_a,
+        ds4_gpu_tensor *out_b, uint64_t off_b, uint64_t dim_b, const void *model_map, uint64_t model_size,
+        uint64_t in_dim, const ds4_gpu_tensor *x, uint32_t n_tok);
+int ds4_gpu_v41_out_proj_q4k_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t off_a, uint64_t off_b, uint32_t groups, uint64_t group_dim, uint64_t rank, uint64_t out_dim,
+        const ds4_gpu_tensor *heads, uint32_t n_tok);
 int ds4_gpu_v41_grouped_matmul_q4k_tensor(ds4_gpu_tensor *low, const void *model_map, uint64_t model_size,
         uint64_t weight_offset, uint32_t n_groups, uint64_t group_dim, uint64_t rank,
         const ds4_gpu_tensor *heads, uint32_t n_tok, int round_out);
@@ -5415,6 +5424,7 @@ int ds4_gpu_v41_vision_unfold_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *
 int ds4_gpu_v41_row_select_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *src, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
 int ds4_gpu_v41_rows_zero_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
 int ds4_gpu_v41_add_tensor(ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n);
+int ds4_gpu_v41_add_round_tensor(ds4_gpu_tensor *y, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n);
 int ds4_gpu_v41_scale_round_tensor(ds4_gpu_tensor *x, uint64_t n, float s);
 int ds4_gpu_v41_expand_hc_tensor(ds4_gpu_tensor *hc, const ds4_gpu_tensor *x, uint32_t n_embd, uint32_t n_hc, uint32_t n_tok);
 int ds4_gpu_v41_hc_mix_tensor(ds4_gpu_tensor *mix, const ds4_gpu_tensor *hc, const void *model_map, uint64_t model_size,

@@ -65,7 +65,10 @@ of the s8 tensor-core kernel (`cuda/ds41_indexer_mma.cuh`). Decode, verify
 and captured steps use the scalar kernel either way. `DS4_DS41_VQ_FP8=0`
 keeps prefill routed experts on the BF16 tensor-core kernels instead of the
 E4M3 arm (`cuda/ds41_vq_prefill_fp8.cuh`), which quantizes expert inputs to
-E4M3 per 128 dims. Both are read once per process. With both at 0, prefill
+E4M3 per 128 dims. `DS4_DS41_Q4P=0` keeps prefill q4_K projections on the
+cuBLAS route (a BF16 copy of each weight per call) instead of the FP16
+tensor-core kernel the GLM VQ family uses (`glmvq_q4p`); the head stays on
+cuBLAS either way. All three are read once per process. With the first two at 0, prefill
 logits equal the build before them bit for bit; the index switch alone
 leaves them identical too (26 held-out cases, 58,777 positions). The
 [November 12 rounds](../docs/deepseek41-optimization-2026-11-12.md) record

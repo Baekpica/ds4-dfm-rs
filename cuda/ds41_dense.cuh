@@ -321,6 +321,18 @@ extern "C" int ds4_gpu_v41_add_tensor(ds4_gpu_tensor *a, const ds4_gpu_tensor *b
     v41_add_kernel<<<(unsigned)((n + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)a->ptr, (const float *)b->ptr, n);
     return cuda_ok(cudaGetLastError(), "v41 add");
 }
+/* y = bf16(a + b) in one pass: the prefill MoE tail, which copied the routed
+ * sum into y, added the shared expert and rounded (the same f32 add). */
+__global__ static void v41_add_round_kernel(float *y, const float *a, const float *b, uint64_t n) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) { y[i] = v41_bf16r(a[i] + b[i]); }
+}
+extern "C" int ds4_gpu_v41_add_round_tensor(ds4_gpu_tensor *y, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n) {
+    if (!y || !a || !b || y->bytes < n * 4 || a->bytes < n * 4 || b->bytes < n * 4) { return 0; }
+    v41_add_round_kernel<<<(unsigned)((n + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)y->ptr, (const float *)a->ptr,
+                                                                                      (const float *)b->ptr, n);
+    return cuda_ok(cudaGetLastError(), "v41 add round");
+}
 __global__ static void v41_expand_hc_kernel(float *hc, const float *x, uint32_t n_embd, uint32_t n_hc) {
     const uint32_t n = blockIdx.y, d = blockIdx.x * blockDim.x + threadIdx.x;
     if (d >= n_embd) return;

@@ -221,6 +221,8 @@ decode cost.
 - Attention next; experts are within a quarter of their DRAM bound, and a
   larger block would halve their stream per token.
 
+Rounds 4–5 took the dense chain: [the follow-up](deepseek41-optimization-2026-11-12-dense.md).
+
 ## Sources checked
 
 YoungAi `7fb26cc3` (`fable5.md`, `docs/speed.md`): the s8 index kernel passed
