@@ -252,7 +252,8 @@ restores the copy, restarts the SSD tier's window at the resumed block (one
 block read back from the file) and drops the draft rings' displaced rows.
 `ds4 --serving-check` (3,781-token prompt, 2,048-row chunks): prefix, rewind
 and continue reuse work (top-1 17/17; prefix and rewind exact); disk KV,
-snapshots and banks are neither declared nor implemented.
+snapshots and banks are neither declared nor implemented. `make gate-inkling2`
+checks the resume rule and the ring spans a copy takes, model-free.
 
 ## Not yet supported
 
