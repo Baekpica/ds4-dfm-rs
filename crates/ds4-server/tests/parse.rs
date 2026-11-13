@@ -924,6 +924,12 @@ fn inkling_audio_chat_input() {
         generation_blocked(&parsed, 6),
         Some("audio input requires Inkling or MiMo")
     );
+    // Inkling-2 shares Inkling's syntax but has no audio tower: a 400 here,
+    // not the template's raise at render (a 500).
+    assert_eq!(
+        generation_blocked(&parsed, 24),
+        Some("Inkling 2 does not accept audio input")
+    );
     let prompt = ds4_server::render_prompt(&parsed, 9).unwrap();
     assert!(String::from_utf8(prompt)
         .unwrap()

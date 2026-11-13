@@ -1268,6 +1268,10 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
     if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
         return Some("video input requires MiMo or MiniMax");
     }
+    // Inkling-2 keeps Inkling's syntax but has no audio tower.
+    if !parsed.audios.is_empty() && model_id == ds4_core::Variant::Inkling2SmallVq as i32 {
+        return Some("Inkling 2 does not accept audio input");
+    }
     if !parsed.audios.is_empty() && !matches!(syntax, ModelSyntax::Inkling | ModelSyntax::Mimo2) {
         return Some("audio input requires Inkling or MiMo");
     }
