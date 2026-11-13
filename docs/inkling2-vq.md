@@ -217,6 +217,19 @@ default threshold: prefill 268.2 tok/s on average (3,878 s), decode 0.86 tok/s
 (7.17 GB of file blocks per token, ~6.2 GB/s), 1,372.6 GiB read in 252.7 s of
 I/O; MemAvailable stayed near 5.8 GiB.
 
+Past the threshold decode reads (context - threshold) x 9,216 bytes per token
+at the drive's rate, so the threshold is the remaining lever. Same 1,040,000
+tokens without drafting:
+
+| Resident positions | Prefill tok/s | Decode tok/s | First token | Read | MemAvailable median (min) |
+|---|---|---|---|---|---|
+| 262,144 (default) | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
+| 524,288 | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
+
+524,288 costs 2.36 GB of device K/V; drafting (1.94 tok/s at 262,144) and
+the image reserve need that memory, so the default stays 262,144.
+`DS4_INKLING2_KV_RESIDENT_CTX=524288` suits serving without either.
+
 ## Memory
 
 `ds4-server --check-config` prices the trunk (113,799,088,128 bytes), the K/V
