@@ -502,6 +502,244 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
     for (int d = 0; d < 4; d++) { dst[2 + 4 * lane + d] = acc[d]; }
 }
 
+/* Verify rows (2..8) on BF16 tensor cores: a CTA owns one (split, KV head)
+ * and the rows' queries of that head group as m16 tiles (slot i = row i / 6,
+ * head 6 kv + i % 6; four warps cover 64 slots, 48 used at eight rows). The
+ * split's 64-key tiles stream through the prefill kernel's ring once for
+ * every row. Writes the decode kernel's partials (m, l, acc without the
+ * sink), P rounded to BF16 as in prefill. */
+enum { INK2A_VTHREADS = INK2A_WARPS * 32 };
+
+template <int FMT>
+__global__ __launch_bounds__(INK2A_VTHREADS)
+void ink2a_verify(float *partials, const float *q, const uint16_t *rel, const void *cache_raw, uint32_t cap,
+        uint32_t window, uint32_t base, uint32_t rows, uint32_t span, uint32_t seg_lo, uint32_t seg_hi,
+        uint32_t block0) {
+    extern __shared__ __align__(16) uint16_t ink2a_smem[];
+    const uint16_t *cache = (const uint16_t *)cache_raw;
+    const uint8_t *pages = (const uint8_t *)cache_raw;
+    uint8_t *raw = (uint8_t *)(ink2a_smem + (FMT == INK2A_FMT_NVFP4 ? INK2A_STAGE_ELEMS : 0));
+    auto s_k = [&](int stage) {
+        return reinterpret_cast<uint16_t (*)[INK2A_SROW]>(ink2a_smem +
+            (FMT == INK2A_FMT_NVFP4 ? 0 : (size_t)stage * INK2A_STAGE_ELEMS));
+    };
+    auto s_v = [&](int stage) { return s_k(stage) + INK2A_TK; };
+    const uint32_t split = blockIdx.x, kv_head = blockIdx.y;
+    const uint32_t warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+    // The rows' common range, this split's share of it.
+    const uint32_t lo = max(window && base >= window ? base - (window - 1) : 0u, seg_lo);
+    const uint32_t hi = min(base + rows, seg_hi);
+    const uint32_t key_lo = lo + split * span, key_end = min(hi, key_lo + span);
+
+    uint32_t qrow[2], qh[2], qpos[2], qfirst[2];
+    bool alive[2];
+    float row_m[2], row_l[2];
+    #pragma unroll
+    for (int r = 0; r < 2; r++) {
+        const uint32_t slot = warp * INK2A_WQ + lane / 4 + r * 8;
+        qrow[r] = slot / INK2A_GROUP;
+        qh[r] = kv_head * INK2A_GROUP + slot % INK2A_GROUP;
+        alive[r] = qrow[r] < rows;
+        qpos[r] = base + qrow[r];
+        qfirst[r] = max(window && qpos[r] >= window ? qpos[r] - (window - 1) : 0u, key_lo);
+        row_m[r] = -INFINITY;
+        row_l[r] = 0.0f;
+    }
+    uint32_t qa[INK2A_DIM / 16][4];
+    #pragma unroll
+    for (int kc = 0; kc < INK2A_DIM / 16; kc++) {
+        #pragma unroll
+        for (int l = 0; l < 4; l++) {
+            const int r = l % 2, j = (l / 2) * 4 + (int)(lane % 4);
+            float2 xy = make_float2(0.0f, 0.0f);
+            if (alive[r]) {
+                xy = *reinterpret_cast<const float2 *>(
+                    q + ((uint64_t)qrow[r] * INK2A_HEADS + qh[r]) * INK2A_DIM + kc * 16 + 2 * j);
+            }
+            qa[kc][l] = ink2a_pack(xy.x, xy.y);
+        }
+    }
+    float output[INK2A_DIM / 8][4];
+    #pragma unroll
+    for (int cb = 0; cb < INK2A_DIM / 8; cb++) {
+        #pragma unroll
+        for (int l = 0; l < 4; l++) { output[cb][l] = 0.0f; }
+    }
+    const uint32_t key_hi = key_end > key_lo ? key_end - 1 : key_lo;
+    const uint32_t kt_start = key_lo & ~(uint32_t)(INK2A_TK - 1);
+    const uint32_t tiles = key_end > key_lo ? (key_hi - kt_start) / INK2A_TK + 1 : 0u;
+
+    // Rows outside [key_lo, key_hi] repeat key_lo so masked keys stay finite.
+    auto issue_tile = [&](int stage, uint32_t kt0) {
+        if constexpr (FMT == INK2A_FMT_NVFP4) {
+            const uint8_t *page = ink2a_page(pages, kt0, kv_head, block0);
+            const uint32_t slot = kt0 % INK2A_KB;
+            uint8_t *dst = raw + stage * INK2A_RAW;
+            for (uint32_t c = threadIdx.x; c < INK2A_RAW / 16; c += INK2A_VTHREADS) {
+                const uint32_t at = c * 16, half = at / INK2A_RAW_HALF, in = at % INK2A_RAW_HALF;
+                const uint32_t data = INK2A_TK * INK2A_FP4;
+                const uint8_t *src = page + half * INK2A_KB * INK2A_FP4_ROW +
+                    (in < data ? slot * INK2A_FP4 + in : INK2A_KB * INK2A_FP4 + slot * 8 + (in - data));
+                __pipeline_memcpy_async(dst + at, src, 16);
+            }
+        } else {
+            for (uint32_t idx = threadIdx.x; idx < INK2A_TILE_CHUNKS; idx += INK2A_VTHREADS) {
+                const uint32_t r = idx / INK2A_ROW_CHUNKS, j = idx % INK2A_ROW_CHUNKS;
+                uint32_t key = kt0 + r;
+                if (key < key_lo || key > key_hi) { key = key_lo; }
+                const uint16_t *row = ink2a_row(cache, key, cap, window);
+                const bool value = j >= INK2A_ROW_CHUNKS / 2;
+                const uint32_t c = (j % (INK2A_ROW_CHUNKS / 2)) * INK2A_CHUNK;
+                const uint16_t *src = row + (value ? INK2A_KV : 0) + kv_head * INK2A_DIM + c;
+                uint16_t *dst = (value ? s_v(stage)[r] : s_k(stage)[r]) + c;
+                __pipeline_memcpy_async(dst, src, INK2A_CHUNK * sizeof(uint16_t));
+            }
+        }
+    };
+    auto decode_tile = [&](int stage, uint32_t kt0) {
+        const uint8_t *src = raw + stage * INK2A_RAW;
+        for (uint32_t g = threadIdx.x; g < 2 * INK2A_TK * 8; g += INK2A_VTHREADS) {
+            const uint32_t value = g / (INK2A_TK * 8), key = (g / 8) % INK2A_TK, grp = g % 8;
+            const uint8_t *half = src + value * INK2A_RAW_HALF;
+            uint32_t packed[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            const uint32_t p = kt0 + key;
+            if (p >= key_lo && p <= key_hi) {
+                const uint2 data = *reinterpret_cast<const uint2 *>(half + key * INK2A_FP4 + grp * 8);
+                ink2a_fp4x16(data, half[INK2A_TK * INK2A_FP4 + key * 8 + grp], packed);
+            }
+            uint16_t *dst = (value ? s_v(0)[key] : s_k(0)[key]) + grp * 16;
+            *reinterpret_cast<uint4 *>(dst) = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+            *reinterpret_cast<uint4 *>(dst + 8) = make_uint4(packed[4], packed[5], packed[6], packed[7]);
+        }
+    };
+    auto consume = [&](int stage, uint32_t kt0) {
+        const uint16_t (*sk)[INK2A_SROW] = s_k(stage);
+        const uint16_t (*sv)[INK2A_SROW] = s_v(stage);
+        float s[INK2A_NB][4];
+        const uint32_t k_row = lane & 7u, k_col = (lane >> 3) * 8u;
+        #pragma unroll
+        for (int nb = 0; nb < INK2A_NB; nb++) {
+            #pragma unroll
+            for (int l = 0; l < 4; l++) { s[nb][l] = 0.0f; }
+            #pragma unroll
+            for (int kc = 0; kc < INK2A_DIM / 16; kc += 2) {
+                uint32_t b0, b1, b2, b3;
+                ink2a_ldsm4(b0, b1, b2, b3, &sk[nb * 8 + k_row][kc * 16 + k_col]);
+                ink2a_mma(s[nb], qa[kc], b0, b1);
+                ink2a_mma(s[nb], qa[kc + 1], b2, b3);
+            }
+        }
+        float tile_max[2] = {-INFINITY, -INFINITY};
+        #pragma unroll
+        for (int nb = 0; nb < INK2A_NB; nb++) {
+            #pragma unroll
+            for (int l = 0; l < 4; l++) {
+                const int r = l / 2;
+                const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
+                float x = -INFINITY;
+                if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < key_end) {
+                    const uint32_t d = qpos[r] - p;
+                    const float bias = d < INK2A_EXTENT
+                        ? __uint_as_float((uint32_t)rel[((uint64_t)qrow[r] * INK2A_HEADS + qh[r]) * INK2A_EXTENT + d] << 16)
+                        : 0.0f;
+                    x = ink2a_score(s[nb][l], bias);
+                }
+                s[nb][l] = x;
+                tile_max[r] = fmaxf(tile_max[r], x);
+            }
+        }
+        float rescale[2], tile_sum[2] = {0.0f, 0.0f};
+        #pragma unroll
+        for (int r = 0; r < 2; r++) {
+            tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 1));
+            tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 2));
+            const float next = fmaxf(row_m[r], tile_max[r]);
+            // No sink here: a row with no live key yet keeps m = -inf.
+            rescale[r] = row_m[r] == -INFINITY ? 0.0f : __expf(row_m[r] - next);
+            row_m[r] = next;
+        }
+        uint32_t pa[INK2A_KS][4];
+        #pragma unroll
+        for (int nb = 0; nb < INK2A_NB; nb++) {
+            #pragma unroll
+            for (int l = 0; l < 4; l++) {
+                const int r = l / 2;
+                const float w = s[nb][l] == -INFINITY ? 0.0f : __expf(s[nb][l] - row_m[r]);
+                s[nb][l] = w;
+                tile_sum[r] += w;
+            }
+        }
+        #pragma unroll
+        for (int ks = 0; ks < INK2A_KS; ks++) {
+            #pragma unroll
+            for (int l = 0; l < 4; l++) {
+                const float *src = s[2 * ks + l / 2];
+                pa[ks][l] = ink2a_pack(src[(l % 2) * 2], src[(l % 2) * 2 + 1]);
+            }
+        }
+        #pragma unroll
+        for (int r = 0; r < 2; r++) {
+            tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 1);
+            tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 2);
+            row_l[r] = row_l[r] * rescale[r] + tile_sum[r];
+        }
+        #pragma unroll
+        for (int cb = 0; cb < INK2A_DIM / 8; cb++) {
+            #pragma unroll
+            for (int l = 0; l < 4; l++) { output[cb][l] *= rescale[l / 2]; }
+        }
+        const uint32_t v_row = ((lane >> 3) & 1u) * 8u + (lane & 7u), v_col = (lane >> 4) * 8u;
+        #pragma unroll
+        for (int ks = 0; ks < INK2A_KS; ks++) {
+            #pragma unroll
+            for (int cb = 0; cb < INK2A_DIM / 8; cb += 2) {
+                uint32_t b0, b1, b2, b3;
+                ink2a_ldsm4t(b0, b1, b2, b3, &sv[ks * 16 + v_row][cb * 8 + v_col]);
+                ink2a_mma(output[cb], pa[ks], b0, b1);
+                ink2a_mma(output[cb + 1], pa[ks], b2, b3);
+            }
+        }
+    };
+
+    if (tiles) { issue_tile(0, kt_start); }
+    __pipeline_commit();
+    int stage = 0;
+    #pragma unroll 1
+    for (uint32_t t = 0; t < tiles; t++) {
+        const uint32_t kt0 = kt_start + t * INK2A_TK;
+        if (t + 1 < tiles) {
+            issue_tile(stage ^ 1, kt0 + INK2A_TK);
+            __pipeline_commit();
+            __pipeline_wait_prior(1);
+        } else {
+            __pipeline_wait_prior(0);
+        }
+        __syncthreads();
+        if constexpr (FMT == INK2A_FMT_NVFP4) {
+            decode_tile(stage, kt0);
+            __syncthreads();
+        }
+        consume(stage, kt0);
+        __syncthreads();
+        stage ^= 1;
+    }
+
+    #pragma unroll
+    for (int r = 0; r < 2; r++) {
+        if (!alive[r]) { continue; }
+        float *dst = partials + (((uint64_t)qrow[r] * INK2A_HEADS + qh[r]) * INK2A_SPLITS + split) * INK2A_PARTIAL;
+        if (lane % 4 == 0) {
+            dst[0] = row_m[r];
+            dst[1] = row_l[r];
+        }
+        #pragma unroll
+        for (int cb = 0; cb < INK2A_DIM / 8; cb++) {
+            *reinterpret_cast<float2 *>(dst + 2 + cb * 8 + (lane % 4) * 2) =
+                make_float2(output[cb][2 * r], output[cb][2 * r + 1]);
+        }
+    }
+}
+
 // out = BF16(BF16(sum of partials over (sink + sum of l)) * sigmoid(gate)).
 __global__ void ink2a_merge(float *out, const float *partials, const float *sinks, const float *gate,
         uint32_t splits) {

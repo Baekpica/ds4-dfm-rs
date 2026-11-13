@@ -834,6 +834,30 @@ extern "C" int ds4_gpu_ink2_qr(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tens
     return cuda_ok(cudaGetLastError(), "Inkling-2 q/r tails");
 }
 
+// DS4_INKLING2_VERIFY_MMA=0: verify rows on the per-row SIMT decode kernel.
+static bool ink2a_verify_on() {
+    static const bool on = !ink2_env_off("DS4_INKLING2_VERIFY_MMA");
+    return on;
+}
+
+/* Verify rows (2..8) on tensor cores over `keys` keys from the first row's
+ * bound: splits of whole 64-key tiles writing the decode kernel's partials.
+ * Returns the split count, 0 on failure. */
+template <int FMT>
+static uint32_t ink2a_verify_launch(float *partials, const float *q, const uint16_t *rel, const void *cache,
+        uint32_t cap, uint32_t window, uint32_t pos, uint32_t rows, uint32_t keys, uint32_t seg_lo, uint32_t seg_hi,
+        uint32_t block0, cudaStream_t stream) {
+    const int smem = FMT == INK2A_FMT_NVFP4 ? INK2A_SMEM_FP4 : INK2A_SMEM;
+    static const cudaError_t ready = cudaFuncSetAttribute(ink2a_verify<FMT>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    if (!cuda_ok(ready, "Inkling-2 verify attention shared memory")) { return 0; }
+    const uint32_t splits = ink2a_splits(keys);
+    const uint32_t span = ((keys + splits - 1) / splits + INK2A_TK - 1) / INK2A_TK * INK2A_TK;
+    ink2a_verify<FMT><<<dim3(splits, INK2A_KV_HEADS), INK2A_VTHREADS, smem, stream>>>(partials, q, rel, cache, cap,
+        window, pos, rows, span, seg_lo, seg_hi, block0);
+    return splits;
+}
+
 extern "C" uint64_t ds4_gpu_ink2_attn_bytes(void) {
     return (uint64_t)INK2A_SPLIT_ROWS * INK2A_HEADS * INK2A_SPLITS * INK2A_PARTIAL * sizeof(float);
 }
@@ -851,15 +875,27 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
     if (rows <= INK2A_SPLIT_ROWS) {
         if (!partials || partials->bytes < ds4_gpu_ink2_attn_bytes()) { return 0; }
         const uint32_t last = pos + rows - 1;
-        const uint32_t keys = window && last >= window ? window : last + 1;
-        const uint32_t splits = ink2a_splits(keys);
-        const dim3 grid(splits, INK2A_KV_HEADS, rows);
-        if (fp4) {
-            ink2a_decode<INK2A_FMT_NVFP4><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
-                (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+        uint32_t splits;
+        if (rows > 1 && ink2a_verify_on()) {
+            const uint32_t first = window && pos >= window ? pos - (window - 1) : 0u;
+            splits = fp4 ? ink2a_verify_launch<INK2A_FMT_NVFP4>((float *)partials->ptr, (const float *)q->ptr,
+                               (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, rows, last + 1 - first, 0u,
+                               UINT32_MAX, 0u, stream)
+                         : ink2a_verify_launch<INK2A_FMT_BF16>((float *)partials->ptr, (const float *)q->ptr,
+                               (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, rows, last + 1 - first, 0u,
+                               UINT32_MAX, 0u, stream);
+            if (!splits) { return 0; }
         } else {
-            ink2a_decode<INK2A_FMT_BF16><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
-                (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            const uint32_t keys = window && last >= window ? window : last + 1;
+            splits = ink2a_splits(keys);
+            const dim3 grid(splits, INK2A_KV_HEADS, rows);
+            if (fp4) {
+                ink2a_decode<INK2A_FMT_NVFP4><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                    (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            } else {
+                ink2a_decode<INK2A_FMT_BF16><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                    (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            }
         }
         ink2a_merge<<<(uint32_t)heads, INK2A_DIM, 0, stream>>>((float *)out->ptr, (const float *)partials->ptr,
             (const float *)sinks->ptr, (const float *)gate->ptr, splits);
@@ -903,10 +939,17 @@ extern "C" int ds4_gpu_ink2_attn_seg(ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     if (rows <= INK2A_SPLIT_ROWS) {
         if (!partials || partials->bytes < ds4_gpu_ink2_attn_bytes()) { return 0; }
         const uint32_t keys = min(seg_hi, pos + rows) - seg_lo;
-        const uint32_t splits = ink2a_splits(keys);
-        ink2a_decode<INK2A_FMT_NVFP4><<<dim3(splits, INK2A_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>(
-            (float *)partials->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, store->ptr, 0, 0, pos,
-            splits, seg_lo, seg_hi, block0);
+        uint32_t splits;
+        if (rows > 1 && ink2a_verify_on()) {
+            splits = ink2a_verify_launch<INK2A_FMT_NVFP4>((float *)partials->ptr, (const float *)q->ptr,
+                (const uint16_t *)rel->ptr, store->ptr, 0u, 0u, pos, rows, keys, seg_lo, seg_hi, block0, stream);
+            if (!splits) { return 0; }
+        } else {
+            splits = ink2a_splits(keys);
+            ink2a_decode<INK2A_FMT_NVFP4><<<dim3(splits, INK2A_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>(
+                (float *)partials->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, store->ptr, 0, 0, pos,
+                splits, seg_lo, seg_hi, block0);
+        }
         ink2a_fold<<<(uint32_t)heads, INK2A_DIM, 0, stream>>>((float *)state->ptr, (const float *)partials->ptr,
             (const float *)sinks->ptr, splits, mode == DS4_INK2_SEG_FIRST);
         if (mode == DS4_INK2_SEG_LAST) {
