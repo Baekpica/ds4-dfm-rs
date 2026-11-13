@@ -27,6 +27,7 @@
 struct inkling2_draft_rt {
     const ds4_inkling2_draft *w;
     uint32_t rows, ring[DS4_INK2_DRAFT_LAYERS];
+    uint32_t lo[DS4_INK2_DRAFT_LAYERS];   // lowest position whose context row each ring still holds
     ds4_gpu_tensor *alpha, *taps, *mixed, *ck, *cv, *markov, *f_rnn;
     ds4_gpu_tensor *ring_k[DS4_INK2_DRAFT_LAYERS], *ring_v[DS4_INK2_DRAFT_LAYERS];
     ds4_gpu_tensor *h, *x, *res, *q, *k, *v, *heads, *o, *gate, *up, *base, *logits, *zin, *pinv, *z, *state, *latent;
@@ -45,6 +46,20 @@ static void inkling2_draft_reset(inkling2_draft_rt *d) {
     if (!d) { return; }
     d->trial_n = 0;
     d->capture = false;
+    memset(d->lo, 0, sizeof(d->lo));
+}
+
+/* A rewind to `at` after rows up to `high` were written: a ring row below
+ * `at` survives only above high - ring (the abandoned rows took the slots
+ * below); the context restarts at `at` when none does. */
+static void inkling2_draft_rewind(inkling2_draft_rt *d, uint32_t at, uint32_t high) {
+    if (!d) { return; }
+    d->trial_n = 0;
+    for (uint32_t l = 0; l < DS4_INK2_DRAFT_LAYERS; l++) {
+        const uint32_t lost = high > d->ring[l] ? high - d->ring[l] : 0u;
+        if (d->lo[l] < lost) { d->lo[l] = lost; }
+        if (d->lo[l] > at) { d->lo[l] = at; }
+    }
 }
 
 static void inkling2_draft_free(inkling2_draft_rt *d) {
@@ -234,7 +249,7 @@ static bool inkling2_draft_layers(ds4_inkling2_graph *g, const ds4_model *m, uin
             !ds4_gpu_ink2_draft_qk(g->gvq, d->q, inkling2_index(m, L->q_norm), DS4_INK2_HEADS, n, p) ||
             !ds4_gpu_ink2_draft_qk(g->gvq, d->k, inkling2_index(m, L->k_norm), DS4_INK2_KV_HEADS, n, p) ||
             !ds4_gpu_ink2_draft_ring(d->ring_k[l], d->ring_v[l], d->k, d->v, n, p, d->ring[l]) ||
-            !ds4_gpu_ink2_draft_attn(d->heads, g->partials, d->q, d->ring_k[l], d->ring_v[l], d->ring[l], n, p, 0u,
+            !ds4_gpu_ink2_draft_attn(d->heads, g->partials, d->q, d->ring_k[l], d->ring_v[l], d->ring[l], n, p, d->lo[l],
                 window) ||
             !plain_graph_matmul_tensor(d->o, m, L->o, DS4_INK2_Q, DS4_INK2_HIDDEN, d->heads, n) ||
             !ds4_gpu_ink2_draft_add_norm(g->gvq, d->x, d->res, d->o, inkling2_index(m, L->ln2), n) ||

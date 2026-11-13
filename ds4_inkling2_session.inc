@@ -1,7 +1,11 @@
 /* Serial session: one graph owns every layer's K/V (full layers by
- * position, sliding layers in a ring) and the convolution histories, which
- * describe only the live frontier: a prompt that extends the checkpoint
- * continues it, any other prompt rebuilds. */
+ * position, sliding layers in a ring) and the convolution histories. The
+ * histories describe only the live frontier: a sync copies them, with the
+ * sliding rings' 1,023 rows below, where its final chunk starts (a resent
+ * turn resumes there) and at its end (a re-rendered continuation resumes
+ * there, however long the answer that displaced the rings). A prompt resumes
+ * where it extends the checkpoint or at a copy at or below the common
+ * prefix, and rebuilds otherwise. */
 static int inkling2_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->inkling2_graph.failed = true;
     s->checkpoint_valid = false;
@@ -27,7 +31,56 @@ static uint32_t inkling2_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
     const ds4_inkling2_graph *g = &s->inkling2_graph;
     if (!s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) { return 0; }
     const uint32_t keep = session_keep_prefix(s, prompt);
-    return keep == g->position ? keep : 0u;
+    if (keep == g->position) { return keep; }
+    const int slot = serial_ckpt_find(s, keep);
+    return slot < 0 ? 0u : s->rewind.pos[slot];
+}
+
+enum { INKLING2_RESUME_PARTS = INKLING2_LAYERS + 2 * (INKLING2_LAYERS - INKLING2_FULL_LAYERS) };
+
+/* What a resume at `at` restores: the convolution histories, then each
+ * sliding ring's 1,023 slots below `at` as two spans in ring order (slots
+ * below position 0 hold nothing a read uses). parts[INKLING2_LAYERS..) are
+ * views the caller frees. */
+static bool inkling2_resume_parts(ds4_inkling2_graph *g, uint32_t at, serial_part *parts) {
+    for (uint32_t il = 0; il < INKLING2_LAYERS; il++) {
+        parts[il] = (serial_part){g->hist[il], (uint64_t)INKLING2_HIST * sizeof(float)};
+    }
+    const uint32_t rows = DS4_INK2_WINDOW - 1u, ring = g->ring_cap;
+    const uint32_t s0 = (at % ring + ring - rows) % ring, head = s0 + rows <= ring ? 1u : ring - s0;
+    bool ok = true;
+    uint32_t n = INKLING2_LAYERS;
+    for (uint32_t il = 0; il < INKLING2_LAYERS; il++) {
+        if (inkling2_global(il)) { continue; }
+        parts[n] = (serial_part){ds4_gpu_tensor_view(g->kv[il], (uint64_t)s0 * INKLING2_KV_ROW,
+            (uint64_t)head * INKLING2_KV_ROW), (uint64_t)head * INKLING2_KV_ROW};
+        parts[n + 1] = (serial_part){ds4_gpu_tensor_view(g->kv[il], (uint64_t)((s0 + head) % ring) * INKLING2_KV_ROW,
+            (uint64_t)(rows - head) * INKLING2_KV_ROW), (uint64_t)(rows - head) * INKLING2_KV_ROW};
+        ok = ok && parts[n].tensor && parts[n + 1].tensor;
+        n += 2;
+    }
+    return ok;
+}
+
+static void inkling2_resume_free(serial_part *parts) {
+    for (uint32_t i = INKLING2_LAYERS; i < INKLING2_RESUME_PARTS; i++) { ds4_gpu_tensor_free(parts[i].tensor); }
+}
+
+// A serial copy of the state after `at` rows.
+static void inkling2_resume_capture(ds4_session *s, uint32_t at) {
+    serial_part parts[INKLING2_RESUME_PARTS] = {{0}};
+    if (inkling2_resume_parts(&s->inkling2_graph, at, parts)) {
+        (void)serial_ckpt_capture(s, parts, INKLING2_RESUME_PARTS, at);
+    }
+    inkling2_resume_free(parts);
+}
+
+static bool inkling2_resume_restore(ds4_session *s, int slot, uint32_t at) {
+    serial_part parts[INKLING2_RESUME_PARTS] = {{0}};
+    const bool ok = inkling2_resume_parts(&s->inkling2_graph, at, parts) &&
+        serial_ckpt_restore(s, slot, parts, INKLING2_RESUME_PARTS);
+    inkling2_resume_free(parts);
+    return ok;
 }
 
 static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
@@ -41,14 +94,21 @@ static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char 
     if (!s->inkling2_graph_ready) { payload_set_err(err, errlen, "Inkling-2 graph is not initialized"); return 1; }
     ds4_inkling2_graph *g = &s->inkling2_graph;
     uint32_t start = inkling2_sync_keep(s, prompt);
-    if (start && start == (uint32_t)prompt->len) { return 0; }
-    if (!start) {
+    const int slot = start && start < (uint32_t)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
+    if (start && start >= (uint32_t)s->checkpoint.len) {
+        if (start == (uint32_t)prompt->len) { return 0; }
+    } else if (slot >= 0 && inkling2_resume_restore(s, slot, start) && inkling2_rewind(g, start)) {
+        session_rewound(s, start);
+    } else {
+        start = 0;
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "Inkling-2 graph reset failed"); return 1; }
     }
-    const uint32_t end = (uint32_t)prompt->len;
+    const uint32_t resume = start, end = (uint32_t)prompt->len;
     while (start < end) {
         const uint32_t n = end - start < g->row_cap ? end - start : g->row_cap;
+        // Where the final chunk starts: a resent turn resumes here.
+        if (start + n == end && start > resume) { inkling2_resume_capture(s, start); }
         // The next chunk's embedding rows load while this one computes.
         if (start + n < end) {
             const uint32_t next = end - start - n < g->row_cap ? end - start - n : g->row_cap;
@@ -63,6 +123,8 @@ static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char 
         if (s->progress) { s->progress(s->progress_ud, "prefill_chunk", (int)start, prompt->len); }
     }
     if (!inkling2_read_logits(s)) { return inkling2_session_fail(s, err, errlen); }
+    // The prompt's end: a re-rendered continuation resumes here.
+    inkling2_resume_capture(s, end);
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;

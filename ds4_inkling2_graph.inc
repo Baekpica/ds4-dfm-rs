@@ -32,7 +32,9 @@ static void inkling2_draft_reset(inkling2_draft_rt *d);
 typedef enum { INKLING2_HEAD_NONE, INKLING2_HEAD_LAST, INKLING2_HEAD_ALL } inkling2_head_rows;
 
 typedef struct {
-    uint32_t ctx_cap, row_cap, ring_cap, position;
+    // high: one past the highest row any forward of this lineage wrote (the
+    // draft rings' displacement bound for a rewind).
+    uint32_t ctx_cap, row_cap, ring_cap, position, high;
     bool ready, failed;
     uint64_t workspace_bytes, kv_bytes;
 #define INKLING2_FIELD(field, cols, type) ds4_gpu_tensor *field;
@@ -91,6 +93,7 @@ static bool inkling2_graph_reset(ds4_inkling2_graph *g) {
     inkling2_draft_reset(g->draft);
 #endif
     g->position = 0u;
+    g->high = 0u;
     g->failed = false;
     return true;
 }
@@ -379,10 +382,21 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
             (!g->draft->capture && !inkling2_draft_anchor(g->draft, rows - 1u))) { return false; }
     }
     g->position = pos + rows;
+    if (g->high < g->position) { g->high = g->position; }
     g->failed = false;
     return true;
 }
 
+/* Resume at `at` below the live position: full-layer rows are positional,
+ * the SSD tier's window restarts at the block holding `at` and the drafter's
+ * rings drop the rows the abandoned branch displaced. The caller restores
+ * the convolution histories copied at `at`. */
+static bool inkling2_rewind(ds4_inkling2_graph *g, uint32_t at) {
+    if (at > g->position || !inkling2_kv_rewind(&g->tier, at)) { return false; }
+    inkling2_draft_rewind(g->draft, at, g->high);
+    g->position = at;
+    return true;
+}
 #else
 // Inkling 2 is CUDA-only; Metal keeps linkage and refuses the graph.
 static bool inkling2_graph_alloc(ds4_inkling2_graph *g, const ds4_model *m, const ds4_weights *w,
@@ -401,4 +415,8 @@ static void inkling2_embed_prefetch(const ds4_model *m, const ds4_weights *w, co
     (void)m; (void)w; (void)tokens; (void)rows;
 }
 
+static bool inkling2_rewind(ds4_inkling2_graph *g, uint32_t at) {
+    (void)g; (void)at;
+    return false;
+}
 #endif

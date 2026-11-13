@@ -236,6 +236,25 @@ static bool inkling2_kv_begin(inkling2_kv *kv, uint32_t rows, uint32_t pos) {
     return true;
 }
 
+/* A rewind to `pos`: the window restarts at the block holding it (never
+ * below the resident blocks); a file block's rows below pos are read back.
+ * Rows at or above pos are rewritten before any read. */
+static bool inkling2_kv_rewind(inkling2_kv *kv, uint32_t pos) {
+    if (!kv->spill) { return true; }
+    inkling2_io_idle(kv);
+    const uint32_t block = pos / DS4_INK2_KV_BLOCK, start = block > kv->resident ? block : kv->resident;
+    if (start >= kv->window_block0) { return true; }
+    if (!ds4_gpu_synchronize()) { return false; }
+    kv->window_block0 = start;
+    if (block < kv->resident || pos % DS4_INK2_KV_BLOCK == 0) { return true; }
+    const uint64_t window_layer = (uint64_t)kv->window_blocks * DS4_INK2_BLOCK_BYTES;
+    for (uint32_t l = 0; l < INKLING2_FULL_LAYERS; l++) {
+        if (!inkling2_kv_io(kv, false, kv->window + l * window_layer, DS4_INK2_BLOCK_BYTES,
+                inkling2_file_offset(kv, l, start))) { return false; }
+    }
+    return true;
+}
+
 // Where full layer `il`'s blocks live for the store kernel.
 static bool inkling2_kv_tier(const inkling2_kv *kv, uint32_t il, ds4_ink2_tier *tier) {
     if (!kv->spill) { return false; }
@@ -278,4 +297,8 @@ static inline bool inkling2_kv_open(inkling2_kv *kv, uint32_t ctx, uint32_t cap)
 }
 static inline void inkling2_kv_close(inkling2_kv *kv) { (void)kv; }
 static inline void inkling2_kv_restart(inkling2_kv *kv) { (void)kv; }
+static inline bool inkling2_kv_rewind(inkling2_kv *kv, uint32_t pos) {
+    (void)pos;
+    return !kv->spill;
+}
 #endif
