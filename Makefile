@@ -2254,7 +2254,8 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_draft.inc ds4_minimax_vision.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/glm_vq_ops.cuh
-INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_graph.inc ds4_inkling2_session.inc
+INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_kv.inc ds4_inkling2_graph.inc \
+	ds4_inkling2_session.inc
 ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh \
 	cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh

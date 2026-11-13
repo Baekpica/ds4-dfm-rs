@@ -47,7 +47,7 @@ enum {
     // A 64-key raw tile: K data, K scales, V data, V scales.
     INK2A_RAW_HALF = INK2A_TK * INK2A_FP4_ROW, INK2A_RAW = 2 * INK2A_RAW_HALF,
     INK2A_SMEM_FP4 = 2 * INK2A_RAW + INK2A_STAGE_ELEMS * (int)sizeof(uint16_t),
-    /* Key segments (a full layer's keys attended in pieces):
+    /* Key segments (the SSD tier attends a full layer's keys in pieces):
      * ONE attends every key and writes the output; FIRST starts the state
      * (m, l, acc[128] per row and head, the sink as m = sink, l = 1); NEXT
      * continues it; LAST continues it and writes the output. */
@@ -520,6 +520,41 @@ __global__ void ink2a_merge(float *out, const float *partials, const float *sink
     }
     const uint64_t at = (uint64_t)rh * INK2A_DIM + d;
     out[at] = ink2a_bf16(ink2a_bf16(__fdiv_rn(value, total)) * ink2a_sigmoid(ink2a_bf16(gate[at])));
+}
+
+/* Decode key segments: fold a segment's split partials into the state (FIRST
+ * starts it with the sink), then finish: out = BF16(BF16(acc / l) *
+ * sigmoid(gate)). */
+__global__ void ink2a_fold(float *state, const float *partials, const float *sinks, uint32_t splits, int first) {
+    const uint32_t rh = blockIdx.x, d = threadIdx.x;
+    const float *src = partials + (uint64_t)rh * INK2A_SPLITS * INK2A_PARTIAL;
+    float *st = state + (uint64_t)rh * INK2A_STATE;
+    const float m0 = first ? ink2a_bf16(sinks[rh]) : st[0], l0 = first ? 1.0f : st[1];
+    const float a0 = first ? 0.0f : st[2 + d];
+    float top = m0;
+    for (uint32_t s = 0; s < splits; s++) { top = fmaxf(top, src[s * INK2A_PARTIAL]); }
+    const float e0 = __expf(m0 - top);
+    float total = l0 * e0, value = a0 * e0;
+    for (uint32_t s = 0; s < splits; s++) {
+        const float ms = src[s * INK2A_PARTIAL];
+        if (ms == -INFINITY) { continue; }
+        const float e = __expf(ms - top);
+        total = fmaf(src[s * INK2A_PARTIAL + 1], e, total);
+        value = fmaf(src[s * INK2A_PARTIAL + 2 + d], e, value);
+    }
+    __syncthreads();
+    if (d == 0) {
+        st[0] = top;
+        st[1] = total;
+    }
+    st[2 + d] = value;
+}
+
+__global__ void ink2a_finish(float *out, const float *state, const float *gate) {
+    const uint32_t rh = blockIdx.x, d = threadIdx.x;
+    const float *st = state + (uint64_t)rh * INK2A_STATE;
+    const uint64_t at = (uint64_t)rh * INK2A_DIM + d;
+    out[at] = ink2a_bf16(ink2a_bf16(__fdiv_rn(st[2 + d], st[1])) * ink2a_sigmoid(ink2a_bf16(gate[at])));
 }
 
 static uint32_t ink2a_splits(uint32_t keys) {

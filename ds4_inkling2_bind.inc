@@ -155,16 +155,68 @@ static uint32_t inkling2_full_format(void) {
     return bf16 ? DS4_INK2_KV_BF16 : DS4_INK2_KV_NVFP4;
 }
 
+/* SSD tier (ds4_inkling2_kv.inc): past the resident context the full
+ * layers' NVFP4 blocks live in a file; the device keeps the resident
+ * blocks, pinned memory the frontier window, two read buffers and the
+ * attention state carried across key segments. */
+enum {
+    // Default largest context whose full-layer K/V stays resident: 256K
+    // positions are 2.25 GiB of NVFP4 blocks beside the trunk.
+    INKLING2_RESIDENT_CTX = 262144,
+    // Blocks per read (37.7 MB): large sequential O_DIRECT reads.
+    INKLING2_RING = 256,
+    INKLING2_FULL_LAYERS = INKLING2_LAYERS / DS4_INK2_BLOCK,
+};
+
+/* DS4_INKLING2_KV_RESIDENT_CTX: the largest context whose full-layer K/V
+ * stays resident (rounded down to 128 positions); 0 sends every block past
+ * the first forward's window to the file (tier equivalence tests). */
+static uint32_t inkling2_resident_ctx(void) {
+    static uint32_t value;
+    static bool read;
+    if (!read) {
+        const char *s = getenv("DS4_INKLING2_KV_RESIDENT_CTX");
+        char *end = NULL;
+        const unsigned long v = s && *s ? strtoul(s, &end, 10) : 0;
+        value = s && *s && end != s && !*end && v <= INKLING2_CONTEXT ? (uint32_t)v : INKLING2_RESIDENT_CTX;
+        value -= value % DS4_INK2_KV_BLOCK;
+        read = true;
+    }
+    return value;
+}
+
+static uint32_t inkling2_ctx_blocks(uint32_t ctx) { return (ctx + DS4_INK2_KV_BLOCK - 1u) / DS4_INK2_KV_BLOCK; }
+
+static bool inkling2_spill(uint32_t ctx) {
+    return inkling2_full_format() == DS4_INK2_KV_NVFP4 && ctx > inkling2_resident_ctx();
+}
+
+// A forward of `cap` rows spans at most cap / 128 + 2 blocks.
+static uint32_t inkling2_window_blocks(uint32_t cap) { return cap / DS4_INK2_KV_BLOCK + 2u; }
+
+// Pinned window and read buffers, and the device attention state.
+static uint64_t inkling2_tier_bytes(uint32_t ctx, uint32_t cap) {
+    if (!inkling2_spill(ctx)) { return 0; }
+    const uint64_t blocks = (uint64_t)INKLING2_FULL_LAYERS * inkling2_window_blocks(cap) + 2u * INKLING2_RING;
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    return blocks * DS4_INK2_BLOCK_BYTES + ds4_gpu_ink2_state_bytes(cap);
+#else
+    return blocks * DS4_INK2_BLOCK_BYTES;
+#endif
+}
+
 // One layer's K/V store: sliding rings of BF16 rows, full layers by format
-// (NVFP4: 128-position blocks).
+// (under the tier: the resident blocks, at least one).
 static uint64_t inkling2_layer_kv_bytes(uint32_t il, uint32_t ctx, uint32_t cap) {
     if (!inkling2_global(il)) { return (uint64_t)inkling2_ring(cap) * INKLING2_KV_ROW; }
     if (inkling2_full_format() == DS4_INK2_KV_BF16) { return (uint64_t)ctx * INKLING2_KV_ROW; }
-    return (uint64_t)((ctx + DS4_INK2_KV_BLOCK - 1u) / DS4_INK2_KV_BLOCK) * DS4_INK2_BLOCK_BYTES;
+    const uint32_t resident = inkling2_resident_ctx() / DS4_INK2_KV_BLOCK;
+    const uint32_t blocks = !inkling2_spill(ctx) ? inkling2_ctx_blocks(ctx) : resident ? resident : 1u;
+    return (uint64_t)blocks * DS4_INK2_BLOCK_BYTES;
 }
 
 static uint64_t inkling2_kv_bytes(uint32_t ctx, uint32_t cap) {
-    uint64_t bytes = (uint64_t)INKLING2_LAYERS * INKLING2_HIST * sizeof(float);
+    uint64_t bytes = (uint64_t)INKLING2_LAYERS * INKLING2_HIST * sizeof(float) + inkling2_tier_bytes(ctx, cap);
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { bytes += inkling2_layer_kv_bytes(il, ctx, cap); }
     return bytes;
 }
@@ -268,3 +320,5 @@ static bool inkling2_gpu_bind(ds4_weights *w, const ds4_model *m) {
     return w->glmvq_gpu != NULL;
 }
 #endif
+
+#include "ds4_inkling2_kv.inc"

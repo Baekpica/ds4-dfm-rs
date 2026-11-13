@@ -129,6 +129,10 @@ const MINIMAX_NATIVE_MAX: u32 = 4096;
 const INKLING2_PREFILL_CHUNK_ENV: &str = "DS4_INKLING2_PREFILL_CHUNK";
 const INKLING2_NATIVE_DEFAULT: u32 = 2048;
 const INKLING2_NATIVE_MAX: u32 = 4096;
+// C inkling2_resident_ctx: the largest context whose full-layer K/V stays
+// resident.
+const INKLING2_RESIDENT_CTX_ENV: &str = "DS4_INKLING2_KV_RESIDENT_CTX";
+const INKLING2_RESIDENT_CTX: u32 = 262_144;
 // C ink2_decode_plan: decode/verify items, mid and partial rows, the verify
 // plan and 48 layers' 3 x 384 expert tables (256-byte aligned regions).
 const INKLING2_DECODE_BYTES: u64 = 1_152_000;
@@ -537,8 +541,9 @@ pub fn fill_quote_facts(
             },
             0,
         ),
-        // The serial session owns the K/V, host logits and history; graph 0
-        // owns the row workspace and the host embedding staging.
+        // The serial session owns the K/V (or the SSD tier), host logits and
+        // history; graph 0 owns the row workspace and the host embedding
+        // staging.
         (ModelFamily::Inkling2Vq, Some(s)) => (
             inkling2_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             inkling2_workspace_bytes(u64::from(native))
@@ -2973,7 +2978,10 @@ fn minimax_kv_bytes(ctx: u64) -> u64 {
 // C inkling2_kv_bytes: four 3-row F32 convolution histories per layer; 40
 // sliding layers keep chunk + 1,023 BF16 K/V rows, the 8 full layers
 // 147,456-byte NVFP4 blocks of 128 positions (DS4_INKLING2_KV_BF16=1: BF16
-// rows).
+// rows). Past the resident context the full layers keep their resident
+// blocks on the device and the rest in a file; pinned memory holds each full
+// layer's window (chunk / 128 + 2 blocks), two 256-block read buffers and
+// the attention state of a chunk.
 fn inkling2_kv_bytes(ctx: u64, native: u32) -> u64 {
     const KV_ROW: u64 = 2 * 1024 * SIZEOF_U16;
     const BLOCK: u64 = 147_456;
@@ -2983,7 +2991,14 @@ fn inkling2_kv_bytes(ctx: u64, native: u32) -> u64 {
     if std::env::var("DS4_INKLING2_KV_BF16").as_deref() == Ok("1") {
         return hist + rings + 8 * ctx * KV_ROW;
     }
-    hist + rings + 8 * ctx.div_ceil(128) * BLOCK
+    let resident =
+        env_u32(INKLING2_RESIDENT_CTX_ENV, INKLING2_RESIDENT_CTX, 0, 1 << 20) / 128 * 128;
+    if ctx <= u64::from(resident) {
+        return hist + rings + 8 * ctx.div_ceil(128) * BLOCK;
+    }
+    let pinned = (8 * (rows / 128 + 2) + 2 * 256) * BLOCK;
+    let state = rows * 48 * 130 * SIZEOF_F32;
+    hist + rings + 8 * (u64::from(resident) / 128).max(1) * BLOCK + pinned + state
 }
 
 // C inkling2_workspace_bytes on the CUDA kernels: logits, the
@@ -4038,6 +4053,7 @@ mod tests {
     #[test]
     fn inkling2_quote_matches_the_native_graph() {
         let _env = lock_test_env();
+        let _tier = EnvGuard::unset(INKLING2_RESIDENT_CTX_ENV);
         let _bf16 = EnvGuard::unset("DS4_INKLING2_KV_BF16");
         // Native graph logs: ctx 16384, 2048-row chunks: KV 0.62 GiB,
         // workspace 1.11 GiB; ctx 8192, 512-row chunks: 0.31 / 0.31 GiB.
@@ -4046,10 +4062,16 @@ mod tests {
         assert!((gib(inkling2_workspace_bytes(2048)) - 1.11).abs() < 0.005);
         assert!((gib(inkling2_kv_bytes(8192, 512)) - 0.31).abs() < 0.005);
         assert!((gib(inkling2_workspace_bytes(512)) - 0.31).abs() < 0.005);
-        // 256K positions: the histories, the rings and every full layer's
-        // NVFP4 blocks.
+        // 1M keeps 256K positions resident; the rest of the full layers'
+        // blocks live on SSD behind an 18-block window per layer, two read
+        // buffers and the attention state.
+        let below = inkling2_kv_bytes(262_144, 2048);
         let rings = 48 * 3 * (2 * 1024 + 2 * 4608) * 4 + 40 * 3071 * 4096;
-        assert_eq!(inkling2_kv_bytes(262_144, 2048), rings + 8 * 2048 * 147_456);
+        assert_eq!(below, rings + 8 * 2048 * 147_456);
+        assert_eq!(
+            inkling2_kv_bytes(1 << 20, 2048),
+            below + (8 * 18 + 512) * 147_456 + 2048 * 48 * 130 * 4
+        );
     }
 
     #[test]

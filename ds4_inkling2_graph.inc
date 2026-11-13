@@ -28,6 +28,10 @@ typedef struct {
 #undef INKLING2_FIELD
     ds4_gpu_tensor *logits, *partials;
     ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS];
+    // SSD tier of the full layers past the resident context, and the
+    // attention state its key segments carry (NULL without a tier).
+    inkling2_kv tier;
+    ds4_gpu_tensor *state;
     uint16_t *host_embed;
     uint32_t matrices[INKLING2_LAYERS][3u * DS4_INK2_EXPERTS];
 #ifndef __APPLE__
@@ -51,6 +55,8 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
 #undef INKLING2_FREE
     ds4_gpu_tensor_free(g->logits);
     ds4_gpu_tensor_free(g->partials);
+    ds4_gpu_tensor_free(g->state);
+    inkling2_kv_close(&g->tier);
     free(g->host_embed);
     memset(g, 0, sizeof(*g));
 }
@@ -63,6 +69,7 @@ static bool inkling2_graph_reset(ds4_inkling2_graph *g) {
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) {
         if (!ds4_gpu_tensor_fill_f32(g->hist[il], 0.0f, INKLING2_HIST)) { return false; }
     }
+    inkling2_kv_restart(&g->tier);
     g->position = 0u;
     g->failed = false;
     return true;
@@ -108,6 +115,10 @@ static bool inkling2_graph_alloc(ds4_inkling2_graph *g, const ds4_model *m, cons
         g->hist[il] = ds4_gpu_tensor_alloc((uint64_t)INKLING2_HIST * sizeof(float));
         ok = g->kv[il] && g->hist[il];
     }
+    if (ok && inkling2_spill(ctx)) {
+        g->state = ds4_gpu_tensor_alloc(ds4_gpu_ink2_state_bytes(cap));
+        ok = g->state && inkling2_kv_open(&g->tier, ctx, cap);
+    }
     if (!ok) {
         fprintf(stderr, "ds4: Inkling-2 graph allocation failed\n");
         inkling2_graph_free(g);
@@ -147,6 +158,41 @@ static bool inkling2_mm1(ds4_inkling2_graph *g, const ds4_model *m, ds4_gpu_tens
     return ok;
 }
 
+/* A full layer's attention under the SSD tier, key segments in order:
+ * the resident blocks, the file blocks below the window (read
+ * INKLING2_RING at a time), then the window. A forward inside the resident
+ * blocks, or with nothing below the window, is one ordinary attention. */
+static bool inkling2_tier_attn(ds4_inkling2_graph *g, uint32_t il, uint32_t rows, uint32_t pos) {
+    inkling2_kv *kv = &g->tier;
+    const uint32_t end = pos + rows, resident_end = kv->resident * DS4_INK2_KV_BLOCK;
+    const uint32_t w0 = kv->window_block0;
+    ds4_gpu_tensor *window = kv->window_gpu[il / DS4_INK2_BLOCK];
+    if (end <= resident_end) {
+        return ds4_gpu_ink2_attn(g->heads, g->q, g->rel, g->sink, g->gate, g->kv[il], resident_end, 0u,
+            DS4_INK2_KV_NVFP4, g->partials, rows, pos);
+    }
+    if (w0 == 0) {
+        return ds4_gpu_ink2_attn(g->heads, g->q, g->rel, g->sink, g->gate, window,
+            kv->window_blocks * DS4_INK2_KV_BLOCK, 0u, DS4_INK2_KV_NVFP4, g->partials, rows, pos);
+    }
+    int mode = DS4_INK2_SEG_FIRST;
+    if (kv->resident) {
+        if (!ds4_gpu_ink2_attn_seg(g->heads, g->state, g->q, g->rel, g->sink, g->gate, g->kv[il], 0u,
+                resident_end, 0u, g->partials, rows, pos, mode)) { return false; }
+        mode = DS4_INK2_SEG_NEXT;
+    }
+    for (uint32_t b = kv->resident; b < w0; b += INKLING2_RING) {
+        const uint32_t n = w0 - b < INKLING2_RING ? w0 - b : INKLING2_RING;
+        ds4_gpu_tensor *store = inkling2_kv_read(kv, il, b, n);
+        if (!store || !ds4_gpu_ink2_attn_seg(g->heads, g->state, g->q, g->rel, g->sink, g->gate, store,
+                b * DS4_INK2_KV_BLOCK, (b + n) * DS4_INK2_KV_BLOCK, b, g->partials, rows, pos, mode) ||
+            !inkling2_kv_release(kv)) { return false; }
+        mode = DS4_INK2_SEG_NEXT;
+    }
+    return ds4_gpu_ink2_attn_seg(g->heads, g->state, g->q, g->rel, g->sink, g->gate, window,
+        w0 * DS4_INK2_KV_BLOCK, end, w0, g->partials, rows, pos, DS4_INK2_SEG_LAST);
+}
+
 /* Attention half: attention-residual inputs, projections, K/V tails and
  * stores, q/r tails and profiles, attention with the sink and gate, o_proj,
  * the output convolution and the residual (restarted at a boundary). */
@@ -183,13 +229,16 @@ static bool inkling2_attention(ds4_inkling2_graph *g, const ds4_model *m, const 
     ds4_gpu_tensor *hk = inkling2_hist(g, il, 0), *hv = inkling2_hist(g, il, 1), *ha = inkling2_hist(g, il, 2);
     const uint32_t cap = full ? g->ctx_cap : g->ring_cap, window = full ? 0u : DS4_INK2_WINDOW;
     const uint32_t format = full ? inkling2_full_format() : DS4_INK2_KV_BF16;
+    ds4_ink2_tier tier;
+    const bool tiered = full && inkling2_kv_tier(&g->tier, il, &tier);
     const bool ok = hk && hv && ha &&
         ds4_gpu_ink2_kv(g->gvq, g->kv[il], cap, format, g->kin, g->vin, hk, hv, taps,
-            full ? g->dynk : NULL, full ? g->dynv : NULL, rows, pos) &&
+            full ? g->dynk : NULL, full ? g->dynv : NULL, rows, pos, tiered ? &tier : NULL) &&
         ds4_gpu_ink2_qr(g->gvq, g->q, g->r, g->rel, inkling2_index(m, l->q_scale), inkling2_index(m, l->r_scale),
             inkling2_index(m, l->rel_proj), rows, pos, full) &&
-        ds4_gpu_ink2_attn(g->heads, g->q, g->rel, g->sink, g->gate, g->kv[il], cap, window, format,
-            g->partials, rows, pos) &&
+        (tiered ? inkling2_tier_attn(g, il, rows, pos)
+                : ds4_gpu_ink2_attn(g->heads, g->q, g->rel, g->sink, g->gate, g->kv[il], cap, window, format,
+                    g->partials, rows, pos)) &&
         inkling2_mm1(g, m, g->attn_out, l->o, g->heads, rows, DS4_GVQ_BF16) &&
         // A block boundary stores its input as a block state and restarts
         // the residual at the attention output.
@@ -280,6 +329,7 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
     /* A failed enqueue leaves partially written K/V and histories; the
      * session must reset before another forward. */
     g->failed = true;
+    if (!inkling2_kv_begin(&g->tier, rows, pos)) { return false; }
     if (!inkling2_embed(g, m, w, tokens, rows)) { return false; }
     const ds4_inkling2_weights *k = w->inkling2;
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) {

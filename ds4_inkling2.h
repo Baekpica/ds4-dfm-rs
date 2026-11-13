@@ -98,9 +98,19 @@ int ds4_gpu_ink2_push(ds4_gpu_tensor *blocks, uint32_t slot, uint32_t cap, const
  * [4][1024] (tap = backward distance) + the per-row, per-KV-head dynamic
  * taps dyn_k/dyn_v ([rows][8 x 4], BF16 values), y = (conv + x) / 3. The
  * histories then hold the last three rows. */
+/* Where a full layer's NVFP4 blocks live under the SSD tier: blocks [0,
+ * resident) in the layer's store (block b at b x DS4_INK2_BLOCK_BYTES), the
+ * frontier blocks [window_block0, window_block0 + window_blocks) in `window`
+ * (pinned host memory the device reads in place). NULL: all in the store. */
+typedef struct {
+    ds4_gpu_tensor *window;
+    uint32_t resident, window_block0, window_blocks;
+} ds4_ink2_tier;
+
 int ds4_gpu_ink2_kv(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache, uint32_t cap, uint32_t format,
     const ds4_gpu_tensor *kin, const ds4_gpu_tensor *vin, ds4_gpu_tensor *hist_k, ds4_gpu_tensor *hist_v,
-    const uint32_t *taps, const ds4_gpu_tensor *dyn_k, const ds4_gpu_tensor *dyn_v, uint32_t rows, uint32_t pos);
+    const uint32_t *taps, const ds4_gpu_tensor *dyn_k, const ds4_gpu_tensor *dyn_v, uint32_t rows, uint32_t pos,
+    const ds4_ink2_tier *tier);
 
 /* In place: q = scaled L2 clip (scale [48][128], 22.627) and r = scaled L2
  * clip (scale [48][16], 8), rounded to BF16; full layers (`global`) then
@@ -119,6 +129,24 @@ uint64_t ds4_gpu_ink2_attn_bytes(void);
 int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *rel,
     const ds4_gpu_tensor *sinks, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *cache, uint32_t cap,
     uint32_t window, uint32_t format, ds4_gpu_tensor *partials, uint32_t rows, uint32_t pos);
+
+/* A full layer's NVFP4 attention over the key segment [seg_lo, seg_hi)
+ * (multiples of 128 except a last segment's end), its blocks in `store`
+ * from block0 on. `mode` DS4_INK2_SEG_FIRST starts the per-(row, head)
+ * state (m, l, acc[128], the sink as m = sink, l = 1), NEXT continues it,
+ * LAST continues it and writes `out` as ds4_gpu_ink2_attn does. `state`:
+ * ds4_gpu_ink2_state_bytes(rows); decode rows also use `partials`. */
+enum { DS4_INK2_SEG_FIRST = 1, DS4_INK2_SEG_NEXT = 2, DS4_INK2_SEG_LAST = 3 };
+uint64_t ds4_gpu_ink2_state_bytes(uint32_t rows);
+int ds4_gpu_ink2_attn_seg(ds4_gpu_tensor *out, ds4_gpu_tensor *state, const ds4_gpu_tensor *q,
+    const ds4_gpu_tensor *rel, const ds4_gpu_tensor *sinks, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *store,
+    uint32_t seg_lo, uint32_t seg_hi, uint32_t block0, ds4_gpu_tensor *partials, uint32_t rows, uint32_t pos,
+    int mode);
+
+/* Two stream marks for the SSD tier's buffers: mark records an event on the
+ * current stream; mark_wait blocks the host until that event has run. */
+int ds4_gpu_ink2_mark(uint32_t slot);
+int ds4_gpu_ink2_mark_wait(uint32_t slot);
 
 /* out = y + residual (F32, not rounded) or, with `round_out`, BF16(y +
  * residual); y = BF16((conv4(x) + x) / sqrt(5)) of the 4,608-wide rows x

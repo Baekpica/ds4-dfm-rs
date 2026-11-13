@@ -668,7 +668,7 @@ __global__ void ink2_history_kernel(float *hist, const float *x, uint32_t width,
  * the cache row; NVFP4 vectors (full layers) to their page through the
  * MiniMax VQ release's encoder (mm_fp4_encode, one warp per vector). */
 __global__ void __launch_bounds__(INK2A_DIM) ink2_kv_kernel(uint16_t *cache, uint32_t format, uint32_t cap,
-        uint32_t window,
+        uint8_t *tier_window, uint32_t tier_resident, uint32_t tier_block0, uint32_t window,
         const float *kin, const float *vin, const float *hist_k, const float *hist_v, const uint16_t *tap_k,
         const uint16_t *tap_v, const float *dyn_k, const float *dyn_v, uint32_t pos) {
     __shared__ float scratch[INK2A_DIM / 32];
@@ -712,7 +712,11 @@ __global__ void __launch_bounds__(INK2A_DIM) ink2_kv_kernel(uint16_t *cache, uin
         vec[threadIdx.x] = stored;
         __syncthreads();
         if (threadIdx.x >= 32) { return; }
-        uint8_t *half = (uint8_t *)ink2a_page((const uint8_t *)cache, p, head) + value * INK2A_KB * INK2A_FP4_ROW;
+        // Blocks past the resident ones are written into the pinned window.
+        const bool cold = tier_window && p / INK2A_KB >= tier_resident;
+        uint8_t *half = (uint8_t *)(cold ? ink2a_page(tier_window, p, head, tier_block0)
+                                         : ink2a_page((const uint8_t *)cache, p, head)) +
+            value * INK2A_KB * INK2A_FP4_ROW;
         const uint32_t slot = p % INK2A_KB;
         mm_fp4_encode(vec, half + slot * INK2A_FP4, half + INK2A_KB * INK2A_FP4 + slot * 8);
         return;
@@ -730,7 +734,7 @@ static uint64_t ink2_kv_bytes(uint32_t format, uint32_t cap) {
 extern "C" int ds4_gpu_ink2_kv(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache, uint32_t cap, uint32_t format,
         const ds4_gpu_tensor *kin, const ds4_gpu_tensor *vin, ds4_gpu_tensor *hist_k, ds4_gpu_tensor *hist_v,
         const uint32_t *taps, const ds4_gpu_tensor *dyn_k, const ds4_gpu_tensor *dyn_v, uint32_t rows,
-        uint32_t pos) {
+        uint32_t pos, const ds4_ink2_tier *tier) {
     const uint64_t count = (uint64_t)rows * INK2A_KV;
     const bool full = dyn_k != nullptr;
     if ((format != DS4_INK2_KV_BF16 && (format != DS4_INK2_KV_NVFP4 || !dyn_k)) || !rows ||
@@ -745,12 +749,21 @@ extern "C" int ds4_gpu_ink2_kv(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache, uint32_t
     // Sliding layers keep a ring that holds the window behind a whole chunk.
     const uint32_t window = full ? 0u : DS4_INK2_WINDOW;
     const uint64_t last = (uint64_t)pos + rows;
-    if (!tk || !tv || (window ? cap < rows + window - 1 : last > cap) || cache->bytes < ink2_kv_bytes(format, cap)) {
-        return 0;
-    }
+    // Under the tier the store holds the resident blocks and the window the
+    // frontier blocks of this forward.
+    const bool tiered = tier && tier->window;
+    const uint32_t first_block = pos / INK2A_KB, last_block = (uint32_t)((last - 1) / INK2A_KB);
+    if (!tk || !tv || (window ? cap < rows + window - 1 : last > cap) ||
+        (tiered ? format != DS4_INK2_KV_NVFP4 ||
+            cache->bytes < (uint64_t)tier->resident * INK2A_BLOCK ||
+            (last_block >= tier->resident && (max(first_block, tier->resident) < tier->window_block0 ||
+                last_block >= tier->window_block0 + tier->window_blocks ||
+                tier->window->bytes < (uint64_t)tier->window_blocks * INK2A_BLOCK))
+                : cache->bytes < ink2_kv_bytes(format, cap))) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
     ink2_kv_kernel<<<dim3(rows, 2, INK2A_KV_HEADS), INK2A_DIM, 0, stream>>>((uint16_t *)cache->ptr, format, cap,
-        window,
+        tiered ? (uint8_t *)tier->window->ptr : nullptr, tiered ? tier->resident : 0u,
+        tiered ? tier->window_block0 : 0u, window,
         (const float *)kin->ptr, (const float *)vin->ptr, (const float *)hist_k->ptr, (const float *)hist_v->ptr,
         tk, tv, full ? (const float *)dyn_k->ptr : nullptr, full ? (const float *)dyn_v->ptr : nullptr, pos);
     // The ordered update cannot overwrite a history another CTA still reads.
@@ -870,6 +883,69 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
     return cuda_ok(cudaGetLastError(), "Inkling-2 prefill attention");
 }
 
+extern "C" uint64_t ds4_gpu_ink2_state_bytes(uint32_t rows) {
+    return (uint64_t)rows * INK2A_HEADS * INK2A_STATE * sizeof(float);
+}
+
+extern "C" int ds4_gpu_ink2_attn_seg(ds4_gpu_tensor *out, ds4_gpu_tensor *state, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *rel, const ds4_gpu_tensor *sinks, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *store, uint32_t seg_lo, uint32_t seg_hi, uint32_t block0, ds4_gpu_tensor *partials,
+        uint32_t rows, uint32_t pos, int mode) {
+    const uint64_t heads = (uint64_t)rows * INK2A_HEADS;
+    const uint32_t blocks = (uint32_t)(((uint64_t)min(seg_hi, pos + rows) + INK2A_KB - 1) / INK2A_KB);
+    if (!rows || mode < DS4_INK2_SEG_FIRST || mode > DS4_INK2_SEG_LAST || seg_lo >= seg_hi ||
+        seg_lo % INK2A_KB || seg_lo / INK2A_KB < block0 || !state || state->bytes < ds4_gpu_ink2_state_bytes(rows) ||
+        !gvq_floats(out, heads * INK2A_DIM) || !gvq_floats(q, heads * INK2A_DIM) ||
+        !gvq_floats(gate, heads * INK2A_DIM) || !gvq_floats(sinks, heads) ||
+        rel->bytes < heads * INK2A_EXTENT * sizeof(uint16_t) ||
+        store->bytes < (uint64_t)(blocks - block0) * INK2A_BLOCK) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    if (rows <= INK2A_SPLIT_ROWS) {
+        if (!partials || partials->bytes < ds4_gpu_ink2_attn_bytes()) { return 0; }
+        const uint32_t keys = min(seg_hi, pos + rows) - seg_lo;
+        const uint32_t splits = ink2a_splits(keys);
+        ink2a_decode<INK2A_FMT_NVFP4><<<dim3(splits, INK2A_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>(
+            (float *)partials->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, store->ptr, 0, 0, pos,
+            splits, seg_lo, seg_hi, block0);
+        ink2a_fold<<<(uint32_t)heads, INK2A_DIM, 0, stream>>>((float *)state->ptr, (const float *)partials->ptr,
+            (const float *)sinks->ptr, splits, mode == DS4_INK2_SEG_FIRST);
+        if (mode == DS4_INK2_SEG_LAST) {
+            ink2a_finish<<<(uint32_t)heads, INK2A_DIM, 0, stream>>>((float *)out->ptr, (const float *)state->ptr,
+                (const float *)gate->ptr);
+        }
+        return cuda_ok(cudaGetLastError(), "Inkling-2 segment decode attention");
+    }
+    const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
+    auto launch = [&](auto kernel) {
+        cudaError_t err = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
+        if (err == cudaSuccess) {
+            kernel<<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)out->ptr, (const float *)q->ptr,
+                (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr, store->ptr, 0u, 0u,
+                rows, pos, (float *)state->ptr, seg_lo, seg_hi, block0);
+            err = cudaGetLastError();
+        }
+        return cuda_ok(err, "Inkling-2 segment prefill attention");
+    };
+    return mode == DS4_INK2_SEG_FIRST ? launch(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_FIRST>)
+        : mode == DS4_INK2_SEG_NEXT ? launch(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_NEXT>)
+        : launch(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_LAST>);
+}
+
+static cudaEvent_t g_ink2_mark[2];
+
+extern "C" int ds4_gpu_ink2_mark(uint32_t slot) {
+    if (slot > 1) { return 0; }
+    if (!g_ink2_mark[slot] && !cuda_ok(cudaEventCreateWithFlags(&g_ink2_mark[slot],
+            cudaEventDisableTiming | cudaEventBlockingSync), "Inkling-2 mark")) { return 0; }
+    return cuda_ok(cudaEventRecord(g_ink2_mark[slot], ds4_current_stream()), "Inkling-2 mark");
+}
+
+extern "C" int ds4_gpu_ink2_mark_wait(uint32_t slot) {
+    return slot <= 1 && (!g_ink2_mark[slot] || cuda_ok(cudaEventSynchronize(g_ink2_mark[slot]), "Inkling-2 mark wait"));
+}
+
+/* Residual convolution of 4,608-wide rows: y = BF16((conv4(x) + x) /
+ * sqrt(5)), out = y + residual (F32) or BF16(y + residual). */
 __global__ void ink2_conv_kernel(float *out, const float *x, const float *hist, const uint16_t *taps,
         const float *residual, uint32_t rows, int round_out) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
