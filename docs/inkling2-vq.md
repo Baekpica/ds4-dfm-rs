@@ -47,6 +47,18 @@ Input renders the official `chat_template.jinja` through the shared engine
 byte for byte). The template opens no generation block: the model writes
 `<|message_model|>` itself.
 
+## Output protocol
+
+Model id 24 maps to Inkling's syntax: its parser
+(`crates/ds4-server/src/render/inkling.rs`), stream markers and malformed-call
+recovery. A reply is `<|message_model|>` followed by channels, each closed by
+`<|end_message|>`: `<|content_thinking|>` (reasoning), `<|content_text|>`
+(content) and, per tool call, `NAME<|content_invoke_tool_json|>{"name":NAME,"args":{...}}`;
+`<|content_model_end_sampling|>` ends it. The template writes the request's
+effort as a `Thinking effort level` system message: off 0, low 0.2 (the
+server's default when a request names none; the template's own is 0.9), high
+0.9, max 0.99. Audio input is refused with a 400 (the template raises on it).
+
 ## K/V tiers
 
 Sliding layers keep a BF16 ring of the window behind one prefill chunk (chunk
@@ -254,6 +266,15 @@ without the drafter, 2.7 GiB with it (minimum 2.37).
 
 ## Serving
 
+```sh
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF                 # 1,048,576 tokens, K/V past 262,144 on the SSD
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --mtp-mode on --mtp-draft 3
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --check-config  # the memory quote only
+```
+
+DSpark and partial reuse are `Present` ([capabilities](serving-capabilities.md)):
+drafting needs `--mtp-mode on`.
+
 One serial lane. Full-layer rows are positional; the convolution histories
 have no positional index, so a sync copies them, with every sliding ring's
 1,023 rows below, where its final chunk starts (a resent turn resumes there)
@@ -281,3 +302,4 @@ checks the resume rule and the ring spans a copy takes, model-free.
 | `DS4_INKLING2_KV_BF16=1` | full layers keep BF16 K/V rows (the source's own; no SSD tier) |
 | `DS4_INKLING2_DSPARK_GATE=0` | draft on every step (no rate gate) |
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
+| `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
