@@ -1,0 +1,18 @@
+Inkling-2-Small VQ speed sweep (speed-bench standard)
+bench ./ds4-bench sha256 1401989b5e9904a5970654d0e8ecfc6b2daa0a70007aa41012782f90de52724d (code c705705b, make ds4-bench CUDA_ARCH=sm_121)
+model <release dir>: release.json sha256 ff495b121f21e92870db8909f54880da61e02b56a37a9f9af8e60d17691e13ef, 52 parts,
+  every part checked against its release.json SHA-256 at load (HF Baekpica/Inkling-2-Small-VQ-GGUF a6db8b8b)
+corpus speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+ctx 2048..65536 step 2048; prefill 2048 new tokens per frontier (2,048-row chunks); gen 128 forced greedy
+./ds4-bench --cuda -m <release dir> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 \
+  --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv <tag>_N.csv
+three fresh processes, page cache dropped before each (KReclaimable < 2 GiB), one model process at a time
+  under tools/host_memory_guard.py (2 GiB reserve and trip); default resident K/V (all 64K resident), no drafter
+host DGX Spark / GB10, driver 615.71.10, CUDA 13.4, Linux 7.0.0-1025-nvidia; nvidia-clocks.service 300-2,200 MHz
+clocks (SM, max, temp C) pre-1 305 MHz, 3003 MHz, 48; post-1 2190 MHz, 3003 MHz, 59; pre-2 305 MHz, 3003 MHz, 55; post-2 2190 MHz, 3003 MHz, 58; pre-3 305 MHz, 3003 MHz, 55; post-3 2190 MHz, 3003 MHz, 58
+MemAvailable minimum 7.02 GiB, PSI full avg10 maximum 0.0%
+run means prefill 979.6, 979.3, 981.0; decode 23.79, 23.62, 23.40
+median of run means 2K-64K: prefill 979.6, decode 23.62
+median of run means 2K-32K: prefill 1061.5, decode 24.28
+per-frontier medians (prefill / decode): 2K 1089.3 / 24.81; 8K 1117.4 / 24.73; 16K 1064.0 / 24.34; 32K 978.7 / 23.61; 48K 905.1 / 23.00; 64K 832.4 / 22.38
+plot gb10_spark_inkling2_1401989b_ts.svg: run 1 (the median prefill run)

@@ -202,8 +202,19 @@ the release's own references:
 
 ## Performance
 
-GB10 at 2,184-2,190 MHz, `ds4-bench`, `speed-bench/promessi_sposi.txt`,
-2,048-row chunks, 32 decoded tokens per frontier (prefill tok/s / decode tok/s):
+The 2K-64K sweep ([record](../speed-bench/gb10_spark_inkling2_1401989b.meta.txt):
+three fresh `ds4-bench` processes at `c705705b`, 2,048 new tokens and 128
+forced greedy tokens per frontier, busy SM clock 2,190 MHz): **979.6 prefill
+/ 23.62 decode** tok/s, medians of run means (2K-32K: 1,061.5 / 24.28).
+
+| Frontier | 2K | 8K | 16K | 32K | 48K | 64K |
+|---|---|---|---|---|---|---|
+| Prefill | 1,089.3 | 1,117.4 | 1,064.0 | 978.7 | 905.1 | 832.4 |
+| Decode | 24.81 | 24.73 | 24.34 | 23.61 | 23.00 | 22.38 |
+
+Resident against the SSD tier (same corpus, 2,048-row chunks; prefill over
+the span since the previous frontier, 32 decoded tokens; prefill tok/s /
+decode tok/s):
 
 | Frontier | Resident | All on SSD (resident 0) |
 |---|---|---|

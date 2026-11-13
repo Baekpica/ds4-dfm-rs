@@ -333,6 +333,28 @@ quality.
 
 ![MiMo-V2.6-Flash VQ prefill and decode on one DGX Spark](benchmarks/mimo2-vq-spark-64k-2026-10-31/throughput.png)
 
+## Inkling-2-Small VQ
+
+Inkling-2-Small with 12-bit hVQ routed experts on all 48 layers, a Q4_K body
+and NVFP4 full-layer K/V
+([model card](https://huggingface.co/Baekpica/Inkling-2-Small-VQ-GGUF))
+recorded **979.6 prefill / 23.62 decode** without drafting across the 32
+frontiers of the 2K–64K sweep (2K–32K: 1,061.5 / 24.28), medians of three
+run means in three fresh `ds4-bench` processes on one DGX Spark / GB10,
+measured code `c705705b`
+([record](../speed-bench/gb10_spark_inkling2_1401989b.meta.txt)). Every
+frontier adds 2,048 prompt tokens over the cached prefix and generates 128
+forced greedy tokens. Busy SM clock 2,190 MHz under the 300–2,200 MHz
+policy; run means span 979.3–981.0 prefill and 23.40–23.79 decode; minimum
+available memory 7.02 GiB, PSI 0.
+
+Prefill is 1,117.4 at 8K (the 2K point is each process's first prefill) and
+832.4 at 64K; decode falls from 24.81 to 22.38. Past 262,144 positions the
+full layers' K/V lives on the SSD: the 1M rates and the tier's cost are on
+the [Inkling-2 page](inkling2-vq.md#performance).
+
+![Inkling-2-Small VQ prefill and decode on one DGX Spark](../speed-bench/gb10_spark_inkling2_1401989b_ts.svg)
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and

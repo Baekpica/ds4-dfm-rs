@@ -57,6 +57,7 @@ documented whole-model results are omitted.
 | MiniMax-M3.1 Flash VQ (13-bit GVQ1 + R8 + Q4_K) | 1,011.0 | 22.10 | [2K–64K sweep, DSpark 3 gated, 512K session](docs/performance.md#minimax-m31-flash-vq) |
 | A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 387.4 | 15.25 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
 | MiMo-V2.6-Flash VQ (13-bit GVQ1 + R8 + Q8_0) | 1,294.9 | 23.96 | [2K–64K sweep, plain; MTP 2: 26.35](docs/performance.md#mimo-v26-flash-vq) |
+| Inkling-2-Small VQ (12-bit hVQ + Q4_K) | 979.6 | 23.62 | [2K–64K sweep, plain](docs/performance.md#inkling-2-small-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
