@@ -22,6 +22,7 @@ mod glm_mtp;
 mod glm_vq;
 mod identify;
 mod inkling;
+mod inkling2_vq;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
@@ -100,6 +101,7 @@ pub use layout::{
 pub use ling31_vq::Feature as Ling31Feature;
 
 pub use gemma4_vq::Gemma4VqFeature;
+pub use inkling2_vq::Feature as Inkling2Feature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -1418,6 +1420,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Inkling2Vq {
+        let g = inkling2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else if shape.family == ModelFamily::Axk2Vq {
         let g = axk2_vq::metadata(path).map_err(|e| Error {
             code: 1,
@@ -1488,6 +1496,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => MinimaxFeature::Draft,
         };
         TensorInventory::open_minimax(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::Inkling2Vq {
+        let feature = match parts {
+            ProbeParts::Trunk => Inkling2Feature::Trunk,
+            ProbeParts::WithMtp => Inkling2Feature::Draft,
+        };
+        TensorInventory::open_inkling2(Path::new(path), feature)
     } else if identified.shape.variant == Variant::Mimo26FlashVq {
         let feature = match parts {
             ProbeParts::Trunk => Mimo2VqFeature::Trunk,
@@ -1762,6 +1776,20 @@ impl Model {
                     .into(),
             });
         }
+        // So are Inkling-2's.
+        if identified.shape.family == ModelFamily::Inkling2Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "Inkling-2 VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1854,6 +1882,8 @@ impl Model {
                 Path::new(path),
                 minimax_vq::feature(tuning.mtp_draft_tokens),
             )
+        } else if identified.shape.family == ModelFamily::Inkling2Vq {
+            TensorInventory::open_inkling2(Path::new(path), Inkling2Feature::Trunk)
         } else if identified.shape.variant == Variant::Mimo26FlashVq {
             TensorInventory::open_mimo2_vq(
                 Path::new(path),
@@ -2663,6 +2693,7 @@ impl Session<'_> {
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Inkling2Vq
         ) {
             return;
         }

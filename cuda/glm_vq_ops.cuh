@@ -131,8 +131,10 @@ __global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const floa
 // serving form (vLLM SwigluStepAndMul) clamps SiLU's F32 output above and
 // up on both sides, then rounds once; an unclamped layer passes +inf.
 // OAI: MiniMax's swigluoai, min(g, l) * sigmoid(1.702 min(g, l)) *
-// (clamp(u, -l, l) + 1) in F32, rounded once.
-enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU, GLMVQ_CLAMP_OAI, GLMVQ_CLAMP_BOTH };
+// (clamp(u, -l, l) + 1) in F32, rounded once. SOFTCAP: Inkling 2's
+// 4 tanh(g / 4) * sigmoid(g) * 25 tanh(u / 25) in F32, rounded once (the
+// limit is unused).
+enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU, GLMVQ_CLAMP_OAI, GLMVQ_CLAMP_BOTH, GLMVQ_CLAMP_SOFTCAP };
 
 template <glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float limit) {
@@ -146,6 +148,11 @@ __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float 
         const float u = fminf(fmaxf(up, -limit), limit);
         const float silu = fminf(__fdiv_rn(gate, glmvq_add(1.0f, expf(-gate))), limit);
         return glmvq_round(glmvq_mul(silu, u));
+    } else if constexpr (CLAMP == GLMVQ_CLAMP_SOFTCAP) {
+        (void)limit;
+        const float capped = glmvq_mul(4.0f, tanhf(glmvq_mul(gate, 0.25f)));
+        const float upper = glmvq_mul(25.0f, tanhf(__fdiv_rn(up, 25.0f)));
+        return glmvq_round(glmvq_mul(glmvq_mul(capped, glmvq_sigmoid(gate)), upper));
     } else if constexpr (CLAMP == GLMVQ_CLAMP_BOTH) {
         // DeepSeek V4.1's Expert: both inputs clamped, one BF16 round.
         const float g = fminf(gate, limit);

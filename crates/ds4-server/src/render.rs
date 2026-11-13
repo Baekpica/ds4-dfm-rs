@@ -213,7 +213,9 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         // 17: GLM VQ keeps GLM-5.3's template, tool markers and parser.
         7 | 17 => ModelSyntax::Glm53,
         8 => ModelSyntax::K2Horizon,
-        9 => ModelSyntax::Inkling,
+        // 24: Inkling-2 keeps Inkling's channel framing and tool markers; its
+        // input renders through the official Jinja template only.
+        9 | 24 => ModelSyntax::Inkling,
         10 => ModelSyntax::Step37,
         // 18: Ling-3.1 keeps Bailing V3's template, tool markers and parser.
         11 | 18 => ModelSyntax::Ling3Vl,

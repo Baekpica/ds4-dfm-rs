@@ -103,6 +103,10 @@ impl Template {
             let gguf = crate::minimax_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
         }
+        if path.is_dir() && crate::inkling2_vq::is_release(path) {
+            let gguf = crate::inkling2_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() && crate::axk2_vq::is_release(path) {
             let gguf = crate::axk2_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -142,8 +146,11 @@ impl Template {
             let axk2 = crate::axk2_vq::is_release(path);
             let ling = crate::ling31_vq::is_release(path);
             let mimo = crate::mimo2_vq::is_release(path);
+            let inkling2 = crate::inkling2_vq::is_release(path);
             for name in ["tokenizer_config.json", "chat_template.jinja"] {
-                if mimo {
+                if inkling2 {
+                    crate::inkling2_vq::asset(path, name).map_err(asset_error)?;
+                } else if mimo {
                     crate::mimo2_vq::asset(path, name).map_err(asset_error)?;
                 } else if beam {
                     crate::beam_vq::asset(path, name).map_err(asset_error)?;

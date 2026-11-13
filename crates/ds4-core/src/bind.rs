@@ -1002,6 +1002,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
         ModelFamily::BeamVq => return layout_names(crate::beam_vq::layouts()),
         ModelFamily::MinimaxVq => return layout_names(crate::minimax_vq::layouts()),
+        ModelFamily::Inkling2Vq => return layout_names(crate::inkling2_vq::layouts()),
         ModelFamily::Axk2Vq => return layout_names(crate::axk2_vq::layouts()),
         ModelFamily::Gemma4Vq => return layout_names(crate::gemma4_vq::layouts()),
         ModelFamily::Glm53 => {
@@ -1231,7 +1232,8 @@ impl BindPlan {
                 ModelFamily::Ling31Vq
                 | ModelFamily::Glm53Vq
                 | ModelFamily::BeamVq
-                | ModelFamily::Axk2Vq => {
+                | ModelFamily::Axk2Vq
+                | ModelFamily::Inkling2Vq => {
                     slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
                 }
                 ModelFamily::Mimo2 if self.shape.variant == crate::Variant::Mimo26FlashVq => {

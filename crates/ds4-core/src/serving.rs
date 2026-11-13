@@ -30,6 +30,7 @@ const LING31_CTX_MAX: u32 = 4 * LING31_NATIVE_CTX;
 const BEAM_CTX_MAX: u32 = 1_048_576;
 /// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
 const MINIMAX_CTX_MAX: u32 = 1_048_576;
+const INKLING2_CTX_MAX: u32 = 1_048_576;
 /// A.X-K2's max_position_embeddings (YaRN x 2 over 131,072).
 const AXK2_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
@@ -670,7 +671,8 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq
-        | ModelFamily::Gemma4Vq => caps.ctx_max,
+        | ModelFamily::Gemma4Vq
+        | ModelFamily::Inkling2Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
@@ -1036,6 +1038,28 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             // Images and videos sync on the serial lane (the release's vision part).
             media_serial: true,
+        },
+        // Serial lane: the dense global layers' K/V grow with the session,
+        // the sliding layers keep a 1,024-token ring.
+        ModelFamily::Inkling2Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(INKLING2_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks
@@ -1688,6 +1712,7 @@ impl ServingCaps {
             Variant::MinimaxVq => "minimax_m3_vq",
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
+            Variant::Inkling2SmallVq => "inkling2_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1887,6 +1912,7 @@ impl ResolvedPlan {
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
             Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
+            Some(ModelFamily::Inkling2Vq) => Some("DS4_INKLING2_PREFILL_CHUNK"),
             _ => None,
         }
     }

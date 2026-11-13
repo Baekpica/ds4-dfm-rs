@@ -38,6 +38,7 @@ pub enum ModelFamily {
     MinimaxVq = 17,
     Axk2Vq = 18,
     Gemma4Vq = 19,
+    Inkling2Vq = 20,
 }
 
 impl ModelFamily {
@@ -63,6 +64,7 @@ impl ModelFamily {
             "naive_n05_flash" => Some(Self::NaiveN05),
             "iquest_q1" => Some(Self::IQuestQ1),
             "gemma4_vq" => Some(Self::Gemma4Vq),
+            "inkling2_vq" => Some(Self::Inkling2Vq),
             _ => None,
         }
     }
@@ -89,6 +91,7 @@ impl ModelFamily {
             Self::NaiveN05 => "naive_n05_flash",
             Self::IQuestQ1 => "iquest_q1",
             Self::Gemma4Vq => "gemma4_vq",
+            Self::Inkling2Vq => "inkling2_vq",
         }
     }
 }
@@ -120,6 +123,7 @@ pub enum Variant {
     Axk2Vq = 21,
     Mimo26FlashVq = 22,
     Gemma4A4bVq = 23,
+    Inkling2SmallVq = 24,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -382,6 +386,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
         Some(b"mimo2_vq") => ArchRoute::Fixed(Variant::Mimo26FlashVq),
         Some(b"gemma4_vq") => ArchRoute::Fixed(Variant::Gemma4A4bVq),
+        Some(b"inkling2_vq") => ArchRoute::Fixed(Variant::Inkling2SmallVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -412,6 +417,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Axk2Vq => SHAPE_AXK2_VQ,
         Variant::Mimo26FlashVq => SHAPE_MIMO26_FLASH_VQ,
         Variant::Gemma4A4bVq => SHAPE_GEMMA4_A4B_VQ,
+        Variant::Inkling2SmallVq => SHAPE_INKLING2_VQ,
     }
 }
 
@@ -1385,6 +1391,40 @@ pub(crate) const SHAPE_BEAM_VQ: Shape = Shape {
     n_full_attn_count: 9,
     use_qk_norm: true,
     rope_freq_base: 10_000.0,
+    rope_orig_ctx: 1_048_576,
+    ..SHAPE_K2_HORIZON_375B
+};
+
+// Inkling-2-Small: 48 q / 8 KV heads of 128 over hidden 4608; every sixth
+// layer (5, 11, ..., 47) attends densely, the rest over a 1,024-token window,
+// both with relative-position profiles and no RoPE; 384 sigmoid-routed
+// experts top-8 scaled by 8, no shared expert (inkling2_vq/layout.rs).
+pub(crate) const SHAPE_INKLING2_VQ: Shape = Shape {
+    name: "Inkling-2-Small-VQ",
+    family: ModelFamily::Inkling2Vq,
+    variant: Variant::Inkling2SmallVq,
+    n_layer: 48,
+    n_embd: 4608,
+    n_vocab: 201_024,
+    n_head: 48,
+    n_head_kv: 8,
+    n_rot: 0,
+    n_expert: 384,
+    n_expert_used: 8,
+    n_expert_shared: 0,
+    n_ff_exp: 2304,
+    n_ff_dense: 0,
+    n_ff_shexp: 0,
+    n_swa: 1024,
+    n_swa_period: 6,
+    n_nextn_predict: 5,
+    n_leading_dense: 0,
+    n_swa_head: 48,
+    n_full_attn_count: 8,
+    n_ssm_conv: 4,
+    use_rope: false,
+    expert_weight_scale: 8.0,
+    rope_freq_base: 0.0,
     rope_orig_ctx: 1_048_576,
     ..SHAPE_K2_HORIZON_375B
 };
