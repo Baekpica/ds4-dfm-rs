@@ -187,6 +187,44 @@ python3 convert_layer_ds41_hvq.py --verify --layers 0-39 --out $W/convert
 python3 assemble_ds41_ivq.py --base $VQ --blobs $W/convert --out $W/publish/DeepSeek-V4.1-Flash-1017-hVQ-GGUF
 ```
 
+## Inkling-2-Small calibration sets
+
+`build_calib_inkling2.py` is `build_calib_ds41.py` (`--mix v1`) for
+[thinkingmachines/Inkling-2-Small](https://huggingface.co/thinkingmachines/Inkling-2-Small/tree/086a047e8b7ff2ac902dd52355328ddb66b16914):
+the same sources, pinned revisions, seed, domains, budgets, held-out cases and 64-token-window
+held-out filter, rendered with the model's `chat_template.jinja` (transformers' `apply_chat_template`)
+and its tokenizer, in the same `input_ids` int32 + `offsets` int64 layout with a per-row manifest.
+What the model changes:
+
+- chat rows have no BOS; they start with `<|message_system|>` (tool_declare, a system prompt or the
+  `Thinking effort level` header). Think rows use reasoning effort `high` (0.9) and keep
+  `reasoning_content` on every assistant turn whose source has it (the template renders all of them;
+  nothing is dropped as in DeepSeek's encoder); non-think rows use `none` (0) and no reasoning;
+- tool calls are rendered as `<|content_invoke_tool_json|>` with parsed-object arguments; tool results
+  are `role: tool` named after their call; the DS4 prompts' DSML is parsed back into calls;
+- raw-text rows start with `--raw-prefix` (`begin_of_text`, id 200028, default; or `none`). Selection,
+  budgets and the overlap filter always run with the prefix, so `reprefix` rewrites an existing build
+  for the other prefix without refetching, byte-identical to a `build` with it;
+- `build-images` adds a multimodal set from four pinned datasets (TextVQA photos, CORD-v2 receipts,
+  PlotQA charts from the Cauldron, ScreenSpot screenshots; licences in `images_manifest.json`): one user
+  turn with the image and a question, the dataset's answer as a non-thinking reply, at most 1,024 image
+  tokens per image (larger images downscaled), the placeholder expanded by the Inkling-2 processor;
+  `images.safetensors` holds `input_ids`, `offsets`, `pixel_values` (float32 `[image tokens, 40, 40, 3]`),
+  `image_grid_thw` and `image_counts`, and `images_heldout.*` eight disjoint cases.
+
+CPU only (CUDA hidden, the process pins itself to `--threads` CPUs, default 32). safetensors files are
+written with a sorted header, so a re-run reproduces every file byte for byte.
+
+```sh
+W=/work/inkling2/calib
+python3 -I build_calib_inkling2.py fetch --out $W          # bounded downloads under $W/raw
+python3 -I build_calib_inkling2.py build --out $W          # calib.* + heldout.*
+python3 -I build_calib_inkling2.py build-images --out $W   # images.* + images_heldout.* (fetches its sources)
+python3 -I build_calib_inkling2.py check --out $W          # ids < 200058, row starts, window disjointness,
+                                                           # image placeholders, samples_decoded.txt, SHA256SUMS
+python3 -I build_calib_inkling2.py reprefix --raw-prefix none --out $W   # raw rows without <|begin_of_text|>
+```
+
 ## Tests
 
 ```sh
