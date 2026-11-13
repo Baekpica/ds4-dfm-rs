@@ -205,6 +205,27 @@ int ds4_gpu_ink2_draft_copy(ds4_gpu_tensor *dst, uint64_t dst_off, const ds4_gpu
 /* hist = the last three rows of [hist; x[0..rows)] (`width`-wide F32 rows). */
 int ds4_gpu_ink2_history(ds4_gpu_tensor *hist, const ds4_gpu_tensor *x, uint32_t width, uint32_t rows);
 
+/* Vision tower (ds4_inkling2_vision.inc): an image of rows x cols language
+ * tokens (40 x 40 pixels each) is 2 rows x 2 cols ViT patches of 20 x 20;
+ * the tower's sequence is [CLS, patches in 2 x 2 block order]. */
+enum {
+    DS4_INK2_VIT_DIM = 1024, DS4_INK2_VIT_HEADS = 16, DS4_INK2_VIT_HEAD = 64, DS4_INK2_VIT_PATCH = 1200,
+    DS4_INK2_VIT_GRID = 32, DS4_INK2_IMAGE_VALUES = 40 * 40 * 3,
+};
+/* patches[4 t + 2 mh + mw] = BF16(pixels[t] at rows 20 mh.., columns 20 mw..),
+ * (y, x, channel) order: the patch embedding's input. */
+int ds4_gpu_ink2_vit_patches(ds4_gpu_tensor *patches, const ds4_gpu_tensor *pixels, uint32_t tokens);
+/* x[0] = BF16(cls[0] + cls[1]); x[1 + i] = BF16(emb[i] + BF16(the 32 x 32
+ * `table` bilinearly resized to the 2 rows x 2 cols patch grid at patch i)). */
+int ds4_gpu_ink2_vit_embed(ds4_gpu_tensor *x, const ds4_gpu_tensor *emb, const ds4_gpu_tensor *table,
+    const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols);
+/* Axial 2-D RoPE (theta 1e4, pairwise) of q and k in packed [q | k | v] rows:
+ * patches at (row + 1, col + 1), CLS at (0, 0); result BF16. */
+int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols);
+/* Layer scale: x = BF16(x + BF16(scale * y)) over `n` rows of `dim`. */
+int ds4_gpu_ink2_vit_scale_add(ds4_gpu_tensor *x, const ds4_gpu_tensor *y, const ds4_gpu_tensor *scale, uint32_t n,
+    uint32_t dim);
+
 #ifdef __cplusplus
 }
 #endif

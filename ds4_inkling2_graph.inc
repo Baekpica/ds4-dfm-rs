@@ -48,6 +48,12 @@ typedef struct {
     ds4_gpu_tensor *state;
     // DSpark drafter runtime (ds4_inkling2_draft.inc), when the open drafts.
     inkling2_draft_rt *draft;
+    // Image rows (host F32 [count][4608] per span) for the forwards a media
+    // sync runs; checkpoint_tag names the images the live state holds.
+    const unsigned *span_start, *span_count;
+    const float *const *span_rows;
+    uint32_t span_n;
+    uint64_t checkpoint_tag;
     uint16_t *host_embed;
     uint32_t matrices[INKLING2_LAYERS][3u * DS4_INK2_EXPERTS];
 #ifndef __APPLE__
@@ -94,6 +100,7 @@ static bool inkling2_graph_reset(ds4_inkling2_graph *g) {
 #endif
     g->position = 0u;
     g->high = 0u;
+    g->checkpoint_tag = 0u;
     g->failed = false;
     return true;
 }
@@ -324,6 +331,23 @@ static bool inkling2_embed(ds4_inkling2_graph *g, const ds4_model *m, const ds4_
         ds4_gpu_ink2_embed(g->gvq, g->x, g->embed, inkling2_index(m, w->inkling2->embed_norm), rows);
 }
 
+/* Image rows over the embedded rows pos..pos+rows-1: each placeholder of a
+ * span takes the vision tower's row, unnormalized. */
+static bool inkling2_apply_spans(ds4_inkling2_graph *g, uint32_t rows, uint32_t pos) {
+    const uint64_t row = (uint64_t)DS4_INK2_HIDDEN * sizeof(float);
+    for (uint32_t i = 0; i < g->span_n; i++) {
+        const uint32_t start = g->span_start[i], stop = start + g->span_count[i];
+        const uint32_t from = start > pos ? start : pos, to = stop < pos + rows ? stop : pos + rows;
+        if (from >= to) { continue; }
+        ds4_gpu_tensor *view = ds4_gpu_tensor_view(g->x, (uint64_t)(from - pos) * row, (uint64_t)(to - from) * row);
+        const bool ok = view && ds4_gpu_tensor_write(view, 0, g->span_rows[i] + (uint64_t)(from - start) *
+            DS4_INK2_HIDDEN, (uint64_t)(to - from) * row);
+        ds4_gpu_tensor_free(view);
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
 // Final attention residual, norm and head of `count` rows from `row` on.
 static bool inkling2_head(ds4_inkling2_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t row,
         uint32_t count, ds4_gpu_tensor *logits) {
@@ -355,7 +379,7 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
      * session must reset before another forward. */
     g->failed = true;
     if (!inkling2_kv_begin(&g->tier, rows, pos)) { return false; }
-    if (!inkling2_embed(g, m, w, tokens, rows)) { return false; }
+    if (!inkling2_embed(g, m, w, tokens, rows) || !inkling2_apply_spans(g, rows, pos)) { return false; }
     const ds4_inkling2_weights *k = w->inkling2;
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) {
         // Block states before this layer: the inputs of boundaries below it.

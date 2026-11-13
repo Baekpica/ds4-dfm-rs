@@ -37915,6 +37915,7 @@ struct ds4_engine {
     ds4_mimo2_media mimo2_media;
     ds4_mimo2_dflash dflash;
     ds4_minimax_vision minimax_vision;
+    ds4_inkling2_vision inkling2_vision;
 #endif
     ds4_vocab vocab;
     ds4_weights weights;
@@ -74008,11 +74009,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MINIMAX_VQ) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MINIMAX_VQ &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING2_VQ) ||
             e->backend != DS4_BACKEND_CUDA ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
             fprintf(stderr,
-                    "ds4: --vision/--vision-gguf requires one full V4.1, GLM-5.3, Step, Ling, MiMo or MiniMax CUDA model\n");
+                    "ds4: --vision/--vision-gguf requires one full V4.1, GLM-5.3, Step, Ling, MiMo, MiniMax or Inkling-2 CUDA model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -74052,6 +74054,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             /* The release's vision part: staged per request like V4.1's
              * tower, so no aux CUDA map (vision_ready stays false). */
             minimax_vision_bind(&e->minimax_vision, &e->vision_model);
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
+            /* The release's vision part, staged per request like MiniMax's. */
+            inkling2_vision_bind(&e->inkling2_vision, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
             ling3vl_vision_bind(&e->ling3vl_vision_weights, &e->vision_model);
             e->vision_image_token = (int)LING3VL_IMAGE_TOKEN;
@@ -74083,6 +74088,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             e->vision_image_token = 200025;
             e->vision_start_token = 200029;
             e->vision_end_token = 200030;
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
+            e->vision_image_token = 200054;
         } else if (!v41_sidecar) {
             e->vision_ready = true;
         } else {
@@ -82259,6 +82266,7 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 #include "ds4_ds41_forward.inc"
 #include "ds4_ds41_vision.inc"   /* vision unit: the DeepSeek-ViT + aligner host forward, after v41_alloc */
 #include "ds4_minimax_vision.inc" /* MiniMax's tower, on V4.1's staging and primitives */
+#include "ds4_inkling2_vision.inc" /* Inkling-2's tower, on MiniMax's and V4.1's */
 /* Decode sampling (unit H): the pick fork, the device readback arms and the
  * host penalty route (the engine's core_v41_sample.c + core_decode_penalty.c).
  * Between the forward and the graph: the graph's wait calls v41_sample_pick. */

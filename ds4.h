@@ -1476,6 +1476,15 @@ int ds4_session_minimax_commit(ds4_session *s, int keep, char *err, size_t errle
 int ds4_session_inkling2_trial(ds4_session *s, int first, int max_tokens,
                                int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_inkling2_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Inkling-2 image input: the vision part's rows of one image (pixels
+ * [rows * cols][40 x 40 x 3] in the processor's order -> out
+ * [rows * cols][4608]), and a prompt sync whose placeholder runs take those
+ * rows (tag: identity of the images, nonzero). */
+int ds4_session_inkling2_encode_vision(ds4_session *s, const float *pixels, unsigned rows, unsigned cols,
+                                       float *out, char *err, size_t errlen);
+int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+                                    const unsigned *counts, const float *const *rows, unsigned nspans,
+                                    uint64_t tag, char *err, size_t errlen);
 /* IQuest-Q1 recursively reuses its integrated predictor. Target and MTP
  * ring journals restore every rejected row before publishing the frontier. */
 int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,

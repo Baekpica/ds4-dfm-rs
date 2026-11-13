@@ -871,6 +871,29 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_inkling2_encode_vision(
+        s: *mut ds4_bridge_session,
+        pixels: *const f32,
+        rows: u32,
+        cols: u32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_inkling2_sync_media(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+        starts: *const u32,
+        counts: *const u32,
+        rows: *const *const f32,
+        nspans: u32,
+        tag: u64,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_iquest_trial(
         s: *mut ds4_bridge_session,
         first: i32,

@@ -83,7 +83,14 @@ static bool inkling2_resume_restore(ds4_session *s, int slot, uint32_t at) {
     return ok;
 }
 
-static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
+enum { INKLING2_IMAGE_PAD = 200054 };
+
+/* `tag` != 0: a media sync whose spans the graph holds (g->span_*). A prompt
+ * resumes on the live state only under the same images; identical
+ * placeholders over other pixels prefill again. A placeholder no span covers
+ * is refused: its embedding row is not an image. */
+static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, uint64_t tag, char *err,
+        size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
             payload_set_err(err, errlen, "Inkling-2 prompt has an invalid token");
@@ -93,7 +100,7 @@ static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char 
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     if (!s->inkling2_graph_ready) { payload_set_err(err, errlen, "Inkling-2 graph is not initialized"); return 1; }
     ds4_inkling2_graph *g = &s->inkling2_graph;
-    uint32_t start = inkling2_sync_keep(s, prompt);
+    uint32_t start = !tag || tag == g->checkpoint_tag ? inkling2_sync_keep(s, prompt) : 0u;
     const int slot = start && start < (uint32_t)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
     if (start && start >= (uint32_t)s->checkpoint.len) {
         if (start == (uint32_t)prompt->len) { return 0; }
@@ -103,6 +110,18 @@ static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char 
         start = 0;
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "Inkling-2 graph reset failed"); return 1; }
+        g->checkpoint_tag = 0u;
+    }
+    for (uint32_t i = start; i < (uint32_t)prompt->len; i++) {
+        if (prompt->v[i] != INKLING2_IMAGE_PAD) { continue; }
+        bool covered = false;
+        for (uint32_t k = 0; !covered && k < g->span_n; k++) {
+            covered = i >= g->span_start[k] && i - g->span_start[k] < g->span_count[k];
+        }
+        if (!covered) {
+            payload_set_err(err, errlen, "Inkling-2 image placeholder has no vision rows");
+            return 1;
+        }
     }
     const uint32_t resume = start, end = (uint32_t)prompt->len;
     while (start < end) {
@@ -128,7 +147,41 @@ static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char 
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
+    if (tag) { g->checkpoint_tag = tag; }
     return 0;
+}
+
+static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
+    return inkling2_session_prefill(s, prompt, 0u, err, errlen);
+}
+
+/* Image rows (host F32 [count][4608] per span) over the prompt's
+ * placeholder runs, then the usual prefill. */
+int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+        const unsigned *counts, const float *const *rows, unsigned nspans, uint64_t tag, char *err, size_t errlen) {
+    if (!ds4_session_is_inkling2(s) || !tokens || n_tokens <= 0 || !tag ||
+        (nspans && (!starts || !counts || !rows))) {
+        payload_set_err(err, errlen, "Inkling-2 media sync needs tokens, spans and a tag");
+        return 1;
+    }
+    for (unsigned i = 0; i < nspans; i++) {
+        if (!counts[i] || !rows[i] || starts[i] > (unsigned)n_tokens || counts[i] > (unsigned)n_tokens - starts[i]) {
+            payload_set_err(err, errlen, "Inkling-2 media span is empty or past the prompt");
+            return 1;
+        }
+    }
+    if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
+    ds4_inkling2_graph *g = &s->inkling2_graph;
+    g->span_start = starts;
+    g->span_count = counts;
+    g->span_rows = rows;
+    g->span_n = nspans;
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    const int rc = inkling2_session_prefill(s, &prompt, tag, err, errlen);
+    g->span_n = 0;
+    g->span_start = g->span_count = NULL;
+    g->span_rows = NULL;
+    return rc;
 }
 
 static int inkling2_session_eval(ds4_session *s, int token, char *err, size_t errlen) {

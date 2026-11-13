@@ -1041,7 +1041,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         },
         // Serial lane: the dense global layers' K/V grow with the session,
         // the sliding layers keep a 1,024-token ring. The release's DSpark
-        // drafter part drafts on the serial lane (block of 8).
+        // drafter part drafts on the serial lane (block of 8), and images
+        // encode on it through the release's vision part.
         ModelFamily::Inkling2Vq => ServingCaps {
             family,
             variant,
@@ -1061,7 +1062,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
-            media_serial: false,
+            media_serial: true,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks

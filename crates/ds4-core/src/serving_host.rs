@@ -872,6 +872,12 @@ pub fn fill_quote_facts(
         } else {
             0
         }
+    } else if caps.family == ModelFamily::Inkling2Vq {
+        if host.vision || facts.vision_loaded {
+            crate::inkling2_vq::media_bytes()
+        } else {
+            0
+        }
     } else if caps.media_serial || host.vision {
         shape
             .map(|s| u64::from(s.n_embd).saturating_mul(8192).saturating_mul(2))
@@ -1055,6 +1061,9 @@ pub fn attach_host_quote(
             }
             _ => None,
         },
+        // Inkling-2's vision part pages in per image; its workspace is the
+        // media reserve.
+        (Variant::Inkling2SmallVq, Some(path)) => crate::inkling2_vq::has_vision(path).then_some(0),
         _ => None,
     };
     let vision_bytes = artifact_span_bytes(vision_path) + release_media.unwrap_or(0);

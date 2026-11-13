@@ -224,6 +224,20 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
     Ok(release_parts(root, feature)?.0)
 }
 
+/// The release lists a vision part (unverified: the quote's question).
+pub(super) fn has_vision(root: &Path) -> bool {
+    release_parts(root, Feature::Trunk).is_ok_and(|(_, vision)| vision.is_some())
+}
+
+/// The vision part, verified, when the release ships one (mapped at open,
+/// read only when media arrives).
+pub(super) fn vision_path(root: &Path) -> Result<Option<PathBuf>> {
+    match release_parts(root, Feature::Trunk)?.1 {
+        Some(part) => Ok(Some(verify_part(root, &part)?.0)),
+        None => Ok(None),
+    }
+}
+
 fn release_parts(root: &Path, feature: Feature) -> Result<(Vec<Part>, Option<Part>)> {
     let release = json(&json_bytes(&root.join(RELEASE))?)?;
     let kv = release

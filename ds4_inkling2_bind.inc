@@ -400,4 +400,68 @@ static bool inkling2_gpu_bind(ds4_weights *w, const ds4_model *m) {
 }
 #endif
 
+/* Vision part (vision-bf16.gguf): every model.visual.* tensor at source
+ * precision, checked at open; the forward is ds4_inkling2_vision.inc. */
+enum { INKLING2_VIT_LAYERS = 23, INKLING2_VIT_FF = 4096, INKLING2_VIT_MERGE = 4096,
+       // Language tokens one image may hold (inkling_media.rs MAX_TOKENS2):
+       // ~0.85 GB of tower activations and scratch at the cap.
+       INKLING2_IMAGE_TOKENS = 4096 };
+
+typedef struct {
+    const ds4_tensor *ln1_w, *ln1_b, *q_w, *q_b, *k_w, *k_b, *v_w, *v_b, *o_w, *o_b, *ls1;
+    const ds4_tensor *ln2_w, *ln2_b, *fc1_w, *fc1_b, *fc2_w, *fc2_b, *ls2;
+} inkling2_vision_layer;
+
+typedef struct {
+    bool bound;
+    const ds4_tensor *patch, *table, *cls, *cls_pos, *pre_w, *pre_b, *proj_in, *proj_out;
+    inkling2_vision_layer layer[INKLING2_VIT_LAYERS];
+} ds4_inkling2_vision;
+
+// Shapes as GGUF stores them (dim[0] is a Linear's input width); MiniMax's checker.
+static void inkling2_vision_bind(ds4_inkling2_vision *v, const ds4_model *m) {
+    memset(v, 0, sizeof(*v));
+    ds4_str role = {0};
+    if (!model_get_string(m, "inkling2_vq.part_role", &role) || !ds4_streq(role, "vision")) {
+        ds4_die("Inkling-2 vision part has no inkling2_vq.part_role vision");
+    }
+    const uint32_t BF = DS4_TENSOR_BF16, D = DS4_INK2_VIT_DIM, G = DS4_INK2_VIT_GRID;
+    v->patch = mm_vis_req(m, "model.visual.backbone.embeddings.patch_embedding.weight", BF, DS4_INK2_VIT_PATCH, D);
+    v->table = mm_vis_req(m, "model.visual.backbone.embeddings.position_embedding", BF, D, G * G);
+    v->cls = mm_vis_req(m, "model.visual.backbone.embeddings.class_embedding", BF, D, 0);
+    v->cls_pos = mm_vis_req(m, "model.visual.backbone.embeddings.cls_position_embedding", BF, D, 0);
+    v->pre_w = mm_vis_req(m, "model.visual.backbone.ln_pre.weight", BF, D, 0);
+    v->pre_b = mm_vis_req(m, "model.visual.backbone.ln_pre.bias", BF, D, 0);
+    for (uint32_t il = 0; il < INKLING2_VIT_LAYERS; il++) {
+        inkling2_vision_layer *l = &v->layer[il];
+        char name[128];
+#define INK2_VIS_BIND(field, suffix, d0, d1) do { \
+            snprintf(name, sizeof(name), "model.visual.backbone.layers.%u.%s", il, suffix); \
+            l->field = mm_vis_req(m, name, BF, d0, d1); \
+        } while (0)
+        INK2_VIS_BIND(ln1_w, "ln_1.weight", D, 0);
+        INK2_VIS_BIND(ln1_b, "ln_1.bias", D, 0);
+        INK2_VIS_BIND(q_w, "self_attn.q_proj.weight", D, D);
+        INK2_VIS_BIND(q_b, "self_attn.q_proj.bias", D, 0);
+        INK2_VIS_BIND(k_w, "self_attn.k_proj.weight", D, D);
+        INK2_VIS_BIND(k_b, "self_attn.k_proj.bias", D, 0);
+        INK2_VIS_BIND(v_w, "self_attn.v_proj.weight", D, D);
+        INK2_VIS_BIND(v_b, "self_attn.v_proj.bias", D, 0);
+        INK2_VIS_BIND(o_w, "self_attn.out_proj.weight", D, D);
+        INK2_VIS_BIND(o_b, "self_attn.out_proj.bias", D, 0);
+        INK2_VIS_BIND(ls1, "ls_1.gamma", D, 0);
+        INK2_VIS_BIND(ln2_w, "ln_2.weight", D, 0);
+        INK2_VIS_BIND(ln2_b, "ln_2.bias", D, 0);
+        INK2_VIS_BIND(fc1_w, "mlp.c_fc.weight", D, INKLING2_VIT_FF);
+        INK2_VIS_BIND(fc1_b, "mlp.c_fc.bias", INKLING2_VIT_FF, 0);
+        INK2_VIS_BIND(fc2_w, "mlp.c_proj.weight", INKLING2_VIT_FF, D);
+        INK2_VIS_BIND(fc2_b, "mlp.c_proj.bias", D, 0);
+        INK2_VIS_BIND(ls2, "ls_2.gamma", D, 0);
+#undef INK2_VIS_BIND
+    }
+    v->proj_in = mm_vis_req(m, "model.visual.proj_in.weight", BF, 4 * D, INKLING2_VIT_MERGE);
+    v->proj_out = mm_vis_req(m, "model.visual.proj_out.weight", BF, INKLING2_VIT_MERGE, DS4_INK2_HIDDEN);
+    v->bound = true;
+}
+
 #include "ds4_inkling2_kv.inc"

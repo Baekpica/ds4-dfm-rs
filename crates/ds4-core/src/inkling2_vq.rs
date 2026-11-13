@@ -75,6 +75,33 @@ fn q8_scale_finite(scale: &[u8]) -> bool {
     u16::from_le_bytes([scale[0], scale[1]]) & 0x7c00 != 0x7c00
 }
 
+/// The release's vision part (image input), when it ships one.
+pub(crate) fn vision_path(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    release::vision_path(root).ok().flatten()
+}
+
+pub(crate) fn has_vision(root: &std::path::Path) -> bool {
+    release::has_vision(root)
+}
+
+/// Peak bytes of image input at the token cap: the tower's F32 rows (x, xn,
+/// attention out, qkv), its 4,096-row MLP tile, the attention's BF16 qkv and
+/// 192 MiB score tile, the BF16 GEMM input and weight slots
+/// (ds4_inkling2_vision.inc); on the host one image's pixels and the 4,608-wide
+/// rows of four images.
+pub(crate) fn media_bytes() -> u64 {
+    const DIM: u64 = 1024;
+    const MLP_TILE: u64 = 4096 * 4096 * 4;
+    const SCORES: u64 = 192 << 20;
+    const SLOTS: u64 = 64 << 20;
+    let tokens = u64::from(crate::inkling_media::MAX_TOKENS2);
+    let rows = 4 * tokens + 1;
+    let tower =
+        rows * 6 * DIM * 4 + MLP_TILE + rows * 3 * DIM * 2 + SCORES + 4 * tokens * 1200 * 2 + SLOTS;
+    let host = tokens * 40 * 40 * 3 * 4 + 4 * tokens * 4608 * 4;
+    tower + host
+}
+
 /// The MTP drafter rides along when speculative decoding is requested
 /// (`--mtp-draft` above 1), as MiniMax's DSpark part does.
 pub(super) fn feature(draft: i32) -> Feature {

@@ -342,6 +342,8 @@ const GEMMA4_MTP_DRAFTS: i32 = 6;
 const MINIMAX_MTP_DRAFTS: i32 = 7;
 // Inkling-2 DSpark: a block of eight rows, the anchor and seven proposals.
 const INKLING2_MTP_DRAFTS: i32 = 7;
+/// Inkling-2's hidden width: one image row per placeholder.
+const INKLING2_WIDTH: usize = 4608;
 
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
@@ -2149,6 +2151,11 @@ impl Model {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
         }
+        // So does Inkling-2 (read only for images).
+        if identified.shape.family == ModelFamily::Inkling2Vq {
+            tuning.vision_path =
+                inkling2_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
+        }
         // MiMo VQ maps its release's vision and audio parts, both hashed here
         // first.
         let mut audio_path = None;
@@ -2362,6 +2369,15 @@ impl Model {
         if self.family == ModelFamily::Inkling {
             return inkling_media::probe_image(data);
         }
+        if self.family == ModelFamily::Inkling2Vq {
+            if !self.vision_ready {
+                return Err(Error {
+                    code: 1,
+                    message: "Inkling-2 vision part is not open".into(),
+                });
+            }
+            return inkling_media::probe_image2(data);
+        }
         let tower = vit_tower(self.family).ok_or_else(|| Error {
             code: 1,
             message: "this model family has no image probe".into(),
@@ -2396,7 +2412,7 @@ impl Model {
         const INKLING_IMAGE_TOKEN: i32 = 200054;
         const GLM_IMAGE_TOKEN: i32 = 154854;
         let marker = match self.family {
-            ModelFamily::Inkling => INKLING_IMAGE_TOKEN,
+            ModelFamily::Inkling | ModelFamily::Inkling2Vq => INKLING_IMAGE_TOKEN,
             ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
             ModelFamily::Ling3Vl => ling3vl::IMAGE_TOKEN as i32,
             _ => {
@@ -3203,6 +3219,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Inkling {
             return self.sync_inkling(tokens, images, &[]);
         }
+        if self.host.family == ModelFamily::Inkling2Vq {
+            return self.sync_inkling2(tokens, images);
+        }
         if images.is_empty() || images.len() > 4 {
             return Err(Error {
                 code: 1,
@@ -3312,6 +3331,64 @@ impl Session<'_> {
             return Err(fail(rc, &err));
         }
         self.host.replace_checkpoint(tokens.as_slice());
+        Ok(())
+    }
+
+    /// Inkling-2 images: each encoded by the release's vision part, its rows
+    /// over its placeholder run.
+    fn sync_inkling2(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
+        let ids = tokens.as_slice();
+        let counts = inkling_media::image_counts2(ids, images)?;
+        let mut rows = Vec::with_capacity(images.len());
+        // One image's pixels at a time; only the rows wait for the prefill.
+        for (input, &count) in images.iter().zip(&counts) {
+            let image = inkling_media::prepare_image2(input.data, count)?;
+            let mut out = vec![0.0f32; count as usize * INKLING2_WIDTH];
+            let mut err = [0u8; 512];
+            // SAFETY: Exclusive session; pixels and out are sized to the grid
+            // and outlive this synchronous call.
+            let rc = unsafe {
+                ds4_sys::ds4_bridge_inkling2_encode_vision(
+                    self.raw.as_ptr(),
+                    image.pixels.as_ptr(),
+                    image.rows,
+                    image.cols,
+                    out.as_mut_ptr(),
+                    err.as_mut_ptr().cast(),
+                    err.len(),
+                )
+            };
+            if rc != 0 {
+                return Err(fail(rc, &err));
+            }
+            rows.push(out);
+        }
+        let starts: Vec<u32> = images.iter().map(|image| image.token_offset).collect();
+        let ptrs: Vec<*const f32> = rows.iter().map(|r| r.as_ptr()).collect();
+        let datas: Vec<&[u8]> = images.iter().map(|image| image.data).collect();
+        let tag = crate::mimo2::media_tag(&datas) | 1;
+        let mut err = [0u8; 512];
+        // SAFETY: Rust owns the rows until this synchronous prefill returns;
+        // native copies each span's rows into its forwards.
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_inkling2_sync_media(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                starts.as_ptr(),
+                counts.as_ptr(),
+                ptrs.as_ptr(),
+                starts.len() as u32,
+                tag,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(ids);
         Ok(())
     }
 

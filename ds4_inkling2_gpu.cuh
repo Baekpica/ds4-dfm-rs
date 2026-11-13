@@ -1037,3 +1037,131 @@ extern "C" int ds4_gpu_ink2_logits(ds4_gpu_tensor *logits, uint32_t rows) {
 }
 
 #include "cuda/inkling2_draft.cuh"
+
+/* Vision tower pieces (transformers Inkling2VisionModel @109a7d19; the forward
+ * is ds4_inkling2_vision.inc). F32 compute, values rounded to BF16 where the
+ * reference's BF16 modules round. */
+enum { INK2_VIT_SIDE = 20, INK2_VIT_TOKEN = 40, INK2_VIT_PAIRS = DS4_INK2_VIT_HEAD / 2 };
+
+__global__ void ink2_vit_patches_kernel(float *patches, const float *pixels, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    // Embeddings.forward: (mh, ph, mw, pw, c) -> (mh, mw, ph, pw, c).
+    const uint32_t c = i % 3, pw = i / 3 % INK2_VIT_SIDE, ph = i / (3 * INK2_VIT_SIDE) % INK2_VIT_SIDE;
+    const uint64_t patch = i / DS4_INK2_VIT_PATCH, token = patch / 4;
+    const uint32_t mh = patch % 4 / 2, mw = patch % 2;
+    const uint32_t y = mh * INK2_VIT_SIDE + ph, x = mw * INK2_VIT_SIDE + pw;
+    patches[i] = glmvq_round(pixels[token * DS4_INK2_IMAGE_VALUES + ((uint64_t)y * INK2_VIT_TOKEN + x) * 3 + c]);
+}
+
+extern "C" int ds4_gpu_ink2_vit_patches(ds4_gpu_tensor *patches, const ds4_gpu_tensor *pixels, uint32_t tokens) {
+    const uint64_t count = (uint64_t)tokens * DS4_INK2_IMAGE_VALUES;
+    if (!tokens || !gvq_floats(patches, count) || !gvq_floats(pixels, count)) { return 0; }
+    ink2_vit_patches_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)patches->ptr, (const float *)pixels->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Inkling-2 vision patches");
+}
+
+// vision_utils._interpolation_axis_taps_weights (bilinear, align_corners
+// False, border): taps floor and floor + 1 of the half-pixel source.
+__device__ __forceinline__ void ink2_vit_taps(uint32_t index, uint32_t size, uint32_t *tap, float *weight) {
+    const float src = __fsub_rn(__fdiv_rn(__fmul_rn((float)index + 0.5f, (float)DS4_INK2_VIT_GRID), (float)size), 0.5f);
+    const float base = floorf(src);
+    for (int o = 0; o < 2; o++) {
+        const int raw = (int)base + o;
+        tap[o] = (uint32_t)min(max(raw, 0), DS4_INK2_VIT_GRID - 1);
+        weight[o] = fmaxf(1.0f - fabsf(src - base - (float)o), 0.0f);
+    }
+}
+
+__global__ void ink2_vit_embed_kernel(float *x, const float *emb, const float *table, const float *cls,
+        uint32_t rows, uint32_t cols) {
+    const uint32_t r = blockIdx.x;
+    float *out = x + (uint64_t)r * DS4_INK2_VIT_DIM;
+    if (r == 0) {
+        for (uint32_t c = threadIdx.x; c < DS4_INK2_VIT_DIM; c += blockDim.x) {
+            out[c] = glmvq_round(cls[c] + cls[DS4_INK2_VIT_DIM + c]);
+        }
+        return;
+    }
+    // Patch r - 1 in 2 x 2 block order -> its row and column on the grid.
+    const uint32_t i = r - 1, token = i / 4;
+    const uint32_t row = token / cols * 2 + i % 4 / 2, col = token % cols * 2 + i % 2;
+    uint32_t th[2], tw[2];
+    float wh[2], ww[2];
+    ink2_vit_taps(row, 2 * rows, th, wh);
+    ink2_vit_taps(col, 2 * cols, tw, ww);
+    const float *e = emb + (uint64_t)i * DS4_INK2_VIT_DIM;
+    for (uint32_t c = threadIdx.x; c < DS4_INK2_VIT_DIM; c += blockDim.x) {
+        // F32 weighted sum of the four BF16 table rows, cast to BF16, added.
+        float pos = 0.0f;
+        for (int a = 0; a < 2; a++) {
+            for (int b = 0; b < 2; b++) {
+                const float v = table[(uint64_t)(th[a] * DS4_INK2_VIT_GRID + tw[b]) * DS4_INK2_VIT_DIM + c];
+                pos = __fadd_rn(pos, __fmul_rn(v, __fmul_rn(wh[a], ww[b])));
+            }
+        }
+        out[c] = glmvq_round(e[c] + glmvq_round(pos));
+    }
+}
+
+extern "C" int ds4_gpu_ink2_vit_embed(ds4_gpu_tensor *x, const ds4_gpu_tensor *emb, const ds4_gpu_tensor *table,
+        const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols) {
+    const uint64_t patches = (uint64_t)rows * cols * 4;
+    if (!rows || !cols || patches + 1 > UINT32_MAX || !gvq_floats(x, (patches + 1) * DS4_INK2_VIT_DIM) ||
+        !gvq_floats(emb, patches * DS4_INK2_VIT_DIM) ||
+        !gvq_floats(table, (uint64_t)DS4_INK2_VIT_GRID * DS4_INK2_VIT_GRID * DS4_INK2_VIT_DIM) ||
+        !gvq_floats(cls, 2 * DS4_INK2_VIT_DIM)) { return 0; }
+    ink2_vit_embed_kernel<<<(uint32_t)(patches + 1), 256, 0, ds4_current_stream()>>>((float *)x->ptr,
+        (const float *)emb->ptr, (const float *)table->ptr, (const float *)cls->ptr, rows, cols);
+    return cuda_ok(cudaGetLastError(), "Inkling-2 vision embedding");
+}
+
+// One thread per (row, q|k, head, pair): pairs 0..15 rotate by the column,
+// 16..31 by the row (recomposition_frequencies: width, then height).
+__global__ void ink2_vit_rope_kernel(float *qkv, uint32_t n, uint32_t cols) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t per_row = 2 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
+    if (i >= (uint64_t)n * per_row) { return; }
+    const uint32_t r = (uint32_t)(i / per_row), rest = (uint32_t)(i % per_row), pair = rest % INK2_VIT_PAIRS;
+    uint32_t prow = 0, pcol = 0;
+    if (r) {
+        const uint32_t p = r - 1, token = p / 4;
+        prow = token / cols * 2 + p % 4 / 2 + 1;
+        pcol = token % cols * 2 + p % 2 + 1;
+    }
+    const uint32_t j = pair % (INK2_VIT_PAIRS / 2);
+    const float inv = 1.0f / powf(10000.0f, (float)(2 * j) / (float)INK2_VIT_PAIRS);
+    const float angle = __fmul_rn((float)(pair < INK2_VIT_PAIRS / 2 ? pcol : prow), inv);
+    const float c = cosf(angle), s = sinf(angle);
+    // [q | k | v]: rest / pairs is the q or k head.
+    float *v = qkv + (uint64_t)r * 3 * DS4_INK2_VIT_DIM + (uint64_t)(rest / INK2_VIT_PAIRS) * DS4_INK2_VIT_HEAD +
+        2 * pair;
+    const float x1 = v[0], x2 = v[1];
+    v[0] = glmvq_round(__fadd_rn(__fmul_rn(x1, c), __fmul_rn(-x2, s)));
+    v[1] = glmvq_round(__fadd_rn(__fmul_rn(x2, c), __fmul_rn(x1, s)));
+}
+
+extern "C" int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols) {
+    const uint64_t n = (uint64_t)rows * cols * 4 + 1;
+    const uint64_t count = n * 2 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
+    if (!rows || !cols || n > UINT32_MAX || !gvq_floats(qkv, n * 3 * DS4_INK2_VIT_DIM)) { return 0; }
+    ink2_vit_rope_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)qkv->ptr,
+        (uint32_t)n, cols);
+    return cuda_ok(cudaGetLastError(), "Inkling-2 vision RoPE");
+}
+
+__global__ void ink2_vit_scale_add_kernel(float *x, const float *y, const float *scale, uint64_t count,
+        uint32_t dim) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < count) { x[i] = glmvq_round(x[i] + glmvq_round(scale[i % dim] * y[i])); }
+}
+
+extern "C" int ds4_gpu_ink2_vit_scale_add(ds4_gpu_tensor *x, const ds4_gpu_tensor *y, const ds4_gpu_tensor *scale,
+        uint32_t n, uint32_t dim) {
+    const uint64_t count = (uint64_t)n * dim;
+    if (!n || !dim || !gvq_floats(x, count) || !gvq_floats(y, count) || !gvq_floats(scale, dim)) { return 0; }
+    ink2_vit_scale_add_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)x->ptr,
+        (const float *)y->ptr, (const float *)scale->ptr, count, dim);
+    return cuda_ok(cudaGetLastError(), "Inkling-2 vision layer scale");
+}
