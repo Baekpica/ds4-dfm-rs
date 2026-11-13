@@ -158,6 +158,53 @@ int ds4_gpu_ink2_conv(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tenso
 /* logits = 30 tanh(z / 30) over the 200,058 tokenizer rows, -inf past them. */
 int ds4_gpu_ink2_logits(ds4_gpu_tensor *logits, uint32_t rows);
 
+/* DSpark drafter (the release's `drafter` part; TokenSpeed inkling2_mtp.py):
+ * target taps (the partial state entering layers 5, 11, ..., 41 and the
+ * normalized output), per-stage tap mixtures softmax(fuse_weight), five
+ * pre-norm layers (0, 1, 3, 4 sliding over 1,031 keys, 2 global) over an
+ * 8-row non-causal block [anchor, mask x 7] and BF16 context rings, the
+ * target head on rows 1..7 and the rnn_hidden head. */
+#define DS4_INK2_DRAFT_THETA 1000000.0f
+enum {
+    DS4_INK2_DRAFT_LAYERS = 5, DS4_INK2_DRAFT_BLOCK = 8, DS4_INK2_DRAFT_TAPS = 8, DS4_INK2_DRAFT_FF = 18432,
+    DS4_INK2_DRAFT_WINDOW = 1024 + DS4_INK2_DRAFT_BLOCK - 1, DS4_INK2_RANK = 256,
+    DS4_INK2_RNN_IN = 2 * DS4_INK2_RANK + 2 * DS4_INK2_HIDDEN,
+};
+int ds4_gpu_ink2_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *x, uint32_t tap, uint32_t rows);
+/* out = norm(BF16(sum_j alpha[stage][j] tap_j)) of tap rows first.. ;
+ * `alpha`: F32 [6][8]. */
+int ds4_gpu_ink2_draft_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *taps,
+    const ds4_gpu_tensor *alpha, uint32_t stage, uint32_t norm, uint32_t first, uint32_t rows);
+/* norm_out = norm(h + residual) from the F32 sum, residual = BF16(h + residual). */
+int ds4_gpu_ink2_draft_add_norm(ds4_gvq_ctx *ctx, ds4_gpu_tensor *norm_out, ds4_gpu_tensor *residual,
+    const ds4_gpu_tensor *h, uint32_t norm, uint32_t rows);
+/* Per head: BF16 RMS norm (weight `norm`), then NeoX RoPE at pos0 + row. */
+int ds4_gpu_ink2_draft_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t norm, uint32_t heads, uint32_t rows,
+    uint32_t pos0);
+int ds4_gpu_ink2_draft_ring(ds4_gpu_tensor *ring_k, ds4_gpu_tensor *ring_v, const ds4_gpu_tensor *k,
+    const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos, uint32_t ring);
+/* Rows pos0.. attend ring positions [max(first, end - ring, window bound), end)
+ * with end = pos0 + rows (non-causal over the block); `partials`: the
+ * ds4_gpu_ink2_attn_bytes() scratch. */
+int ds4_gpu_ink2_draft_attn(ds4_gpu_tensor *out, ds4_gpu_tensor *partials, const ds4_gpu_tensor *q,
+    const ds4_gpu_tensor *ring_k, const ds4_gpu_tensor *ring_v, uint32_t ring, uint32_t rows, uint32_t pos0,
+    uint32_t first, uint32_t window);
+int ds4_gpu_ink2_draft_silu(ds4_gpu_tensor *out, const ds4_gpu_tensor *g, const ds4_gpu_tensor *u, uint64_t count);
+int ds4_gpu_ink2_draft_mask(ds4_gvq_ctx *ctx, ds4_gpu_tensor *h, uint32_t mask, uint32_t rows);
+int ds4_gpu_ink2_draft_markov_in(ds4_gpu_tensor *z, const ds4_gpu_tensor *hidden, const ds4_gpu_tensor *f_rnn,
+    uint32_t steps);
+/* Step `step` of the rnn_hidden head: logits of proposal row `step` from the
+ * F32 base logits rows, the recurrence state and ids[step]. */
+int ds4_gpu_ink2_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, ds4_gpu_tensor *state,
+    ds4_gpu_tensor *latent, ds4_gpu_tensor *z, const ds4_gpu_tensor *invariant, const ds4_gpu_tensor *base,
+    const ds4_gpu_tensor *fold_w, const ds4_gpu_tensor *fold_b, const ds4_gpu_tensor *ids, uint32_t proj,
+    uint32_t bias, uint32_t w1, uint32_t step);
+int ds4_gpu_ink2_draft_fold_x(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t bias);
+int ds4_gpu_ink2_draft_fold_pack(ds4_gpu_tensor *fold_w, ds4_gpu_tensor *fold_b, const ds4_gpu_tensor *head_rows);
+int ds4_gpu_ink2_draft_copy(ds4_gpu_tensor *dst, uint64_t dst_off, const ds4_gpu_tensor *src, uint64_t count);
+/* hist = the last three rows of [hist; x[0..rows)] (`width`-wide F32 rows). */
+int ds4_gpu_ink2_history(ds4_gpu_tensor *hist, const ds4_gpu_tensor *x, uint32_t width, uint32_t rows);
+
 #ifdef __cplusplus
 }
 #endif

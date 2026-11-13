@@ -1040,7 +1040,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             media_serial: true,
         },
         // Serial lane: the dense global layers' K/V grow with the session,
-        // the sliding layers keep a 1,024-token ring.
+        // the sliding layers keep a 1,024-token ring. The release's DSpark
+        // drafter part drafts on the serial lane (block of 8).
         ModelFamily::Inkling2Vq => ServingCaps {
             family,
             variant,
@@ -1050,10 +1051,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse_support: Support::Present,
             disk: Support::None,
             snapshot: Support::None,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
-            spec_draft_min: 1,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off.
+            spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(INKLING2_CTX_MAX),
             qualified_ctx: None,

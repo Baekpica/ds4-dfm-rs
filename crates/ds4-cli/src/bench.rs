@@ -243,7 +243,11 @@ fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     // GLM, Ling-3.1 and MiniMax draft from parts of their own release.
     if matches!(
         family,
-        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::MinimaxVq
+        ModelFamily::Glm53
+            | ModelFamily::Glm53Vq
+            | ModelFamily::Ling31Vq
+            | ModelFamily::MinimaxVq
+            | ModelFamily::Inkling2Vq
     ) {
         return mtp.is_none()
             && draft > 1

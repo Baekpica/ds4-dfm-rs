@@ -543,12 +543,16 @@ pub fn fill_quote_facts(
         ),
         // The serial session owns the K/V (or the SSD tier), host logits and
         // history; graph 0 owns the row workspace and the host embedding
-        // staging.
+        // staging; drafting adds the drafter's runtime.
         (ModelFamily::Inkling2Vq, Some(s)) => (
             inkling2_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             inkling2_workspace_bytes(u64::from(native))
                 + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
-            0,
+            if req.mtp_mode == MtpMode::On {
+                inkling2_draft_bytes(ctx, u64::from(native))
+            } else {
+                0
+            },
             0,
         ),
         // Each bank owns its latent, rope and index-key rows, host logits
@@ -1021,6 +1025,14 @@ pub fn attach_host_quote(
         let part = |feature| crate::minimax_vq::resident_bytes(path, feature).unwrap_or(0);
         mtp_bytes =
             part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
+    }
+    // Inkling-2 maps its drafter part beside the trunk only when drafting.
+    if let (ModelFamily::Inkling2Vq, MtpMode::On, Some(path)) =
+        (caps.family, req.mtp_mode, model_path)
+    {
+        let part = |feature| crate::inkling2_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::Inkling2Feature::Draft).saturating_sub(part(crate::Inkling2Feature::Trunk));
     }
     // MiMo VQ maps its MTP part beside the trunk only when drafting with it,
     // which its qualified MTP also does under auto (a DFlash `--mtp` file is
@@ -2999,6 +3011,45 @@ fn inkling2_kv_bytes(ctx: u64, native: u32) -> u64 {
     let pinned = (8 * (rows / 128 + 2) + 2 * 256) * BLOCK;
     let state = rows * 48 * 130 * SIZEOF_F32;
     hist + rings + 8 * (u64::from(resident) / 128).max(1) * BLOCK + pinned + state
+}
+
+// C inkling2_draft_bytes: tap rows of one chunk, its mixtures and context
+// K/V, the four sliding draft layers' 1,040-row rings and the global one's
+// last 65,536 positions (BF16 K and V), the 8-row block, seven proposal steps
+// (base and corrected logits, recurrence input and projection), the head
+// folded through hidden_out, verify logits and a trial's histories and
+// convolution inputs.
+fn inkling2_draft_bytes(ctx: u64, rows: u64) -> u64 {
+    const H: u64 = 4608;
+    const KV: u64 = 1024;
+    const Q: u64 = 6144;
+    const FF: u64 = 18_432;
+    const V: u64 = 201_024;
+    const RANK: u64 = 256;
+    const RNN_IN: u64 = 2 * RANK + 2 * H;
+    const B: u64 = 8;
+    const STEPS: u64 = B - 1;
+    const TAPS: u64 = 8;
+    const LAYERS: u64 = 5;
+    const LOCAL: u64 = 1031 + B + 1;
+    const GLOBAL: u64 = 65_536;
+    const TRIAL_ROW: u64 = 2 * KV + 2 * H;
+    let f = SIZEOF_F32;
+    let rings = ((LAYERS - 1) * LOCAL + ctx.min(GLOBAL) + B + 1) * 2 * KV * SIZEOF_U16;
+    (LAYERS + 1) * TAPS * f
+        + rows * TAPS * H * SIZEOF_U16
+        + rows * (2 * H + 2 * KV) * f
+        + H * f
+        + rings
+        + B * (4 * H + 2 * Q + 2 * KV + 2 * FF) * f
+        + STEPS * (2 * V + RNN_IN + 3 * RANK) * f
+        + 5 * RANK * f
+        + B * SIZEOF_I32
+        + V * (RANK + 1) * SIZEOF_U16
+        + B * V * f
+        + B * SIZEOF_I32
+        + 48 * 3 * TRIAL_ROW * f
+        + 48 * B * TRIAL_ROW * f
 }
 
 // C inkling2_workspace_bytes on the CUDA kernels: logits, the

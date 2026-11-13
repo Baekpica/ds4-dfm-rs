@@ -75,6 +75,17 @@ fn q8_scale_finite(scale: &[u8]) -> bool {
     u16::from_le_bytes([scale[0], scale[1]]) & 0x7c00 != 0x7c00
 }
 
+/// The MTP drafter rides along when speculative decoding is requested
+/// (`--mtp-draft` above 1), as MiniMax's DSpark part does.
+pub(super) fn feature(draft: i32) -> Feature {
+    let disabled = std::env::var("DS4_MTP_SPEC_DISABLE").ok().as_deref() == Some("1");
+    if draft > 1 && !disabled {
+        Feature::Draft
+    } else {
+        Feature::Trunk
+    }
+}
+
 /// The device-copied parts (trunk, drafter on request), then the embedding
 /// part, whose rows the host reads per token, last.
 pub(super) fn open_dir(

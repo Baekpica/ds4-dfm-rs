@@ -5720,6 +5720,18 @@ typedef struct {
     ds4_tensor *embed_norm, *out_query;
 } ds4_inkling2_weights;
 
+/* Inkling-2 DSpark drafter (the release's `drafter` part, mapped only when
+ * the open drafts): Q8_0 projections, BF16 norms, tap fusion, mask row and
+ * the rnn_hidden head. */
+typedef struct {
+    ds4_tensor *dflare, *ln1, *ln2, *q, *k, *v, *o, *k_ctx, *v_ctx, *q_norm, *k_norm, *k_norm_ctx, *gate, *up, *down;
+} ds4_inkling2_draft_layer;
+
+typedef struct {
+    ds4_tensor *fuse, *mask, *norm, *markov_norm, *w1, *rnn_w, *rnn_b, *out_w, *out_b;
+    ds4_inkling2_draft_layer layer[DS4_INK2_DRAFT_LAYERS];
+} ds4_inkling2_draft;
+
 /* MiniMax DSpark drafter (the release's `drafter` part, mapped only when the
  * open drafts): Q8_0 projections, BF16 norms and heads. */
 typedef struct {
@@ -5811,6 +5823,7 @@ typedef struct {
     ds4_minimax_layer *minimax; /* MiniMax VQ: index norms and layers 3-59's experts. */
     ds4_minimax_draft *minimax_draft; /* MiniMax DSpark, when its part is mapped. */
     ds4_inkling2_weights *inkling2; /* Inkling-2 VQ: all 48 layers, experts included. */
+    ds4_inkling2_draft *inkling2_draft; /* Inkling-2 DSpark drafter, when its part is mapped. */
     ds4_axk2_layer *axk2;       /* A.X-K2 VQ: gated-norm gates and layers 1-60's experts. */
     ds4_mimo2vq_layer *mimo2vq; /* MiMo VQ: layers 1-47's experts (index il - 1). */
     ds4_gemma4_layer *gemma4;   /* Gemma-4 VQ: all 30 layers, experts included. */
@@ -11255,6 +11268,7 @@ static void weights_free(ds4_weights *w) {
     free(w->minimax);
     free(w->minimax_draft);
     free(w->inkling2);
+    free(w->inkling2_draft);
     free(w->axk2);
     free(w->mimo2vq);
     free(w->gemma4);
@@ -75779,7 +75793,7 @@ static uint32_t axk2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap
 
 static bool inkling2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                  ds4_session_graph_fit_quote *q) {
-    const uint64_t need = inkling2_memory(ctx, cap).total_bytes;
+    const uint64_t need = inkling2_memory(ctx, cap).total_bytes + (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     uint64_t available = 0, total = 0;
@@ -76021,12 +76035,20 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     }
     if (ds4_session_is_inkling2(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
-        const uint64_t estimate = inkling2_memory(ctx, s->prefill_cap).total_bytes;
+        const uint64_t estimate = inkling2_memory(ctx, s->prefill_cap).total_bytes +
+            (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, s->prefill_cap) : 0u);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
-        const bool ok = inkling2_session_fit(e, ctx, s->prefill_cap, NULL) &&
+        bool ok = inkling2_session_fit(e, ctx, s->prefill_cap, NULL) &&
             inkling2_graph_alloc(&s->inkling2_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+#ifndef __APPLE__
+        if (ok && inkling2_drafting(e)) {
+            s->inkling2_graph.draft = inkling2_draft_alloc(s->inkling2_graph.gvq, &e->model, &e->weights, ctx,
+                s->prefill_cap);
+            ok = s->inkling2_graph.draft != NULL;
+        }
+#endif
         ds4_gpu_mem_scope_end();
         if (!ok) {
             inkling2_graph_free(&s->inkling2_graph); s->inkling2_graph_ready = false;

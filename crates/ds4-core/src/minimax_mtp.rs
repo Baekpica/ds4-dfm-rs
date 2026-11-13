@@ -39,7 +39,7 @@ impl DsparkGate {
     }
 
     /// A trial kept tokens at `rate` tokens/s.
-    fn after_trial(&mut self, rate: f64) {
+    pub(crate) fn after_trial(&mut self, rate: f64) {
         Self::ewma(&mut self.draft_rate, &mut self.trials, rate);
         if self.trials >= Self::WARMUP {
             if self.plains == 0 {
@@ -50,9 +50,14 @@ impl DsparkGate {
         }
     }
 
+    /// Plain decodes still to run before drafting is measured again.
+    pub(crate) fn cooling(&self) -> bool {
+        self.cooldown > 0
+    }
+
     /// A plain decode ran at `rate` tokens/s; drafting is measured afresh
     /// once the pause ends.
-    fn after_plain(&mut self, rate: f64) {
+    pub(crate) fn after_plain(&mut self, rate: f64) {
         Self::ewma(&mut self.plain_rate, &mut self.plains, rate);
         self.cooldown = self.cooldown.saturating_sub(1);
         if self.cooldown == 0 {

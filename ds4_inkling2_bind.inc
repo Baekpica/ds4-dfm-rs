@@ -98,11 +98,64 @@ static void inkling2_bind_layer(ds4_inkling2_layer *l, const ds4_model *m, uint3
     }
 }
 
+static ds4_tensor *inkling2_draft_tensor(const ds4_model *m, const char *name, uint32_t type, uint32_t ndim,
+        uint64_t d0, uint64_t d1) {
+    char full[160];
+    const int n = snprintf(full, sizeof(full), "mtp.%s", name);
+    if (n < 0 || (size_t)n >= sizeof(full)) { ds4_die("Inkling-2 drafter tensor name too long"); }
+    ds4_tensor *t = required_tensor(m, full);
+    tensor_expect_layout(t, type, ndim, d0, d1, 0);
+    return t;
+}
+
+/* The drafter binds when its part is mapped (the open drafts). HF [rows,
+ * cols] matrices bind as GGUF [cols, rows]. */
+static ds4_inkling2_draft *inkling2_bind_draft(const ds4_model *m) {
+    if (!model_find_tensor(m, "mtp.fuse_weight")) { return NULL; }
+    const uint32_t BF = DS4_TENSOR_BF16, Q8 = DS4_TENSOR_Q8_0, H = DS4_INK2_HIDDEN, R = DS4_INK2_RANK;
+    ds4_inkling2_draft *d = xcalloc(1, sizeof(*d));
+    d->fuse = inkling2_draft_tensor(m, "fuse_weight", BF, 2, DS4_INK2_DRAFT_TAPS, DS4_INK2_DRAFT_LAYERS + 1);
+    d->mask = inkling2_draft_tensor(m, "mask_embed", BF, 1, H, 0);
+    d->norm = inkling2_draft_tensor(m, "norm.weight", BF, 1, H, 0);
+    d->markov_norm = inkling2_draft_tensor(m, "markov_head.dflare_norm.weight", BF, 1, H, 0);
+    d->w1 = inkling2_draft_tensor(m, "markov_head.markov_w1.weight", BF, 2, R, DS4_N_VOCAB);
+    d->rnn_w = inkling2_draft_tensor(m, "markov_head.rnn_proj.weight", BF, 2, DS4_INK2_RNN_IN, 3u * R);
+    d->rnn_b = inkling2_draft_tensor(m, "markov_head.rnn_proj.bias", BF, 1, 3u * R, 0);
+    d->out_w = inkling2_draft_tensor(m, "markov_head.hidden_out.weight", BF, 2, R, H);
+    d->out_b = inkling2_draft_tensor(m, "markov_head.hidden_out.bias", BF, 1, H, 0);
+    for (uint32_t il = 0; il < DS4_INK2_DRAFT_LAYERS; il++) {
+        ds4_inkling2_draft_layer *l = &d->layer[il];
+        char name[128];
+#define INKLING2_DRAFT(field, suffix, type, ndim, d0, d1) do { \
+        snprintf(name, sizeof(name), "layers.%u.%s", il, suffix); \
+        l->field = inkling2_draft_tensor(m, name, type, ndim, d0, d1); \
+    } while (0)
+        INKLING2_DRAFT(dflare, "dflare_norm.weight", BF, 1, H, 0);
+        INKLING2_DRAFT(ln1, "input_layernorm.weight", BF, 1, H, 0);
+        INKLING2_DRAFT(ln2, "post_attention_layernorm.weight", BF, 1, H, 0);
+        INKLING2_DRAFT(q, "self_attn.q_proj.weight", Q8, 2, H, DS4_INK2_Q);
+        INKLING2_DRAFT(k, "self_attn.k_proj.weight", Q8, 2, H, DS4_INK2_KV);
+        INKLING2_DRAFT(v, "self_attn.v_proj.weight", Q8, 2, H, DS4_INK2_KV);
+        INKLING2_DRAFT(o, "self_attn.o_proj.weight", Q8, 2, DS4_INK2_Q, H);
+        INKLING2_DRAFT(k_ctx, "self_attn.k_proj_ctx.weight", Q8, 2, H, DS4_INK2_KV);
+        INKLING2_DRAFT(v_ctx, "self_attn.v_proj_ctx.weight", Q8, 2, H, DS4_INK2_KV);
+        INKLING2_DRAFT(q_norm, "self_attn.q_norm.weight", BF, 1, DS4_INK2_HEAD, 0);
+        INKLING2_DRAFT(k_norm, "self_attn.k_norm.weight", BF, 1, DS4_INK2_HEAD, 0);
+        INKLING2_DRAFT(k_norm_ctx, "self_attn.k_norm_ctx.weight", BF, 1, DS4_INK2_HEAD, 0);
+        INKLING2_DRAFT(gate, "mlp.gate_proj.weight", Q8, 2, H, DS4_INK2_DRAFT_FF);
+        INKLING2_DRAFT(up, "mlp.up_proj.weight", Q8, 2, H, DS4_INK2_DRAFT_FF);
+        INKLING2_DRAFT(down, "mlp.down_proj.weight", Q8, 2, DS4_INK2_DRAFT_FF, H);
+#undef INKLING2_DRAFT
+    }
+    return d;
+}
+
 static void inkling2_bind(ds4_weights *w, const ds4_model *m) {
     memset(w, 0, sizeof(*w));
     ds4_inkling2_weights *k = xcalloc(1, sizeof(*k));
     w->inkling2 = k;
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { inkling2_bind_layer(&k->layer[il], m, il); }
+    w->inkling2_draft = inkling2_bind_draft(m);
     k->embed_norm = required_tensor(m, "model.llm.embed_norm.weight");
     tensor_expect_layout(k->embed_norm, DS4_TENSOR_BF16, 1, DS4_INK2_HIDDEN, 0, 0);
     k->out_query = required_tensor(m, "model.llm.attn_res.output_query");
@@ -219,6 +272,32 @@ static uint64_t inkling2_kv_bytes(uint32_t ctx, uint32_t cap) {
     uint64_t bytes = (uint64_t)INKLING2_LAYERS * INKLING2_HIST * sizeof(float) + inkling2_tier_bytes(ctx, cap);
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { bytes += inkling2_layer_kv_bytes(il, ctx, cap); }
     return bytes;
+}
+
+/* DSpark drafter runtime (ds4_inkling2_draft.inc): rings of the four sliding
+ * draft layers, the global draft layer's last positions, a chunk's taps. */
+enum {
+    INKLING2_DRAFT_LOCAL_RING = DS4_INK2_DRAFT_WINDOW + DS4_INK2_DRAFT_BLOCK + 1,
+    INKLING2_DRAFT_GLOBAL = 65536, INKLING2_DRAFT_GLOBAL_LAYER = 2,
+    // Convolution inputs a trial keeps per layer: K and V inputs, attention
+    // and MLP outputs of up to a block of verify rows.
+    INKLING2_DRAFT_STREAMS = 4, INKLING2_TRIAL_ROW = 2 * DS4_INK2_KV + 2 * DS4_INK2_HIDDEN,
+};
+
+// Device bytes of the drafter's runtime for a context and chunk.
+static uint64_t inkling2_draft_bytes(uint32_t ctx, uint32_t rows) {
+    const uint64_t f = sizeof(float), b = DS4_INK2_DRAFT_BLOCK, steps = b - 1u, kv = DS4_INK2_KV;
+    const uint64_t global = (ctx < INKLING2_DRAFT_GLOBAL ? ctx : INKLING2_DRAFT_GLOBAL) + b + 1u;
+    const uint64_t rings = ((DS4_INK2_DRAFT_LAYERS - 1u) * (uint64_t)INKLING2_DRAFT_LOCAL_RING + global) * 2u * kv * 2u;
+    return (uint64_t)(DS4_INK2_DRAFT_LAYERS + 1u) * DS4_INK2_DRAFT_TAPS * f +
+        (uint64_t)rows * DS4_INK2_DRAFT_TAPS * DS4_INK2_HIDDEN * sizeof(uint16_t) +
+        (uint64_t)rows * (2u * DS4_INK2_HIDDEN + 2u * kv) * f + DS4_INK2_HIDDEN * f + rings +
+        b * (4u * DS4_INK2_HIDDEN + 2u * DS4_INK2_Q + 2u * kv + 2u * DS4_INK2_DRAFT_FF) * f +
+        steps * (2u * DS4_INK2_VOCAB + DS4_INK2_RNN_IN + 3u * DS4_INK2_RANK) * f +
+        (3u * DS4_INK2_RANK + 2u * DS4_INK2_RANK) * f + b * sizeof(int32_t) +
+        (uint64_t)DS4_INK2_VOCAB * (DS4_INK2_RANK + 1u) * sizeof(uint16_t) +
+        b * DS4_INK2_VOCAB * f + b * sizeof(int32_t) +
+        (uint64_t)INKLING2_LAYERS * INKLING2_HIST * f + (uint64_t)INKLING2_LAYERS * b * INKLING2_TRIAL_ROW * f;
 }
 
 /* Row buffers. F32 rows hold BF16-rounded values except `resid` (the

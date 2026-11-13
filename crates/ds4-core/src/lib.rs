@@ -22,6 +22,7 @@ mod glm_mtp;
 mod glm_vq;
 mod identify;
 mod inkling;
+mod inkling2_mtp;
 mod inkling2_vq;
 mod inkling_audio;
 mod inkling_media;
@@ -339,6 +340,8 @@ const GEMMA4_MTP_DRAFTS: i32 = 6;
 
 /// DSpark's seven block rows each propose one token (anchor-first).
 const MINIMAX_MTP_DRAFTS: i32 = 7;
+// Inkling-2 DSpark: a block of eight rows, the anchor and seven proposals.
+const INKLING2_MTP_DRAFTS: i32 = 7;
 
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
@@ -355,6 +358,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "Gemma-4 accepts at most six recursive draft tokens"
     } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
         "MiniMax DSpark drafts at most seven tokens per block"
+    } else if family == ModelFamily::Inkling2Vq && draft > INKLING2_MTP_DRAFTS {
+        "Inkling-2 DSpark drafts at most seven tokens per block"
     } else {
         return Ok(());
     };
@@ -1883,7 +1888,10 @@ impl Model {
                 minimax_vq::feature(tuning.mtp_draft_tokens),
             )
         } else if identified.shape.family == ModelFamily::Inkling2Vq {
-            TensorInventory::open_inkling2(Path::new(path), Inkling2Feature::Trunk)
+            TensorInventory::open_inkling2(
+                Path::new(path),
+                inkling2_vq::feature(tuning.mtp_draft_tokens),
+            )
         } else if identified.shape.variant == Variant::Mimo26FlashVq {
             TensorInventory::open_mimo2_vq(
                 Path::new(path),
@@ -3573,6 +3581,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::MinimaxVq {
             return self.eval_minimax_argmax(first, max_tokens, eos, limit);
         }
+        if self.host.family == ModelFamily::Inkling2Vq {
+            return self.eval_inkling2_argmax(first, max_tokens, eos, limit);
+        }
         if self.host.family == ModelFamily::Ling31Vq {
             return self.eval_ling31_argmax(first, max_tokens, eos, limit);
         }
@@ -4698,6 +4709,30 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_minimax_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_inkling2_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_inkling2_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,

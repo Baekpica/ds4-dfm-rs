@@ -16,8 +16,20 @@
  * run on GLM VQ's kernels and the routed experts on Inkling 2's runtime
  * (ds4_inkling2_gpu.cuh). */
 
-// Rows a forward sends through the head: none or the last (logits).
-typedef enum { INKLING2_HEAD_NONE, INKLING2_HEAD_LAST } inkling2_head_rows;
+typedef struct inkling2_draft_rt inkling2_draft_rt;
+
+// The open drafts with the release's drafter part (--mtp-draft above 1).
+static bool inkling2_drafting(const ds4_engine *e) {
+    return e->weights.inkling2_draft && e->mtp_draft_tokens > 1 && !getenv("DS4_MTP_SPEC_DISABLE");
+}
+#ifndef __APPLE__
+static void inkling2_draft_free(inkling2_draft_rt *d);
+static void inkling2_draft_reset(inkling2_draft_rt *d);
+#endif
+
+// Rows a forward sends through the head: none, the last (logits), every row
+// (a trial's verify logits, into the drafter's rows).
+typedef enum { INKLING2_HEAD_NONE, INKLING2_HEAD_LAST, INKLING2_HEAD_ALL } inkling2_head_rows;
 
 typedef struct {
     uint32_t ctx_cap, row_cap, ring_cap, position;
@@ -32,6 +44,8 @@ typedef struct {
     // attention state its key segments carry (NULL without a tier).
     inkling2_kv tier;
     ds4_gpu_tensor *state;
+    // DSpark drafter runtime (ds4_inkling2_draft.inc), when the open drafts.
+    inkling2_draft_rt *draft;
     uint16_t *host_embed;
     uint32_t matrices[INKLING2_LAYERS][3u * DS4_INK2_EXPERTS];
 #ifndef __APPLE__
@@ -57,6 +71,9 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
     ds4_gpu_tensor_free(g->partials);
     ds4_gpu_tensor_free(g->state);
     inkling2_kv_close(&g->tier);
+#ifndef __APPLE__
+    inkling2_draft_free(g->draft);
+#endif
     free(g->host_embed);
     memset(g, 0, sizeof(*g));
 }
@@ -70,6 +87,9 @@ static bool inkling2_graph_reset(ds4_inkling2_graph *g) {
         if (!ds4_gpu_tensor_fill_f32(g->hist[il], 0.0f, INKLING2_HIST)) { return false; }
     }
     inkling2_kv_restart(&g->tier);
+#ifndef __APPLE__
+    inkling2_draft_reset(g->draft);
+#endif
     g->position = 0u;
     g->failed = false;
     return true;
@@ -319,6 +339,8 @@ static bool inkling2_head(ds4_inkling2_graph *g, const ds4_model *m, const ds4_w
     return ok;
 }
 
+#include "ds4_inkling2_draft.inc"
+
 static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds4_weights *w, const int *tokens,
         uint32_t rows, uint32_t pos, inkling2_head_rows head) {
     if (g->failed || !g->ready || !rows || rows > g->row_cap || pos != g->position || pos > g->ctx_cap ||
@@ -336,11 +358,26 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
         // Block states before this layer: the inputs of boundaries below it.
         const uint32_t before = (il + DS4_INK2_BLOCK - 1u) / DS4_INK2_BLOCK;
         const uint32_t after = before + (inkling2_boundary(il) ? 1u : 0u);
-        if (!inkling2_attention(g, m, k, il, rows, pos, before) || !inkling2_mlp(g, m, k, il, rows, pos, after)) {
+        if (!inkling2_draft_tap(g, il, rows) || !inkling2_attention(g, m, k, il, rows, pos, before) || !inkling2_mlp(g, m, k, il, rows, pos, after) ||
+            !inkling2_draft_keep(g, il, rows)) {
             return false;
         }
     }
     if (head == INKLING2_HEAD_LAST && !inkling2_head(g, m, w, rows - 1u, 1u, g->logits)) { return false; }
+    if (head == INKLING2_HEAD_ALL && (!g->draft || rows > DS4_INK2_DRAFT_BLOCK ||
+            !inkling2_head(g, m, w, 0u, rows, g->draft->vlogits))) {
+        return false;
+    }
+    // The normalized output of every row (the head computed it above), then
+    // the drafter's context; a trial picks its anchor row at commit.
+    if (g->draft) {
+        ds4_gpu_tensor *const out[] = {g->xq};
+        const uint32_t norm = inkling2_index(m, w->output_norm);
+        if ((head == INKLING2_HEAD_NONE && !ds4_gpu_ink2_attn_res(g->gvq, out, g->blocks, DS4_INK2_BLOCKS, g->row_cap,
+                g->x, inkling2_index(m, w->inkling2->out_query), 1u, &norm, rows)) ||
+            !inkling2_draft_context(g, m, rows, pos) ||
+            (!g->draft->capture && !inkling2_draft_anchor(g->draft, rows - 1u))) { return false; }
+    }
     g->position = pos + rows;
     g->failed = false;
     return true;

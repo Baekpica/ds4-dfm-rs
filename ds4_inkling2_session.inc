@@ -83,3 +83,120 @@ static int inkling2_session_eval(ds4_session *s, int token, char *err, size_t er
     return 0;
 }
 
+/* DSpark trial: the drafter proposes tokens[1..n) after `first`; the target
+ * verifies the anchor and the proposals in one forward, target[i] its draw
+ * after row i (argmax, or the request's sampler). Returns n, 0 to decode
+ * plainly or -1. Convolution histories are saved before the verify forward
+ * and its rows' inputs kept, so commit can roll back a rejected tail. */
+int ds4_session_inkling2_trial(ds4_session *s, int first, int max_tokens, int *tokens, int *target, int cap,
+        char *err, size_t errlen) {
+    if (!s || !ds4_session_is_inkling2(s) || !tokens || !target || cap < 1) {
+        payload_set_err(err, errlen, "invalid Inkling-2 trial output");
+        return -1;
+    }
+#ifdef __APPLE__
+    (void)first; (void)max_tokens;
+    return 0;
+#else
+    ds4_inkling2_graph *g = &s->inkling2_graph;
+    inkling2_draft_rt *d = g->draft;
+    if (max_tokens <= 0 || !d || getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
+    if (!s->inkling2_graph_ready || !s->checkpoint_valid || g->failed || d->trial_n ||
+        g->position != (uint32_t)s->checkpoint.len || first < 0 || (uint32_t)first >= DS4_INK2_TOKENS) {
+        payload_set_err(err, errlen, "Inkling-2 trial needs a committed checkpoint");
+        return -1;
+    }
+    uint32_t n = (uint32_t)max_tokens;
+    if (n > (uint32_t)cap) { n = (uint32_t)cap; }
+    if (n > (uint32_t)s->engine->mtp_draft_tokens + 1u) { n = (uint32_t)s->engine->mtp_draft_tokens + 1u; }
+    if (n > DS4_INK2_DRAFT_BLOCK) { n = DS4_INK2_DRAFT_BLOCK; }
+    // The block's rows must fit, and the context rings hold the prompt.
+    if (n < 2u || !g->position || g->ctx_cap - g->position < DS4_INK2_DRAFT_BLOCK || n > g->row_cap) { return 0; }
+    const ds4_model *m = &s->engine->model;
+    const ds4_weights *w = &s->engine->weights;
+    const uint32_t start = g->position;
+    tokens[0] = first;
+    const double t0 = now_sec();
+    if (!inkling2_draft_propose(g, m, w, n, tokens)) {
+        inkling2_session_fail(s, err, errlen);
+        return -1;
+    }
+    const double t1 = now_sec();
+    d->draft_ms = (t1 - t0) * 1000.0;
+    bool ok = true;
+    for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
+        ok = ds4_gpu_ink2_draft_copy(d->hist_save, (uint64_t)il * INKLING2_HIST, g->hist[il], INKLING2_HIST);
+    }
+    d->capture = true;
+    ok = ok && inkling2_forward(g, m, w, tokens, n, start, INKLING2_HEAD_ALL);
+    d->capture = false;
+    if (!ok || !ds4_gpu_argmax_rows_tensor(d->vids, d->vlogits, DS4_INK2_VOCAB, n) ||
+        !ds4_gpu_tensor_read(d->vids, 0, target, (uint64_t)n * sizeof(int))) {
+        inkling2_session_fail(s, err, errlen);
+        return -1;
+    }
+    if (spec_sampling(&s->spec)) {
+        const float *rows = spec_host_rows(d->vlogits, DS4_N_VOCAB, n);
+        if (!rows) {
+            inkling2_session_fail(s, err, errlen);
+            return -1;
+        }
+        spec_sample_rows(&s->spec, rows, DS4_N_VOCAB, DS4_N_VOCAB, tokens, n, target);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (target[i] < 0 || (uint32_t)target[i] >= DS4_INK2_TOKENS) {
+            inkling2_session_fail(s, err, errlen);
+            return -1;
+        }
+    }
+    d->verify_ms = (now_sec() - t1) * 1000.0;
+    if (getenv("DS4_MTP_SPEC_LOG")) {
+        // Per slot: does proposal i equal the target's draw after row i - 1?
+        char hits[DS4_INK2_DRAFT_BLOCK + 1] = {0};
+        for (uint32_t i = 1; i < n; i++) { hits[i - 1] = tokens[i] == target[i - 1] ? '1' : '0'; }
+        fprintf(stderr, "ds4: Inkling-2 DSpark slots=%s\n", hits);
+    }
+    d->trial_n = n;
+    d->trial_pos = start;
+    memcpy(d->trial, tokens, n * sizeof(*tokens));
+    ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1u);
+    return (int)n;
+#endif
+}
+
+/* Keep the trial's first `keep` rows: the logits after the last kept row,
+ * the histories rolled back to it, and its Markov row as the next anchor's
+ * context. */
+int ds4_session_inkling2_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+#ifdef __APPLE__
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "Inkling-2 accepted prefix has no matching trial");
+    return 1;
+#else
+    ds4_inkling2_graph *g = s && ds4_session_is_inkling2(s) ? &s->inkling2_graph : NULL;
+    inkling2_draft_rt *d = g ? g->draft : NULL;
+    if (!d || !s->checkpoint_valid || keep < 1 || (uint32_t)keep > d->trial_n || g->failed ||
+        d->trial_pos != (uint32_t)s->checkpoint.len || g->position != d->trial_pos + d->trial_n) {
+        payload_set_err(err, errlen, "Inkling-2 accepted prefix has no matching trial");
+        return 1;
+    }
+    const uint32_t trial = d->trial_n;
+    d->trial_n = 0;
+    if (!ds4_gpu_tensor_read(d->vlogits, (uint64_t)(keep - 1) * DS4_N_VOCAB * sizeof(float), s->logits,
+            (uint64_t)DS4_N_VOCAB * sizeof(float))) { return inkling2_session_fail(s, err, errlen); }
+    for (uint32_t i = 0; i < DS4_INK2_TOKENS; i++) {
+        if (!isfinite(s->logits[i])) { return inkling2_session_fail(s, err, errlen); }
+    }
+    if (((uint32_t)keep < trial && !inkling2_draft_rollback(g, (uint32_t)keep)) ||
+        !inkling2_draft_anchor(d, (uint32_t)keep - 1u)) { return inkling2_session_fail(s, err, errlen); }
+    g->position = d->trial_pos + (uint32_t)keep;
+    for (int i = 0; i < keep; i++) { token_vec_push(&s->checkpoint, d->trial[i]); }
+    s->mtp_draft_valid = false;
+    ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint64_t)keep - 1u);
+    if (getenv("DS4_MTP_SPEC_LOG")) {
+        fprintf(stderr, "ds4: Inkling-2 DSpark trial=%u keep=%d pos=%u draft=%.1fms verify=%.1fms\n", trial, keep,
+                g->position, d->draft_ms, d->verify_ms);
+    }
+    return 0;
+#endif
+}

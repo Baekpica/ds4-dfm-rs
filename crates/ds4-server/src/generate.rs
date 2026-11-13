@@ -4272,7 +4272,8 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         // open leaves the default one-token draft.
         ds4_core::ModelFamily::Mimo2
         | ds4_core::ModelFamily::BeamVq
-        | ds4_core::ModelFamily::MinimaxVq => draft > 1,
+        | ds4_core::ModelFamily::MinimaxVq
+        | ds4_core::ModelFamily::Inkling2Vq => draft > 1,
         _ => false,
     }
 }

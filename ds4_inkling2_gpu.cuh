@@ -992,3 +992,5 @@ extern "C" int ds4_gpu_ink2_logits(ds4_gpu_tensor *logits, uint32_t rows) {
         count);
     return cuda_ok(cudaGetLastError(), "Inkling-2 logits");
 }
+
+#include "cuda/inkling2_draft.cuh"
