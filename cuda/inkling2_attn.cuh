@@ -39,7 +39,8 @@ enum {
     INK2A_SMEM = 2 * INK2A_STAGE_ELEMS * (int)sizeof(uint16_t),
     // Decode geometry: a 32-key tile per step, one warp per query head.
     INK2A_DTK = 32, INK2A_DTHREADS = INK2A_GROUP * 32, INK2A_PARTIAL = INK2A_DIM + 2,
-    INK2A_SPLITS = 64, INK2A_SPLIT_ROWS = 8, INK2A_MIN_SPLIT = 128,
+    INK2A_SPLITS = 64, INK2A_SPLIT_ROWS = 8, INK2A_MIN_SPLIT = 128, INK2A_SWA_SPLIT = 64,
+    INK2A_FULL_STAGE_MIN_KEYS = 32768,
     // NVFP4 pages: 128 keys of one KV head, K data/scales then V data/scales.
     INK2A_FMT_BF16 = 0, INK2A_FMT_NVFP4 = 1,
     INK2A_KB = 128, INK2A_FP4 = INK2A_DIM / 2, INK2A_FP4_ROW = INK2A_FP4 + 8,
@@ -140,7 +141,7 @@ __device__ __forceinline__ float ink2a_score(float dot, float bias) {
     return ink2a_bf16(ink2a_bf16(ink2a_bf16(dot) * INK2A_SCALE) + bias);
 }
 
-template <int FMT, int MODE = INK2A_ONE>
+template <int FMT, int MODE = INK2A_ONE, bool PREFETCH_BIAS = false, bool FAR_TILES = false>
 __global__ __launch_bounds__(INK2A_THREADS, 1)
 void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float *sinks, const float *gate,
         const void *cache_raw, uint32_t cap, uint32_t window, uint32_t rows, uint32_t base,
@@ -269,6 +270,25 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
     auto consume = [&](int stage, uint32_t kt0) {
         const uint16_t (*sk)[INK2A_SROW] = s_k(stage);
         const uint16_t (*sv)[INK2A_SROW] = s_v(stage);
+        // Keep raw bias loads ahead of QK; immediate scalar use serialized
+        // L1TEX waits. Volatile loads prevent the compiler from sinking them.
+        uint32_t biases[INK2A_NB][4];
+        if constexpr (PREFETCH_BIAS) {
+            #pragma unroll
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const int r = l / 2;
+                    const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
+                    const uint32_t d = qpos[r] - p;
+                    biases[nb][l] = 0;
+                    if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi && d < INK2A_EXTENT) {
+                        const uint16_t *src = rel + ((uint64_t)(tq0 + qrow[r]) * INK2A_HEADS + h) * INK2A_EXTENT + d;
+                        asm volatile("ld.global.u16 %0, [%1];" : "=r"(biases[nb][l]) : "l"(src) : "memory");
+                    }
+                }
+            }
+        }
         float s[INK2A_NB][4];
         const uint32_t k_row = lane & 7u, k_col = (lane >> 3) * 8u;
         #pragma unroll
@@ -284,23 +304,39 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
             }
         }
         float tile_max[2] = {-INFINITY, -INFINITY};
-        #pragma unroll
-        for (int nb = 0; nb < INK2A_NB; nb++) {
+        // Old complete tiles have zero bias and no masked scores.
+        const bool far = FAR_TILES && FMT == INK2A_FMT_NVFP4 && MODE == INK2A_ONE &&
+            tq0 + INK2A_TQ <= rows && q_lo >= kt0 + INK2A_TK + INK2A_EXTENT - 1 &&
+            kt0 >= seg_lo && kt0 + INK2A_TK <= seg_hi;
+        if (far) {
             #pragma unroll
-            for (int l = 0; l < 4; l++) {
-                const int r = l / 2;
-                const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
-                float x = -INFINITY;
-                if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
-                    const uint32_t d = qpos[r] - p;
-                    const uint32_t t = tq0 + qrow[r];
-                    const float bias = d < INK2A_EXTENT
-                        ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
-                        : 0.0f;
-                    x = ink2a_score(s[nb][l], bias);
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const float x = ink2a_score(s[nb][l], 0.0f);
+                    s[nb][l] = x;
+                    tile_max[l / 2] = fmaxf(tile_max[l / 2], x);
                 }
-                s[nb][l] = x;
-                tile_max[r] = fmaxf(tile_max[r], x);
+            }
+        } else {
+            #pragma unroll
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const int r = l / 2;
+                    const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
+                    float x = -INFINITY;
+                    if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
+                        const uint32_t d = qpos[r] - p;
+                        const uint32_t t = tq0 + qrow[r];
+                        const float bias = PREFETCH_BIAS ? __uint_as_float(biases[nb][l] << 16) : d < INK2A_EXTENT
+                            ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
+                            : 0.0f;
+                        x = ink2a_score(s[nb][l], bias);
+                    }
+                    s[nb][l] = x;
+                    tile_max[r] = fmaxf(tile_max[r], x);
+                }
             }
         }
         float rescale[2], tile_sum[2] = {0.0f, 0.0f};
@@ -416,7 +452,7 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
  * the split's keys, a lane per key of each 32-key tile staged in shared
  * memory (lane j reads K row j from word (i + j) % 64 on, so the 32 rows'
  * words fall in distinct banks). partial = (m, l, acc[128]). */
-template <int FMT>
+template <int FMT, bool STAGED = false>
 __global__ __launch_bounds__(INK2A_DTHREADS)
 void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const void *cache_raw, uint32_t cap,
         uint32_t window, uint32_t base, uint32_t splits, uint32_t seg_lo = 0, uint32_t seg_hi = UINT32_MAX,
@@ -439,7 +475,40 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
     const uint16_t *bias = rel + ((uint64_t)row * INK2A_HEADS + h) * INK2A_EXTENT;
     for (uint32_t t0 = k0; t0 < k1; t0 += INK2A_DTK) {
         __syncthreads();
-        if constexpr (FMT == INK2A_FMT_NVFP4) {
+        // Keep the bias load ahead of the tile wait and QK work.
+        uint16_t prefetched_bias = 0;
+        if constexpr (STAGED) {
+            const uint32_t p = t0 + lane;
+            if (p < k1 && pos - p < INK2A_EXTENT) {
+                asm volatile("ld.global.u16 %0, [%1];" : "=h"(prefetched_bias) : "l"(bias + pos - p));
+            }
+        }
+        if constexpr (FMT == INK2A_FMT_NVFP4 && STAGED) {
+            // Issue independent raw loads before any conversion consumes them.
+            constexpr int batches = (INK2A_DTK * 2 * 8 + INK2A_DTHREADS - 1) / INK2A_DTHREADS;
+            uint2 data[batches];
+            uint32_t scales[batches];
+            #pragma unroll
+            for (int batch = 0; batch < batches; batch++) {
+                const uint32_t i = threadIdx.x + batch * INK2A_DTHREADS;
+                if (i >= INK2A_DTK * 2 * 8) { continue; }
+                const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
+                const uint32_t p = min(t0 + j, k1 - 1), slot = p % INK2A_KB;
+                const uint8_t *half = ink2a_page(pages, p, kv, block0) + value * INK2A_KB * INK2A_FP4_ROW;
+                asm volatile("ld.global.v2.u32 {%0, %1}, [%2];"
+                    : "=r"(data[batch].x), "=r"(data[batch].y) : "l"(half + slot * INK2A_FP4 + grp * 8) : "memory");
+                asm volatile("ld.global.u8 %0, [%1];" : "=r"(scales[batch])
+                    : "l"(half + INK2A_KB * INK2A_FP4 + slot * 8 + grp) : "memory");
+            }
+            #pragma unroll
+            for (int batch = 0; batch < batches; batch++) {
+                const uint32_t i = threadIdx.x + batch * INK2A_DTHREADS;
+                if (i >= INK2A_DTK * 2 * 8) { continue; }
+                const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
+                uint32_t *dst = (value ? sv[j] : sk[j]) + grp * 8;
+                ink2a_fp4x16(data[batch], scales[batch], dst);
+            }
+        } else if constexpr (FMT == INK2A_FMT_NVFP4) {
             // 32 keys x (K, V) x 8 groups of 16 values, decoded to BF16 pairs.
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * 2 * 8; i += INK2A_DTHREADS) {
                 const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
@@ -449,6 +518,16 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 uint32_t *dst = (value ? sv[j] : sk[j]) + grp * 8;
                 ink2a_fp4x16(data, half[INK2A_KB * INK2A_FP4 + slot * 8 + grp], dst);
             }
+        } else if constexpr (STAGED) {
+            for (uint32_t i = threadIdx.x; i < INK2A_DTK * INK2A_DIM / 8; i += INK2A_DTHREADS) {
+                const uint32_t j = i / (INK2A_DIM / 8), c = i % (INK2A_DIM / 8);
+                const uint32_t p = min(t0 + j, k1 - 1);
+                const uint16_t *src = ink2a_row(cache, p, cap, window) + kv * INK2A_DIM;
+                __pipeline_memcpy_async(&sk[j][4 * c], src + 8 * c, 16);
+                __pipeline_memcpy_async(&sv[j][4 * c], src + INK2A_KV + 8 * c, 16);
+            }
+            __pipeline_commit();
+            __pipeline_wait_prior(0);
         } else {
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * INK2A_DIM / 4; i += INK2A_DTHREADS) {
                 const uint32_t j = i / (INK2A_DIM / 4), c = i % (INK2A_DIM / 4);
@@ -473,7 +552,9 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 dot = fmaf(__uint_as_float(bits & 0xffff0000u), sq[warp][2 * w + 1], dot);
             }
             const uint32_t d = pos - p;
-            score = ink2a_score(dot, d < INK2A_EXTENT ? __uint_as_float((uint32_t)bias[d] << 16) : 0.0f);
+            const float relative = STAGED ? __uint_as_float((uint32_t)prefetched_bias << 16)
+                : d < INK2A_EXTENT ? __uint_as_float((uint32_t)bias[d] << 16) : 0.0f;
+            score = ink2a_score(dot, relative);
         }
         float tmax = score;
         for (uint32_t o = 16; o; o >>= 1) { tmax = fmaxf(tmax, __shfl_xor_sync(0xffffffffu, tmax, o)); }

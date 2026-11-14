@@ -19,12 +19,11 @@
  * cuda/inkling2_attn.cuh. */
 #include "ds4_inkling2.h"
 #include "cuda/inkling2_attn.cuh"
+#include "cuda/inkling2_res.cuh"
 
-enum { INK2_EXPERTS = DS4_INK2_EXPERTS, INK2_USED = DS4_INK2_USED, INK2_HIDDEN = DS4_INK2_HIDDEN,
+enum { INK2_EXPERTS = DS4_INK2_EXPERTS, INK2_USED = DS4_INK2_USED,
        INK2_FFN = DS4_INK2_FFN, INK2_TABLE = 3 * INK2_EXPERTS, INK2_LAYERS = DS4_INK2_LAYERS,
-       INK2_VERIFY_ROWS = GLMVQ_VER_ROWS, INK2_ALIGN = 256, INK2_THREADS = 256,
-       INK2_PER_THREAD = INK2_HIDDEN / INK2_THREADS, INK2_MAX_STACK = DS4_INK2_BLOCKS + 1,
-       INK2_MAX_QUERIES = 3 };
+       INK2_VERIFY_ROWS = GLMVQ_VER_ROWS, INK2_ALIGN = 256 };
 static_assert((uint32_t)INK2_USED == (uint32_t)GLMVQ_DEC_USED, "GVQ decode geometry");
 static_assert(INK2_HIDDEN % INK2_THREADS == 0, "a CTA covers a hidden row");
 static_assert((uint32_t)DS4_INK2_SPLITS == (uint32_t)INK2A_SPLITS, "decode partial geometry");
@@ -468,111 +467,6 @@ extern "C" int ds4_gpu_ink2_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds
     return cuda_ok(cudaGetLastError(), "Inkling-2 router");
 }
 
-// Block-wide sums of `n` per-thread values (n <= 40), in place.
-template <uint32_t N>
-__device__ __forceinline__ void ink2_block_sum(float (&v)[N], uint32_t n, float *scratch) {
-    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, warps = blockDim.x / 32;
-    for (uint32_t i = 0; i < n; i++) {
-        float x = v[i];
-        for (uint32_t o = 16; o; o >>= 1) { x += __shfl_xor_sync(0xffffffffu, x, o); }
-        if (!lane) { scratch[warp * N + i] = x; }
-    }
-    __syncthreads();
-    for (uint32_t i = 0; i < n; i++) {
-        float x = 0.0f;
-        for (uint32_t w = 0; w < warps; w++) { x += scratch[w * N + i]; }
-        v[i] = x;
-    }
-    __syncthreads();
-}
-
-__device__ __forceinline__ float ink2_bf(uint16_t bits) { return __uint_as_float((uint32_t)bits << 16); }
-
-/* One CTA per token. Pass 1: each stacked state's sum of squares and its dot
- * with every query; pass 2: the attention-weighted sum of the normalized
- * states; then the weighted RMS norm of each output. */
-__global__ void __launch_bounds__(INK2_THREADS) ink2_attn_res_kernel(float *out0, float *out1, float *out2,
-        const uint16_t *blocks, uint32_t nblocks, uint32_t cap, const float *partial, const float *query,
-        uint32_t nq, const uint16_t *norm0, const uint16_t *norm1, const uint16_t *norm2) {
-    __shared__ float scratch[(INK2_THREADS / 32) * (INK2_MAX_STACK * (INK2_MAX_QUERIES + 1))];
-    constexpr uint32_t STATS = INK2_MAX_STACK * (INK2_MAX_QUERIES + 1);
-    const uint32_t row = blockIdx.x, n = nblocks + 1;
-    const float *x = partial + (uint64_t)row * INK2_HIDDEN;
-    auto state = [&](uint32_t j, uint32_t i) {
-        return j < nblocks ? ink2_bf(blocks[((uint64_t)j * cap + row) * INK2_HIDDEN + i]) : x[i];
-    };
-    float *outs[INK2_MAX_QUERIES] = {out0, out1, out2};
-    const uint16_t *norms[INK2_MAX_QUERIES] = {norm0, norm1, norm2};
-    float y[INK2_MAX_QUERIES][INK2_PER_THREAD];
-    uint32_t outputs = nq;
-    if (!query) {
-        // No attention: the partial state itself is normalized.
-        outputs = 1;
-        #pragma unroll
-        for (uint32_t k = 0; k < INK2_PER_THREAD; k++) { y[0][k] = x[threadIdx.x + k * INK2_THREADS]; }
-    } else {
-        float stats[STATS];
-        for (uint32_t i = 0; i < STATS; i++) { stats[i] = 0.0f; }
-        for (uint32_t j = 0; j < n; j++) {
-            #pragma unroll 2
-            for (uint32_t k = 0; k < INK2_PER_THREAD; k++) {
-                const uint32_t i = threadIdx.x + k * INK2_THREADS;
-                const float v = state(j, i);
-                stats[j] = fmaf(v, v, stats[j]);
-                for (uint32_t qi = 0; qi < nq; qi++) {
-                    stats[INK2_MAX_STACK + qi * INK2_MAX_STACK + j] =
-                        fmaf(query[(uint64_t)qi * INK2_HIDDEN + i], v,
-                            stats[INK2_MAX_STACK + qi * INK2_MAX_STACK + j]);
-                }
-            }
-        }
-        ink2_block_sum<STATS>(stats, STATS, scratch);
-        float inv[INK2_MAX_STACK], p[INK2_MAX_QUERIES][INK2_MAX_STACK];
-        for (uint32_t j = 0; j < n; j++) {
-            inv[j] = rsqrtf(__fdiv_rn(stats[j], (float)INK2_HIDDEN) + 1e-6f);
-        }
-        const float scale = rsqrtf((float)INK2_HIDDEN);
-        for (uint32_t qi = 0; qi < nq; qi++) {
-            float top = -INFINITY, total = 0.0f;
-            for (uint32_t j = 0; j < n; j++) {
-                p[qi][j] = stats[INK2_MAX_STACK + qi * INK2_MAX_STACK + j] * inv[j] * scale;
-                top = fmaxf(top, p[qi][j]);
-            }
-            for (uint32_t j = 0; j < n; j++) {
-                p[qi][j] = expf(p[qi][j] - top);
-                total += p[qi][j];
-            }
-            for (uint32_t j = 0; j < n; j++) { p[qi][j] = __fdiv_rn(p[qi][j], total); }
-        }
-        for (uint32_t qi = 0; qi < nq; qi++) {
-            #pragma unroll
-            for (uint32_t k = 0; k < INK2_PER_THREAD; k++) { y[qi][k] = 0.0f; }
-        }
-        for (uint32_t j = 0; j < n; j++) {
-            #pragma unroll 2
-            for (uint32_t k = 0; k < INK2_PER_THREAD; k++) {
-                const float v = state(j, threadIdx.x + k * INK2_THREADS) * inv[j];
-                for (uint32_t qi = 0; qi < nq; qi++) { y[qi][k] = fmaf(p[qi][j], v, y[qi][k]); }
-            }
-        }
-    }
-    float sq[INK2_MAX_QUERIES] = {0.0f, 0.0f, 0.0f};
-    for (uint32_t qi = 0; qi < outputs; qi++) {
-        #pragma unroll
-        for (uint32_t k = 0; k < INK2_PER_THREAD; k++) { sq[qi] = fmaf(y[qi][k], y[qi][k], sq[qi]); }
-    }
-    ink2_block_sum<INK2_MAX_QUERIES>(sq, outputs, scratch);
-    for (uint32_t qi = 0; qi < outputs; qi++) {
-        const float r = rsqrtf(__fdiv_rn(sq[qi], (float)INK2_HIDDEN) + 1e-6f);
-        float *o = outs[qi] + (uint64_t)row * INK2_HIDDEN;
-        #pragma unroll
-        for (uint32_t k = 0; k < INK2_PER_THREAD; k++) {
-            const uint32_t i = threadIdx.x + k * INK2_THREADS;
-            o[i] = glmvq_round(glmvq_mul(ink2_bf(norms[qi][i]), glmvq_mul(y[qi][k], r)));
-        }
-    }
-}
-
 extern "C" int ds4_gpu_ink2_attn_res(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *out, const ds4_gpu_tensor *blocks,
         uint32_t nblocks, uint32_t cap, const ds4_gpu_tensor *partial, uint32_t query, uint32_t nq,
         const uint32_t *norms, uint32_t rows) {
@@ -592,9 +486,15 @@ extern "C" int ds4_gpu_ink2_attn_res(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *ou
         o[i] = (float *)out[i]->ptr;
     }
     if (attend && !q) { return 0; }
-    ink2_attn_res_kernel<<<rows, INK2_THREADS, 0, ds4_current_stream()>>>(o[0], o[1], o[2],
-        nblocks ? (const uint16_t *)blocks->ptr : nullptr, nblocks, cap, (const float *)partial->ptr, q,
-        attend ? nq : 0u, w[0], w[1], w[2]);
+    static const bool specialize = !ink2_env_off("DS4_INKLING2_ATTN_RES_SPEC");
+    const auto *states = nblocks ? (const uint16_t *)blocks->ptr : nullptr;
+    if (specialize && (outputs == 1 || outputs == 3)) {
+        ink2_res_launch(o[0], o[1], o[2], states, nblocks, cap, (const float *)partial->ptr, q,
+            outputs, w[0], w[1], w[2], rows, ds4_current_stream());
+    } else {
+        ink2_attn_res_kernel<><<<rows, INK2_THREADS, 0, ds4_current_stream()>>>(o[0], o[1], o[2],
+            states, nblocks, cap, (const float *)partial->ptr, q, attend ? nq : 0u, w[0], w[1], w[2]);
+    }
     return cuda_ok(cudaGetLastError(), "Inkling-2 attention residual");
 }
 
@@ -887,10 +787,20 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
             if (!splits) { return 0; }
         } else {
             const uint32_t keys = window && last >= window ? window : last + 1;
-            splits = ink2a_splits(keys);
+            static const bool swa_decode = !ink2_env_off("DS4_INKLING2_SWA_DECODE");
+            static const bool full_decode = !ink2_env_off("DS4_INKLING2_FULL_DECODE");
+            const bool staged = rows == 1u && window == INK2A_EXTENT && swa_decode;
+            splits = staged ? (keys + INK2A_SWA_SPLIT - 1) / INK2A_SWA_SPLIT : ink2a_splits(keys);
             const dim3 grid(splits, INK2A_KV_HEADS, rows);
-            if (fp4) {
+            // Short-context end-to-end gain did not repeat; qualify from 32K.
+            if (fp4 && rows == 1u && keys >= INK2A_FULL_STAGE_MIN_KEYS && full_decode) {
+                ink2a_decode<INK2A_FMT_NVFP4, true><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                    (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            } else if (fp4) {
                 ink2a_decode<INK2A_FMT_NVFP4><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                    (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            } else if (staged) {
+                ink2a_decode<INK2A_FMT_BF16, true><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
                     (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
             } else {
                 ink2a_decode<INK2A_FMT_BF16><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
@@ -905,12 +815,29 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
     static cudaError_t ready4 = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
+    static cudaError_t ready_far = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
+    static cudaError_t ready_bias = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
+    static const bool prefetch_bias = !ink2_env_off("DS4_INKLING2_BIAS_PREFETCH");
+    static const bool far_tiles = !ink2_env_off("DS4_INKLING2_FAR_TILES");
+    const bool bias = !fp4 && window && prefetch_bias;
     if (!cuda_ok(fp4 ? ready4 : ready, "Inkling-2 attention shared memory")) { return 0; }
+    if (bias && !cuda_ok(ready_bias, "Inkling-2 bias prefetch shared memory")) { return 0; }
+    if (fp4 && far_tiles && !cuda_ok(ready_far, "Inkling-2 far tiles shared memory")) { return 0; }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
-    if (fp4) {
+    if (fp4 && far_tiles) {
+        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
+            (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
+    } else if (fp4) {
         ink2a_prefill<INK2A_FMT_NVFP4><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)out->ptr,
             (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,
             cache->ptr, cap, window, rows, pos);
+    } else if (bias) {
+        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true><<<grid, INK2A_THREADS, INK2A_SMEM, stream>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
+            (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
     } else {
         ink2a_prefill<INK2A_FMT_BF16><<<grid, INK2A_THREADS, INK2A_SMEM, stream>>>((float *)out->ptr,
             (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,

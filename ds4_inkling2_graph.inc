@@ -216,9 +216,17 @@ static bool inkling2_graph_bank(ds4_inkling2_graph *g, const ds4_inkling2_graph 
 // Projections of one input (Q4_K and BF16 records, at most four).
 static bool inkling2_mm(ds4_inkling2_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
+    static int grouped = -1;
+    if (grouped < 0) {
+        const char *v = getenv("DS4_INKLING2_Q4_GROUP");
+        grouped = !v || strcmp(v, "0");
+    }
     uint32_t index[4];
     for (uint32_t c = 0; c < count; c++) { index[c] = inkling2_index(m, ws[c]); }
-    const bool ok = count <= 4 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    // Decode streams the small r/k/v matrices beside the large projections.
+    const bool ok = count <= 4 && ((rows == 1u && grouped &&
+        ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x, rows)) ||
+        ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: Inkling-2 projection group of %u failed (rows=%u)\n", count, rows); }
     return ok;
 }

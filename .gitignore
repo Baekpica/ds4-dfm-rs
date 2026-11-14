@@ -246,6 +246,7 @@ tests/naive_banks
 /tests/ling31_quality
 /tests/beam_quality
 /tests/minimax_quality
+/tests/inkling2_quality
 /tests/test_minimax_decode
 /tests/test_minimax_mma8w
 /tests/test_minimax_rows
@@ -313,3 +314,5 @@ tests/naive_banks
 /tests/gemma4_q4_decode
 /tests/gemma4_mtp_gate
 /tests/gemma4_ring
+/tests/test_inkling2_res
+/tests/test_inkling2_attn

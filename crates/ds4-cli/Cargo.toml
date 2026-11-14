@@ -98,6 +98,10 @@ name = "minimax_quality"
 required-features = ["native"]
 
 [[example]]
+name = "inkling2_quality"
+required-features = ["native"]
+
+[[example]]
 name = "axk2_quality"
 required-features = ["native"]
 

@@ -263,15 +263,26 @@ the release's own references:
 
 ## Performance
 
-The 2K-64K sweep ([record](../speed-bench/gb10_spark_inkling2_1401989b.meta.txt):
-three fresh `ds4-bench` processes at `c705705b`, 2,048 new tokens and 128
-forced greedy tokens per frontier, busy SM clock 2,190 MHz): **979.6 prefill
-/ 23.62 decode** tok/s, medians of run means (2K-32K: 1,061.5 / 24.28).
+The November 15 [2K–64K record](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt) uses three fresh `ds4-bench`
+processes at `457e60f4`, 2,048 new tokens and 128 forced greedy tokens per
+frontier, all K/V resident, default PDL and no drafter. Medians of run means:
+**1,248.1 prefill / 29.79 decode** tok/s (2K–32K:
+1,333.2 / 30.72).
+Fresh matched `53043039` runs give 979.9 / 23.41: **+27.37% / +27.23%**.
+Final run means span 1,244.3–1,253.9 / 29.60–30.08; see the
+[three-Prefill/three-Decode report](inkling2-optimization-2026-11-14.md) for numerical gates,
+target attribution and D3's 32K boundary.
 
 | Frontier | 2K | 8K | 16K | 32K | 48K | 64K |
 |---|---|---|---|---|---|---|
-| Prefill | 1,089.3 | 1,117.4 | 1,064.0 | 978.7 | 905.1 | 832.4 |
-| Decode | 24.81 | 24.73 | 24.34 | 23.61 | 23.00 | 22.38 |
+| Prefill | 1,303.0 | 1,395.6 | 1,339.7 | 1,245.2 | 1,172.0 | 1,087.8 |
+| Decode | 31.46 | 31.38 | 30.85 | 29.83 | 28.92 | 28.05 |
+
+Per-frontier medians of three. Busy clocks 2,177–2,190 MHz;
+minimum available memory 7.75 GiB and PSI 0 across the six valid runs.
+
+The following SSD/1M measurements are inherited from the initial release;
+they were not rerun by this resident text campaign.
 
 Resident against the SSD tier (same corpus, 2,048-row chunks; prefill over
 the span since the previous frontier, 32 decoded tokens; prefill tok/s /
@@ -370,9 +381,26 @@ essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
 resume rule with its image cut, the ring spans a copy takes, the bank
-checkpoint rules and the snapshot sizes, model-free;
+checkpoint rules and the snapshot sizes, model-free. Its GPU fixtures check
+fixed residual stack/query widths and attention bias prefetch against their
+original paths; projection dispatch covers the one-row grouped path and
+its unsupported-format fallback;
 `make test-inkling2-vit-attn` checks the tower's flash attention against an
 F64 softmax on a GPU.
+
+See the [November 14–15 optimization record](inkling2-optimization-2026-11-14.md)
+for measured text prefill/decode changes and their bounds.
+
+`make tests/inkling2_quality CUDA_ARCH=sm_121` builds the Rust arithmetic
+recorder; `tests/inkling2_quality --self-test` checks its NLL math without a
+model. Run it under the host memory guard with `MODEL_DIR`,
+`tests/fixtures/inkling2-decode-quality.json` and an output JSON path as its
+three arguments. It records NLL/top-1 at 1,280 fixed assistant positions,
+including 32K/64K prefixes, and checks full-vocabulary finiteness. Compare
+fresh baseline, candidate and an existing arithmetic switch (such as
+`DS4_INKLING2_GAIN_DOT=0`) on the same host; no fixed universal tolerance is
+built in. The fixture pins authored text and official template/tokenizer
+hashes. It is a numerical regression check, not a general ability benchmark.
 
 ## Not yet supported
 
@@ -389,5 +417,11 @@ F64 softmax on a GPU.
 | `DS4_INKLING2_DSPARK_GATE=0` | draft on every step (no rate gate) |
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
+| `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
+| `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
+| `DS4_INKLING2_FAR_TILES=0` | resident NVFP4 prefill attention checks masks and relative biases on every score, including old complete tiles |
+| `DS4_INKLING2_SWA_DECODE=0` | one-row sliding attention uses synchronous KV copies and 128-key splits instead of staged 64-key splits |
+| `DS4_INKLING2_FULL_DECODE=0` | one-row resident NVFP4 attention at 32K or more keys reads each group serially instead of batching raw loads; shorter contexts retain the original path |
+| `DS4_INKLING2_Q4_GROUP=0` | one-row Q4 projections run separately, with the scalar path for small matrices |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |

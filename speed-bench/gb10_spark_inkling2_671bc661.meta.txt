@@ -1,0 +1,69 @@
+Inkling-2-Small VQ final matched speed sweep, 2026-11-15
+Source: original 53043039d8cb257dab005e3aec616dbf5ff75905; final 457e60f4dc97b8ca1647cc69ad6d8769dc47155a.
+Original binary SHA256 bcc68a0162ad24aa9fc517000d2857da3ac041a9f627badf36f455f5ac3efe0d.
+Final binary SHA256 671bc6615f70343d8f37b249ecbcf5069a48b8081c333c3e24823b544b073dfa.
+Build: make ds4-bench CUDA_ARCH=sm_121; CUDA 13.4.92, sm_121a. Clean final source, unchanged compiled inference bytes.
+Artifact: Baekpica/Inkling-2-Small-VQ-GGUF at b79f2fbd27e981691a7d0c930e0c42b9ece08ec4, 52 parts.
+release.json SHA256 ff495b121f21e92870db8909f54880da61e02b56a37a9f9af8e60d17691e13ef; loader checks tensor spans.
+Corpus: speed-bench/promessi_sposi.txt SHA256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f.
+Host: one GB10 / DGX Spark, 48 SMs, driver user/kernel 610.57.04/615.71.10.
+Boot: 94cfabbf-7a48-4692-b38a-78e43e9be86d; enabled successful nvidia-clocks.service 300-2200 MHz, no profiler overrides.
+Protocol: 2048..65536 step 2048, 2048 NEW prompt tokens (one chunk) per frontier, 128 forced greedy tokens, default PDL, no drafter, all KV resident.
+Order: base1, final1, final2, base2, base3, final3; six fresh processes, one GPU job at a time.
+Original CSVs: gb10_spark_inkling2_bcc68a01_{1,2,3}.csv; final CSVs: gb10_spark_inkling2_671bc661_{1,2,3}.csv.
+After each previous exit: nvtop Compute and htop inspection, clear_cache, both views checked again.
+Guard command (same both arms):
+python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 --reserve-gib 2 --trip-gib 2 --psi-full-limit 0 --timeout 1800 --log <run>/memory.jsonl -- taskset -c 5-9,15-19 <binary> --cuda -m <release-dir> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir <run>/proof --csv <run>/bench.csv
+Runtime controls: {"LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64:"}. No DS4 overrides.
+All six exits 0 and GPU process list empty after each; minimum available 7.75031 GiB, max PSI full avg10 0.0.
+sweep-base-1: prefill 965.64469, decode 23.32062; MemAvailable min 7.95405 GiB, PSI 0.0; guard max/high 117.2/116.2 GiB; busy clocks {'2184 MHz': 304, '2190 MHz': 5}; temperature [47, 72] C
+sweep-base-2: prefill 979.89719, decode 23.49719; MemAvailable min 7.92344 GiB, PSI 0.0; guard max/high 117.1/116.1 GiB; busy clocks {'2184 MHz': 302, '2190 MHz': 3}; temperature [58, 71] C
+sweep-base-3: prefill 981.33938, decode 23.41219; MemAvailable min 7.94088 GiB, PSI 0.0; guard max/high 117.1/116.1 GiB; busy clocks {'2184 MHz': 302, '2190 MHz': 3}; temperature [57, 71] C
+sweep-final-1: prefill 1248.08250, decode 30.07562; MemAvailable min 7.75031 GiB, PSI 0.0; guard max/high 117.2/116.2 GiB; busy clocks {'2184 MHz': 217, '2177 MHz': 21}; temperature [57, 75] C
+sweep-final-2: prefill 1244.34188, decode 29.78750; MemAvailable min 7.93196 GiB, PSI 0.0; guard max/high 117.2/116.2 GiB; busy clocks {'2184 MHz': 210, '2177 MHz': 30}; temperature [59, 76] C
+sweep-final-3: prefill 1253.89031, decode 29.59656; MemAvailable min 7.91239 GiB, PSI 0.0; guard max/high 117.1/116.1 GiB; busy clocks {'2184 MHz': 209, '2177 MHz': 33}; temperature [58, 76] C
+Summary: median of three arithmetic run means over 32 frontier rates (not pooled token/wall throughput).
+Original 2K-64K: 979.89719 prefill, 23.41219 decode; final 1248.08250, 29.78750 tok/s.
+Gain vs fresh matched original: 27.36872% prefill, 27.23074% decode.
+Final 2K-32K: 1333.21250 / 30.71688 tok/s.
+Per-frontier medians of three, prefill/decode:
+2048: base 1091.52/24.64, final 1302.96/31.46
+4096: base 1144.90/24.52, final 1413.31/31.32
+6144: base 1134.22/24.56, final 1411.74/31.34
+8192: base 1116.21/24.52, final 1395.58/31.38
+10240: base 1116.16/24.27, final 1396.17/31.03
+12288: base 1100.25/24.26, final 1384.93/31.10
+14336: base 1080.95/24.17, final 1362.98/30.87
+16384: base 1063.52/24.13, final 1339.73/30.85
+18432: base 1062.65/24.01, final 1346.33/30.65
+20480: base 1044.97/23.96, final 1326.98/30.54
+22528: base 1031.50/23.93, final 1300.80/30.47
+24576: base 1026.69/23.81, final 1298.48/30.27
+26624: base 1006.56/23.76, final 1274.65/30.23
+28672: base 997.79/23.66, final 1268.25/30.15
+30720: base 988.80/23.61, final 1262.21/29.98
+32768: base 976.36/23.39, final 1245.18/29.83
+34816: base 963.67/23.33, final 1237.83/29.71
+36864: base 960.40/23.25, final 1231.56/29.63
+38912: base 951.96/23.17, final 1227.42/29.43
+40960: base 940.16/23.08, final 1216.77/29.34
+43008: base 927.00/22.97, final 1193.20/29.27
+45056: base 916.37/22.90, final 1177.09/29.04
+47104: base 908.50/22.88, final 1175.90/29.03
+49152: base 902.63/22.75, final 1171.99/28.92
+51200: base 889.09/22.72, final 1153.21/28.79
+53248: base 882.02/22.65, final 1148.04/28.71
+55296: base 878.30/22.58, final 1141.39/28.53
+57344: base 864.16/22.53, final 1123.50/28.49
+59392: base 853.67/22.40, final 1114.24/28.40
+61440: base 848.31/22.30, final 1108.95/28.26
+63488: base 842.60/22.28, final 1105.46/28.13
+65536: base 830.14/22.20, final 1087.77/28.05
+Plot gb10_spark_inkling2_671bc661_ts.svg: final run 1 (median prefill run); raw CSVs retain every run, summary phase medians are independent.
+Proof: all 192 frontiers contain 200058 finite logits and 128 valid generated IDs.
+All-six exact prefill equality at 32/32 frontiers; all-six generated-ID equality at 13/32.
+Within each arm all 32 frontiers' logits and generated IDs repeat exactly across the three processes.
+Final decode means decline 30.076 -> 29.788 -> 29.597 (1.6%); prefill is not monotonic. Final busy temperatures reach 75-76 C and include 2177 MHz; originals reach 71-72 C with 2184-2190 MHz. These observations do not explain all rate variation; residual variation is unassigned. Every final run exceeds every original run in both phases.
+Arithmetic changes D1/D2 use the 1280-position empirical-noise NLL/top-1 gate in the optimization report; identity is not a quality requirement.
+One earlier attempt aborted with SIGTERM during cold load before any frontier, after sustained high memory pressure; preserved separately and excluded. No guard/context/clock change for retry.
+Scope: text resident 2K-64K plain decoding only; no new 1M/SSD/serving/DSpark/vision qualification. Weights unchanged.
