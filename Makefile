@@ -1006,7 +1006,7 @@ tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
-	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn
+	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn test-inkling2-res
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1035,6 +1035,12 @@ tests/test_inkling2_vit_attn: tests/test_inkling2_vit_attn.cu cuda/inkling2_vit_
 test-inkling2-vit-attn: tests/test_inkling2_vit_attn
 	./tests/test_inkling2_vit_attn
 
+tests/test_inkling2_res: tests/test_inkling2_res.cu cuda/inkling2_res.cuh ds4_inkling2.h ds4_glmvq.h cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+test-inkling2-res: tests/test_inkling2_res
+	./tests/test_inkling2_res
+
 # CI. The workflow runs exactly the four ci-* targets, one parallel job each.
 # CI holds only checks that cover every family; a new check joins a group
 # here, never a workflow step:
@@ -1060,7 +1066,7 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
-gate-inkling2: test-inkling2-sync-keep test-inkling2-banks
+gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
 
 .PHONY: test-gemma4-memory
@@ -2272,7 +2278,7 @@ INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_kv.inc 
 	ds4_inkling2_draft.inc ds4_inkling2_session.inc ds4_inkling2_vision.inc ds4_inkling2_payload.inc \
 	ds4_inkling2_batch.inc ds4_inkling2_bank_payload.inc
 ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_draft.cuh \
+ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_res.cuh cuda/inkling2_draft.cuh \
 	cuda/inkling2_vit_attn.cuh cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
@@ -2736,6 +2742,7 @@ BUILD_OBJECTS := \
     tests/test_step37_spec.o tests/test_step37_vision.o
 
 BUILD_PROGRAMS := \
+    tests/test_inkling2_res \
     ds4 ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
     ds4-eval ds4-rs ds4-server ds4-server-c ds4-server-rs ds4_cpu ds4_native ds4_server_test \
     ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
