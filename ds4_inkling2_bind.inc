@@ -407,8 +407,8 @@ static bool inkling2_gpu_bind(ds4_weights *w, const ds4_model *m) {
  * precision, checked at open; the forward is ds4_inkling2_vision.inc. */
 enum { INKLING2_VIT_LAYERS = 23, INKLING2_VIT_FF = 4096, INKLING2_VIT_MERGE = 4096,
        // Language tokens one image may hold (inkling_media.rs MAX_TOKENS2):
-       // ~0.85 GB of tower activations and scratch at the cap.
-       INKLING2_IMAGE_TOKENS = 4096 };
+       // 4,096 pixels a side, the model card's range, in 40-pixel tokens.
+       INKLING2_IMAGE_TOKENS = (4096 + 39) / 40 * ((4096 + 39) / 40) };
 
 typedef struct {
     const ds4_tensor *ln1_w, *ln1_b, *q_w, *q_b, *k_w, *k_b, *v_w, *v_b, *o_w, *o_b, *ls1;

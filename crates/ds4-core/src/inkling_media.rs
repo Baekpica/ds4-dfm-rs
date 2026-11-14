@@ -2,7 +2,10 @@
 
 use std::io::Cursor;
 
-use image::{metadata::Orientation, DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
+use image::{
+    imageops::FilterType, metadata::Orientation, DynamicImage, ImageDecoder, ImageFormat,
+    ImageReader, Limits,
+};
 
 use crate::{Error, Result, VisionImageInfo};
 
@@ -237,7 +240,7 @@ fn pack(
     std: [f32; 3],
     times: u32,
 ) -> Result<ImagePixels> {
-    let (width, height) = (info.source_width, info.source_height);
+    let (width, height) = (info.content_width, info.content_height);
     if u64::from(width) * u64::from(height) * u64::from(CHANNELS) != rgb.len() as u64 {
         return Err(image_error("invalid Inkling RGB dimensions or byte count"));
     }
@@ -277,29 +280,50 @@ fn pack(
 // 40-pixel tokens padded right and bottom, mean and std 0.5 fused with the
 // rescale, alpha composited over a checkerboard first.
 const V2_SCALE: f32 = 0.5 * PIXEL_SCALE;
-/// Tokens of one image. The processor has no maximum; 4,096 (6.5 MP) keeps
-/// the tower's ~0.85 GB peak beside a 1M-context drafting serve.
-pub(crate) const MAX_TOKENS2: u32 = 4096;
+/// The model card's image range is 4,096 pixels a side; its evaluation
+/// downsampled a longer side to 4,096 keeping the aspect ratio, as here (the
+/// processor itself never resizes).
+const MAX_SIDE2: u32 = 4096;
+/// Tokens of one image at most: 103 x 103 at 4,096 x 4,096.
+pub(crate) const MAX_TOKENS2: u32 = MAX_SIDE2.div_ceil(PATCH) * MAX_SIDE2.div_ceil(PATCH);
 /// Image tokens whose F32 rows (18 KiB each) wait together for one prefill;
 /// more new images prefill in stages.
 pub(crate) const ROWS_BUDGET2: u32 = 16_384;
+
+/// The content size: both sides times 4,096 / the longer one when it is
+/// longer (rounded, at least one pixel).
+fn fit2(width: u32, height: u32) -> (u32, u32) {
+    let long = width.max(height);
+    if long <= MAX_SIDE2 {
+        return (width, height);
+    }
+    let scale = |side: u32| {
+        ((u64::from(side) * u64::from(MAX_SIDE2) + u64::from(long) / 2) / u64::from(long)).max(1)
+            as u32
+    };
+    (scale(width), scale(height))
+}
 
 fn image_geometry2(width: u32, height: u32, budget: u32) -> Result<VisionImageInfo> {
     if width == 0 || height == 0 || width > MAX_EDGE || height > MAX_EDGE {
         return Err(image_error("invalid Inkling-2 image dimensions"));
     }
-    let (rows, cols) = (height.div_ceil(PATCH), width.div_ceil(PATCH));
+    let (content_width, content_height) = fit2(width, height);
+    let (rows, cols) = (
+        content_height.div_ceil(PATCH),
+        content_width.div_ceil(PATCH),
+    );
     let count = u64::from(rows) * u64::from(cols);
     if count > u64::from(budget.min(MAX_TOKENS2)) {
         return Err(image_error(
-            "Inkling-2 image exceeds the media token budget (maximum 4096)",
+            "Inkling-2 image exceeds its probed token count",
         ));
     }
     Ok(VisionImageInfo {
         source_width: width,
         source_height: height,
-        content_width: width,
-        content_height: height,
+        content_width,
+        content_height,
         padded_width: cols * PATCH,
         padded_height: rows * PATCH,
         grid_width: cols,
@@ -329,6 +353,13 @@ pub(crate) fn prepare_image2(data: &[u8], budget: u32) -> Result<ImagePixels> {
         DynamicImage::from_decoder(decoder).map_err(decode_error)?
     };
     image.apply_orientation(orientation);
+    if (image.width(), image.height()) != (info.content_width, info.content_height) {
+        image = image.resize_exact(
+            info.content_width,
+            info.content_height,
+            FilterType::CatmullRom,
+        );
+    }
     let rgb = if image.color().has_alpha() {
         checkerboard(&image.into_rgba8())
     } else {
@@ -498,6 +529,38 @@ mod tests {
         // Half alpha over the 204 cell: (100 * 128 + 204 * 127 + 127) / 255.
         let half = prepare_image2(&png(1, 1, &[100, 100, 100, 128]), 1).unwrap();
         assert_eq!(half.pixels[0], (152.0 - 127.5) / 127.5);
+    }
+
+    #[test]
+    fn inkling2_fits_the_card_range() {
+        // (source) -> (content) -> tokens: sides up to 4,096 stay, a longer
+        // one scales both to 4,096 on the long side.
+        for (w, h, cw, ch, tokens) in [
+            (4096, 4096, 4096, 4096, MAX_TOKENS2),
+            (4032, 3024, 4032, 3024, 101 * 76),
+            (8000, 6000, 4096, 3072, 103 * 77),
+            (5000, 10, 4096, 8, 103),
+            (3, 9000, 1, 4096, 103),
+            (32768, 1, 4096, 1, 103),
+        ] {
+            let info = image_geometry2(w, h, MAX_TOKENS2).unwrap();
+            assert_eq!(
+                (
+                    info.source_width,
+                    info.content_width,
+                    info.content_height,
+                    info.token_count
+                ),
+                (w, cw, ch, tokens)
+            );
+        }
+        assert_eq!(MAX_TOKENS2, 10_609);
+        // A long side downsamples before the processor's padding and alpha.
+        let data = png(4100, 1, &[10, 20, 30, 255].repeat(4100));
+        let got = prepare_image2(&data, 103).unwrap();
+        assert_eq!((got.rows, got.cols), (1, 103));
+        assert_eq!(got.pixels[0], (10.0 - 127.5) / 127.5);
+        assert_eq!(got.pixels[102 * 1600 * 3 + 16 * 3], (-1.0 - 127.5) / 127.5);
     }
 
     #[test]

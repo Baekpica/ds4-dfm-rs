@@ -215,13 +215,21 @@ enum {
 /* patches[4 t + 2 mh + mw] = BF16(pixels[t] at rows 20 mh.., columns 20 mw..),
  * (y, x, channel) order: the patch embedding's input. */
 int ds4_gpu_ink2_vit_patches(ds4_gpu_tensor *patches, const ds4_gpu_tensor *pixels, uint32_t tokens);
-/* x[0] = BF16(cls[0] + cls[1]); x[1 + i] = BF16(emb[i] + BF16(the 32 x 32
- * `table` bilinearly resized to the 2 rows x 2 cols patch grid at patch i)). */
+/* Patches p0..p0 + count - 1 (emb holds their rows): x[1 + i] = BF16(emb[i - p0]
+ * + BF16(the 32 x 32 `table` bilinearly resized to the 2 rows x 2 cols patch
+ * grid at patch i)); from patch 0 also x[0] = BF16(cls[0] + cls[1]). */
 int ds4_gpu_ink2_vit_embed(ds4_gpu_tensor *x, const ds4_gpu_tensor *emb, const ds4_gpu_tensor *table,
-    const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols);
-/* Axial 2-D RoPE (theta 1e4, pairwise) of q and k in packed [q | k | v] rows:
- * patches at (row + 1, col + 1), CLS at (0, 0); result BF16. */
-int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols);
+    const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols, uint32_t p0, uint32_t count);
+/* Rows r0..r0 + m - 1 of packed F32 [q | k | v] (qkv holds those m rows):
+ * axial 2-D RoPE (theta 1e4, pairwise) of q and k, patches at (row + 1,
+ * col + 1), CLS at (0, 0); q, k and v land as BF16 in qkv16's rows r0... */
+int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv16, const ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols,
+    uint32_t r0, uint32_t m);
+/* Query rows of one dense-attention tile over n rows (V4.1's S/P budget). */
+uint32_t ds4_gpu_ink2_vit_attn_rows(uint32_t n);
+/* Dense attention (scale 1/8, 16 heads of 64) of query rows q0..q0 + m - 1
+ * over all n rows of BF16 [q | k | v]: o [m][1024] F32, BF16 values. */
+int ds4_gpu_ink2_vit_attn(ds4_gpu_tensor *o, const ds4_gpu_tensor *qkv16, uint32_t n, uint32_t q0, uint32_t m);
 /* Layer scale: x = BF16(x + BF16(scale * y)) over `n` rows of `dim`. */
 int ds4_gpu_ink2_vit_scale_add(ds4_gpu_tensor *x, const ds4_gpu_tensor *y, const ds4_gpu_tensor *scale, uint32_t n,
     uint32_t dim);

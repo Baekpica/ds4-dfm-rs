@@ -1074,24 +1074,25 @@ __device__ __forceinline__ void ink2_vit_taps(uint32_t index, uint32_t size, uin
     }
 }
 
+// Block b: the CLS row when the range starts at patch 0, then patches p0...
 __global__ void ink2_vit_embed_kernel(float *x, const float *emb, const float *table, const float *cls,
-        uint32_t rows, uint32_t cols) {
-    const uint32_t r = blockIdx.x;
-    float *out = x + (uint64_t)r * DS4_INK2_VIT_DIM;
-    if (r == 0) {
+        uint32_t rows, uint32_t cols, uint32_t p0) {
+    const uint32_t b = blockIdx.x - (p0 == 0);
+    if (p0 == 0 && blockIdx.x == 0) {
         for (uint32_t c = threadIdx.x; c < DS4_INK2_VIT_DIM; c += blockDim.x) {
-            out[c] = glmvq_round(cls[c] + cls[DS4_INK2_VIT_DIM + c]);
+            x[c] = glmvq_round(cls[c] + cls[DS4_INK2_VIT_DIM + c]);
         }
         return;
     }
-    // Patch r - 1 in 2 x 2 block order -> its row and column on the grid.
-    const uint32_t i = r - 1, token = i / 4;
+    // Patch i in 2 x 2 block order -> its row and column on the grid.
+    const uint32_t i = p0 + b, token = i / 4;
+    float *out = x + (uint64_t)(i + 1) * DS4_INK2_VIT_DIM;
     const uint32_t row = token / cols * 2 + i % 4 / 2, col = token % cols * 2 + i % 2;
     uint32_t th[2], tw[2];
     float wh[2], ww[2];
     ink2_vit_taps(row, 2 * rows, th, wh);
     ink2_vit_taps(col, 2 * cols, tw, ww);
-    const float *e = emb + (uint64_t)i * DS4_INK2_VIT_DIM;
+    const float *e = emb + (uint64_t)b * DS4_INK2_VIT_DIM;
     for (uint32_t c = threadIdx.x; c < DS4_INK2_VIT_DIM; c += blockDim.x) {
         // F32 weighted sum of the four BF16 table rows, cast to BF16, added.
         float pos = 0.0f;
@@ -1106,49 +1107,102 @@ __global__ void ink2_vit_embed_kernel(float *x, const float *emb, const float *t
 }
 
 extern "C" int ds4_gpu_ink2_vit_embed(ds4_gpu_tensor *x, const ds4_gpu_tensor *emb, const ds4_gpu_tensor *table,
-        const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols) {
+        const ds4_gpu_tensor *cls, uint32_t rows, uint32_t cols, uint32_t p0, uint32_t count) {
     const uint64_t patches = (uint64_t)rows * cols * 4;
-    if (!rows || !cols || patches + 1 > UINT32_MAX || !gvq_floats(x, (patches + 1) * DS4_INK2_VIT_DIM) ||
-        !gvq_floats(emb, patches * DS4_INK2_VIT_DIM) ||
+    if (!rows || !cols || !count || patches + 1 > UINT32_MAX || p0 > patches || count > patches - p0 ||
+        !gvq_floats(x, (patches + 1) * DS4_INK2_VIT_DIM) || !gvq_floats(emb, (uint64_t)count * DS4_INK2_VIT_DIM) ||
         !gvq_floats(table, (uint64_t)DS4_INK2_VIT_GRID * DS4_INK2_VIT_GRID * DS4_INK2_VIT_DIM) ||
         !gvq_floats(cls, 2 * DS4_INK2_VIT_DIM)) { return 0; }
-    ink2_vit_embed_kernel<<<(uint32_t)(patches + 1), 256, 0, ds4_current_stream()>>>((float *)x->ptr,
-        (const float *)emb->ptr, (const float *)table->ptr, (const float *)cls->ptr, rows, cols);
+    ink2_vit_embed_kernel<<<count + (p0 == 0), 256, 0, ds4_current_stream()>>>((float *)x->ptr,
+        (const float *)emb->ptr, (const float *)table->ptr, (const float *)cls->ptr, rows, cols, p0);
     return cuda_ok(cudaGetLastError(), "Inkling-2 vision embedding");
 }
 
-// One thread per (row, q|k, head, pair): pairs 0..15 rotate by the column,
-// 16..31 by the row (recomposition_frequencies: width, then height).
-__global__ void ink2_vit_rope_kernel(float *qkv, uint32_t n, uint32_t cols) {
+// One thread per (row, q|k|v, head, pair) of rows r0..: q and k pairs 0..15
+// rotate by the column, 16..31 by the row (recomposition_frequencies: width,
+// then height); v passes. All land in qkv16 as BF16, exact: every value is
+// on the BF16 grid.
+__global__ void ink2_vit_rope_kernel(__nv_bfloat16 *qkv16, const float *qkv, uint32_t m, uint32_t r0,
+        uint32_t cols) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t per_row = 2 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
-    if (i >= (uint64_t)n * per_row) { return; }
-    const uint32_t r = (uint32_t)(i / per_row), rest = (uint32_t)(i % per_row), pair = rest % INK2_VIT_PAIRS;
-    uint32_t prow = 0, pcol = 0;
-    if (r) {
-        const uint32_t p = r - 1, token = p / 4;
-        prow = token / cols * 2 + p % 4 / 2 + 1;
-        pcol = token % cols * 2 + p % 2 + 1;
+    const uint32_t per_row = 3 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
+    if (i >= (uint64_t)m * per_row) { return; }
+    const uint32_t lr = (uint32_t)(i / per_row), rest = (uint32_t)(i % per_row), pair = rest % INK2_VIT_PAIRS;
+    // [q | k | v]: rest / pairs is the q, k or v head.
+    const uint64_t at = (uint64_t)(rest / INK2_VIT_PAIRS) * DS4_INK2_VIT_HEAD + 2 * pair;
+    const float *v = qkv + (uint64_t)lr * 3 * DS4_INK2_VIT_DIM + at;
+    __nv_bfloat16 *o = qkv16 + (uint64_t)(r0 + lr) * 3 * DS4_INK2_VIT_DIM + at;
+    float y1 = v[0], y2 = v[1];
+    if (rest < 2 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS) {
+        const uint32_t r = r0 + lr;
+        uint32_t prow = 0, pcol = 0;
+        if (r) {
+            const uint32_t p = r - 1, token = p / 4;
+            prow = token / cols * 2 + p % 4 / 2 + 1;
+            pcol = token % cols * 2 + p % 2 + 1;
+        }
+        const uint32_t j = pair % (INK2_VIT_PAIRS / 2);
+        const float inv = 1.0f / powf(10000.0f, (float)(2 * j) / (float)INK2_VIT_PAIRS);
+        const float angle = __fmul_rn((float)(pair < INK2_VIT_PAIRS / 2 ? pcol : prow), inv);
+        const float c = cosf(angle), s = sinf(angle);
+        y1 = glmvq_round(__fadd_rn(__fmul_rn(v[0], c), __fmul_rn(-v[1], s)));
+        y2 = glmvq_round(__fadd_rn(__fmul_rn(v[1], c), __fmul_rn(v[0], s)));
     }
-    const uint32_t j = pair % (INK2_VIT_PAIRS / 2);
-    const float inv = 1.0f / powf(10000.0f, (float)(2 * j) / (float)INK2_VIT_PAIRS);
-    const float angle = __fmul_rn((float)(pair < INK2_VIT_PAIRS / 2 ? pcol : prow), inv);
-    const float c = cosf(angle), s = sinf(angle);
-    // [q | k | v]: rest / pairs is the q or k head.
-    float *v = qkv + (uint64_t)r * 3 * DS4_INK2_VIT_DIM + (uint64_t)(rest / INK2_VIT_PAIRS) * DS4_INK2_VIT_HEAD +
-        2 * pair;
-    const float x1 = v[0], x2 = v[1];
-    v[0] = glmvq_round(__fadd_rn(__fmul_rn(x1, c), __fmul_rn(-x2, s)));
-    v[1] = glmvq_round(__fadd_rn(__fmul_rn(x2, c), __fmul_rn(x1, s)));
+    o[0] = __float2bfloat16_rn(y1);
+    o[1] = __float2bfloat16_rn(y2);
 }
 
-extern "C" int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols) {
+extern "C" int ds4_gpu_ink2_vit_rope(ds4_gpu_tensor *qkv16, const ds4_gpu_tensor *qkv, uint32_t rows, uint32_t cols,
+        uint32_t r0, uint32_t m) {
     const uint64_t n = (uint64_t)rows * cols * 4 + 1;
-    const uint64_t count = n * 2 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
-    if (!rows || !cols || n > UINT32_MAX || !gvq_floats(qkv, n * 3 * DS4_INK2_VIT_DIM)) { return 0; }
-    ink2_vit_rope_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)qkv->ptr,
-        (uint32_t)n, cols);
+    const uint64_t count = (uint64_t)m * 3 * DS4_INK2_VIT_HEADS * INK2_VIT_PAIRS;
+    if (!rows || !cols || !m || n > UINT32_MAX || r0 > n || m > n - r0 ||
+        !gvq_floats(qkv, (uint64_t)m * 3 * DS4_INK2_VIT_DIM) ||
+        ds4_gpu_tensor_bytes(qkv16) < n * 3 * DS4_INK2_VIT_DIM * sizeof(__nv_bfloat16)) { return 0; }
+    ink2_vit_rope_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (__nv_bfloat16 *)qkv16->ptr, (const float *)qkv->ptr, m, r0, cols);
     return cuda_ok(cudaGetLastError(), "Inkling-2 vision RoPE");
+}
+
+/* V4.1's query tile over n rows: S (F32) and P (BF16) of every head within
+ * V41_VIS_ATTN_BYTES. */
+extern "C" uint32_t ds4_gpu_ink2_vit_attn_rows(uint32_t n) {
+    const uint64_t qc = V41_VIS_ATTN_BYTES / ((uint64_t)DS4_INK2_VIT_HEADS * n * 6u);
+    return (uint32_t)(qc < 1 ? 1 : qc > n ? n : qc);
+}
+
+/* ds4_gpu_v41_dense_attn_tensor for query rows [q0, q0 + m) of BF16 rows:
+ * S = Q K^T, row softmax, P V per head and query tile, the tiles counted
+ * from row 0 as the whole-image call counts them. o: m rows, BF16 values. */
+extern "C" int ds4_gpu_ink2_vit_attn(ds4_gpu_tensor *o, const ds4_gpu_tensor *qkv16, uint32_t n, uint32_t q0,
+        uint32_t m) {
+    const uint32_t H = DS4_INK2_VIT_HEADS, D = DS4_INK2_VIT_HEAD, HD = H * D, W = 3u * HD;
+    if (!o || !qkv16 || !g_cublas_ready || !n || !m || q0 > n || m > n - q0 || !gvq_floats(o, (uint64_t)m * HD) ||
+        ds4_gpu_tensor_bytes(qkv16) < (uint64_t)n * W * sizeof(__nv_bfloat16)) { return 0; }
+    const uint64_t qc = ds4_gpu_ink2_vit_attn_rows(n);
+    float *S = (float *)v41_grow(&g_vis_s, (uint64_t)H * qc * n * 4, "vision attn S");
+    __nv_bfloat16 *P = (__nv_bfloat16 *)v41_grow(&g_vis_p, (uint64_t)H * qc * n * 2, "vision attn P");
+    if (!S || !P) { return 0; }
+    const __nv_bfloat16 *q16 = (const __nv_bfloat16 *)qkv16->ptr;
+    const float alpha = 1.0f, beta = 0.0f, scale = 1.0f / sqrtf((float)D);
+    (void)cublasSetStream(g_cublas, ds4_current_stream());
+    cuda_cublas_ws_prep(ds4_current_stream());
+    for (uint32_t t = q0; t < q0 + m; t += (uint32_t)qc) {
+        const uint32_t nq = (uint32_t)(q0 + m - t < qc ? q0 + m - t : qc);
+        cublasStatus_t st = cublasGemmStridedBatchedEx(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, (int)n, (int)nq, (int)D,
+            &alpha, q16 + HD, CUDA_R_16BF, (int)W, (long long)D, q16 + (uint64_t)t * W, CUDA_R_16BF, (int)W,
+            (long long)D, &beta, S, CUDA_R_32F, (int)n, (long long)n * nq, (int)H, CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT);
+        if (!cublas_ok(st, "Inkling-2 vision QK^T")) { return 0; }
+        v41_vision_softmax_kernel<<<H * nq, 256, 0, ds4_current_stream()>>>(P, S, n, scale);
+        if (!cuda_ok(cudaGetLastError(), "Inkling-2 vision softmax")) { return 0; }
+        st = cublasGemmStridedBatchedEx(g_cublas, CUBLAS_OP_N, CUBLAS_OP_N, (int)D, (int)nq, (int)n, &alpha,
+            q16 + 2u * HD, CUDA_R_16BF, (int)W, (long long)D, P, CUDA_R_16BF, (int)n, (long long)n * nq, &beta,
+            (float *)o->ptr + (uint64_t)(t - q0) * HD, CUDA_R_32F, (int)HD, (long long)D, (int)H,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        if (!cublas_ok(st, "Inkling-2 vision PV")) { return 0; }
+    }
+    return ds4_gpu_v41_round_bf16_tensor(o, (uint64_t)m * HD);
 }
 
 __global__ void ink2_vit_scale_add_kernel(float *x, const float *y, const float *scale, uint64_t count,

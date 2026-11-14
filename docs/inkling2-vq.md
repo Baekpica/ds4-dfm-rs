@@ -198,21 +198,33 @@ image ─▶ EXIF orientation ─▶ alpha over an 8-pixel 204/153 checkerboard 
 The template writes one `<|unused_200054|>` per image; the host expands it to
 one placeholder per 40 x 40 token (`ceil(h / 40) x ceil(w / 40)`, no resize:
 Inkling2ImageProcessor at `109a7d19`). JPEG decodes through libjpeg-turbo, as
-PIL does. The processor has no maximum; one image is refused above 4,096
-tokens (6.5 MP), which bounds the tower's activations. Each image is one
-bidirectional attention segment; the tower's weights stream from the mapped
-part per layer and its page cache is dropped afterwards
+PIL does. The processor has no maximum; the model card gives 4,096 pixels a
+side as the range, and its evaluation downsampled a longer side to 4,096
+keeping the aspect ratio. The host does the same (Catmull-Rom, before the
+alpha checkerboard), so one image holds at most 103 x 103 = 10,609 tokens.
+Each image is one bidirectional attention segment; the tower's weights stream
+from the mapped part per layer and its page cache is dropped afterwards
 (`ds4_inkling2_vision.inc`, V4.1's linears, attention and GELU, MiniMax's
-LayerNorm).
+LayerNorm). Only the residual (F32) and the BF16 q, k, v of every row span the
+image, 10 KiB per ViT row; every other activation runs in 4,096-row tiles, so
+the tower peaks near 0.85 GB at 10,609 tokens. An image of one tile runs the
+same launches as an untiled pass.
 
 Checked against transformers' tower transcribed in PyTorch (BF16, SDPA) on the
-same pixels, six images from 8 to 1,647 tokens (PNG with and without alpha,
-JPEG with EXIF rotation): host pixels equal the processor's bit for bit; rows
-cos mean 0.9991-0.99986 (minimum 0.9876), relative RMS mean 0.017-0.041,
-where the reference against itself with SDPA's math backend gives 0.9996-
-0.99986 (minimum 0.9884) and 0.016-0.028. Answers name the colors of
-synthetic images, a cartoon and the text of a Chinese trading-app screenshot.
-Encoding takes 0.06 s for 18 tokens, 0.23 s for 510 and 1.37 s for 1,647.
+same pixels, nine images from 8 to 10,609 tokens (PNG with and without alpha,
+JPEG with EXIF rotation, a 12 MP photo, a 4,096-pixel square and a
+6,000 x 4,000 image downsampled): host pixels equal the processor's bit for
+bit. The tiled pass leaves every row of the six smaller images (8 to 1,647
+tokens) bit-identical to the untiled one: cos mean 0.9991-0.99986, relative
+RMS mean 0.017-0.041, where the reference against itself with SDPA's math
+backend gives 0.9996-0.99986 and 0.016-0.028; at 7,107-10,609 tokens cos
+mean 0.99902-0.99930 and relative RMS 0.033-0.039 (the math backend's scores
+do not fit). Answers name the colors of synthetic images, a cartoon, the
+text of a Chinese trading-app screenshot and the shapes and text of
+4,096-pixel images. Encoding takes 0.06 s for 18 tokens, 0.23 s for 510,
+1.41 s for 1,647, 49.4 s for 7,676 and 108.7 s for 10,609: V4.1's attention
+materializes S and P per query tile, ~460 GB of traffic per layer at 10,609
+tokens.
 
 Each image is named by an FNV-1a tag of its bytes, and the live state keeps
 the rows below the first image a prompt does not share (the same placeholder
@@ -291,14 +303,15 @@ the image reserve need that memory, so the default stays 262,144.
 `ds4-server --check-config` prices the trunk (113,799,088,128 bytes), the K/V
 of the requested context (resident blocks, the tier's pinned buffers and
 attention state), the row workspace (1.11 GiB at 2,048 rows), the image
-reserve (1.26 GB: the tower at 4,096 tokens and the rows of four images) and,
+reserve (1.39 GB: the tower at 10,609 tokens, one image's pixels and 16,384
+tokens of rows) and,
 with MTP, the drafter part (1.87 GB) and its runtime (0.63 GiB at 1M). A 1M
-context quotes 123.6 GB without MTP and 126.2 GB with it against ~126.8 GB
+context quotes 123.8 GB without MTP and 126.3 GB with it against ~127.2 GB
 available (4 GiB floor included). The server quotes again after the open,
 against the memory the load left: ~9.9 GiB without the drafter, ~8 GiB with
-it. The native context needs 9.16 GiB without drafting and 9.79 GiB with it
-(7.79 GiB at a 2 GiB floor), so DSpark serves up to 131,072 positions with
-`--mem-floor-gb 2` (6.52 GiB). Two banks at 131,072 positions (1.6 GiB each)
+it. The native context needs 9.29 GiB without drafting and 9.92 GiB with it
+(7.92 GiB at a 2 GiB floor), so DSpark serves up to 131,072 positions with
+`--mem-floor-gb 2` (6.65 GiB). Two banks at 131,072 positions (1.6 GiB each)
 also take the 2 GiB floor. Measured at 1M with `ds4`: MemAvailable ~5.8 GiB
 without the drafter, 2.7 GiB with it (minimum 2.37).
 
@@ -357,7 +370,7 @@ checkpoint rules and the snapshot sizes, model-free.
 
 ## Not yet supported
 
-- Images above 4,096 tokens; audio and video (the model has neither).
+- Audio and video (the model has neither).
 
 ## Diagnostic switches
 
