@@ -43,6 +43,10 @@ const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
 const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
 const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
 const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
+// Inkling-2: IK22 carries the drafter's context rows (words 8 and 9 count
+// them per local and for the global draft layer); IK21 none.
+const LAYOUT_INKLING2: u32 = u32::from_le_bytes(*b"IK21");
+const LAYOUT_INKLING2_DRAFT: u32 = u32::from_le_bytes(*b"IK22");
 // Gemma-4 carries two KV layouts: word 8 is the sliding-ring size and words
 // 9/10 are the per-layout row counts, so word 12 stays zero.
 const LAYOUT_GEMMA4: u32 = u32::from_le_bytes(*b"GVK4");
@@ -70,6 +74,7 @@ pub enum PayloadLayout {
     MinimaxVq,
     Axk2Vq,
     Gemma4Vq,
+    Inkling2Vq,
 }
 
 impl PayloadLayout {
@@ -96,6 +101,7 @@ impl PayloadLayout {
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
+            LAYOUT_INKLING2 | LAYOUT_INKLING2_DRAFT => Self::Inkling2Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -121,6 +127,7 @@ impl PayloadLayout {
             Self::MinimaxVq => ModelFamily::MinimaxVq,
             Self::Axk2Vq => ModelFamily::Axk2Vq,
             Self::Gemma4Vq => ModelFamily::Gemma4Vq,
+            Self::Inkling2Vq => ModelFamily::Inkling2Vq,
         }
     }
 
@@ -141,6 +148,7 @@ impl PayloadLayout {
                         | Self::MinimaxVq
                         | Self::Axk2Vq
                         | Self::Gemma4Vq
+                        | Self::Inkling2Vq
                 ))
     }
 
@@ -407,6 +415,28 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("invalid Gemma-4 session payload token"));
             }
         }
+        PayloadLayout::Inkling2Vq => {
+            // Native owns the tensor lengths, the wrapped ring spans and the
+            // draft rows' fit into the open's rings.
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+                || p.fields[12] != p.token_count()
+                || p.fields[8] > p.token_count()
+                || p.fields[9] > p.token_count()
+                || (p.fields[5] == LAYOUT_INKLING2 && (p.fields[8] | p.fields[9]) != 0)
+            {
+                return Err(err("invalid Inkling-2 session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid Inkling-2 session payload token"));
+            }
+        }
         // QWN3 word 12 is the PLE convolution byte count, not live rows.
         PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
@@ -504,7 +534,10 @@ impl SessionLedger {
         let layout = prefix.layout();
         if matches!(
             layout,
-            PayloadLayout::Glm53 | PayloadLayout::Glm53Vq | PayloadLayout::MinimaxVq
+            PayloadLayout::Glm53
+                | PayloadLayout::Glm53Vq
+                | PayloadLayout::MinimaxVq
+                | PayloadLayout::Inkling2Vq
         ) {
             validate_layout(prefix)?;
         }
@@ -1039,6 +1072,74 @@ mod tests {
             let mut bad = prefix.clone();
             bad.tokens[0] = token;
             assert!(read(&bad, ModelFamily::MinimaxVq, 1048576).is_err());
+        }
+    }
+
+    #[test]
+    fn inkling2_prefix_identity() {
+        // Native IK21 header: ctx, row cap, layers, tag, blocks, n, draft
+        // rows (local, global), block bytes, vocab, live rows (= n).
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                1048576,
+                2048,
+                48,
+                LAYOUT_INKLING2,
+                1,
+                3,
+                0,
+                0,
+                147456,
+                201024,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        assert_eq!(prefix.layout().family(), ModelFamily::Inkling2Vq);
+        let read = |p: &HostPrefix, family, ctx| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, ctx)
+        };
+        assert_eq!(
+            read(&prefix, ModelFamily::Inkling2Vq, 3).unwrap().tokens,
+            [7, 8, 9]
+        );
+        assert!(read(&prefix, ModelFamily::Inkling2Vq, 2).is_err());
+        assert!(read(&prefix, ModelFamily::MinimaxVq, 1048576).is_err());
+        let mut bad = prefix.clone();
+        bad.fields[12] = 2;
+        assert!(read(&bad, ModelFamily::Inkling2Vq, 1048576).is_err());
+
+        // IK21 carries no draft rows; IK22 at most n per kind.
+        for (tag, local, global, valid) in [
+            (LAYOUT_INKLING2, 0, 0, true),
+            (LAYOUT_INKLING2, 1, 0, false),
+            (LAYOUT_INKLING2, 0, 1, false),
+            (LAYOUT_INKLING2_DRAFT, 0, 0, true),
+            (LAYOUT_INKLING2_DRAFT, 3, 3, true),
+            (LAYOUT_INKLING2_DRAFT, 4, 3, false),
+            (LAYOUT_INKLING2_DRAFT, 3, 4, false),
+        ] {
+            let mut p = prefix.clone();
+            p.fields[5] = tag;
+            p.fields[8] = local;
+            p.fields[9] = global;
+            assert_eq!(p.layout(), PayloadLayout::Inkling2Vq);
+            assert_eq!(read(&p, ModelFamily::Inkling2Vq, 3).is_ok(), valid);
+            let mut host = SessionLedger::new(
+                ModelFamily::Inkling2Vq,
+                crate::session::SessionBackend::Cuda,
+                3,
+                1,
+            );
+            assert_eq!(host.apply_payload(&p).is_ok(), valid);
+        }
+        for token in [201024, u32::MAX] {
+            let mut bad = prefix.clone();
+            bad.tokens[0] = token;
+            assert!(read(&bad, ModelFamily::Inkling2Vq, 1048576).is_err());
         }
     }
 

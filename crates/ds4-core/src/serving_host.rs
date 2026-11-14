@@ -126,6 +126,16 @@ const BEAM_MMA_ITEM_BYTES: u64 = 20;
 const MINIMAX_PREFILL_CHUNK_ENV: &str = "DS4_MINIMAX_PREFILL_CHUNK";
 const MINIMAX_NATIVE_DEFAULT: u32 = 4096;
 const MINIMAX_NATIVE_MAX: u32 = 4096;
+const INKLING2_PREFILL_CHUNK_ENV: &str = "DS4_INKLING2_PREFILL_CHUNK";
+const INKLING2_NATIVE_DEFAULT: u32 = 2048;
+const INKLING2_NATIVE_MAX: u32 = 4096;
+// C inkling2_resident_ctx: the largest context whose full-layer K/V stays
+// resident.
+const INKLING2_RESIDENT_CTX_ENV: &str = "DS4_INKLING2_KV_RESIDENT_CTX";
+const INKLING2_RESIDENT_CTX: u32 = 262_144;
+// C ink2_decode_plan: decode/verify items, mid and partial rows, the verify
+// plan and 48 layers' 3 x 384 expert tables (256-byte aligned regions).
+const INKLING2_DECODE_BYTES: u64 = 1_152_000;
 // C mm_decode_plan: decode items, mid and partial rows, then 57 layers'
 // 3 x 128 expert tables (256-byte aligned regions).
 const MINIMAX_DECODE_BYTES: u64 = 211_456;
@@ -531,6 +541,20 @@ pub fn fill_quote_facts(
             },
             0,
         ),
+        // Each bank owns its K/V (or SSD tier) and histories, host logits
+        // and history; graph 0 owns the row workspace and the host embedding
+        // staging. The drafter's runtime belongs to the serial session.
+        (ModelFamily::Inkling2Vq, Some(s)) => (
+            inkling2_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
+            inkling2_workspace_bytes(u64::from(native))
+                + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
+            if req.mtp_mode == MtpMode::On {
+                inkling2_draft_bytes(ctx, u64::from(native))
+            } else {
+                0
+            },
+            0,
+        ),
         // Each bank owns its latent, rope and index-key rows, host logits
         // and history; graph 0 owns the row workspace and the host
         // embedding staging. No drafter.
@@ -848,6 +872,12 @@ pub fn fill_quote_facts(
         } else {
             0
         }
+    } else if caps.family == ModelFamily::Inkling2Vq {
+        if host.vision || facts.vision_loaded {
+            crate::inkling2_vq::media_bytes()
+        } else {
+            0
+        }
     } else if caps.media_serial || host.vision {
         shape
             .map(|s| u64::from(s.n_embd).saturating_mul(8192).saturating_mul(2))
@@ -1002,6 +1032,14 @@ pub fn attach_host_quote(
         mtp_bytes =
             part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
     }
+    // Inkling-2 maps its drafter part beside the trunk only when drafting.
+    if let (ModelFamily::Inkling2Vq, MtpMode::On, Some(path)) =
+        (caps.family, req.mtp_mode, model_path)
+    {
+        let part = |feature| crate::inkling2_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::Inkling2Feature::Draft).saturating_sub(part(crate::Inkling2Feature::Trunk));
+    }
     // MiMo VQ maps its MTP part beside the trunk only when drafting with it,
     // which its qualified MTP also does under auto (a DFlash `--mtp` file is
     // priced as that file).
@@ -1023,6 +1061,9 @@ pub fn attach_host_quote(
             }
             _ => None,
         },
+        // Inkling-2's vision part pages in per image; its workspace is the
+        // media reserve.
+        (Variant::Inkling2SmallVq, Some(path)) => crate::inkling2_vq::has_vision(path).then_some(0),
         _ => None,
     };
     let vision_bytes = artifact_span_bytes(vision_path) + release_media.unwrap_or(0);
@@ -1230,6 +1271,11 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
             return crate::minimax_vq::resident_bytes(path, crate::MinimaxFeature::Trunk)
                 .unwrap_or(0);
         }
+        // Inkling-2's embedding and vision parts stay on SSD (MiniMax's rule).
+        if crate::inkling2_vq::is_release(path) {
+            return crate::inkling2_vq::resident_bytes(path, crate::Inkling2Feature::Trunk)
+                .unwrap_or(0);
+        }
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::part_bytes(path, crate::Ling31Feature::Trunk).unwrap_or(0);
         }
@@ -1417,6 +1463,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Ling31Vq => LING31_NATIVE_MAX,
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
+        ModelFamily::Inkling2Vq => INKLING2_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
         ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
@@ -1501,6 +1548,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             MINIMAX_NATIVE_DEFAULT,
             1,
             MINIMAX_NATIVE_MAX,
+        ),
+        ModelFamily::Inkling2Vq => env_u32(
+            INKLING2_PREFILL_CHUNK_ENV,
+            INKLING2_NATIVE_DEFAULT,
+            1,
+            INKLING2_NATIVE_MAX,
         ),
         ModelFamily::Axk2Vq => env_u32(
             AXK2_PREFILL_CHUNK_ENV,
@@ -2943,6 +2996,109 @@ fn minimax_kv_bytes(ctx: u64) -> u64 {
     index + (pool + blocks.min(1024)) * PAGE + LAYERS * blocks * SIZEOF_I32
 }
 
+// C inkling2_kv_bytes: four 3-row F32 convolution histories per layer; 40
+// sliding layers keep chunk + 1,023 BF16 K/V rows, the 8 full layers
+// 147,456-byte NVFP4 blocks of 128 positions (DS4_INKLING2_KV_BF16=1: BF16
+// rows). Past the resident context the full layers keep their resident
+// blocks on the device and the rest in a file; pinned memory holds each full
+// layer's window (chunk / 128 + 2 blocks), two 256-block read buffers and
+// the attention state of a chunk.
+fn inkling2_kv_bytes(ctx: u64, native: u32) -> u64 {
+    const KV_ROW: u64 = 2 * 1024 * SIZEOF_U16;
+    const BLOCK: u64 = 147_456;
+    let rows = u64::from(native);
+    let hist = 48 * 3 * (2 * 1024 + 2 * 4608) * SIZEOF_F32;
+    let rings = 40 * (rows + 1023) * KV_ROW;
+    if std::env::var("DS4_INKLING2_KV_BF16").as_deref() == Ok("1") {
+        return hist + rings + 8 * ctx * KV_ROW;
+    }
+    let resident =
+        env_u32(INKLING2_RESIDENT_CTX_ENV, INKLING2_RESIDENT_CTX, 0, 1 << 20) / 128 * 128;
+    if ctx <= u64::from(resident) {
+        return hist + rings + 8 * ctx.div_ceil(128) * BLOCK;
+    }
+    let pinned = (8 * (rows / 128 + 2) + 2 * 256) * BLOCK;
+    let state = rows * 48 * 130 * SIZEOF_F32;
+    hist + rings + 8 * (u64::from(resident) / 128).max(1) * BLOCK + pinned + state
+}
+
+// C inkling2_draft_bytes: tap rows of one chunk, its mixtures and context
+// K/V, the four sliding draft layers' 1,040-row rings and the global one's
+// last 65,536 positions (BF16 K and V), the 8-row block, seven proposal steps
+// (base and corrected logits, recurrence input and projection), the head
+// folded through hidden_out, verify logits and a trial's histories and
+// convolution inputs.
+fn inkling2_draft_bytes(ctx: u64, rows: u64) -> u64 {
+    const H: u64 = 4608;
+    const KV: u64 = 1024;
+    const Q: u64 = 6144;
+    const FF: u64 = 18_432;
+    const V: u64 = 201_024;
+    const RANK: u64 = 256;
+    const RNN_IN: u64 = 2 * RANK + 2 * H;
+    const B: u64 = 8;
+    const STEPS: u64 = B - 1;
+    const TAPS: u64 = 8;
+    const LAYERS: u64 = 5;
+    const LOCAL: u64 = 1031 + B + 1;
+    const GLOBAL: u64 = 65_536;
+    const TRIAL_ROW: u64 = 2 * KV + 2 * H;
+    let f = SIZEOF_F32;
+    let rings = ((LAYERS - 1) * LOCAL + ctx.min(GLOBAL) + B + 1) * 2 * KV * SIZEOF_U16;
+    (LAYERS + 1) * TAPS * f
+        + rows * TAPS * H * SIZEOF_U16
+        + rows * (2 * H + 2 * KV) * f
+        + H * f
+        + rings
+        + B * (4 * H + 2 * Q + 2 * KV + 2 * FF) * f
+        + STEPS * (2 * V + RNN_IN + 3 * RANK) * f
+        + 5 * RANK * f
+        + B * SIZEOF_I32
+        + V * (RANK + 1) * SIZEOF_U16
+        + B * V * f
+        + B * SIZEOF_I32
+        + 48 * 3 * TRIAL_ROW * f
+        + 48 * B * TRIAL_ROW * f
+}
+
+// C inkling2_workspace_bytes on the CUDA kernels: logits, the
+// INKLING2_ROW_BUFFERS rows, decode attention partials, the q4p input (at
+// least the router widened to F32), cuBLAS and routes, the routed-expert
+// decode tables and, above verify widths, the FP8 MMA planes.
+fn inkling2_workspace_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 4608;
+    const FFN: u64 = 2304;
+    const USED: u64 = 8;
+    let align = |n: u64| n.div_ceil(256) * 256;
+    // F32 words: x/resid/xq/xk/xv, q/gate/heads, r, sinks, k/v inputs,
+    // dynamic taps, attention and MoE outputs, router, routes and weights;
+    // BF16: embedding, relative-bias and block-state rows.
+    let row = (5 * HIDDEN + 3 * 6144 + 768 + 48 + 2 * 1024 + 2 * 32 + 2 * HIDDEN + 384 + 2 * USED)
+        * SIZEOF_F32
+        + (HIDDEN + 48 * 1024 + 8 * HIDDEN) * SIZEOF_U16;
+    let partials = 8 * 48 * 64 * 130 * SIZEOF_F32;
+    let q4p = (rows * 6144 * SIZEOF_U16 * 2).max(384 * HIDDEN * SIZEOF_F32);
+    let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;
+    let pairs = rows * USED;
+    // FP8 rows and scales, gate, E4M3 SwiGLU rows and scales, down, order,
+    // three item lists (32-byte items), pair rows and scales.
+    let mma = if rows > GLMVQ_VERIFY_ROWS {
+        align(rows * HIDDEN)
+            + align(rows * SIZEOF_F32)
+            + align(pairs * FFN * SIZEOF_U16)
+            + align(pairs * FFN)
+            + align(pairs * FFN / 128 * SIZEOF_F32)
+            + align(pairs * HIDDEN * SIZEOF_U16)
+            + align(pairs * SIZEOF_U32)
+            + align(3 * (384 + pairs / 128) * 32)
+            + align(pairs * SIZEOF_U32)
+            + align(pairs * SIZEOF_F32)
+    } else {
+        0
+    };
+    201_024 * SIZEOF_F32 + rows * row + partials + q4p + linear + INKLING2_DECODE_BYTES + mma
+}
+
 // C minimax_draft_bytes: BF16 taps of one chunk, the widened fc input
 // (256 rows), context and K/V rows, five BF16 rings of 4,104 positions,
 // then the seven block rows (residual, norm, output, q, heads, attention
@@ -3214,6 +3370,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
+                | ModelFamily::Inkling2Vq
                 | ModelFamily::Axk2Vq
         )
     {
@@ -3951,6 +4108,30 @@ mod tests {
             Some(
                 minimax_workspace_bytes(16384, 4096) + 4096 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32)
             )
+        );
+    }
+
+    #[test]
+    fn inkling2_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _tier = EnvGuard::unset(INKLING2_RESIDENT_CTX_ENV);
+        let _bf16 = EnvGuard::unset("DS4_INKLING2_KV_BF16");
+        // Native graph logs: ctx 16384, 2048-row chunks: KV 0.62 GiB,
+        // workspace 1.11 GiB; ctx 8192, 512-row chunks: 0.31 / 0.31 GiB.
+        let gib = |b: u64| b as f64 / GIB as f64;
+        assert!((gib(inkling2_kv_bytes(16384, 2048)) - 0.62).abs() < 0.005);
+        assert!((gib(inkling2_workspace_bytes(2048)) - 1.11).abs() < 0.005);
+        assert!((gib(inkling2_kv_bytes(8192, 512)) - 0.31).abs() < 0.005);
+        assert!((gib(inkling2_workspace_bytes(512)) - 0.31).abs() < 0.005);
+        // 1M keeps 256K positions resident; the rest of the full layers'
+        // blocks live on SSD behind an 18-block window per layer, two read
+        // buffers and the attention state.
+        let below = inkling2_kv_bytes(262_144, 2048);
+        let rings = 48 * 3 * (2 * 1024 + 2 * 4608) * 4 + 40 * 3071 * 4096;
+        assert_eq!(below, rings + 8 * 2048 * 147_456);
+        assert_eq!(
+            inkling2_kv_bytes(1 << 20, 2048),
+            below + (8 * 18 + 512) * 147_456 + 2048 * 48 * 130 * 4
         );
     }
 

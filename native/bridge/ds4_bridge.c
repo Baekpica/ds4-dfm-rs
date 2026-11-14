@@ -675,6 +675,48 @@ int ds4_bridge_minimax_commit(ds4_bridge_session *s, int32_t keep, char *err, si
     return ds4_session_minimax_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_inkling2_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_inkling2_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_inkling2_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_inkling2_commit(s->session, keep, err, errlen);
+}
+
+int ds4_bridge_inkling2_encode_vision(ds4_bridge_session *s, const float *pixels, uint32_t rows, uint32_t cols,
+                                      float *out, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_inkling2_encode_vision(s->session, pixels, rows, cols, out, err, errlen);
+}
+
+int ds4_bridge_inkling2_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                   const uint32_t *starts, const uint32_t *counts,
+                                   const float *const *rows, uint32_t nspans, uint64_t tag,
+                                   char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_inkling2_sync_media(s->session, tokens, n_tokens, starts, counts, rows, nspans, tag,
+                                           err, errlen);
+}
+
 int ds4_bridge_iquest_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                            int32_t *tokens, int32_t *target, int32_t cap,
                            char *err, size_t errlen)

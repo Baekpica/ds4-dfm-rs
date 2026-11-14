@@ -57,6 +57,7 @@ documented whole-model results are omitted.
 | MiniMax-M3.1 Flash VQ (13-bit GVQ1 + R8 + Q4_K) | 1,011.0 | 22.10 | [2K–64K sweep, DSpark 3 gated, 512K session](docs/performance.md#minimax-m31-flash-vq) |
 | A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 387.4 | 15.25 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
 | MiMo-V2.6-Flash VQ (13-bit GVQ1 + R8 + Q8_0) | 1,294.9 | 23.96 | [2K–64K sweep, plain; MTP 2: 26.35](docs/performance.md#mimo-v26-flash-vq) |
+| Inkling-2-Small VQ (12-bit hVQ + Q4_K) | 979.6 | 23.62 | [2K–64K sweep, plain](docs/performance.md#inkling-2-small-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
@@ -191,6 +192,7 @@ collection. Feature and context limits remain specific to each artifact.
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
 | MiMo-V2.6-Flash VQ (RL, UNCENSORED, MOPD) | `mimo2_vq` (GVQ1 release directory) | [Baekpica RL VQ](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF) / [UNCENSORED VQ](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF) / [MOPD VQ](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-VQ-GGUF) experts (R13+8 on 32 layers) + Q8_0 nonexperts | [FP8 full-layer KV, Q8_0 vision/audio, embedded MTP or DFlash, native 1M on the serial lane; 2K–64K measured](docs/mimo2-vq.md) |
 | Gemma-4 26B A4B VQ | `gemma4_vq` (GVQ1 release directory) | [Jlfn R13+8 VQ experts + Q4_K nonexperts](https://huggingface.co/Jlfn/gemma-4-26b-a4b-vq-gguf) | [Sliding and full GQA, optional FP8 full-layer KV, native 262K, banks, partial reuse and disk KV, opt-in drafter, 12 GiB placement; 2K–64K measured outside the clock policy](docs/gemma4-vq.md) |
+| Inkling-2-Small VQ | `inkling2_vq` (GVQ1 release directory) | [Baekpica 12-bit hVQ experts + Q4_K nonexperts](https://huggingface.co/Baekpica/Inkling-2-Small-VQ-GGUF) | [NVFP4 full-layer K/V, native 1M with K/V past 262K on the SSD, images, partial reuse, disk KV and snapshots, opt-in banks and DSpark drafter; 2K–64K measured](docs/inkling2-vq.md) |
 | Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |
 | IQuest-Q1 | `iquest_q1` | [Baekpica mixed quant](https://huggingface.co/Baekpica/IQuest-Q1-Mixed-Quant-GGUF) | [Hybrid Q8 KV, banks and embedded MTP; bounded Spark thinking-mode gates](docs/iquest-q1.md) |
 

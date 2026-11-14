@@ -30,6 +30,7 @@ const LING31_CTX_MAX: u32 = 4 * LING31_NATIVE_CTX;
 const BEAM_CTX_MAX: u32 = 1_048_576;
 /// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
 const MINIMAX_CTX_MAX: u32 = 1_048_576;
+const INKLING2_CTX_MAX: u32 = 1_048_576;
 /// A.X-K2's max_position_embeddings (YaRN x 2 over 131,072).
 const AXK2_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
@@ -670,7 +671,8 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq
-        | ModelFamily::Gemma4Vq => caps.ctx_max,
+        | ModelFamily::Gemma4Vq
+        | ModelFamily::Inkling2Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
@@ -1035,6 +1037,32 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_banks: None,
             qualified_prompt: None,
             // Images and videos sync on the serial lane (the release's vision part).
+            media_serial: true,
+        },
+        // The native 1M context, DSpark (block of 8) and images run on the
+        // serial lane by default. Banks are opt-in (--max-seqs 2 or more):
+        // each owns its full-layer blocks (and SSD tier), sliding rings and
+        // convolution histories over graph 0's scratch, and a fork below the
+        // frontier restores a checkpoint slot.
+        ModelFamily::Inkling2Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::OptIn,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off.
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(INKLING2_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
             media_serial: true,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
@@ -1688,6 +1716,7 @@ impl ServingCaps {
             Variant::MinimaxVq => "minimax_m3_vq",
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
+            Variant::Inkling2SmallVq => "inkling2_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1887,6 +1916,7 @@ impl ResolvedPlan {
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
             Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
+            Some(ModelFamily::Inkling2Vq) => Some("DS4_INKLING2_PREFILL_CHUNK"),
             _ => None,
         }
     }
@@ -3677,6 +3707,35 @@ mod tests {
         assert_eq!(native_ctx_default(vq), Some(1_048_576));
         let mixed = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
         assert_eq!(native_ctx_default(mixed), None);
+    }
+
+    #[test]
+    fn inkling2_serial_by_default_banks_when_named() {
+        let (family, variant) = (ModelFamily::Inkling2Vq, Variant::Inkling2SmallVq);
+        // The native 1M context and DSpark take the serial lane by default.
+        let mut req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(2),
+            ..ServingRequest::default()
+        };
+        let p = plan(req.clone(), family, variant);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert!(!p.wants_bank_lane());
+        // Named banks drop drafting (it runs on the serial lane only).
+        req.max_seqs = MaxSeqs::Fixed(2);
+        req.mtp_mode = MtpMode::Off;
+        let p = plan(req.clone(), family, variant);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(p.wants_bank_lane());
+        req.mtp_mode = MtpMode::On;
+        assert!(plan(req, family, variant)
+            .issues
+            .iter()
+            .any(|i| i.code == "mtp_lane"));
     }
 
     #[test]

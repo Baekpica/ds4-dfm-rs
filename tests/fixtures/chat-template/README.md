@@ -23,8 +23,8 @@ The fixture records the Python and Jinja2 versions. The generator binds the
 filter to Python JSON with the Transformers ASCII default; it contains no
 serializer implementation and does not use Rust output as an oracle.
 
-`models/*/chat_template.jinja` and `model-vectors.json` cover nine official
-artifacts with 76 Python renders. Each adjacent `provenance.json` records
+`models/*/chat_template.jinja` and `model-vectors.json` cover ten official
+artifacts with 87 Python renders. Each adjacent `provenance.json` records
 its source revision, template hash and special-token context. Source bytes
 are unmodified. DeepSeek V4 provides a Python encoder instead of Jinja and
 is an explicit exception.

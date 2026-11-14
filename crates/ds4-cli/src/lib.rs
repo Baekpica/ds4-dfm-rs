@@ -452,6 +452,7 @@ fn use_glm_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
         ds4_core::ModelFamily::Glm53
             | ds4_core::ModelFamily::Glm53Vq
             | ds4_core::ModelFamily::Ling31Vq
+            | ds4_core::ModelFamily::Inkling2Vq
     ) && draft > 1
         && ds4_core::check_mtp_draft(family, draft).is_ok()
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
@@ -508,6 +509,7 @@ fn mtp_open_options(
                     | ds4_core::ModelFamily::Glm53
                     | ds4_core::ModelFamily::Glm53Vq
                     | ds4_core::ModelFamily::Ling31Vq
+                    | ds4_core::ModelFamily::Inkling2Vq
             )
         ) && args.mtp_draft > 1)
     {

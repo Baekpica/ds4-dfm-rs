@@ -16,7 +16,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 ROOT = Path(__file__).parent
-FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling")
+FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling", "inkling2")
 CLOCK = datetime.fromtimestamp(0, timezone.utc)
 TOOL = {
     "type": "function",
@@ -198,6 +198,23 @@ def model_cases(family):
             {"type": "text", "text": "색과 내용을 알려 줘."},
         ]}]
         cases.append(case("image_audio_placeholders", media))
+        bad_call = copy.deepcopy(TOOL_HISTORY)
+        bad_call[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(ARGUMENTS, ensure_ascii=False)
+        cases.append(case("reject_string_arguments", bad_call, tools=[TOOL], reject="arguments must be a parsed object"))
+
+    if family == "inkling2":
+        # No generation block: the effort is a system message; images render
+        # one placeholder, audio is refused.
+        image = [{"role": "user", "content": [
+            {"type": "input_image"},
+            {"type": "text", "text": "색과 내용을 알려 줘."},
+        ]}]
+        cases.append(case("image_placeholder", image))
+        audio = [{"role": "user", "content": [{"type": "input_audio"}]}]
+        cases.append(case("reject_audio", audio, reject="does not accept audio"))
+        cases.append(case("numeric_effort", [USER], {"reasoning_effort": 0.5}))
+        cases.append(case("reject_unknown_effort", [USER], {"reasoning_effort": "extreme"},
+                          reject="Unknown reasoning_effort"))
         bad_call = copy.deepcopy(TOOL_HISTORY)
         bad_call[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(ARGUMENTS, ensure_ascii=False)
         cases.append(case("reject_string_arguments", bad_call, tools=[TOOL], reject="arguments must be a parsed object"))

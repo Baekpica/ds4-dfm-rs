@@ -76,3 +76,4 @@ model_case!(qwen_uncensored, "qwen-uncensored");
 model_case!(glm, "glm");
 model_case!(k2, "k2");
 model_case!(inkling, "inkling");
+model_case!(inkling2, "inkling2");

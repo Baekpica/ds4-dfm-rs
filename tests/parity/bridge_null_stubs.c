@@ -336,6 +336,29 @@ int ds4_session_minimax_sync_media(ds4_session *s, const int *tokens, int n_toke
     (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
     STUB("ds4_session_minimax_sync_media");
 }
+int ds4_session_inkling2_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap, char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    (void)err; (void)errlen;
+    STUB("ds4_session_inkling2_trial");
+}
+int ds4_session_inkling2_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_inkling2_commit");
+}
+int ds4_session_inkling2_encode_vision(ds4_session *s, const float *pixels, unsigned rows, unsigned cols,
+                                       float *out, char *err, size_t errlen) {
+    (void)s; (void)pixels; (void)rows; (void)cols; (void)out; (void)err; (void)errlen;
+    STUB("ds4_session_inkling2_encode_vision");
+}
+int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
+                                    const unsigned *starts, const unsigned *counts,
+                                    const float *const *rows, unsigned nspans,
+                                    uint64_t tag, char *err, size_t errlen) {
+    (void)s; (void)tokens; (void)n_tokens; (void)starts; (void)counts;
+    (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
+    STUB("ds4_session_inkling2_sync_media");
+}
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap,
                            char *err, size_t errlen) {

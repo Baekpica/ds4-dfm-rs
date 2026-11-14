@@ -22,6 +22,8 @@ mod glm_mtp;
 mod glm_vq;
 mod identify;
 mod inkling;
+mod inkling2_mtp;
+mod inkling2_vq;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
@@ -100,6 +102,7 @@ pub use layout::{
 pub use ling31_vq::Feature as Ling31Feature;
 
 pub use gemma4_vq::Gemma4VqFeature;
+pub use inkling2_vq::Feature as Inkling2Feature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -337,6 +340,10 @@ const GEMMA4_MTP_DRAFTS: i32 = 6;
 
 /// DSpark's seven block rows each propose one token (anchor-first).
 const MINIMAX_MTP_DRAFTS: i32 = 7;
+// Inkling-2 DSpark: a block of eight rows, the anchor and seven proposals.
+const INKLING2_MTP_DRAFTS: i32 = 7;
+/// Inkling-2's hidden width: one image row per placeholder.
+const INKLING2_WIDTH: usize = 4608;
 
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
@@ -353,6 +360,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "Gemma-4 accepts at most six recursive draft tokens"
     } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
         "MiniMax DSpark drafts at most seven tokens per block"
+    } else if family == ModelFamily::Inkling2Vq && draft > INKLING2_MTP_DRAFTS {
+        "Inkling-2 DSpark drafts at most seven tokens per block"
     } else {
         return Ok(());
     };
@@ -1418,6 +1427,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Inkling2Vq {
+        let g = inkling2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else if shape.family == ModelFamily::Axk2Vq {
         let g = axk2_vq::metadata(path).map_err(|e| Error {
             code: 1,
@@ -1488,6 +1503,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => MinimaxFeature::Draft,
         };
         TensorInventory::open_minimax(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::Inkling2Vq {
+        let feature = match parts {
+            ProbeParts::Trunk => Inkling2Feature::Trunk,
+            ProbeParts::WithMtp => Inkling2Feature::Draft,
+        };
+        TensorInventory::open_inkling2(Path::new(path), feature)
     } else if identified.shape.variant == Variant::Mimo26FlashVq {
         let feature = match parts {
             ProbeParts::Trunk => Mimo2VqFeature::Trunk,
@@ -1762,6 +1783,20 @@ impl Model {
                     .into(),
             });
         }
+        // So are Inkling-2's.
+        if identified.shape.family == ModelFamily::Inkling2Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "Inkling-2 VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1853,6 +1888,11 @@ impl Model {
             TensorInventory::open_minimax(
                 Path::new(path),
                 minimax_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else if identified.shape.family == ModelFamily::Inkling2Vq {
+            TensorInventory::open_inkling2(
+                Path::new(path),
+                inkling2_vq::feature(tuning.mtp_draft_tokens),
             )
         } else if identified.shape.variant == Variant::Mimo26FlashVq {
             TensorInventory::open_mimo2_vq(
@@ -2111,6 +2151,11 @@ impl Model {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
         }
+        // So does Inkling-2 (read only for images).
+        if identified.shape.family == ModelFamily::Inkling2Vq {
+            tuning.vision_path =
+                inkling2_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
+        }
         // MiMo VQ maps its release's vision and audio parts, both hashed here
         // first.
         let mut audio_path = None;
@@ -2324,6 +2369,15 @@ impl Model {
         if self.family == ModelFamily::Inkling {
             return inkling_media::probe_image(data);
         }
+        if self.family == ModelFamily::Inkling2Vq {
+            if !self.vision_ready {
+                return Err(Error {
+                    code: 1,
+                    message: "Inkling-2 vision part is not open".into(),
+                });
+            }
+            return inkling_media::probe_image2(data);
+        }
         let tower = vit_tower(self.family).ok_or_else(|| Error {
             code: 1,
             message: "this model family has no image probe".into(),
@@ -2358,7 +2412,7 @@ impl Model {
         const INKLING_IMAGE_TOKEN: i32 = 200054;
         const GLM_IMAGE_TOKEN: i32 = 154854;
         let marker = match self.family {
-            ModelFamily::Inkling => INKLING_IMAGE_TOKEN,
+            ModelFamily::Inkling | ModelFamily::Inkling2Vq => INKLING_IMAGE_TOKEN,
             ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
             ModelFamily::Ling3Vl => ling3vl::IMAGE_TOKEN as i32,
             _ => {
@@ -2663,6 +2717,7 @@ impl Session<'_> {
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Inkling2Vq
         ) {
             return;
         }
@@ -3164,6 +3219,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Inkling {
             return self.sync_inkling(tokens, images, &[]);
         }
+        if self.host.family == ModelFamily::Inkling2Vq {
+            return self.sync_inkling2(tokens, images);
+        }
         if images.is_empty() || images.len() > 4 {
             return Err(Error {
                 code: 1,
@@ -3273,6 +3331,64 @@ impl Session<'_> {
             return Err(fail(rc, &err));
         }
         self.host.replace_checkpoint(tokens.as_slice());
+        Ok(())
+    }
+
+    /// Inkling-2 images: each encoded by the release's vision part, its rows
+    /// over its placeholder run.
+    fn sync_inkling2(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
+        let ids = tokens.as_slice();
+        let counts = inkling_media::image_counts2(ids, images)?;
+        let mut rows = Vec::with_capacity(images.len());
+        // One image's pixels at a time; only the rows wait for the prefill.
+        for (input, &count) in images.iter().zip(&counts) {
+            let image = inkling_media::prepare_image2(input.data, count)?;
+            let mut out = vec![0.0f32; count as usize * INKLING2_WIDTH];
+            let mut err = [0u8; 512];
+            // SAFETY: Exclusive session; pixels and out are sized to the grid
+            // and outlive this synchronous call.
+            let rc = unsafe {
+                ds4_sys::ds4_bridge_inkling2_encode_vision(
+                    self.raw.as_ptr(),
+                    image.pixels.as_ptr(),
+                    image.rows,
+                    image.cols,
+                    out.as_mut_ptr(),
+                    err.as_mut_ptr().cast(),
+                    err.len(),
+                )
+            };
+            if rc != 0 {
+                return Err(fail(rc, &err));
+            }
+            rows.push(out);
+        }
+        let starts: Vec<u32> = images.iter().map(|image| image.token_offset).collect();
+        let ptrs: Vec<*const f32> = rows.iter().map(|r| r.as_ptr()).collect();
+        let datas: Vec<&[u8]> = images.iter().map(|image| image.data).collect();
+        let tag = crate::mimo2::media_tag(&datas) | 1;
+        let mut err = [0u8; 512];
+        // SAFETY: Rust owns the rows until this synchronous prefill returns;
+        // native copies each span's rows into its forwards.
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_inkling2_sync_media(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                starts.as_ptr(),
+                counts.as_ptr(),
+                ptrs.as_ptr(),
+                starts.len() as u32,
+                tag,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(ids);
         Ok(())
     }
 
@@ -3541,6 +3657,9 @@ impl Session<'_> {
         }
         if self.host.family == ModelFamily::MinimaxVq {
             return self.eval_minimax_argmax(first, max_tokens, eos, limit);
+        }
+        if self.host.family == ModelFamily::Inkling2Vq {
+            return self.eval_inkling2_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Ling31Vq {
             return self.eval_ling31_argmax(first, max_tokens, eos, limit);
@@ -4667,6 +4786,30 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_minimax_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_inkling2_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_inkling2_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,

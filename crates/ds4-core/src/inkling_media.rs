@@ -94,6 +94,7 @@ fn oriented_geometry(
     decoder: &impl ImageDecoder,
     orientation: Orientation,
     budget: u32,
+    geometry: fn(u32, u32, u32) -> Result<VisionImageInfo>,
 ) -> Result<VisionImageInfo> {
     let (mut width, mut height) = decoder.dimensions();
     if matches!(
@@ -105,20 +106,20 @@ fn oriented_geometry(
     ) {
         std::mem::swap(&mut width, &mut height);
     }
-    image_geometry(width, height, budget)
+    geometry(width, height, budget)
 }
 
 pub(crate) fn probe_image(data: &[u8]) -> Result<VisionImageInfo> {
     let mut decoder = image_decoder(data)?;
     let orientation = decoder.orientation().map_err(decode_error)?;
-    oriented_geometry(&decoder, orientation, MAX_PATCHES)
+    oriented_geometry(&decoder, orientation, MAX_PATCHES, image_geometry)
 }
 
 pub(crate) fn prepare_image(data: &[u8], budget: u32) -> Result<ImagePixels> {
     let mut decoder = image_decoder(data)?;
     let orientation = decoder.orientation().map_err(decode_error)?;
     // Match the source PIL loading path: EXIF transform, then RGB conversion.
-    oriented_geometry(&decoder, orientation, budget)?;
+    oriented_geometry(&decoder, orientation, budget, image_geometry)?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(decode_error)?;
     image.apply_orientation(orientation);
     let rgb = image.into_rgb8();
@@ -161,6 +162,28 @@ pub(crate) fn prepare_media(
         spans.push((audio.token_offset, count, AUDIO_TOKEN));
         audio_counts.push(count);
     }
+    check_spans(tokens, spans)?;
+    let images = images
+        .iter()
+        .zip(image_counts)
+        .map(|(image, count)| Ok((image.token_offset, prepare_image(image.data, count)?)))
+        .collect::<Result<_>>()?;
+    let audios = audios
+        .iter()
+        .zip(audio_counts)
+        .map(|(audio, count)| {
+            Ok((
+                audio.token_offset,
+                crate::inkling_audio::prepare_audio(audio.data, count)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(PreparedMedia { images, audios })
+}
+
+/// Each (offset, count, placeholder) span covers exactly its placeholder run
+/// and no placeholder lies outside the spans.
+fn check_spans(tokens: &[i32], mut spans: Vec<(u32, u32, i32)>) -> Result<()> {
     spans.sort_unstable_by_key(|span| span.0);
     let mut previous_end = 0usize;
     for (offset, count, token) in spans {
@@ -187,22 +210,7 @@ pub(crate) fn prepare_media(
     {
         return Err(image_error("Inkling media placeholder has no input"));
     }
-    let images = images
-        .iter()
-        .zip(image_counts)
-        .map(|(image, count)| Ok((image.token_offset, prepare_image(image.data, count)?)))
-        .collect::<Result<_>>()?;
-    let audios = audios
-        .iter()
-        .zip(audio_counts)
-        .map(|(audio, count)| {
-            Ok((
-                audio.token_offset,
-                crate::inkling_audio::prepare_audio(audio.data, count)?,
-            ))
-        })
-        .collect::<Result<_>>()?;
-    Ok(PreparedMedia { images, audios })
+    Ok(())
 }
 
 pub(crate) fn prepare_rgb(rgb: &[u8], width: u32, height: u32, budget: u32) -> Result<ImagePixels> {
@@ -213,18 +221,34 @@ pub(crate) fn prepare_rgb(rgb: &[u8], width: u32, height: u32, budget: u32) -> R
         return Err(image_error("invalid Inkling RGB dimensions or byte count"));
     }
     let info = image_geometry(width, height, budget)?;
+    // TorchvisionBackend fuses rescaling into the FP32 mean/std tensors.
+    let mean = MEAN.map(|v| v * PIXEL_SCALE);
+    let std = STD.map(|v| v * PIXEL_SCALE);
+    pack(rgb, &info, mean, std, TIMES)
+}
+
+/// One patch of 40 x 40 x 3 normalized values per token, row-major tokens,
+/// each repeated `times` (Inkling's static frames). Keep the order, including
+/// the raw -1 padding, before the encoder's BF16 cast.
+fn pack(
+    rgb: &[u8],
+    info: &VisionImageInfo,
+    mean: [f32; 3],
+    std: [f32; 3],
+    times: u32,
+) -> Result<ImagePixels> {
+    let (width, height) = (info.source_width, info.source_height);
+    if u64::from(width) * u64::from(height) * u64::from(CHANNELS) != rgb.len() as u64 {
+        return Err(image_error("invalid Inkling RGB dimensions or byte count"));
+    }
     let (rows, cols) = (info.grid_height, info.grid_width);
     let count = u64::from(info.token_count);
-    let values = usize::try_from(count * u64::from(TIMES * PATCH * PATCH * CHANNELS))
+    let values = usize::try_from(count * u64::from(times * PATCH * PATCH * CHANNELS))
         .map_err(|_| image_error("Inkling image workspace is too large"))?;
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(values)
         .map_err(|_| image_error("cannot allocate Inkling image workspace"))?;
-    // TorchvisionBackend fuses rescaling into the FP32 mean/std tensors.
-    // Keep this order, including raw -1 padding, before the encoder BF16 cast.
-    let mean = MEAN.map(|v| v * PIXEL_SCALE);
-    let std = STD.map(|v| v * PIXEL_SCALE);
     for py in 0..rows {
         for px in 0..cols {
             let start = pixels.len();
@@ -241,11 +265,114 @@ pub(crate) fn prepare_rgb(rgb: &[u8], width: u32, height: u32, budget: u32) -> R
                     pixels.push((value - mean[c]) / std[c]);
                 }
             }
-            // Static images repeat the same patch along the two-frame axis.
-            pixels.extend_from_within(start..);
+            for _ in 1..times {
+                pixels.extend_from_within(start..start + (PATCH * PATCH * CHANNELS) as usize);
+            }
         }
     }
     Ok(ImagePixels { pixels, rows, cols })
+}
+
+// Inkling-2's processor (Inkling2ImageProcessor @109a7d19): no resize; whole
+// 40-pixel tokens padded right and bottom, mean and std 0.5 fused with the
+// rescale, alpha composited over a checkerboard first.
+const V2_SCALE: f32 = 0.5 * PIXEL_SCALE;
+/// Tokens of one image. The processor has no maximum; 4,096 (6.5 MP) keeps
+/// the tower's ~0.85 GB peak beside a 1M-context drafting serve.
+pub(crate) const MAX_TOKENS2: u32 = 4096;
+
+fn image_geometry2(width: u32, height: u32, budget: u32) -> Result<VisionImageInfo> {
+    if width == 0 || height == 0 || width > MAX_EDGE || height > MAX_EDGE {
+        return Err(image_error("invalid Inkling-2 image dimensions"));
+    }
+    let (rows, cols) = (height.div_ceil(PATCH), width.div_ceil(PATCH));
+    let count = u64::from(rows) * u64::from(cols);
+    if count > u64::from(budget.min(MAX_TOKENS2)) {
+        return Err(image_error(
+            "Inkling-2 image exceeds the media token budget (maximum 4096)",
+        ));
+    }
+    Ok(VisionImageInfo {
+        source_width: width,
+        source_height: height,
+        content_width: width,
+        content_height: height,
+        padded_width: cols * PATCH,
+        padded_height: rows * PATCH,
+        grid_width: cols,
+        grid_height: rows,
+        token_count: count as u32,
+    })
+}
+
+pub(crate) fn probe_image2(data: &[u8]) -> Result<VisionImageInfo> {
+    let mut decoder = image_decoder(data)?;
+    let orientation = decoder.orientation().map_err(decode_error)?;
+    oriented_geometry(&decoder, orientation, MAX_TOKENS2, image_geometry2)
+}
+
+pub(crate) fn prepare_image2(data: &[u8], budget: u32) -> Result<ImagePixels> {
+    let mut decoder = image_decoder(data)?;
+    let orientation = decoder.orientation().map_err(decode_error)?;
+    let info = oriented_geometry(&decoder, orientation, budget, image_geometry2)?;
+    // JPEG through libjpeg-turbo, as PIL decodes it (vit_image); PNG keeps
+    // its alpha for the checkerboard.
+    let mut image = if matches!(image::guess_format(data), Ok(ImageFormat::Jpeg)) {
+        let rgb = crate::vit_image::decode(data).map_err(|message| image_error(&message))?;
+        let rgb = image::RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
+            .ok_or_else(|| image_error("Inkling-2 JPEG decode size mismatch"))?;
+        DynamicImage::ImageRgb8(rgb)
+    } else {
+        DynamicImage::from_decoder(decoder).map_err(decode_error)?
+    };
+    image.apply_orientation(orientation);
+    let rgb = if image.color().has_alpha() {
+        checkerboard(&image.into_rgba8())
+    } else {
+        image.into_rgb8().into_raw()
+    };
+    pack(&rgb, &info, [V2_SCALE; 3], [V2_SCALE; 3], 1)
+}
+
+/// Inkling2ImageProcessor.convert_to_rgb: each channel over 8-pixel cells of
+/// 204 and 153, (c a + cell (255 - a) + 127) / 255.
+fn checkerboard(rgba: &image::RgbaImage) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.as_raw().len() / 4 * 3);
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let cell: u32 = if (x / 8 + y / 8) % 2 == 0 { 204 } else { 153 };
+        let alpha = u32::from(pixel[3]);
+        out.extend(
+            pixel.0[..3]
+                .iter()
+                .map(|&c| ((u32::from(c) * alpha + cell * (255 - alpha) + 127) / 255) as u8),
+        );
+    }
+    out
+}
+
+/// Token counts of Inkling-2 images in prompt order, each over its
+/// placeholder run (checked before any pixel is decoded).
+pub(crate) fn image_counts2(tokens: &[i32], images: &[crate::VisionInput<'_>]) -> Result<Vec<u32>> {
+    if images.is_empty() || images.len() > MAX_MEDIA {
+        return Err(image_error("Inkling-2 requires 1 to 4 images"));
+    }
+    if images
+        .windows(2)
+        .any(|p| p[0].token_offset >= p[1].token_offset)
+    {
+        return Err(image_error("Inkling-2 images must follow prompt order"));
+    }
+    let counts = images
+        .iter()
+        .map(|image| Ok(probe_image2(image.data)?.token_count))
+        .collect::<Result<Vec<_>>>()?;
+    let spans = images
+        .iter()
+        .zip(&counts)
+        .map(|(image, &count)| (image.token_offset, count, IMAGE_TOKEN))
+        .collect();
+    check_spans(tokens, spans)?;
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -346,6 +473,28 @@ mod tests {
         assert!(probe_image(b"not an image").is_err());
         let too_wide = png(32769, 1, &[0, 0, 0, 255].repeat(32769));
         assert!(probe_image(&too_wide).is_err());
+    }
+
+    #[test]
+    fn inkling2_pixels_follow_the_processor() {
+        // 41 x 2: two token columns, -1 padding on the 0-255 scale below.
+        let data = png(41, 2, &[10, 20, 30, 255].repeat(41 * 2));
+        let info = probe_image2(&data).unwrap();
+        assert_eq!(
+            (info.grid_height, info.grid_width, info.token_count),
+            (1, 2, 2)
+        );
+        let got = prepare_image2(&data, 2).unwrap();
+        assert_eq!(got.pixels.len(), 2 * 40 * 40 * 3);
+        assert_eq!(got.pixels[0], (10.0 - 127.5) / 127.5);
+        assert_eq!(got.pixels[2 * 40 * 3], (-1.0 - 127.5) / 127.5);
+        assert!(prepare_image2(&data, 1).is_err());
+        // An exact multiple adds no column (Inkling's processor does).
+        let square = png(40, 40, &[0; 40 * 40 * 4]);
+        assert_eq!(probe_image2(&square).unwrap().token_count, 1);
+        // Half alpha over the 204 cell: (100 * 128 + 204 * 127 + 127) / 255.
+        let half = prepare_image2(&png(1, 1, &[100, 100, 100, 128]), 1).unwrap();
+        assert_eq!(half.pixels[0], (152.0 - 127.5) / 127.5);
     }
 
     #[test]

@@ -1268,6 +1268,10 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
     if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
         return Some("video input requires MiMo or MiniMax");
     }
+    // Inkling-2 keeps Inkling's syntax but has no audio tower.
+    if !parsed.audios.is_empty() && model_id == ds4_core::Variant::Inkling2SmallVq as i32 {
+        return Some("Inkling 2 does not accept audio input");
+    }
     if !parsed.audios.is_empty() && !matches!(syntax, ModelSyntax::Inkling | ModelSyntax::Mimo2) {
         return Some("audio input requires Inkling or MiMo");
     }
@@ -4272,7 +4276,8 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         // open leaves the default one-token draft.
         ds4_core::ModelFamily::Mimo2
         | ds4_core::ModelFamily::BeamVq
-        | ds4_core::ModelFamily::MinimaxVq => draft > 1,
+        | ds4_core::ModelFamily::MinimaxVq
+        | ds4_core::ModelFamily::Inkling2Vq => draft > 1,
         _ => false,
     }
 }

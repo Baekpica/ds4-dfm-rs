@@ -367,7 +367,7 @@ impl Vocab {
 
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
-            ModelFamily::Inkling => inkling::specials(self)?,
+            ModelFamily::Inkling | ModelFamily::Inkling2Vq => inkling::specials(self)?,
             ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Ling31Vq => ling31::specials(self, g)?,
@@ -686,6 +686,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("A.X-K2 release metadata"))?;
             return Self::load_tables(&g, family, Some(axk2::tables(path)?));
         }
+        if family == ModelFamily::Inkling2Vq {
+            let g = crate::inkling2_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Inkling-2 release metadata"))?;
+            return Self::load_tables(&g, family, Some(inkling::tables2(path)?));
+        }
         if family == ModelFamily::MinimaxVq {
             let g = crate::minimax_vq::metadata(path)
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
@@ -722,6 +727,7 @@ impl Vocab {
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
                 | ModelFamily::Gemma4Vq
+                | ModelFamily::Inkling2Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -771,6 +777,9 @@ impl Vocab {
             )),
             ModelFamily::MinimaxVq => Some(TokError::InvalidTokenizer(
                 "MiniMax VQ chat requires official Jinja",
+            )),
+            ModelFamily::Inkling2Vq => Some(TokError::InvalidTokenizer(
+                "Inkling-2 VQ chat requires official Jinja",
             )),
             ModelFamily::Axk2Vq => Some(TokError::InvalidTokenizer(
                 "A.X-K2 VQ chat requires official Jinja",
@@ -1442,7 +1451,10 @@ fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
     let encoded = byte_encode(raw);
     // Source BPE with ignore_merges=true: whole vocabulary pieces
     // win even when applying the merge table would produce a different split.
-    if matches!(vocab.family, ModelFamily::Inkling | ModelFamily::Glm53Vq) {
+    if matches!(
+        vocab.family,
+        ModelFamily::Inkling | ModelFamily::Inkling2Vq | ModelFamily::Glm53Vq
+    ) {
         if let Some(&id) = vocab.token_to_id.get(&encoded) {
             out.push(id);
             return;
@@ -2418,7 +2430,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
-        ModelFamily::Inkling => inkling::encode(vocab, text, out),
+        ModelFamily::Inkling | ModelFamily::Inkling2Vq => inkling::encode(vocab, text, out),
         ModelFamily::Step37 => step37::encode(vocab, text, out),
         ModelFamily::IQuestQ1 => {
             use unicode_normalization::UnicodeNormalization;
@@ -2467,6 +2479,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     if matches!(
         vocab.family,
         ModelFamily::Inkling
+            | ModelFamily::Inkling2Vq
             | ModelFamily::Glm53Vq
             | ModelFamily::Step37
             | ModelFamily::Ling3Vl

@@ -40,7 +40,20 @@ const SPECIAL_WORDS: &[(usize, &str)] = &[
     (200057, "<|content_invoke_tool_text|>"),
 ];
 
-fn special_word(id: usize) -> String {
+/// Inkling 2 reads no audio: these ids are `<|unused_N|>` in its tokenizer.
+const AUDIO_IDS: [usize; 3] = [200020, 200023, 200043];
+
+/// Which release's added-token table a tokenizer must carry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Release {
+    Inkling,
+    Inkling2,
+}
+
+fn special_word(id: usize, release: Release) -> String {
+    if release == Release::Inkling2 && AUDIO_IDS.contains(&id) {
+        return format!("<|unused_{id}|>");
+    }
     SPECIAL_WORDS
         .iter()
         .find(|(i, _)| *i == id)
@@ -94,6 +107,23 @@ pub(super) fn tables(g: &GgufFile) -> Result<Tables, TokError> {
     let data = g
         .get_string("inkling.tokenizer.json")
         .ok_or(TokError::MissingTable("inkling.tokenizer.json"))?;
+    parse(data, Release::Inkling)
+}
+
+/// Inkling 2's source tokenizer.json, kept beside the release parts: the
+/// same pipeline and added-token layout over its own BPE tables.
+pub(super) fn tables2(root: &std::path::Path) -> Result<super::glm_vq::Tables, TokError> {
+    let data = crate::inkling2_vq::asset(root, "tokenizer.json")
+        .map_err(|_| invalid("Inkling-2 tokenizer.json"))?;
+    let (tokens, merges) = parse(&data, Release::Inkling2)?;
+    Ok(super::glm_vq::Tables {
+        tokens,
+        merges,
+        added: (BASE_VOCAB..VOCAB).collect(),
+    })
+}
+
+fn parse(data: &[u8], release: Release) -> Result<Tables, TokError> {
     let config: Value =
         serde_json::from_slice(data).map_err(|_| invalid("inkling.tokenizer.json"))?;
     pipeline(&config)?;
@@ -142,7 +172,7 @@ pub(super) fn tables(g: &GgufFile) -> Result<Tables, TokError> {
         }
         // IDs are part of the model contract, including the unused image/audio
         // embedding placeholders. Swapped or duplicate strings must fail.
-        if word != special_word(id) || !tokens[id].is_empty() || vocab.contains_key(word) {
+        if word != special_word(id, release) || !tokens[id].is_empty() || vocab.contains_key(word) {
             return Err(invalid("added_tokens contract"));
         }
         tokens[id] = word.as_bytes().to_vec();

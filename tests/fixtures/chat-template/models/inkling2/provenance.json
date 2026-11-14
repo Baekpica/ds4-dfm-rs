@@ -1,0 +1,9 @@
+{
+  "repo": "thinkingmachines/Inkling-2-Small-MXFP8",
+  "revision": "086a047e8b7ff2ac902dd52355328ddb66b16914",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "e9cfd8e75d1272633c2e72b3cc76e99567e2bc8912b960483aed483ad35d54c7",
+  "tokenizer_config_sha256": "6addc2bf8dc756dea8edd083a4ea3b67a66b8f513e9745a36e4a7cc0cc9f55ed",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/thinkingmachines/Inkling-2-Small-MXFP8/blob/086a047e8b7ff2ac902dd52355328ddb66b16914/chat_template.jinja"
+}
