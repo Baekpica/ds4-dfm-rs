@@ -66,8 +66,10 @@ fn streamed<T>(f: impl FnOnce() -> T) -> T {
 /// Both f16 scales (d, dmin) at the start of a Q4_K block are finite.
 fn q4_scales_finite(scales: &[u8]) -> bool {
     scales[..4]
-        .chunks_exact(2)
-        .all(|s| u16::from_le_bytes([s[0], s[1]]) & 0x7c00 != 0x7c00)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|s| u16::from_le_bytes(*s) & 0x7c00 != 0x7c00)
 }
 
 /// The f16 scale at the start of a Q8_0 block is finite.
@@ -238,8 +240,8 @@ impl Header {
             return Err(fail("noncanonical GVQ1 offsets"));
         }
         let payload = span(data, tensor.abs_offset, size)?;
-        for gain in span(payload, HEADER, 2 * rows)?.chunks_exact(2) {
-            let bits = u16::from_le_bytes(gain.try_into().unwrap());
+        for gain in span(payload, HEADER, 2 * rows)?.as_chunks::<2>().0 {
+            let bits = u16::from_le_bytes(*gain);
             // +0 is the zero-row encoding; -0 and negatives are invalid.
             if bits & 0x8000 != 0 || bits & 0x7c00 == 0x7c00 {
                 return Err(fail("negative/nonfinite row gain"));
@@ -407,10 +409,12 @@ pub(super) fn validate_part(
         if STREAMED.with(Cell::get) {
             continue;
         }
-        if t.typ == Q4_K && !bytes.chunks_exact(Q4_BYTES as usize).all(q4_scales_finite) {
+        let (q4, _) = bytes.as_chunks::<{ Q4_BYTES as usize }>();
+        if t.typ == Q4_K && !q4.iter().all(|b| q4_scales_finite(b)) {
             return Err(fail("nonfinite Q4_K scale"));
         }
-        if t.typ == Q8_0 && !bytes.chunks_exact(Q8_BYTES as usize).all(q8_scale_finite) {
+        let (q8, _) = bytes.as_chunks::<{ Q8_BYTES as usize }>();
+        if t.typ == Q8_0 && !q8.iter().all(|b| q8_scale_finite(b)) {
             return Err(fail("nonfinite Q8_0 scale"));
         }
     }
