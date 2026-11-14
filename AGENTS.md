@@ -208,7 +208,7 @@ Within a family campaign, order the phases so each finished phase speeds up the 
 4. **Plain decode before MTP.** The non-speculative decode step is the baseline every MTP comparison divides by, and a verify pass is built from the same kernels; optimize it first, then the drafter, verify widths and acceptance.
 5. **Text before vision performance.** Optimization rounds run on text workloads; once the text path is done, optimize the vision encoder and media prefill. Do not feed media into every text round.
 
-Measure each phase against the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), stated per kernel class, and aim near 85-90% of it. The usable floors set the priority: once a context segment's (8K, 64K, 128K, 256K, 1M ...) prefill floor is above ~1,000 tok/s, further prefill work on it drops in priority (1,200-1,300 tok/s is comfortable); decode must reach at least 20 tok/s, with MTP where a segment's plain-decode bandwidth bound is below that.
+Measure each phase against the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), stated per kernel class. A campaign runs the number of valid rounds the request names; numeric speed targets are per model and come only with the request, usually when an early implementation is far below its bound.
 
 Use this order as an investigation heuristic, not a fixed optimization sequence; measured contribution and detailed profiling determine priority:
 
@@ -639,8 +639,6 @@ VMM arena, which is on by default.
 ## Common Rules
 - When writing something intended for human consumption, (comment, commit message, reply to prompt) use as few words as possible. Pick every word meticulously to reduce the volume to a strict minimum. Be down to the point. Less is more.
 
-- Avoid superlatives and praise. Stop telling me I am absolutely right. Give me the cold hard truth.
-
 - Avoid magic numbers and strings by extracting recurring or meaningful values into descriptive constants (const) or enums. Keep self-explanatory, one-off values inline to avoid clutter. If a value comes from a spec (e.g. HTTP 200 OK), use a constant regardless.
 
 - Reduce code indentation. Avoid Arrow Anti-Pattern. Leverage early return and continue.
@@ -677,5 +675,3 @@ Rule 5: Use the imperative mood in the subject line (e.g., "Fix bug," "Add featu
 Rule 6: Wrap the body text manually at 72 characters to prevent Git formatting issues.
 Rule 7: Use the body to explain what and why vs. how. Assume the code explains the how;
         the message must explain the context and reasoning.
-
-- If the prompt indicates that a bug is being fixed, don't write the fix right away. First write the test. Observe it failing. Then write the fix. And observe the test passing.

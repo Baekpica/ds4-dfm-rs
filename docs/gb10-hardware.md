@@ -4,7 +4,7 @@ This engine is tuned for one NVIDIA DGX Spark. This page is the single place
 for the hardware limits that bound its kernels and serving plans, and for how
 each number was measured; [AGENTS.md](../AGENTS.md#gb10-dgx-spark-bottleneck-know-how)
 and the family pages cite it instead of repeating figures. Rooflines for an
-optimization round (the 85-90% targets of the
+optimization round (see the
 [phase order](prefill-decode-optimization-playbook.md#phase-order)) start here.
 
 ## Identity
