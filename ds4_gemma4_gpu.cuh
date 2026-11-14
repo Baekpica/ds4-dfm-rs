@@ -53,6 +53,7 @@ struct ds4_g4_moe {
      * rebind changes the descriptors and the copy check re-uploads. */
     ds4_gpu_tensor *pmid;       /* G4_USED x G4_FF BF16 */
     ds4_gpu_tensor *ptab;       /* G4_LAYERS x 3 x G4_EXPERTS glmvq_matrix */
+    glmvq_matrix *hptab;        /* host mirror of ptab for zero-upload cache hits */
     uint32_t *hbind;            /* G4_LAYERS x 3 x G4_EXPERTS indices */
     uint8_t hbind_ok[G4_LAYERS];
 };
@@ -838,9 +839,11 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->htokpair = (uint32_t *)calloc((size_t)pairs, sizeof(uint32_t));
     /* Every expert's token tiles sum to at most pairs / BN + one per expert,
      * so the layer list is bounded by that many token tiles times the
-     * matrix's row tiles (the down projection has the most). */
+     * gate/up and down row tiles combined (allowing a single items upload
+     * per layer without a mid-layer host synchronize). */
     const uint32_t token_tiles = (uint32_t)(pairs / G4_VQP_BN) + G4_EXPERTS;
-    const uint32_t row_tiles = (G4_EMBED + G4_VQP_BM - 1u) / G4_VQP_BM;
+    const uint32_t row_tiles = (G4_FF + G4_VQP_BM - 1u) / G4_VQP_BM +
+        (G4_EMBED + G4_VQP_BM - 1u) / G4_VQP_BM;
     m->items_cap = token_tiles * row_tiles;
     m->items = ds4_gpu_tensor_alloc((uint64_t)m->items_cap * sizeof(g4_vqp_item));
     m->qmat = ds4_gpu_tensor_alloc(3u * G4_EXPERTS * sizeof(glmvq_matrix));
@@ -849,10 +852,12 @@ ds4_g4_moe *ds4_gpu_g4_moe_create(ds4_gvq_ctx *gvq, uint32_t chunk) {
     m->pmid = ds4_gpu_tensor_alloc((uint64_t)G4_USED * G4_FF * sizeof(__nv_bfloat16));
     m->ptab = ds4_gpu_tensor_alloc((uint64_t)G4_LAYERS * 3u * G4_EXPERTS *
         sizeof(glmvq_matrix));
+    m->hptab = (glmvq_matrix *)calloc((size_t)G4_LAYERS * 3u * G4_EXPERTS,
+        sizeof(glmvq_matrix));
     m->hbind = (uint32_t *)calloc((size_t)G4_LAYERS * 3u * G4_EXPERTS, sizeof(uint32_t));
     if (!m->in || !m->out || !m->gate || !m->up || !m->mid || !m->order ||
         !m->routes || !m->grouped || !m->tokpair || !m->htokpair || !m->items || !m->qmat ||
-        !m->hitems || !m->hqmat || !m->pmid || !m->ptab || !m->hbind) {
+        !m->hitems || !m->hqmat || !m->pmid || !m->ptab || !m->hptab || !m->hbind) {
         ds4_gpu_g4_moe_free(m);
         return nullptr;
     }
@@ -877,6 +882,7 @@ void ds4_gpu_g4_moe_free(ds4_g4_moe *m) {
     free(m->htokpair);
     free(m->hitems);
     free(m->hqmat);
+    free(m->hptab);
     free(m->hbind);
     free(m);
 }
@@ -925,16 +931,105 @@ static int g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d, float w,
 }
 
 /* Bridge for the graph's cache-miss fallback (DS4_GEMMA4_MOE_MISS=cpu): the
- * host pipeline for one expert, and the ordered add of its contribution. */
+ * host pipeline for cold experts, and the ordered add of their contributions. */
 extern "C" int ds4_gpu_g4_cpu_moe_expert(ds4_gvq_ctx *ctx, const uint32_t *matrices,
         uint32_t expert, const float *x, float *out) {
-    if (!ctx || !ctx->model || !g_model_host_base) { return 0; }
-    return g4_cpu_moe_expert(g_model_host_base, ctx->model, matrices, expert, x, out);
+    if (!ctx || !ctx->model) { return 0; }
+    const void *map = ctx->model->map ? ctx->model->map : g_model_host_base;
+    if (!map) { return 0; }
+    return g4_cpu_moe_expert(map, ctx->model, matrices, expert, x, out);
+}
+
+extern "C" int ds4_gpu_g4_cpu_moe_routes(ds4_gvq_ctx *ctx, const uint32_t *matrices,
+        const uint32_t *experts, const uint32_t *tokens, uint32_t nroutes,
+        const float *x, uint32_t rows, float *out) {
+    if (!nroutes) { return 1; }
+    if (!ctx || !ctx->model) { return 0; }
+    const void *map = ctx->model->map ? ctx->model->map : g_model_host_base;
+    if (!map) { return 0; }
+    return g4_cpu_moe_routes(map, ctx->model, matrices, experts, tokens,
+        nroutes, x, rows, out);
 }
 
 extern "C" int ds4_gpu_g4_moe_add_one(ds4_gpu_tensor *out, const ds4_gpu_tensor *d,
         float weight, uint32_t count) {
     return g4_moe_add_one(out, d, weight, count);
+}
+
+struct g4_cpu_tok_add {
+    uint32_t token;
+    uint32_t count;
+    uint32_t idx[G4_USED];
+    float w[G4_USED];
+};
+
+__global__ static void g4_moe_add_many_kernel(float *out, const float *d,
+        const g4_cpu_tok_add *adds, uint32_t ntok, uint32_t width) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (uint64_t)ntok * width) { return; }
+    const uint32_t k = (uint32_t)(i / width);
+    const uint32_t col = (uint32_t)(i % width);
+    const g4_cpu_tok_add ta = adds[k];
+    float acc = out[(uint64_t)ta.token * width + col];
+    for (uint32_t j = 0; j < ta.count; j++) {
+        acc = g4_round(acc + d[(uint64_t)ta.idx[j] * width + col] * ta.w[j]);
+    }
+    out[(uint64_t)ta.token * width + col] = acc;
+}
+
+extern "C" int ds4_gpu_g4_moe_add_many(ds4_g4_moe *m, ds4_gpu_tensor *out,
+        const float *host_d, const uint32_t *tokens, const float *weights,
+        uint32_t nroutes, uint32_t rows) {
+    if (!nroutes) { return 1; }
+    if (!m || !m->in || !m->gate || !out || !host_d || !tokens || !weights || !rows ||
+        rows > m->chunk || nroutes > (uint64_t)m->chunk * G4_USED) {
+        return 0;
+    }
+    static g4_cpu_tok_add *s_adds;
+    static int32_t *s_map;
+    static uint32_t s_cap;
+    if (rows > s_cap) {
+        free(s_adds); free(s_map);
+        s_adds = (g4_cpu_tok_add *)malloc((size_t)rows * sizeof(*s_adds));
+        s_map = (int32_t *)malloc((size_t)rows * sizeof(int32_t));
+        if (!s_adds || !s_map) { s_cap = 0; return 0; }
+        s_cap = rows;
+    }
+    for (uint32_t t = 0; t < rows; t++) { s_map[t] = -1; }
+    uint32_t ntok = 0;
+    for (uint32_t r = 0; r < nroutes; r++) {
+        const uint32_t t = tokens[r];
+        if (t >= rows) { return 0; }
+        int32_t slot = s_map[t];
+        if (slot < 0) {
+            slot = (int32_t)ntok++;
+            s_map[t] = slot;
+            s_adds[slot].token = t;
+            s_adds[slot].count = 0;
+        }
+        const uint32_t c = s_adds[slot].count;
+        if (c >= G4_USED) { return 0; }
+        s_adds[slot].idx[c] = r;
+        s_adds[slot].w[c] = weights[r];
+        s_adds[slot].count = c + 1u;
+    }
+    const uint64_t d_bytes = (uint64_t)nroutes * G4_EMBED * sizeof(float);
+    const uint64_t a_bytes = (uint64_t)ntok * sizeof(g4_cpu_tok_add);
+    if (m->in->bytes < d_bytes || m->gate->bytes < a_bytes) { return 0; }
+    cudaStream_t stream = ds4_current_stream();
+    if (cudaMemcpyAsync(m->in->ptr, host_d, (size_t)d_bytes, cudaMemcpyHostToDevice, stream) !=
+            cudaSuccess ||
+        cudaMemcpyAsync(m->gate->ptr, s_adds, (size_t)a_bytes, cudaMemcpyHostToDevice, stream) !=
+            cudaSuccess) {
+        return 0;
+    }
+    const uint64_t elements = (uint64_t)ntok * G4_EMBED;
+    const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1u) / GLMVQ_THREADS);
+    g4_moe_add_many_kernel<<<blocks, GLMVQ_THREADS, 0, stream>>>(
+        (float *)out->ptr, (const float *)m->in->ptr,
+        (const g4_cpu_tok_add *)m->gate->ptr, ntok, G4_EMBED);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert add many")) { return 0; }
+    return cudaStreamSynchronize(stream) == cudaSuccess;
 }
 
 /* The same accumulation over every expert of one layer in ONE launch, with
@@ -963,6 +1058,7 @@ __global__ static void g4_moe_scatter_ordered_kernel(float *dst, const float *sr
     float acc = 0.0f;
     for (uint32_t j = 0; j < G4_USED; j++) {
         const uint32_t row = tokpair[(uint64_t)token * G4_USED + j];
+        if (row == UINT32_MAX) { break; }
         acc = g4_round(acc + src[(uint64_t)row * width + column] * weights[order[row]]);
     }
     dst[(uint64_t)token * width + column] = acc;
@@ -1013,12 +1109,12 @@ static bool g4_moe_linear_one(ds4_g4_moe *m, ds4_gpu_tensor *out, uint32_t index
         g4_vq_gemv_variant(), g4_vq_gemv_threads(), ds4_current_stream()) != 0;
 }
 
-/* Fused gate/up + GELU for one route. Off by default; DS4_GEMMA4_MOE_FUSED=1
- * turns it on, and the separate two-GEMV path stays the reference. */
+/* Fused gate/up + GELU for one route. Default ON; DS4_GEMMA4_MOE_FUSED=0
+ * falls back to the separate two-GEMV path. */
 static bool g4_moe_fused(void) {
     static int fused = -1;
     if (fused < 0) {
-        fused = ds4_gemma4_knob_bool("DS4_GEMMA4_MOE_FUSED");
+        fused = !ds4_gemma4_knob_off("DS4_GEMMA4_MOE_FUSED");
     }
     return fused != 0;
 }
@@ -1113,7 +1209,8 @@ static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_
         const ds4_gpu_tensor *weights, const uint32_t *matrices, uint32_t rows,
         const uint32_t *counts, const uint32_t *offsets) {
     if (!m || !m->items || !m->qmat || !m->hitems || !m->hqmat) { return 0; }
-    const uint64_t pairs = (uint64_t)rows * G4_USED;
+    const uint64_t active_pairs = offsets[G4_EXPERTS];
+    if (!active_pairs) { return 1; }
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         if (!counts[e]) { continue; }
         for (uint32_t w = 0; w < 3u; w++) {
@@ -1132,48 +1229,47 @@ static int g4_moe_run_prefill(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_
             return 0;
         }
     }
-    uint32_t count = 0;
+    uint32_t gu_count = 0;
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         const uint32_t n = counts[e];
         if (!n) { continue; }
         for (uint32_t row0 = 0; row0 < G4_FF; row0 += G4_VQP_BM) {
             for (uint32_t t0 = 0; t0 < n; t0 += G4_VQP_BN) {
-                if (count >= m->items_cap) { return 0; }
-                m->hitems[count++] = {e, G4_EXPERTS + e, row0, offsets[e] + t0, offsets[e] + n};
+                if (gu_count >= m->items_cap) { return 0; }
+                m->hitems[gu_count++] = {e, G4_EXPERTS + e, row0, offsets[e] + t0, offsets[e] + n};
             }
         }
     }
-    if (!ds4_gpu_tensor_write(m->qmat, 0, m->hqmat, 3u * G4_EXPERTS * sizeof(glmvq_matrix)) ||
-        !ds4_gpu_tensor_write(m->items, 0, m->hitems, (uint64_t)count * sizeof(g4_vqp_item))) {
-        return 0;
-    }
-    const uint64_t elements = pairs * G4_EMBED;
-    const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
-    const uint32_t scatter_blocks = (uint32_t)(((uint64_t)rows * G4_EMBED + GLMVQ_THREADS - 1) /
-        GLMVQ_THREADS);
-    g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
-        (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
-        0u, elements, G4_EMBED);
-    if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather")) { return 0; }
-    if (!g4_vq_gemm_items((const g4_vqp_item *)m->items->ptr, count,
-            (const glmvq_matrix *)m->qmat->ptr, true, (const float *)m->in->ptr, G4_EMBED,
-            (float *)m->mid->ptr, G4_FF, ds4_current_stream())) {
-        return 0;
-    }
-    count = 0;
+    uint32_t down_count = 0;
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         const uint32_t n = counts[e];
         if (!n) { continue; }
         for (uint32_t row0 = 0; row0 < G4_EMBED; row0 += G4_VQP_BM) {
             for (uint32_t t0 = 0; t0 < n; t0 += G4_VQP_BN) {
-                if (count >= m->items_cap) { return 0; }
-                m->hitems[count++] = {2u * G4_EXPERTS + e, 0u, row0, offsets[e] + t0,
-                    offsets[e] + n};
+                if (gu_count + down_count >= m->items_cap) { return 0; }
+                m->hitems[gu_count + down_count++] = {2u * G4_EXPERTS + e, 0u, row0,
+                    offsets[e] + t0, offsets[e] + n};
             }
         }
     }
-    if (!ds4_gpu_tensor_write(m->items, 0, m->hitems, (uint64_t)count * sizeof(g4_vqp_item)) ||
-        !g4_vq_gemm_items((const g4_vqp_item *)m->items->ptr, count,
+    if (!ds4_gpu_tensor_write(m->qmat, 0, m->hqmat, 3u * G4_EXPERTS * sizeof(glmvq_matrix)) ||
+        !ds4_gpu_tensor_write(m->items, 0, m->hitems,
+            (uint64_t)(gu_count + down_count) * sizeof(g4_vqp_item))) {
+        return 0;
+    }
+    const uint64_t elements = active_pairs * G4_EMBED;
+    const uint32_t blocks = (uint32_t)((elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    const uint32_t scatter_blocks = (uint32_t)(((uint64_t)rows * G4_EMBED + GLMVQ_THREADS - 1) /
+        GLMVQ_THREADS);
+    const g4_vqp_item *d_items = (const g4_vqp_item *)m->items->ptr;
+    g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
+        0u, elements, G4_EMBED);
+    if (!cuda_ok(cudaGetLastError(), "Gemma-4 expert gather")) { return 0; }
+    if (!g4_vq_gemm_items(d_items, gu_count,
+            (const glmvq_matrix *)m->qmat->ptr, true, (const float *)m->in->ptr, G4_EMBED,
+            (float *)m->mid->ptr, G4_FF, ds4_current_stream()) ||
+        !g4_vq_gemm_items(d_items + gu_count, down_count,
             (const glmvq_matrix *)m->qmat->ptr, false, (const float *)m->mid->ptr, G4_FF,
             (float *)m->out->ptr, G4_EMBED, ds4_current_stream())) {
         return 0;
@@ -1194,11 +1290,16 @@ static int g4_moe_run_cpu(ds4_g4_moe *m, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
         const uint32_t *matrices, const int32_t *routes, uint32_t rows,
         uint32_t layer) {
-    if (!m->gvq || !m->gvq->model || !g_model_host_base) {
+    if (!m->gvq || !m->gvq->model) {
         fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
         return 0;
     }
-    if (!g4_cpu_moe_run_tensors(g_model_host_base, m->gvq->model, out, input,
+    const void *map = m->gvq->model->map ? m->gvq->model->map : g_model_host_base;
+    if (!map) {
+        fprintf(stderr, "ds4: Gemma-4 CPU MoE has no host model map\n");
+        return 0;
+    }
+    if (!g4_cpu_moe_run_tensors(map, m->gvq->model, out, input,
                                 weights, matrices, routes, rows, layer)) {
         fprintf(stderr, "ds4: Gemma-4 CPU MoE layer failed\n");
         return 0;
@@ -1232,22 +1333,34 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
     uint32_t counts[G4_EXPERTS] = {}, offsets[G4_EXPERTS + 1] = {}, cursor[G4_EXPERTS];
     for (uint64_t i = 0; i < pairs; i++) {
         const int32_t expert = m->routes[i];
-        if (expert < 0 || expert >= G4_EXPERTS) { return 0; }
+        if (expert < 0) { continue; }
+        if (expert >= (int32_t)G4_EXPERTS) { return 0; }
         counts[expert]++;
     }
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
         offsets[e + 1] = offsets[e] + counts[e];
         cursor[e] = offsets[e];
     }
-    for (uint64_t i = 0; i < pairs; i++) { m->grouped[cursor[m->routes[i]]++] = (uint32_t)i; }
-    if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, pairs * sizeof(uint32_t))) { return 0; }
+    const uint64_t active_pairs = offsets[G4_EXPERTS];
+    if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
+    if (!active_pairs) { return 1; }
+    for (uint64_t i = 0; i < pairs; i++) {
+        const int32_t expert = m->routes[i];
+        if (expert >= 0) {
+            m->grouped[cursor[expert]++] = (uint32_t)i;
+        }
+    }
+    if (!ds4_gpu_tensor_write(m->order, 0, m->grouped, active_pairs * sizeof(uint32_t))) {
+        return 0;
+    }
     /* Per token, its grouped rows in the order the reference adds them: the
      * grouped list is expert-major, so walking it in index order appends
      * each token's experts in ascending expert id. Only the direct prefill
      * consumes it; the one-row path leaves it alone. */
     if (rows > 1u) {
         for (uint32_t t = 0; t < rows; t++) { m->htokfill[t] = 0; }
-        for (uint64_t r = 0; r < pairs; r++) {
+        for (uint64_t i = 0; i < pairs; i++) { m->htokpair[i] = UINT32_MAX; }
+        for (uint64_t r = 0; r < active_pairs; r++) {
             const uint32_t token = m->grouped[r] / G4_USED;
             m->htokpair[(uint64_t)token * G4_USED + m->htokfill[token]++] = (uint32_t)r;
         }
@@ -1255,7 +1368,6 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
             return 0;
         }
     }
-    if (!ds4_gpu_tensor_fill_f32(out, 0.0f, (uint64_t)rows * G4_EMBED)) { return 0; }
     if (rows > 1 && g4_exact_prefill()) {
         /* The chunk-size exactness gate: run each route as its own one-row
          * projection, so the grouped prefill equals the one-row path bit for
@@ -1265,7 +1377,7 @@ static int g4_moe_run_routes(ds4_g4_moe *m, ds4_gpu_tensor *out, const ds4_gpu_t
          * below restores it once per expert per chunk, the Ling-3.1 /
          * A.X-K2 prefill shape. */
         const uint32_t blocks = (uint32_t)((G4_EMBED + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
-        for (uint64_t i = 0; i < pairs; i++) {
+        for (uint64_t i = 0; i < active_pairs; i++) {
             const uint32_t expert = (uint32_t)m->routes[m->grouped[i]];
             g4_moe_gather_kernel<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
                 (float *)m->in->ptr, (const float *)input->ptr, (const uint32_t *)m->order->ptr,
@@ -1592,47 +1704,77 @@ static int g4_moe_persist_shared(void) {
 }
 
 /* Resolve one layer's 384 GVQ indices into the device table the persistent
- * kernels read, once per layer. The kernels stage one main book and one
- * residual book, so the layer must have exactly the artifact's layout: every
- * gate/up expert on the layer's gate/up book, every down expert on its down
- * book. Anything else returns 0 and the caller keeps the per-expert loop. */
+ * kernels read. Under the slot cache (g->stream), cold experts have empty
+ * descriptors while resident experts are populated; the table is only
+ * re-uploaded when a resident slot changes. */
 static int g4_moe_persist_bind(ds4_g4_moe *m, const uint32_t *matrices, uint32_t layer) {
-    if (!m || !m->gvq || !m->ptab || !m->hbind || !matrices || layer >= G4_LAYERS) { return 0; }
-    const uint32_t count = 3u * G4_EXPERTS;
-    uint32_t *bound = m->hbind + (size_t)layer * count;
-    if (m->hbind_ok[layer] && !memcmp(bound, matrices, count * sizeof(uint32_t))) { return 1; }
-    glmvq_matrix *table = m->hqmat;
-    for (uint32_t p = 0; p < 3u; p++) {
-        for (uint32_t e = 0; e < G4_EXPERTS; e++) {
-            const uint32_t index = matrices[p * G4_EXPERTS + e];
-            if (index >= m->gvq->model->source.size()) { return 0; }
-            const glmvq_source &s = m->gvq->model->source[index];
-            const glmvq_matrix &q = s.vq;
-            if (s.storage != GLMVQ_WEIGHT_VQ || !q.main || !q.plane || !q.book || !q.gain ||
-                !q.res || !q.res_book || q.precision != GLMVQ_E4M3) { return 0; }
-            if (p < 2u) {
-                if (q.rows != G4_FF || q.cols != G4_EMBED) { return 0; }
-            } else if (q.rows != G4_EMBED || q.cols != G4_FF) {
-                return 0;
-            }
-            table[p * G4_EXPERTS + e] = q;
-        }
+    if (!m || !m->gvq || !m->ptab || !m->hptab || !m->hbind || !matrices || layer >= G4_LAYERS) {
+        return 0;
     }
+    const uint32_t count = 3u * G4_EXPERTS;
+    glmvq_matrix *table = m->hqmat;
+    const void *gu_book = nullptr, *gu_res = nullptr;
+    const void *dn_book = nullptr, *dn_res = nullptr;
+    uint32_t resident = 0;
     for (uint32_t e = 0; e < G4_EXPERTS; e++) {
-        const glmvq_matrix &g = table[e], &u = table[G4_EXPERTS + e];
-        const glmvq_matrix &d = table[2u * G4_EXPERTS + e];
-        if (g.book != table[0].book || g.res_book != table[0].res_book ||
-            u.book != table[0].book || u.res_book != table[0].res_book ||
-            d.book != table[2u * G4_EXPERTS].book ||
-            d.res_book != table[2u * G4_EXPERTS].res_book) {
+        const uint32_t gi = matrices[e];
+        const uint32_t ui = matrices[G4_EXPERTS + e];
+        const uint32_t di = matrices[2u * G4_EXPERTS + e];
+        if (gi >= m->gvq->model->source.size() ||
+            ui >= m->gvq->model->source.size() ||
+            di >= m->gvq->model->source.size()) {
             return 0;
         }
+        const glmvq_source &gs = m->gvq->model->source[gi];
+        const glmvq_source &us = m->gvq->model->source[ui];
+        const glmvq_source &ds = m->gvq->model->source[di];
+        if (gs.storage != GLMVQ_WEIGHT_VQ || us.storage != GLMVQ_WEIGHT_VQ ||
+            ds.storage != GLMVQ_WEIGHT_VQ) {
+            return 0;
+        }
+        const glmvq_matrix &g = gs.vq, &u = us.vq, &d = ds.vq;
+        if (!g.main || !u.main || !d.main) {
+            table[e] = {};
+            table[G4_EXPERTS + e] = {};
+            table[2u * G4_EXPERTS + e] = {};
+            continue;
+        }
+        if (!g.plane || !g.book || !g.gain || !g.res || !g.res_book || g.precision != GLMVQ_E4M3 ||
+            !u.plane || !u.book || !u.gain || !u.res || !u.res_book || u.precision != GLMVQ_E4M3 ||
+            !d.plane || !d.book || !d.gain || !d.res || !d.res_book || d.precision != GLMVQ_E4M3 ||
+            g.rows != G4_FF || g.cols != G4_EMBED ||
+            u.rows != G4_FF || u.cols != G4_EMBED ||
+            d.rows != G4_EMBED || d.cols != G4_FF) {
+            return 0;
+        }
+        if (!gu_book) {
+            gu_book = g.book; gu_res = g.res_book;
+            dn_book = d.book; dn_res = d.res_book;
+        }
+        if (g.book != gu_book || g.res_book != gu_res ||
+            u.book != gu_book || u.res_book != gu_res ||
+            d.book != dn_book || d.res_book != dn_res) {
+            return 0;
+        }
+        table[e] = g;
+        table[G4_EXPERTS + e] = u;
+        table[2u * G4_EXPERTS + e] = d;
+        resident++;
+    }
+    if (!resident) { return 0; }
+    glmvq_matrix *cached = m->hptab + (size_t)layer * count;
+    uint32_t *bound = m->hbind + (size_t)layer * count;
+    if (m->hbind_ok[layer] &&
+        !memcmp(bound, matrices, count * sizeof(uint32_t)) &&
+        !memcmp(cached, table, count * sizeof(glmvq_matrix))) {
+        return 1;
     }
     if (!ds4_gpu_tensor_write(m->ptab, (uint64_t)layer * count * sizeof(glmvq_matrix),
             table, (uint64_t)count * sizeof(glmvq_matrix))) {
         return 0;
     }
     memcpy(bound, matrices, count * sizeof(uint32_t));
+    memcpy(cached, table, count * sizeof(glmvq_matrix));
     m->hbind_ok[layer] = 1;
     return 1;
 }

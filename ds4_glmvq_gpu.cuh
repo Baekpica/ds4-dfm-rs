@@ -33,6 +33,7 @@ struct ds4_gvq_model {
     std::vector<glmvq_source> source;
     std::vector<ds4_gvq_record> records;
     ds4_gpu_tensor *device = nullptr;
+    const void *map = nullptr;
 };
 
 // Decode and verify widths chain their launches with programmatic dependent
@@ -271,6 +272,7 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
     if (!map || !records || !count) { return nullptr; }
     ds4_gvq_model *plan = new (std::nothrow) ds4_gvq_model;
     if (!plan) { return nullptr; }
+    plan->map = map;
     plan->records.assign(records, records + count);
     plan->source.resize(count);
     for (uint32_t i = 0; i < count; i++) {
