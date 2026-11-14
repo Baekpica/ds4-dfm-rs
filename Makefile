@@ -1006,7 +1006,7 @@ tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
-	test-mimo2-sync-keep test-inkling2-sync-keep
+	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1024,6 +1024,9 @@ test-mimo2-sync-keep:
 
 test-inkling2-sync-keep:
 	python3 tests/test_inkling2_sync_keep.py
+
+test-inkling2-banks:
+	python3 tests/test_inkling2_banks.py
 
 # CI. The workflow runs exactly the four ci-* targets, one parallel job each.
 # CI holds only checks that cover every family; a new check joins a group
@@ -1050,7 +1053,7 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
-gate-inkling2: test-inkling2-sync-keep
+gate-inkling2: test-inkling2-sync-keep test-inkling2-banks
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
 
 .PHONY: test-gemma4-memory
@@ -2259,7 +2262,8 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/glm_vq_ops.cuh
 INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_kv.inc ds4_inkling2_graph.inc \
-	ds4_inkling2_draft.inc ds4_inkling2_session.inc ds4_inkling2_vision.inc ds4_inkling2_payload.inc
+	ds4_inkling2_draft.inc ds4_inkling2_session.inc ds4_inkling2_vision.inc ds4_inkling2_payload.inc \
+	ds4_inkling2_batch.inc ds4_inkling2_bank_payload.inc
 ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_draft.cuh \
 	cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh

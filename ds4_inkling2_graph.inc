@@ -35,7 +35,9 @@ typedef struct {
     // high: one past the highest row any forward of this lineage wrote (the
     // draft rings' displacement bound for a rewind).
     uint32_t ctx_cap, row_cap, ring_cap, position, high;
-    bool ready, failed;
+    // borrowed: a bank above 0, on graph 0's scratch (its own K/V, tier and
+    // histories).
+    bool ready, failed, borrowed;
     uint64_t workspace_bytes, kv_bytes;
 #define INKLING2_FIELD(field, cols, type) ds4_gpu_tensor *field;
     INKLING2_ROW_BUFFERS(INKLING2_FIELD)
@@ -68,6 +70,14 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
         ds4_gpu_tensor_free(g->kv[il]);
         ds4_gpu_tensor_free(g->hist[il]);
     }
+    inkling2_kv_close(&g->tier);
+#ifndef __APPLE__
+    inkling2_draft_free(g->draft);
+#endif
+    if (g->borrowed) {
+        memset(g, 0, sizeof(*g));
+        return;
+    }
 #ifndef __APPLE__
     ds4_gpu_ink2_moe_free(g->moe);
     ds4_gpu_gvq_free(g->gvq);
@@ -78,10 +88,6 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
     ds4_gpu_tensor_free(g->logits);
     ds4_gpu_tensor_free(g->partials);
     ds4_gpu_tensor_free(g->state);
-    inkling2_kv_close(&g->tier);
-#ifndef __APPLE__
-    inkling2_draft_free(g->draft);
-#endif
     free(g->host_embed);
     memset(g, 0, sizeof(*g));
 }
@@ -115,6 +121,18 @@ static ds4_gpu_tensor *inkling2_hist(ds4_inkling2_graph *g, uint32_t il, uint32_
         width[stream] * DS4_INK2_HISTORY * sizeof(float));
 }
 
+// What a bank owns: every layer's K/V (the SSD tier past the resident
+// context) and convolution histories.
+static bool inkling2_graph_state(ds4_inkling2_graph *g) {
+    bool ok = true;
+    for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
+        g->kv[il] = ds4_gpu_tensor_alloc(inkling2_layer_kv_bytes(il, g->ctx_cap, g->row_cap));
+        g->hist[il] = ds4_gpu_tensor_alloc((uint64_t)INKLING2_HIST * sizeof(float));
+        ok = g->kv[il] && g->hist[il];
+    }
+    return ok && inkling2_kv_open(&g->tier, g->ctx_cap, g->row_cap);
+}
+
 static bool inkling2_graph_alloc(ds4_inkling2_graph *g, const ds4_model *m, const ds4_weights *w,
         uint32_t ctx, uint32_t cap) {
     memset(g, 0, sizeof(*g));
@@ -139,15 +157,10 @@ static bool inkling2_graph_alloc(ds4_inkling2_graph *g, const ds4_model *m, cons
     g->logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * sizeof(float));
     g->partials = ds4_gpu_tensor_alloc(ds4_gpu_ink2_attn_bytes());
     g->host_embed = xmalloc((size_t)cap * DS4_INK2_HIDDEN * sizeof(uint16_t));
-    bool ok = g->logits && g->partials;
-    for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
-        g->kv[il] = ds4_gpu_tensor_alloc(inkling2_layer_kv_bytes(il, ctx, cap));
-        g->hist[il] = ds4_gpu_tensor_alloc((uint64_t)INKLING2_HIST * sizeof(float));
-        ok = g->kv[il] && g->hist[il];
-    }
+    bool ok = g->logits && g->partials && inkling2_graph_state(g);
     if (ok && inkling2_spill(ctx)) {
         g->state = ds4_gpu_tensor_alloc(ds4_gpu_ink2_state_bytes(cap));
-        ok = g->state && inkling2_kv_open(&g->tier, ctx, cap);
+        ok = g->state != NULL;
     }
     if (!ok) {
         fprintf(stderr, "ds4: Inkling-2 graph allocation failed\n");
@@ -168,6 +181,26 @@ static bool inkling2_graph_alloc(ds4_inkling2_graph *g, const ds4_model *m, cons
     if (!inkling2_graph_reset(g)) { inkling2_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING, "ds4: Inkling-2 graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.2f GiB\n",
         ctx, cap, (double)g->kv_bytes / 1073741824.0, (double)g->workspace_bytes / 1073741824.0);
+    return true;
+}
+
+/* Bank b > 0: graph 0's scratch and weights tables, its own state. Banks
+ * never draft (the drafter belongs to the serial session) nor hold images. */
+static bool inkling2_graph_bank(ds4_inkling2_graph *g, const ds4_inkling2_graph *owner) {
+    *g = *owner;
+    g->borrowed = true;
+    g->ready = false;
+    g->draft = NULL;
+    g->span_n = 0;
+    memset(&g->tier, 0, sizeof(g->tier));
+    for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { g->kv[il] = g->hist[il] = NULL; }
+    if (!inkling2_graph_state(g)) {
+        fprintf(stderr, "ds4: Inkling-2 bank allocation failed\n");
+        inkling2_graph_free(g);
+        return false;
+    }
+    g->ready = true;
+    if (!inkling2_graph_reset(g)) { inkling2_graph_free(g); return false; }
     return true;
 }
 

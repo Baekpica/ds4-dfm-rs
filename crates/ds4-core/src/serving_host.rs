@@ -541,9 +541,9 @@ pub fn fill_quote_facts(
             },
             0,
         ),
-        // The serial session owns the K/V (or the SSD tier), host logits and
-        // history; graph 0 owns the row workspace and the host embedding
-        // staging; drafting adds the drafter's runtime.
+        // Each bank owns its K/V (or SSD tier) and histories, host logits
+        // and history; graph 0 owns the row workspace and the host embedding
+        // staging. The drafter's runtime belongs to the serial session.
         (ModelFamily::Inkling2Vq, Some(s)) => (
             inkling2_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             inkling2_workspace_bytes(u64::from(native))
@@ -3370,6 +3370,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
+                | ModelFamily::Inkling2Vq
                 | ModelFamily::Axk2Vq
         )
     {
