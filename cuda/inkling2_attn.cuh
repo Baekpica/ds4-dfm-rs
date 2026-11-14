@@ -140,7 +140,7 @@ __device__ __forceinline__ float ink2a_score(float dot, float bias) {
     return ink2a_bf16(ink2a_bf16(ink2a_bf16(dot) * INK2A_SCALE) + bias);
 }
 
-template <int FMT, int MODE = INK2A_ONE, bool PREFETCH_BIAS = false>
+template <int FMT, int MODE = INK2A_ONE, bool PREFETCH_BIAS = false, bool FAR_TILES = false>
 __global__ __launch_bounds__(INK2A_THREADS, 1)
 void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float *sinks, const float *gate,
         const void *cache_raw, uint32_t cap, uint32_t window, uint32_t rows, uint32_t base,
@@ -303,23 +303,39 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
             }
         }
         float tile_max[2] = {-INFINITY, -INFINITY};
-        #pragma unroll
-        for (int nb = 0; nb < INK2A_NB; nb++) {
+        // Old complete tiles have zero bias and no masked scores.
+        const bool far = FAR_TILES && FMT == INK2A_FMT_NVFP4 && MODE == INK2A_ONE &&
+            tq0 + INK2A_TQ <= rows && q_lo >= kt0 + INK2A_TK + INK2A_EXTENT - 1 &&
+            kt0 >= seg_lo && kt0 + INK2A_TK <= seg_hi;
+        if (far) {
             #pragma unroll
-            for (int l = 0; l < 4; l++) {
-                const int r = l / 2;
-                const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
-                float x = -INFINITY;
-                if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
-                    const uint32_t d = qpos[r] - p;
-                    const uint32_t t = tq0 + qrow[r];
-                    const float bias = PREFETCH_BIAS ? __uint_as_float(biases[nb][l] << 16) : d < INK2A_EXTENT
-                        ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
-                        : 0.0f;
-                    x = ink2a_score(s[nb][l], bias);
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const float x = ink2a_score(s[nb][l], 0.0f);
+                    s[nb][l] = x;
+                    tile_max[l / 2] = fmaxf(tile_max[l / 2], x);
                 }
-                s[nb][l] = x;
-                tile_max[r] = fmaxf(tile_max[r], x);
+            }
+        } else {
+            #pragma unroll
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const int r = l / 2;
+                    const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
+                    float x = -INFINITY;
+                    if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
+                        const uint32_t d = qpos[r] - p;
+                        const uint32_t t = tq0 + qrow[r];
+                        const float bias = PREFETCH_BIAS ? __uint_as_float(biases[nb][l] << 16) : d < INK2A_EXTENT
+                            ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
+                            : 0.0f;
+                        x = ink2a_score(s[nb][l], bias);
+                    }
+                    s[nb][l] = x;
+                    tile_max[r] = fmaxf(tile_max[r], x);
+                }
             }
         }
         float rescale[2], tile_sum[2] = {0.0f, 0.0f};

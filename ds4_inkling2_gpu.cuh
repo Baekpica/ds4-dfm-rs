@@ -805,14 +805,22 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
     static cudaError_t ready4 = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
+    static cudaError_t ready_far = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
     static cudaError_t ready_bias = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
     static const bool prefetch_bias = !ink2_env_off("DS4_INKLING2_BIAS_PREFETCH");
+    static const bool far_tiles = !ink2_env_off("DS4_INKLING2_FAR_TILES");
     const bool bias = !fp4 && window && prefetch_bias;
     if (!cuda_ok(fp4 ? ready4 : ready, "Inkling-2 attention shared memory")) { return 0; }
     if (bias && !cuda_ok(ready_bias, "Inkling-2 bias prefetch shared memory")) { return 0; }
+    if (fp4 && far_tiles && !cuda_ok(ready_far, "Inkling-2 far tiles shared memory")) { return 0; }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
-    if (fp4) {
+    if (fp4 && far_tiles) {
+        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
+            (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
+    } else if (fp4) {
         ink2a_prefill<INK2A_FMT_NVFP4><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)out->ptr,
             (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,
             cache->ptr, cap, window, rows, pos);

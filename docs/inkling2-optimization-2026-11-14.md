@@ -146,3 +146,61 @@ Production/NVTX builds and independent read-only review pass. This is
 ```text
 134eca6dc8be145e3e92d2f2e8934dfe1cb1ef6ca1b8bc6cd53aa597c56e802d
 ```
+
+## P3: skip per-score masks on old full-attention tiles
+
+After P2, resident NVFP4 full attention takes 305.996 ms (5.17% of 8K
+prefill). Its last 2,048-row chunk takes 14.128 ms. The matching isolated
+shape (position 6,144, 8,192-key capacity) takes 13.56 ms under NCU.
+Its useful QK/PV work is 360.8 GFLOP: a 3.35 ms BF16 tensor-core floor.
+Synthetic E2M1 bytes and E4M3 scales use the production page layout.
+
+Source-mapped counters attribute 289.70 million instructions (21.9% of
+all instructions) to per-score validity and relative-bias handling. Most
+full-layer keys are already outside the 1,024-position bias span and
+strictly before every query in the tile. A uniform predicate now selects
+constant-zero bias and known-valid scores for those complete tiles.
+Score formulas and reduction order stay unchanged (class 5.1); causal,
+bias-bearing and incomplete tiles retain the original path. The dispatch
+is limited to resident NVFP4 prefill. Decode and segmented SSD attention
+keep their existing kernels. `DS4_INKLING2_FAR_TILES=0` disables it.
+
+Three isolated pairs: 13.962 / 13.867 / 13.895 ms → 10.927 / 10.881 /
+10.870 ms. One 32K-frontier pair: 48.643 → 33.645 ms. NCU reports
+13.56 → 10.55 ms, 1,323.18 → 965.14 million instructions, 223 → 209
+registers, no spills, and unchanged 53.25 KB shared memory. No tensor
+allocation or arithmetic is added. The candidate reaches about 31% of the
+optimistic BF16 bound; conversion, score processing and dependencies
+still cost time.
+
+| Fresh pair | Prefill P2 → P3 (tok/s) | Decode P2 → P3 (tok/s) |
+|---|---:|---:|
+| 8K, 1 | 1380.21 → 1392.82 | 29.61 → 29.87 |
+| 8K, 2 | 1385.64 → 1392.32 | 29.79 → 29.37 |
+| 8K, 3 | 1375.09 → 1396.83 | 29.37 → 29.32 |
+| Mean | 1380.31 → 1393.99 (+0.99%) | 29.590 → 29.520 (−0.24%) |
+| 32K, one confirmation pair | 1291.28 → 1342.41 (+3.96%) | 27.81 → 28.06 |
+
+Each prefill pair improves; the absolute ranges are 1375.09–1385.64 and
+1392.32–1396.83 tok/s. Decode ranges overlap (29.37–29.79 / 29.32–29.87),
+with no decode code change. All eight runs exit 0 with equal, finite
+200,058-logit vectors and equal 64-token continuations. Minimum available
+memory is 7.33 GiB, PSI is zero, and busy clocks are 2,177–2,184 MHz,
+mostly 2,184. The retained trace reduces full attention to 251.780 ms;
+prefill wall time is 5,850.501 ms. This is the third adopted Prefill round;
+Decode rounds have not yet begun.
+
+The attention fixture now covers 36 NVFP4 cases in addition to the
+12 sliding cases: query widths 9, 63, 64, 65, 129 and 2,048, each at
+positions 0, 1,023, 1,087, 1,088, 6,144 and 32,768. This checks the first
+eligible old tile, incomplete query tiles and long prefixes against the
+original kernel. All outputs are finite and equal.
+
+Two probes did not enter this change. QR already hits L1 on 95.05% of
+loads and streams useful data at about 198 GB/s, so the proposed cache
+preference did not address its measured limit. Permuting the decoded
+NVFP4 tile's stores gave about 2.1% isolated improvement, but added selects
+and address work; its end-to-end benefit was not tested or counted.
+
+Production executable SHA256:
+`4af7fc639822f85bd6d15781fb309c536d25599cb2f5da6aa7d31f977d28186b`.

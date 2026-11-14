@@ -396,5 +396,6 @@ for measured text prefill/decode changes and their bounds.
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
 | `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
 | `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
+| `DS4_INKLING2_FAR_TILES=0` | resident NVFP4 prefill attention checks masks and relative biases on every score, including old complete tiles |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |
