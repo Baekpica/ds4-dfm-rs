@@ -787,10 +787,15 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
             if (!splits) { return 0; }
         } else {
             const uint32_t keys = window && last >= window ? window : last + 1;
-            splits = ink2a_splits(keys);
+            static const bool swa_decode = !ink2_env_off("DS4_INKLING2_SWA_DECODE");
+            const bool staged = rows == 1u && window == INK2A_EXTENT && swa_decode;
+            splits = staged ? (keys + INK2A_SWA_SPLIT - 1) / INK2A_SWA_SPLIT : ink2a_splits(keys);
             const dim3 grid(splits, INK2A_KV_HEADS, rows);
             if (fp4) {
                 ink2a_decode<INK2A_FMT_NVFP4><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                    (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
+            } else if (staged) {
+                ink2a_decode<INK2A_FMT_BF16, true><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
                     (const float *)q->ptr, (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, splits);
             } else {
                 ink2a_decode<INK2A_FMT_BF16><<<grid, INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,

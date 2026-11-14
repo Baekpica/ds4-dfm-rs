@@ -39,7 +39,7 @@ enum {
     INK2A_SMEM = 2 * INK2A_STAGE_ELEMS * (int)sizeof(uint16_t),
     // Decode geometry: a 32-key tile per step, one warp per query head.
     INK2A_DTK = 32, INK2A_DTHREADS = INK2A_GROUP * 32, INK2A_PARTIAL = INK2A_DIM + 2,
-    INK2A_SPLITS = 64, INK2A_SPLIT_ROWS = 8, INK2A_MIN_SPLIT = 128,
+    INK2A_SPLITS = 64, INK2A_SPLIT_ROWS = 8, INK2A_MIN_SPLIT = 128, INK2A_SWA_SPLIT = 64,
     // NVFP4 pages: 128 keys of one KV head, K data/scales then V data/scales.
     INK2A_FMT_BF16 = 0, INK2A_FMT_NVFP4 = 1,
     INK2A_KB = 128, INK2A_FP4 = INK2A_DIM / 2, INK2A_FP4_ROW = INK2A_FP4 + 8,
@@ -451,7 +451,7 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
  * the split's keys, a lane per key of each 32-key tile staged in shared
  * memory (lane j reads K row j from word (i + j) % 64 on, so the 32 rows'
  * words fall in distinct banks). partial = (m, l, acc[128]). */
-template <int FMT>
+template <int FMT, bool ASYNC = false>
 __global__ __launch_bounds__(INK2A_DTHREADS)
 void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const void *cache_raw, uint32_t cap,
         uint32_t window, uint32_t base, uint32_t splits, uint32_t seg_lo = 0, uint32_t seg_hi = UINT32_MAX,
@@ -474,6 +474,14 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
     const uint16_t *bias = rel + ((uint64_t)row * INK2A_HEADS + h) * INK2A_EXTENT;
     for (uint32_t t0 = k0; t0 < k1; t0 += INK2A_DTK) {
         __syncthreads();
+        // Keep the bias load ahead of the tile wait and QK work.
+        uint16_t prefetched_bias = 0;
+        if constexpr (ASYNC) {
+            const uint32_t p = t0 + lane;
+            if (p < k1 && pos - p < INK2A_EXTENT) {
+                asm volatile("ld.global.u16 %0, [%1];" : "=h"(prefetched_bias) : "l"(bias + pos - p));
+            }
+        }
         if constexpr (FMT == INK2A_FMT_NVFP4) {
             // 32 keys x (K, V) x 8 groups of 16 values, decoded to BF16 pairs.
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * 2 * 8; i += INK2A_DTHREADS) {
@@ -484,6 +492,16 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 uint32_t *dst = (value ? sv[j] : sk[j]) + grp * 8;
                 ink2a_fp4x16(data, half[INK2A_KB * INK2A_FP4 + slot * 8 + grp], dst);
             }
+        } else if constexpr (ASYNC) {
+            for (uint32_t i = threadIdx.x; i < INK2A_DTK * INK2A_DIM / 8; i += INK2A_DTHREADS) {
+                const uint32_t j = i / (INK2A_DIM / 8), c = i % (INK2A_DIM / 8);
+                const uint32_t p = min(t0 + j, k1 - 1);
+                const uint16_t *src = ink2a_row(cache, p, cap, window) + kv * INK2A_DIM;
+                __pipeline_memcpy_async(&sk[j][4 * c], src + 8 * c, 16);
+                __pipeline_memcpy_async(&sv[j][4 * c], src + INK2A_KV + 8 * c, 16);
+            }
+            __pipeline_commit();
+            __pipeline_wait_prior(0);
         } else {
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * INK2A_DIM / 4; i += INK2A_DTHREADS) {
                 const uint32_t j = i / (INK2A_DIM / 4), c = i % (INK2A_DIM / 4);
@@ -508,7 +526,9 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 dot = fmaf(__uint_as_float(bits & 0xffff0000u), sq[warp][2 * w + 1], dot);
             }
             const uint32_t d = pos - p;
-            score = ink2a_score(dot, d < INK2A_EXTENT ? __uint_as_float((uint32_t)bias[d] << 16) : 0.0f);
+            const float relative = ASYNC ? __uint_as_float((uint32_t)prefetched_bias << 16)
+                : d < INK2A_EXTENT ? __uint_as_float((uint32_t)bias[d] << 16) : 0.0f;
+            score = ink2a_score(dot, relative);
         }
         float tmax = score;
         for (uint32_t o = 16; o; o >>= 1) { tmax = fmaxf(tmax, __shfl_xor_sync(0xffffffffu, tmax, o)); }

@@ -109,7 +109,8 @@ On the retained P1 trace, sliding prefill attention takes 843.569 ms
 work, a 0.478 ms BF16 tensor-core floor, but its kernel takes 5.27 ms.
 An isolated capture with the same 2,048 rows, position 6,144, 1,024-key
 window and 3,072-row ring takes 5.306 ms. Values are synthetic BF16;
-shapes, addresses and the execution path match the production case.
+the production ring has 3,071 rows, so wrap addresses differ slightly.
+The work shape and execution path match; full-model A/B uses the actual ring.
 
 NCU reports 78.8% long-scoreboard stalls and only 8.55% issue-slot use.
 SASS line mapping attributes 86.35% of long-scoreboard samples to the
@@ -310,3 +311,96 @@ widths, switch state and fallback outcomes. Production, NVTX and quality
 builds, NLL self-test and independent code review pass. This is **Decode
 round 1**. Production executable SHA256:
 `077c5dae4b60afc67da48bd77f26bf5b60ceba1e641e852b90d2fbeb466e3a48`.
+
+## D2: stage sliding decode tiles and expose more splits
+
+A new retained-D1 trace attributes 355.922 ms (4.23% of 8,417.847 ms decode)
+to sliding attention, 34.758 µs per call. The isolated replay uses the
+production 3,071-row ring and 16 rotating caches (201 MB), with synthetic
+BF16 values and hot Q/bias/sink arrays. Attention plus merge takes 36.162 µs,
+close to the model's 37.530 µs. Useful KV reads alone are 4.194 MB, a
+17.48 µs floor at 240 GB/s. NCU's cold replay takes 39.87 µs; 2,394 of
+3,146 long-scoreboard samples wait at stores immediately following KV
+global loads. Eight splits expose only 64 CTAs and 16.82% occupancy.
+
+Reusing the existing verify MMA kernel loses: sliding attention plus merge
+rises from 38.792 to 49.251 µs, and full attention from 85.891 to 126.188 µs.
+It computes 64 query slots for six live heads and requires 177/184 registers
+and 69.6/53.2 KB shared memory. That resource and work cost rejects the probe;
+it does not enter production. Whole-workload measurement was restarted on
+unchanged D1 before selecting the following alternative.
+
+One-row sliding attention now copies 16-byte KV pieces asynchronously into
+the existing shared tile, loads raw relative bias before QK, and splits at
+64 keys instead of 128 (16 splits at a full window). No buffer is added.
+At eight splits, asynchronous copies alone take 28.807 µs; bias prefetch
+reduces a separate paired probe from 28.553 to 27.952 µs. Sixteen splits
+beat both eight and 32 in the final probe. Three matched isolated pairs,
+including merge, take 35.377 / 35.329 / 35.455 µs before and
+25.871 / 25.988 / 25.610 µs after.
+
+NCU time falls to 29.31 µs with 33.01% occupancy. Registers remain 51,
+shared memory 19.46 KB, spills zero, and issued instructions are nearly
+unchanged (2.303 M → 2.301 M). The extra splits reread Q and write more
+partials: global read sectors rise 140,288 → 146,432, and store sectors
+26,112 → 52,224. These are request sectors, not measured DRAM bytes.
+The fixed partial buffer already accommodates 64 splits. Changing the
+merge order is class 5.2; copies at matched split geometry are class 5.1.
+`DS4_INKLING2_SWA_DECODE=0` restores the old path. Prefill, verify and SSD
+segment dispatch remain unchanged.
+
+### Arithmetic and performance gates
+
+Three fresh quality processes compare D2 off, D2 off plus the accepted
+gain-dot switch, and D2 on. The off result exactly reproduces D1's retained
+quality result. All 1,280 positions have finite full-vocabulary logits.
+
+| Positions | NLL MAE, noise → candidate | NLL RMS, noise → candidate | Top-1 changes, noise → candidate |
+|---|---:|---:|---:|
+| All 1,280 | 0.029163 → 0.021463 | 0.065354 → 0.055282 | 14 → 17 |
+| Short, 1,024 | 0.026489 → 0.018790 | 0.062308 → 0.053242 | 9 → 9 |
+| 32K, 128 | 0.041058 → 0.030262 | 0.081322 → 0.067733 | 1 → 4 |
+| 64K, 128 | 0.038661 → 0.034049 | 0.070989 → 0.057405 | 4 → 4 |
+
+Baseline / noise / candidate mean NLL is 1.303290 / 1.303950 / 1.305609;
+target top-1 correct is 868 / 862 / 869. Candidate NLL rises 0.002319 while
+absolute/RMS movement is below the measured reference in each stratum.
+At 32K and 64K, correct targets rise from 84/53 to 86/54; Korean falls
+98 → 96, as does the noise reference. Cumulative D1+D2 against pre-D1 has
+mean NLL change −0.000064 and 17 top-1 changes, with RMS 0.069089 versus
+the original noise's 0.066852. This bounded gate does not claim every
+metric improves or establish general capability.
+
+The repeated speed comparison lengthens both arms to 1,024 generated
+tokens. It uses archived D1 and current D2 in ABBAAB order, default PDL.
+
+| Fresh pair | Prefill D1 → D2 (tok/s) | Decode D1 → D2 (tok/s) |
+|---|---:|---:|
+| 8K, 1 | 1394.93 → 1394.82 | 30.65 → 31.78 |
+| 8K, 2 | 1390.69 → 1392.87 | 30.95 → 31.34 |
+| 8K, 3 | 1382.60 → 1380.97 | 30.82 → 31.35 |
+| Mean | 1389.41 → 1389.55 (+0.01%) | 30.807 → 31.490 (+2.22%) |
+| 32K, one confirmation pair | 1332.30 → 1341.18 (+0.67%) | 29.03 → 30.08 (+3.62%) |
+
+Every repeated pair improves, with nonoverlapping decode ranges
+30.65–30.95 / 31.34–31.78 tok/s. All eight processes exit successfully;
+minimum available memory is 7.34 GiB and PSI is zero. Busy clocks are
+2,184 MHz except two 2,177 MHz samples in the 32K candidate. Temperatures
+span 56–67 °C at 8K and 62–72 °C at 32K. Residual variation within each
+arm remains unassigned. All prefill logits are equal and finite over
+200,058 entries. The 8K continuations match for all 1,024 tokens; the 32K
+pair diverges at token 57 and is a confirmation with different later routes.
+
+The retained PDL-off trace reduces sliding attention to 238.668 ms
+(23.307 µs per call, −32.94%). Merge rises 34.059 → 39.703 ms; net target
+time falls 111.610 ms, 1.33% of the baseline decode wall. Total traced
+decode falls 8,417.847 → 8,319.939 ms. Other kernels vary, and PDL-off
+attribution is not a prediction of the 2.22% default-PDL throughput gain.
+
+The fixture passes 68 finite/equal cases: 48 previous prefill cases and
+20 decode cases covering short tails, split boundaries, ring wraps and
+32K positions at matched geometry. Preserved BF16 and NVFP4 fallback SASS
+matches D1 after normalizing constant-bank offsets. Production, NVTX and
+quality builds and independent code/numerical review pass. This is
+**Decode round 2**. Production executable SHA256:
+`fea070eaf6543f248b851aaa567357fcf903da4515a2d30a4f610811488ad9fd`.

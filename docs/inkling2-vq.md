@@ -409,6 +409,7 @@ hashes. It is a numerical regression check, not a general ability benchmark.
 | `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
 | `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
 | `DS4_INKLING2_FAR_TILES=0` | resident NVFP4 prefill attention checks masks and relative biases on every score, including old complete tiles |
+| `DS4_INKLING2_SWA_DECODE=0` | one-row sliding attention uses synchronous KV copies and 128-key splits instead of staged 64-key splits |
 | `DS4_INKLING2_Q4_GROUP=0` | one-row Q4 projections run separately, with the scalar path for small matrices |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |
