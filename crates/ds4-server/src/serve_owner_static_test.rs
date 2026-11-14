@@ -120,6 +120,7 @@ fn static_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, Job
         live_ids: Vec::new(),
         engine_defaults: false,
         think_on_request: false,
+        images_unbounded: false,
     };
     let body = format!(
         r#"{{"messages":[{{"role":"user","content":"{tag}"}}],"thinking":{{"type":"disabled"}},"temperature":0}}"#

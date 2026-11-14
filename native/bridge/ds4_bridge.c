@@ -704,16 +704,25 @@ int ds4_bridge_inkling2_encode_vision(ds4_bridge_session *s, const float *pixels
     return ds4_session_inkling2_encode_vision(s->session, pixels, rows, cols, out, err, errlen);
 }
 
+int ds4_bridge_inkling2_media_keep(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                   const uint32_t *starts, const uint32_t *counts, const uint64_t *tags,
+                                   uint32_t nspans)
+{
+    if (!s || !s->session) {
+        return -1;
+    }
+    return ds4_session_inkling2_media_keep(s->session, tokens, n_tokens, starts, counts, tags, nspans);
+}
+
 int ds4_bridge_inkling2_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
-                                   const uint32_t *starts, const uint32_t *counts,
-                                   const float *const *rows, uint32_t nspans, uint64_t tag,
-                                   char *err, size_t errlen)
+                                   const uint32_t *starts, const uint32_t *counts, const uint64_t *tags,
+                                   const float *const *rows, uint32_t nspans, char *err, size_t errlen)
 {
     if (!s || !s->session) {
         set_err(err, errlen, "session is NULL");
         return 1;
     }
-    return ds4_session_inkling2_sync_media(s->session, tokens, n_tokens, starts, counts, rows, nspans, tag,
+    return ds4_session_inkling2_sync_media(s->session, tokens, n_tokens, starts, counts, tags, rows, nspans,
                                            err, errlen);
 }
 

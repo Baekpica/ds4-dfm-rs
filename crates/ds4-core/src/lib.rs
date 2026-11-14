@@ -344,6 +344,16 @@ const MINIMAX_MTP_DRAFTS: i32 = 7;
 const INKLING2_MTP_DRAFTS: i32 = 7;
 /// Inkling-2's hidden width: one image row per placeholder.
 const INKLING2_WIDTH: usize = 4608;
+/// ds4_session_inkling2_sync_media: the live state kept fewer rows than
+/// media_keep said, so a placeholder it prefills has no rows.
+const INKLING2_NEEDS_ROWS: i32 = 2;
+
+/// A media sync's images in prompt order: placeholder runs and pixel tags.
+struct Inkling2Spans {
+    starts: Vec<u32>,
+    counts: Vec<u32>,
+    tags: Vec<u64>,
+}
 
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
@@ -3336,37 +3346,113 @@ impl Session<'_> {
 
     /// Inkling-2 images: each encoded by the release's vision part, its rows
     /// over its placeholder run.
+    /// Each image is named by its pixels: the live state keeps the rows below
+    /// the first image a prompt does not share, so only the images past them
+    /// run the tower (a follow-up turn encodes its new images alone).
     fn sync_inkling2(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         let ids = tokens.as_slice();
-        let counts = inkling_media::image_counts2(ids, images)?;
-        let mut rows = Vec::with_capacity(images.len());
-        // One image's pixels at a time; only the rows wait for the prefill.
-        for (input, &count) in images.iter().zip(&counts) {
-            let image = inkling_media::prepare_image2(input.data, count)?;
-            let mut out = vec![0.0f32; count as usize * INKLING2_WIDTH];
-            let mut err = [0u8; 512];
-            // SAFETY: Exclusive session; pixels and out are sized to the grid
-            // and outlive this synchronous call.
-            let rc = unsafe {
-                ds4_sys::ds4_bridge_inkling2_encode_vision(
-                    self.raw.as_ptr(),
-                    image.pixels.as_ptr(),
-                    image.rows,
-                    image.cols,
-                    out.as_mut_ptr(),
-                    err.as_mut_ptr().cast(),
-                    err.len(),
-                )
-            };
-            if rc != 0 {
-                return Err(fail(rc, &err));
+        let spans = Inkling2Spans {
+            counts: inkling_media::image_counts2(ids, images)?,
+            starts: images.iter().map(|image| image.token_offset).collect(),
+            tags: images
+                .iter()
+                .map(|image| crate::mimo2::media_tag(&[image.data]) | 1)
+                .collect(),
+        };
+        let keep = self.inkling2_media_keep(ids, &spans)?;
+        match self.inkling2_sync_from(ids, images, &spans, keep) {
+            // A restore below the promised rows failed: every image again.
+            Err(e) if e.code == INKLING2_NEEDS_ROWS => {
+                self.inkling2_sync_from(ids, images, &spans, 0)
             }
-            rows.push(out);
+            done => done,
         }
-        let starts: Vec<u32> = images.iter().map(|image| image.token_offset).collect();
-        let ptrs: Vec<*const f32> = rows.iter().map(|r| r.as_ptr()).collect();
-        let datas: Vec<&[u8]> = images.iter().map(|image| image.data).collect();
-        let tag = crate::mimo2::media_tag(&datas) | 1;
+    }
+
+    fn inkling2_media_keep(&self, ids: &[i32], spans: &Inkling2Spans) -> Result<u32> {
+        // SAFETY: Exclusive session; the slices outlive this pure query.
+        let keep = unsafe {
+            ds4_sys::ds4_bridge_inkling2_media_keep(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                spans.starts.as_ptr(),
+                spans.counts.as_ptr(),
+                spans.tags.as_ptr(),
+                spans.starts.len() as u32,
+            )
+        };
+        u32::try_from(keep).map_err(|_| Error {
+            code: 1,
+            message: "invalid Inkling-2 image spans".into(),
+        })
+    }
+
+    /// The images whose runs end past `keep` run the tower in prompt order,
+    /// one image's pixels at a time; their rows wait for the prefill up to
+    /// ROWS_BUDGET2 tokens, past which the prompt prefills in stages through
+    /// the last image held.
+    fn inkling2_sync_from(
+        &mut self,
+        ids: &[i32],
+        images: &[VisionInput<'_>],
+        spans: &Inkling2Spans,
+        keep: u32,
+    ) -> Result<()> {
+        let mut rows: Vec<Option<Vec<f32>>> = vec![None; images.len()];
+        let mut held = 0;
+        for (k, input) in images.iter().enumerate() {
+            let count = spans.counts[k];
+            if spans.starts[k] + count <= keep {
+                continue;
+            }
+            if held > 0 && held + count > inkling_media::ROWS_BUDGET2 {
+                let stage = (spans.starts[k - 1] + spans.counts[k - 1]) as usize;
+                self.inkling2_sync_rows(&ids[..stage], spans, &rows[..k])?;
+                rows.iter_mut().for_each(|r| *r = None);
+                held = 0;
+            }
+            rows[k] = Some(self.inkling2_encode(input.data, count)?);
+            held += count;
+        }
+        self.inkling2_sync_rows(ids, spans, &rows)
+    }
+
+    fn inkling2_encode(&mut self, data: &[u8], count: u32) -> Result<Vec<f32>> {
+        let image = inkling_media::prepare_image2(data, count)?;
+        let mut out = vec![0.0f32; count as usize * INKLING2_WIDTH];
+        let mut err = [0u8; 512];
+        // SAFETY: Exclusive session; pixels and out are sized to the grid and
+        // outlive this synchronous call.
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_inkling2_encode_vision(
+                self.raw.as_ptr(),
+                image.pixels.as_ptr(),
+                image.rows,
+                image.cols,
+                out.as_mut_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        Ok(out)
+    }
+
+    /// Prefill `ids` under its images (the first `rows.len()`), NULL rows for
+    /// those the live state keeps.
+    fn inkling2_sync_rows(
+        &mut self,
+        ids: &[i32],
+        spans: &Inkling2Spans,
+        rows: &[Option<Vec<f32>>],
+    ) -> Result<()> {
+        let ptrs: Vec<*const f32> = rows
+            .iter()
+            .map(|r| r.as_ref().map_or(std::ptr::null(), |r| r.as_ptr()))
+            .collect();
         let mut err = [0u8; 512];
         // SAFETY: Rust owns the rows until this synchronous prefill returns;
         // native copies each span's rows into its forwards.
@@ -3375,11 +3461,11 @@ impl Session<'_> {
                 self.raw.as_ptr(),
                 ids.as_ptr(),
                 ids.len() as i32,
-                starts.as_ptr(),
-                counts.as_ptr(),
+                spans.starts.as_ptr(),
+                spans.counts.as_ptr(),
+                spans.tags.as_ptr(),
                 ptrs.as_ptr(),
-                starts.len() as u32,
-                tag,
+                rows.len() as u32,
                 err.as_mut_ptr().cast(),
                 err.len(),
             )

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Compile Inkling-2's serial resume rule (inkling2_sync_keep) and the ring
-spans a resume copies (inkling2_resume_parts) over stub sessions.
+"""Compile Inkling-2's serial resume rule (inkling2_sync_keep with its image
+cut) and the ring spans a resume copies (inkling2_resume_parts) over stub
+sessions.
 
 The convolution histories have no positional index, so a prompt resumes
 where it extends the live state or at a copy at or below its common prefix;
-a copy holds the histories and each sliding ring's 1,023 rows below it."""
+a copy holds the histories and each sliding ring's 1,023 rows below it.
+Placeholder tokens do not name pixels: the prefix also ends at the first
+image the live state and the prompt do not share (run and pixel tag)."""
 import subprocess, tempfile
 from pathlib import Path
 
@@ -34,10 +37,16 @@ typedef struct {
     uint32_t pos[SERIAL_CKPTS];
     uint64_t gen[SERIAL_CKPTS];
 } ds4_serial_ckpt;
+typedef struct { uint32_t start, count; uint64_t tag; } inkling2_image;
 typedef struct {
     uint32_t ring_cap, position;
     bool failed;
     ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS];
+    const unsigned *span_start, *span_count;
+    const uint64_t *span_tag;
+    uint32_t span_n;
+    inkling2_image *live;
+    uint32_t live_n;
 } ds4_inkling2_graph;
 typedef struct {
     ds4_tokens checkpoint;
@@ -74,6 +83,26 @@ static void live(uint32_t len, uint32_t a, uint32_t b) {
     s.inkling2_graph.position = len;
     s.rewind.pos[0] = a;
     s.rewind.pos[1] = b;
+}
+
+/* The live state's images and the prompt's (runs and tags). */
+static inkling2_image held[4];
+static unsigned asked_start[4], asked_count[4];
+static uint64_t asked_tag[4];
+static void images(const inkling2_image *live_images, uint32_t nlive, const inkling2_image *asked, uint32_t nasked) {
+    ds4_inkling2_graph *g = &s.inkling2_graph;
+    for (uint32_t i = 0; i < nlive; i++) { held[i] = live_images[i]; }
+    for (uint32_t i = 0; i < nasked; i++) {
+        asked_start[i] = asked[i].start;
+        asked_count[i] = asked[i].count;
+        asked_tag[i] = asked[i].tag;
+    }
+    g->live = held;
+    g->live_n = nlive;
+    g->span_start = asked_start;
+    g->span_count = asked_count;
+    g->span_tag = asked_tag;
+    g->span_n = nasked;
 }
 
 /* Keep for a prompt sharing `common` live tokens, `len` tokens long. */
@@ -138,6 +167,29 @@ int main(void) {
     s.inkling2_graph.position = 6000;
     ok &= check("stale_copy", keep_for(5500, 5600), 4000);
 
+    /* Images: the live state holds A at 100 and B at 3,000 (copies at
+     * 2,048 and 5,000). */
+    const inkling2_image A = {100, 50, 11}, B = {3000, 20, 22}, other_b = {3000, 20, 23};
+    const inkling2_image short_b = {3000, 19, 22}, extra = {4000, 8, 33}, C = {4800, 9, 44}, D = {4800, 9, 45};
+    const inkling2_image both[] = {A, B}, changed[] = {A, other_b}, shorter[] = {A, short_b};
+    const inkling2_image added[] = {A, B, extra}, late_live[] = {A, C}, late_asked[] = {A, D};
+    live(5000, 2048, 5000);
+    images(both, 2, both, 2);
+    ok &= check("same_images", keep_for(5000, 5100), 5000);
+    images(both, 2, changed, 2);
+    ok &= check("other_pixels", keep_for(5000, 5100), 2048);
+    images(both, 2, shorter, 2);
+    ok &= check("other_run", keep_for(5000, 5100), 2048);
+    images(both, 2, both, 1);
+    ok &= check("image_dropped", keep_for(5000, 5100), 2048);
+    images(both, 2, added, 3);
+    ok &= check("image_added_below", keep_for(5000, 5100), 2048);
+    /* An image at or past the common prefix does not cut it. */
+    live(5000, 4096, 5000);
+    images(late_live, 2, late_asked, 2);
+    ok &= check("image_past_prefix", keep_for(4500, 4600), 4096);
+    images(both, 0, both, 0);
+
     live(5000, 4096, 5000);
     s.inkling2_graph.failed = true;
     ok &= check("failed_graph", keep_for(5000, 5100), 0);
@@ -161,7 +213,7 @@ int main(void) {
    .replace('@PREFIX@', cut(ds4, 'static uint32_t session_keep_prefix(', '/* Whether a sliding ring')) \
    .replace('@CKPT@', cut(ds4, 'static bool serial_ckpt_live(', '/* One tensor span')) \
    .replace('@REWOUND@', cut(ds4, 'static void session_rewound(', '/* GLM-5.3:')) \
-   .replace('@KEEP@', cut(session, '/* Rows the live state keeps', 'static void inkling2_resume_free('))
+   .replace('@KEEP@', cut(session, "// A media sync's placeholder", 'static void inkling2_resume_free('))
 with tempfile.TemporaryDirectory() as t:
     p = Path(t)
     (p / 'keep.c').write_text(code)

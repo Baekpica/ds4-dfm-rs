@@ -26,11 +26,29 @@ static bool inkling2_read_logits(ds4_session *s) {
     return true;
 }
 
+// A media sync's placeholder past the kept rows has no image rows.
+enum { INKLING2_NEEDS_ROWS = 2 };
+
+/* `keep` cut at the first image the live state and the request (g->span_*)
+ * do not share: the same placeholder run over the same pixels. Placeholder
+ * tokens do not name pixels, and rows below a run never depend on it. */
+static uint32_t inkling2_image_cut(const ds4_inkling2_graph *g, uint32_t keep) {
+    for (uint32_t i = 0;; i++) {
+        const uint32_t held = i < g->live_n ? g->live[i].start : UINT32_MAX;
+        const uint32_t asked = i < g->span_n ? g->span_start[i] : UINT32_MAX;
+        const uint32_t first = held < asked ? held : asked;
+        if (first >= keep) { return keep; }
+        if (held != asked || g->live[i].count != g->span_count[i] || g->live[i].tag != g->span_tag[i]) {
+            return first;
+        }
+    }
+}
+
 /* Rows the live state keeps for `prompt`; 0 rebuilds. */
 static uint32_t inkling2_sync_keep(ds4_session *s, const ds4_tokens *prompt) {
     const ds4_inkling2_graph *g = &s->inkling2_graph;
     if (!s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) { return 0; }
-    const uint32_t keep = session_keep_prefix(s, prompt);
+    const uint32_t keep = inkling2_image_cut(g, session_keep_prefix(s, prompt));
     if (keep == g->position) { return keep; }
     const int slot = serial_ckpt_find(s, keep);
     return slot < 0 ? 0u : s->rewind.pos[slot];
@@ -83,12 +101,26 @@ static bool inkling2_resume_restore(ds4_session *s, int slot, uint32_t at) {
     return ok;
 }
 
-/* `tag` != 0: a media sync whose spans the graph holds (g->span_*). A prompt
- * resumes on the live state only under the same images; identical
- * placeholders over other pixels prefill again. A placeholder no span covers
- * is refused: its embedding row is not an image. */
-static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, uint64_t tag, char *err,
-        size_t errlen) {
+/* The request's images (g->span_*, none for text) become the live state's. */
+static bool inkling2_images_hold(ds4_inkling2_graph *g) {
+    if (g->span_n > g->live_cap) {
+        inkling2_image *grown = realloc(g->live, (size_t)g->span_n * sizeof(*grown));
+        if (!grown) { return false; }
+        g->live = grown;
+        g->live_cap = g->span_n;
+    }
+    for (uint32_t i = 0; i < g->span_n; i++) {
+        g->live[i] = (inkling2_image){g->span_start[i], g->span_count[i], g->span_tag[i]};
+    }
+    g->live_n = g->span_n;
+    return true;
+}
+
+/* A media sync names its images (g->span_*): the live state keeps rows below
+ * the first image the prompt does not share, and every placeholder the sync
+ * prefills takes its image's rows; without them it returns
+ * INKLING2_NEEDS_ROWS (an embedding row is not an image). */
+static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
             payload_set_err(err, errlen, "Inkling-2 prompt has an invalid token");
@@ -98,7 +130,7 @@ static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, ui
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     if (!s->inkling2_graph_ready) { payload_set_err(err, errlen, "Inkling-2 graph is not initialized"); return 1; }
     ds4_inkling2_graph *g = &s->inkling2_graph;
-    uint32_t start = !tag || tag == g->checkpoint_tag ? inkling2_sync_keep(s, prompt) : 0u;
+    uint32_t start = inkling2_sync_keep(s, prompt);
     const int slot = start && start < (uint32_t)s->checkpoint.len ? serial_ckpt_find(s, start) : -1;
     if (start && start >= (uint32_t)s->checkpoint.len) {
         if (start == (uint32_t)prompt->len) { return 0; }
@@ -108,17 +140,17 @@ static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, ui
         start = 0;
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "Inkling-2 graph reset failed"); return 1; }
-        g->checkpoint_tag = 0u;
+        g->live_n = 0u;
     }
     for (uint32_t i = start; i < (uint32_t)prompt->len; i++) {
         if (prompt->v[i] != INKLING2_IMAGE_PAD) { continue; }
         bool covered = false;
         for (uint32_t k = 0; !covered && k < g->span_n; k++) {
-            covered = i >= g->span_start[k] && i - g->span_start[k] < g->span_count[k];
+            covered = g->span_rows[k] && i >= g->span_start[k] && i - g->span_start[k] < g->span_count[k];
         }
         if (!covered) {
             payload_set_err(err, errlen, "Inkling-2 image placeholder has no vision rows");
-            return 1;
+            return INKLING2_NEEDS_ROWS;
         }
     }
     const uint32_t resume = start, end = (uint32_t)prompt->len;
@@ -145,40 +177,65 @@ static int inkling2_session_prefill(ds4_session *s, const ds4_tokens *prompt, ui
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
-    if (tag) { g->checkpoint_tag = tag; }
+    if (!inkling2_images_hold(g)) { return inkling2_session_fail(s, err, errlen); }
     return 0;
 }
 
 static int inkling2_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
-    return inkling2_session_prefill(s, prompt, 0u, err, errlen);
+    return inkling2_session_prefill(s, prompt, err, errlen);
 }
 
-/* Image rows (host F32 [count][4608] per span) over the prompt's
- * placeholder runs, then the usual prefill. */
-int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
-        const unsigned *counts, const float *const *rows, unsigned nspans, uint64_t tag, char *err, size_t errlen) {
-    if (!ds4_session_is_inkling2(s) || !tokens || n_tokens <= 0 || !tag ||
-        (nspans && (!starts || !counts || !rows))) {
-        payload_set_err(err, errlen, "Inkling-2 media sync needs tokens, spans and a tag");
-        return 1;
-    }
+// Image spans in prompt order, nonempty, inside the prompt, nonzero tags.
+static bool inkling2_spans_valid(int n_tokens, const unsigned *starts, const unsigned *counts,
+        const uint64_t *tags, unsigned nspans) {
+    if (n_tokens <= 0 || (nspans && (!starts || !counts || !tags))) { return false; }
+    uint64_t end = 0;
     for (unsigned i = 0; i < nspans; i++) {
-        if (!counts[i] || !rows[i] || starts[i] > (unsigned)n_tokens || counts[i] > (unsigned)n_tokens - starts[i]) {
-            payload_set_err(err, errlen, "Inkling-2 media span is empty or past the prompt");
-            return 1;
+        if (!counts[i] || !tags[i] || starts[i] < end || (uint64_t)starts[i] + counts[i] > (uint64_t)n_tokens) {
+            return false;
         }
+        end = (uint64_t)starts[i] + counts[i];
+    }
+    return true;
+}
+
+static void inkling2_spans_set(ds4_inkling2_graph *g, const unsigned *starts, const unsigned *counts,
+        const uint64_t *tags, const float *const *rows, unsigned nspans) {
+    g->span_start = starts;
+    g->span_count = counts;
+    g->span_tag = tags;
+    g->span_rows = rows;
+    g->span_n = nspans;
+}
+
+int ds4_session_inkling2_media_keep(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+        const unsigned *counts, const uint64_t *tags, unsigned nspans) {
+    if (!ds4_session_is_inkling2(s) || !tokens || !inkling2_spans_valid(n_tokens, starts, counts, tags, nspans)) {
+        return -1;
+    }
+    if (!s->inkling2_graph_ready) { return 0; }
+    ds4_inkling2_graph *g = &s->inkling2_graph;
+    inkling2_spans_set(g, starts, counts, tags, NULL, nspans);
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    const uint32_t keep = inkling2_sync_keep(s, &prompt);
+    inkling2_spans_set(g, NULL, NULL, NULL, NULL, 0);
+    return (int)keep;
+}
+
+int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+        const unsigned *counts, const uint64_t *tags, const float *const *rows, unsigned nspans, char *err,
+        size_t errlen) {
+    if (!ds4_session_is_inkling2(s) || !tokens || !inkling2_spans_valid(n_tokens, starts, counts, tags, nspans) ||
+        (nspans && !rows)) {
+        payload_set_err(err, errlen, "Inkling-2 media spans are empty, unordered or past the prompt");
+        return 1;
     }
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     ds4_inkling2_graph *g = &s->inkling2_graph;
-    g->span_start = starts;
-    g->span_count = counts;
-    g->span_rows = rows;
-    g->span_n = nspans;
+    inkling2_spans_set(g, starts, counts, tags, rows, nspans);
     const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
-    const int rc = inkling2_session_prefill(s, &prompt, tag, err, errlen);
-    g->span_n = 0;
-    g->span_start = g->span_count = NULL;
-    g->span_rows = NULL;
+    const int rc = inkling2_session_prefill(s, &prompt, err, errlen);
+    inkling2_spans_set(g, NULL, NULL, NULL, NULL, 0);
     return rc;
 }
 

@@ -81,6 +81,9 @@ pub struct ServerConfig {
     /// asks (Gemma-4's `<|think|>`): thinking stays off unless asked. The bin
     /// sets it from the opened model.
     pub think_on_request: bool,
+    /// The family's media sync takes any number of images (Inkling-2): no
+    /// four-image limit per request. The bin sets it from the opened model.
+    pub images_unbounded: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     /// Request-omitted sampling: server flags over the model's own values.
@@ -186,6 +189,7 @@ impl Default for ServerConfig {
             engine_defaults: false,
             max_effort_default: false,
             think_on_request: false,
+            images_unbounded: false,
             ctx: 8192,
             default_tokens: 393216,
             sampling: Default::default(),
@@ -1273,6 +1277,7 @@ fn prepare_client(
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
                 think_on_request: cfg.think_on_request,
+                images_unbounded: cfg.images_unbounded,
             };
             let body = std::str::from_utf8(&req.body).unwrap_or("");
             match parse_request(surf, &env, body) {
@@ -3814,6 +3819,7 @@ mod owner_tests {
             live_ids: Vec::new(),
             engine_defaults: false,
             think_on_request: false,
+            images_unbounded: false,
         };
         let mut parsed = parse_request(
             WireSurface::Anthropic,
@@ -3924,6 +3930,7 @@ mod owner_tests {
             live_ids: Vec::new(),
             engine_defaults: false,
             think_on_request: false,
+            images_unbounded: false,
         };
         let parsed = parse_request(
             WireSurface::Anthropic,
@@ -3983,6 +3990,7 @@ mod owner_tests {
             live_ids: Vec::new(),
             engine_defaults: false,
             think_on_request: false,
+            images_unbounded: false,
         };
         let body = format!(r#"{{"prompt":"{prompt}","max_tokens":0}}"#);
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();

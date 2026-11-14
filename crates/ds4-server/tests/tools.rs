@@ -390,6 +390,7 @@ fn parse_chat_request_keeps_a_type_list_head() {
         live_ids: Vec::new(),
         engine_defaults: false,
         think_on_request: false,
+        images_unbounded: false,
     };
     let request = r#"{"messages":[{"role":"user","content":"find it"}],
         "tools":[{"type":"function","function":{"name":"search_tool","parameters":
