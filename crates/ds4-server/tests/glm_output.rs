@@ -35,6 +35,7 @@ fn orders(properties: Value) -> Vec<ToolSchemaOrder> {
         live_ids: Vec::new(),
         engine_defaults: false,
         think_on_request: false,
+        images_unbounded: false,
     };
     let request = json!({"messages":[{"role":"user","content":"Use inspect."}],
         "tools":[{"type":"function","function":{"name":"inspect",

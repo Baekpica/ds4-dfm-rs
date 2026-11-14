@@ -53,7 +53,7 @@ static void inkling2_payload_draft_rows(const ds4_inkling2_graph *g, uint32_t n,
 
 // Tokens do not name the pixels behind image placeholders: no snapshot.
 static uint64_t inkling2_payload_bytes(const ds4_inkling2_graph *g, uint32_t n) {
-    if (!g || !g->ready || g->failed || !n || n > g->ctx_cap || g->position != n || g->checkpoint_tag ||
+    if (!g || !g->ready || g->failed || !n || n > g->ctx_cap || g->position != n || g->live_n ||
         (g->draft && g->draft->trial_n)) { return 0; }
     uint32_t rows[2];
     inkling2_payload_draft_rows(g, n, rows);
@@ -229,7 +229,7 @@ static int inkling2_payload_restore(ds4_inkling2_graph *g, FILE *fp, uint64_t *l
     /* A failed or partial restore can never be reused as a committed prefix. */
     g->failed = true;
     g->position = 0;
-    g->checkpoint_tag = 0;
+    g->live_n = 0;
     if (g->draft) {
         g->draft->trial_n = 0;
         g->draft->capture = false;

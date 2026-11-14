@@ -90,7 +90,7 @@ pub(crate) fn has_vision(root: &std::path::Path) -> bool {
 /// attention out, qkv), its 4,096-row MLP tile, the attention's BF16 qkv and
 /// 192 MiB score tile, the BF16 GEMM input and weight slots
 /// (ds4_inkling2_vision.inc); on the host one image's pixels and the 4,608-wide
-/// rows of four images.
+/// F32 rows one prefill waits for.
 pub(crate) fn media_bytes() -> u64 {
     const DIM: u64 = 1024;
     const MLP_TILE: u64 = 4096 * 4096 * 4;
@@ -100,7 +100,7 @@ pub(crate) fn media_bytes() -> u64 {
     let rows = 4 * tokens + 1;
     let tower =
         rows * 6 * DIM * 4 + MLP_TILE + rows * 3 * DIM * 2 + SCORES + 4 * tokens * 1200 * 2 + SLOTS;
-    let host = tokens * 40 * 40 * 3 * 4 + 4 * tokens * 4608 * 4;
+    let host = tokens * 40 * 40 * 3 * 4 + u64::from(crate::inkling_media::ROWS_BUDGET2) * 4608 * 4;
     tower + host
 }
 

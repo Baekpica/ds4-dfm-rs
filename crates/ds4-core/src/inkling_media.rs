@@ -280,6 +280,9 @@ const V2_SCALE: f32 = 0.5 * PIXEL_SCALE;
 /// Tokens of one image. The processor has no maximum; 4,096 (6.5 MP) keeps
 /// the tower's ~0.85 GB peak beside a 1M-context drafting serve.
 pub(crate) const MAX_TOKENS2: u32 = 4096;
+/// Image tokens whose F32 rows (18 KiB each) wait together for one prefill;
+/// more new images prefill in stages.
+pub(crate) const ROWS_BUDGET2: u32 = 16_384;
 
 fn image_geometry2(width: u32, height: u32, budget: u32) -> Result<VisionImageInfo> {
     if width == 0 || height == 0 || width > MAX_EDGE || height > MAX_EDGE {
@@ -353,8 +356,8 @@ fn checkerboard(rgba: &image::RgbaImage) -> Vec<u8> {
 /// Token counts of Inkling-2 images in prompt order, each over its
 /// placeholder run (checked before any pixel is decoded).
 pub(crate) fn image_counts2(tokens: &[i32], images: &[crate::VisionInput<'_>]) -> Result<Vec<u32>> {
-    if images.is_empty() || images.len() > MAX_MEDIA {
-        return Err(image_error("Inkling-2 requires 1 to 4 images"));
+    if images.is_empty() {
+        return Err(image_error("Inkling-2 media sync requires an image"));
     }
     if images
         .windows(2)
@@ -495,6 +498,23 @@ mod tests {
         // Half alpha over the 204 cell: (100 * 128 + 204 * 127 + 127) / 255.
         let half = prepare_image2(&png(1, 1, &[100, 100, 100, 128]), 1).unwrap();
         assert_eq!(half.pixels[0], (152.0 - 127.5) / 127.5);
+    }
+
+    #[test]
+    fn inkling2_takes_any_number_of_images() {
+        let data = png(40, 1, &[12, 64, 231, 0].repeat(40));
+        let mut tokens = vec![200000];
+        let mut images = Vec::new();
+        for _ in 0..6 {
+            images.push(crate::VisionInput {
+                data: &data,
+                token_offset: tokens.len() as u32,
+            });
+            tokens.extend([IMAGE_TOKEN, 200010]);
+        }
+        assert_eq!(image_counts2(&tokens, &images).unwrap(), vec![1; 6]);
+        assert!(image_counts2(&tokens, &[]).is_err());
+        assert!(image_counts2(&tokens, &images[..5]).is_err());
     }
 
     #[test]

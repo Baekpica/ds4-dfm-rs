@@ -31,6 +31,9 @@ static void inkling2_draft_reset(inkling2_draft_rt *d);
 // (a trial's verify logits, into the drafter's rows).
 typedef enum { INKLING2_HEAD_NONE, INKLING2_HEAD_LAST, INKLING2_HEAD_ALL } inkling2_head_rows;
 
+// An image's placeholder run and the tag of its pixels.
+typedef struct { uint32_t start, count; uint64_t tag; } inkling2_image;
+
 typedef struct {
     // high: one past the highest row any forward of this lineage wrote (the
     // draft rings' displacement bound for a rewind).
@@ -50,12 +53,15 @@ typedef struct {
     ds4_gpu_tensor *state;
     // DSpark drafter runtime (ds4_inkling2_draft.inc), when the open drafts.
     inkling2_draft_rt *draft;
-    // Image rows (host F32 [count][4608] per span) for the forwards a media
-    // sync runs; checkpoint_tag names the images the live state holds.
+    // A media sync's images in prompt order, each named by a tag of its
+    // pixels; rows (host F32 [count][4608]) are NULL for an image the live
+    // state keeps. `live` holds the images the live state holds.
     const unsigned *span_start, *span_count;
+    const uint64_t *span_tag;
     const float *const *span_rows;
     uint32_t span_n;
-    uint64_t checkpoint_tag;
+    inkling2_image *live;
+    uint32_t live_n, live_cap;
     uint16_t *host_embed;
     uint32_t matrices[INKLING2_LAYERS][3u * DS4_INK2_EXPERTS];
 #ifndef __APPLE__
@@ -89,6 +95,7 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
     ds4_gpu_tensor_free(g->partials);
     ds4_gpu_tensor_free(g->state);
     free(g->host_embed);
+    free(g->live);
     memset(g, 0, sizeof(*g));
 }
 
@@ -106,7 +113,7 @@ static bool inkling2_graph_reset(ds4_inkling2_graph *g) {
 #endif
     g->position = 0u;
     g->high = 0u;
-    g->checkpoint_tag = 0u;
+    g->live_n = 0u;
     g->failed = false;
     return true;
 }
@@ -192,6 +199,8 @@ static bool inkling2_graph_bank(ds4_inkling2_graph *g, const ds4_inkling2_graph 
     g->ready = false;
     g->draft = NULL;
     g->span_n = 0;
+    g->live = NULL;
+    g->live_n = g->live_cap = 0;
     memset(&g->tier, 0, sizeof(g->tier));
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { g->kv[il] = g->hist[il] = NULL; }
     if (!inkling2_graph_state(g)) {
@@ -372,6 +381,7 @@ static bool inkling2_apply_spans(ds4_inkling2_graph *g, uint32_t rows, uint32_t 
         const uint32_t start = g->span_start[i], stop = start + g->span_count[i];
         const uint32_t from = start > pos ? start : pos, to = stop < pos + rows ? stop : pos + rows;
         if (from >= to) { continue; }
+        if (!g->span_rows[i]) { return false; }
         ds4_gpu_tensor *view = ds4_gpu_tensor_view(g->x, (uint64_t)(from - pos) * row, (uint64_t)(to - from) * row);
         const bool ok = view && ds4_gpu_tensor_write(view, 0, g->span_rows[i] + (uint64_t)(from - start) *
             DS4_INK2_HIDDEN, (uint64_t)(to - from) * row);

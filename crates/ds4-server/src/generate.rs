@@ -2192,7 +2192,10 @@ fn prepare_media(
             ))
         }
     };
-    if parsed.images.len() + parsed.audios.len() + parsed.videos.len() > 4 {
+    // Inkling-2 keeps and stages image rows per image: any number of images.
+    if parsed.images.len() + parsed.audios.len() + parsed.videos.len() > 4
+        && engine.model_id() != ds4_core::Variant::Inkling2SmallVq as i32
+    {
         return Err(GenerateError::Unsupported(
             "serial media supports 1 to 4 inputs",
         ));
@@ -7214,6 +7217,7 @@ mod disk_sync_tests {
             live_ids: Vec::new(),
             engine_defaults: false,
             think_on_request: false,
+            images_unbounded: false,
         };
         let ordinary = parse_request(
             WireSurface::OpenaiChat,

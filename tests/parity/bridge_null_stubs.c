@@ -351,12 +351,18 @@ int ds4_session_inkling2_encode_vision(ds4_session *s, const float *pixels, unsi
     (void)s; (void)pixels; (void)rows; (void)cols; (void)out; (void)err; (void)errlen;
     STUB("ds4_session_inkling2_encode_vision");
 }
+int ds4_session_inkling2_media_keep(ds4_session *s, const int *tokens, int n_tokens,
+                                    const unsigned *starts, const unsigned *counts,
+                                    const uint64_t *tags, unsigned nspans) {
+    (void)s; (void)tokens; (void)n_tokens; (void)starts; (void)counts; (void)tags; (void)nspans;
+    STUB("ds4_session_inkling2_media_keep");
+}
 int ds4_session_inkling2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
                                     const unsigned *starts, const unsigned *counts,
-                                    const float *const *rows, unsigned nspans,
-                                    uint64_t tag, char *err, size_t errlen) {
+                                    const uint64_t *tags, const float *const *rows,
+                                    unsigned nspans, char *err, size_t errlen) {
     (void)s; (void)tokens; (void)n_tokens; (void)starts; (void)counts;
-    (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
+    (void)tags; (void)rows; (void)nspans; (void)err; (void)errlen;
     STUB("ds4_session_inkling2_sync_media");
 }
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,

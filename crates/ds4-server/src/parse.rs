@@ -136,6 +136,9 @@ pub struct ParseEnv {
     /// (Gemma-4): thinking stays off unless the request turns it on, at the
     /// default effort when it names no level.
     pub think_on_request: bool,
+    /// The family takes any number of images (Inkling-2's per-image reuse
+    /// and staged rows): no four-image limit.
+    pub images_unbounded: bool,
 }
 
 impl Default for ParseEnv {
@@ -148,6 +151,7 @@ impl Default for ParseEnv {
             live_ids: Vec::new(),
             engine_defaults: false,
             think_on_request: false,
+            images_unbounded: false,
         }
     }
 }
@@ -308,8 +312,10 @@ impl ImageInputs {
             items: Vec::new(),
             bytes: 0,
             // YoungAi server_parse_tools.c:289 grows the image list; ds41
-            // checks expanded context and memory. Other families keep four.
-            count_limit: (!env.engine_defaults).then_some(CHAT_IMAGE_MAX_COUNT),
+            // checks expanded context and memory, Inkling-2 its rows.
+            // Other families keep four.
+            count_limit: (!env.engine_defaults && !env.images_unbounded)
+                .then_some(CHAT_IMAGE_MAX_COUNT),
         }
     }
 }
@@ -4024,6 +4030,26 @@ mod eos_policy_tests {
 mod gemma_default_tests {
     use super::{parse_anthropic_request, parse_chat_request, ParseEnv};
     use crate::route::ThinkMode;
+
+    // Four images per request unless the family takes any number (Inkling-2).
+    #[test]
+    fn image_count_follows_the_family() {
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let image = format!(
+            r#"{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{PNG}"}}}}"#
+        );
+        let body = format!(
+            r#"{{"messages":[{{"role":"user","content":[{},{{"type":"text","text":"colors?"}}]}}]}}"#,
+            vec![image; 5].join(",")
+        );
+        let four = parse_chat_request(&ParseEnv::default(), &body).unwrap_err();
+        assert!(four.contains("at most 4"), "{four}");
+        let env = ParseEnv {
+            images_unbounded: true,
+            ..ParseEnv::default()
+        };
+        assert_eq!(parse_chat_request(&env, &body).unwrap().images.len(), 5);
+    }
 
     // Gemma-4's template opens the thought channel only for an explicit
     // thinking request. A request that names no level gets none; an explicit

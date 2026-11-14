@@ -718,6 +718,9 @@ fn main() {
                         ds4_server::syntax_for_model_id(m.model_id()),
                         ds4_server::ModelSyntax::Gemma4
                     );
+                    // Inkling-2 keeps and stages image rows per image: any
+                    // number of images per request.
+                    cfg.images_unbounded = m.family() == ds4_core::ModelFamily::Inkling2Vq;
                     cfg.have_engine = true;
                     Some(m)
                 }

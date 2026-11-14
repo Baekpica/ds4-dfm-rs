@@ -881,15 +881,25 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_inkling2_media_keep(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+        starts: *const u32,
+        counts: *const u32,
+        tags: *const u64,
+        nspans: u32,
+    ) -> c_int;
+
     pub fn ds4_bridge_inkling2_sync_media(
         s: *mut ds4_bridge_session,
         tokens: *const i32,
         n_tokens: i32,
         starts: *const u32,
         counts: *const u32,
+        tags: *const u64,
         rows: *const *const f32,
         nspans: u32,
-        tag: u64,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;

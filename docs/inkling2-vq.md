@@ -214,10 +214,16 @@ where the reference against itself with SDPA's math backend gives 0.9996-
 synthetic images, a cartoon and the text of a Chinese trading-app screenshot.
 Encoding takes 0.06 s for 18 tokens, 0.23 s for 510 and 1.37 s for 1,647.
 
-A prompt resumes on the live state only under the same images (FNV-1a of the
-image bytes): a same-size image with identical placeholders prefills again,
-and a follow-up turn over the same image resumes at its copy. Every request
-encodes its images again, also when the state is reused.
+Each image is named by an FNV-1a tag of its bytes, and the live state keeps
+the rows below the first image a prompt does not share (the same placeholder
+run over the same tag): a follow-up turn that adds an image resumes where the
+previous turn ended and encodes only the new image, and a same-size image
+with identical placeholders prefills again from its run. The host asks native
+for those rows before encoding (`ds4_session_inkling2_media_keep`); a sync
+that kept fewer (a failed restore) returns before any forward and the host
+encodes every image again. A request takes any number of images: the rows of
+new images wait for the prefill up to 16,384 tokens (0.3 GB), past which the
+prompt prefills in stages through the last image held.
 
 ## Quality
 
@@ -346,8 +352,8 @@ essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
 512-row chunks): reuse prefix, rewind and continue (top-1 17/17), disk and
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
-resume rule, the ring spans a copy takes, the bank checkpoint rules and the
-snapshot sizes, model-free.
+resume rule with its image cut, the ring spans a copy takes, the bank
+checkpoint rules and the snapshot sizes, model-free.
 
 ## Not yet supported
 
