@@ -140,7 +140,7 @@ __device__ __forceinline__ float ink2a_score(float dot, float bias) {
     return ink2a_bf16(ink2a_bf16(ink2a_bf16(dot) * INK2A_SCALE) + bias);
 }
 
-template <int FMT, int MODE = INK2A_ONE>
+template <int FMT, int MODE = INK2A_ONE, bool PREFETCH_BIAS = false>
 __global__ __launch_bounds__(INK2A_THREADS, 1)
 void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float *sinks, const float *gate,
         const void *cache_raw, uint32_t cap, uint32_t window, uint32_t rows, uint32_t base,
@@ -269,6 +269,25 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
     auto consume = [&](int stage, uint32_t kt0) {
         const uint16_t (*sk)[INK2A_SROW] = s_k(stage);
         const uint16_t (*sv)[INK2A_SROW] = s_v(stage);
+        // Keep raw bias loads ahead of QK; immediate scalar use serialized
+        // L1TEX waits. Volatile loads prevent the compiler from sinking them.
+        uint32_t biases[INK2A_NB][4];
+        if constexpr (PREFETCH_BIAS) {
+            #pragma unroll
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int l = 0; l < 4; l++) {
+                    const int r = l / 2;
+                    const uint32_t p = kt0 + nb * 8 + (lane % 4) * 2 + (l % 2);
+                    const uint32_t d = qpos[r] - p;
+                    biases[nb][l] = 0;
+                    if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi && d < INK2A_EXTENT) {
+                        const uint16_t *src = rel + ((uint64_t)(tq0 + qrow[r]) * INK2A_HEADS + h) * INK2A_EXTENT + d;
+                        asm volatile("ld.global.u16 %0, [%1];" : "=r"(biases[nb][l]) : "l"(src) : "memory");
+                    }
+                }
+            }
+        }
         float s[INK2A_NB][4];
         const uint32_t k_row = lane & 7u, k_col = (lane >> 3) * 8u;
         #pragma unroll
@@ -294,7 +313,7 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
                 if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
                     const uint32_t d = qpos[r] - p;
                     const uint32_t t = tq0 + qrow[r];
-                    const float bias = d < INK2A_EXTENT
+                    const float bias = PREFETCH_BIAS ? __uint_as_float(biases[nb][l] << 16) : d < INK2A_EXTENT
                         ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
                         : 0.0f;
                     x = ink2a_score(s[nb][l], bias);

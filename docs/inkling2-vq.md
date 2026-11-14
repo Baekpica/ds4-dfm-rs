@@ -370,8 +370,9 @@ essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
 resume rule with its image cut, the ring spans a copy takes, the bank
-checkpoint rules and the snapshot sizes, model-free. Its GPU residual fixture
-checks fixed stack/query widths against the runtime-indexed path;
+checkpoint rules and the snapshot sizes, model-free. Its GPU fixtures check
+fixed residual stack/query widths and attention bias prefetch against their
+original paths;
 `make test-inkling2-vit-attn` checks the tower's flash attention against an
 F64 softmax on a GPU.
 
@@ -394,5 +395,6 @@ for measured text prefill/decode changes and their bounds.
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
 | `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
+| `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |

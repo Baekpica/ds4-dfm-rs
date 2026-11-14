@@ -1006,7 +1006,7 @@ tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
-	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn test-inkling2-res
+	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn test-inkling2-res test-inkling2-attn
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1041,6 +1041,12 @@ tests/test_inkling2_res: tests/test_inkling2_res.cu cuda/inkling2_res.cuh ds4_in
 test-inkling2-res: tests/test_inkling2_res
 	./tests/test_inkling2_res
 
+tests/test_inkling2_attn: tests/test_inkling2_attn.cu cuda/inkling2_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+test-inkling2-attn: tests/test_inkling2_attn
+	./tests/test_inkling2_attn
+
 # CI. The workflow runs exactly the four ci-* targets, one parallel job each.
 # CI holds only checks that cover every family; a new check joins a group
 # here, never a workflow step:
@@ -1066,7 +1072,7 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
-gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res
+gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res test-inkling2-attn
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
 
 .PHONY: test-gemma4-memory
@@ -2743,6 +2749,7 @@ BUILD_OBJECTS := \
 
 BUILD_PROGRAMS := \
     tests/test_inkling2_res \
+    tests/test_inkling2_attn \
     ds4 ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
     ds4-eval ds4-rs ds4-server ds4-server-c ds4-server-rs ds4_cpu ds4_native ds4_server_test \
     ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
