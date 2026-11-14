@@ -404,3 +404,102 @@ matches D1 after normalizing constant-bank offsets. Production, NVTX and
 quality builds and independent code/numerical review pass. This is
 **Decode round 2**. Production executable SHA256:
 `fea070eaf6543f248b851aaa567357fcf903da4515a2d30a4f610811488ad9fd`.
+
+## D3: batch raw loads in long-context NVFP4 decode
+
+The retained D2 trace at 32K + 256 tokens spends 611.755 ms, 6.99% of
+8,750.013 ms decode, in full attention (298.708 µs per call). Its
+37,749,888-byte KV payload has a 157.291 µs floor at 240 GB/s, before
+conversion, QK, softmax and partials. Sixteen rotating synthetic caches
+exceed L2; their isolated attention plus merge takes 313.198 µs. NCU's
+cold-cache replay takes 353.82 µs. Of 11,389 long-scoreboard samples,
+9,047 wait at the raw FP4 consumer and 1,886 at scale conversion.
+
+The original loop reads and decodes three groups in sequence. The new
+path issues the groups' independent raw data and scale loads first, then
+converts them. Volatile PTX keeps the third load ahead of conversion;
+ordinary C++ batching let the compiler sink it. The path also reuses the
+raw relative-bias prefetch. Split count, arithmetic and storage stay the
+same (class 5.1). Three isolated 32K pairs, including merge:
+311.103 / 311.564 / 311.586 → 294.529 / 293.043 / 293.456 µs. Confirmation
+at 8K is 85.294 → 82.633 µs, and at 64K 622.397 → 576.637 µs.
+
+NCU improves to 335.17 µs; long-scoreboard samples fall to 7,607.
+Registers rise 54 → 64, with the same 19.456 KB shared memory, zero spills
+and five CTAs per SM. Issued instructions rise 76.629 M → 77.683 M
+(+1.38%). No persistent tensor allocation is added. A raw shared staging
+alternative needs 4,608 extra bytes and reduces residency to four CTAs;
+its initial 322.397 µs and simplified-copy 305.709 µs both lose to the
+register batch. That additional resource cost is not retained.
+
+### Whole-model evidence and the short-context boundary
+
+The initial comparison uses archived D2 and the candidate, with three
+fresh 32K + 1,024-token pairs in ABBAAB order and default PDL:
+
+| Fresh pair | Prefill D2 → D3 (tok/s) | Decode D2 → D3 (tok/s) |
+|---|---:|---:|
+| 32K, 1 | 1339.51 → 1342.28 | 29.66 → 30.23 |
+| 32K, 2 | 1334.51 → 1339.99 | 29.00 → 29.65 |
+| 32K, 3 | 1344.59 → 1338.92 | 29.88 → 30.25 |
+| Mean | 1339.54 → 1340.40 (+0.06%) | 29.513 → 30.043 (+1.80%) |
+| 64K, one confirmation pair | 1253.21 → 1252.35 | 27.52 → 27.74 (+0.80%) |
+
+All three long-context pairs improve, but their absolute decode ranges
+overlap: 29.00–29.88 / 29.65–30.25. An 8K confirmation instead falls
+31.33 → 30.97 tok/s. To distinguish the path from build differences,
+three additional fresh 8K pairs use the same binary with
+`DS4_INKLING2_FULL_DECODE=0/1`: 31.62 / 31.52 / 30.86 →
+30.98 / 31.54 / 31.03 tok/s. The mean changes −0.48%, with mixed pair
+directions and overlapping ranges. Neither a consistent short-context
+gain nor a consistent regression is established. A same-binary 32K pair
+improves 29.40 → 29.93 tok/s (+1.80%).
+
+The retained path therefore applies only to one-row resident NVFP4
+attention with **at least 32,768 actual keys**. This is the current
+qualified long-context boundary, not a measured optimal crossover.
+Short contexts keep the original kernel; verify and segmented SSD paths
+also remain unchanged. `DS4_INKLING2_FULL_DECODE=0` disables the new path.
+The extra instructions/registers lack a demonstrated end-to-end benefit
+in the short regime. No context limit or cache format changes.
+
+After this dispatch restriction, all four decode kernel bodies retain
+the same SASS (constant-bank offsets normalized). A new 8K trace selects
+only the original full-attention kernel, and its 200,058 finite logits
+and 256 generated IDs match D2. The final same-binary 32K off/on pair
+improves **29.51 → 29.67 tok/s (+0.54%)**, with prefill 1344.43 → 1348.65.
+Its full logits and 1,024 generated IDs match. Thus the initial +1.80%
+mean is a bounded sample, not a fixed expected gain; all five measured
+32K pairs improve, including both same-binary confirmations.
+
+The retained 32K PDL-off trace reduces the full-attention target
+611.755 → 578.024 ms (298.708 → 282.238 µs, −5.51%), agreeing with the
+isolated measurement. Its 33.730 ms saving is 0.39% of the baseline
+decode wall; total wall falls 8,750.013 → 8,654.265 ms. Other kernel times
+vary. The larger default-PDL throughput gain is not all attributed to
+that exclusive PDL-off kernel saving.
+
+All ten initial speed runs have equal, finite full-vocabulary prefill
+logits and equal 1,024-token continuations. The eight additional controls
+and final long pair do too. PSI is zero; minimum available memory is
+7.07 GiB initially, 7.21 GiB in controls and 7.29 GiB in the final pair.
+Busy clocks span 2,177–2,190 MHz, mostly 2,184; temperatures reach 71 °C.
+Residual absolute variation is not assigned a specific cause.
+
+### Regression evidence
+
+The fixture passes 89 finite/equal cases, including 21 new NVFP4 decode
+cases at tails, page/split boundaries, 32K and 64K. Independent review
+found that its original periodic synthetic data repeated between batches.
+The fixture now mixes high address bits; a deliberate mutant reusing
+batch 0's data and scale fails its comparison assertion. The production
+code required no corresponding correction.
+
+A fresh quality process exactly reproduces D2's NLL and top-1 records at
+all 1,280 teacher-forced positions, with all 200,058 vocabulary logits
+finite. The final dispatch selects between those equal arithmetic paths;
+the cumulative D1+D2 quality boundary still applies. Production, NVTX and
+quality builds and independent code/dispatch reviews pass. This is
+**Decode round 3**, qualified at 32K/64K, completing three Prefill and
+three Decode rounds. The final round executable SHA256 is
+`671bc6615f70343d8f37b249ecbcf5069a48b8081c333c3e24823b544b073dfa`.

@@ -40,6 +40,7 @@ enum {
     // Decode geometry: a 32-key tile per step, one warp per query head.
     INK2A_DTK = 32, INK2A_DTHREADS = INK2A_GROUP * 32, INK2A_PARTIAL = INK2A_DIM + 2,
     INK2A_SPLITS = 64, INK2A_SPLIT_ROWS = 8, INK2A_MIN_SPLIT = 128, INK2A_SWA_SPLIT = 64,
+    INK2A_FULL_STAGE_MIN_KEYS = 32768,
     // NVFP4 pages: 128 keys of one KV head, K data/scales then V data/scales.
     INK2A_FMT_BF16 = 0, INK2A_FMT_NVFP4 = 1,
     INK2A_KB = 128, INK2A_FP4 = INK2A_DIM / 2, INK2A_FP4_ROW = INK2A_FP4 + 8,
@@ -451,7 +452,7 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
  * the split's keys, a lane per key of each 32-key tile staged in shared
  * memory (lane j reads K row j from word (i + j) % 64 on, so the 32 rows'
  * words fall in distinct banks). partial = (m, l, acc[128]). */
-template <int FMT, bool ASYNC = false>
+template <int FMT, bool STAGED = false>
 __global__ __launch_bounds__(INK2A_DTHREADS)
 void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const void *cache_raw, uint32_t cap,
         uint32_t window, uint32_t base, uint32_t splits, uint32_t seg_lo = 0, uint32_t seg_hi = UINT32_MAX,
@@ -476,13 +477,38 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
         __syncthreads();
         // Keep the bias load ahead of the tile wait and QK work.
         uint16_t prefetched_bias = 0;
-        if constexpr (ASYNC) {
+        if constexpr (STAGED) {
             const uint32_t p = t0 + lane;
             if (p < k1 && pos - p < INK2A_EXTENT) {
                 asm volatile("ld.global.u16 %0, [%1];" : "=h"(prefetched_bias) : "l"(bias + pos - p));
             }
         }
-        if constexpr (FMT == INK2A_FMT_NVFP4) {
+        if constexpr (FMT == INK2A_FMT_NVFP4 && STAGED) {
+            // Issue independent raw loads before any conversion consumes them.
+            constexpr int batches = (INK2A_DTK * 2 * 8 + INK2A_DTHREADS - 1) / INK2A_DTHREADS;
+            uint2 data[batches];
+            uint32_t scales[batches];
+            #pragma unroll
+            for (int batch = 0; batch < batches; batch++) {
+                const uint32_t i = threadIdx.x + batch * INK2A_DTHREADS;
+                if (i >= INK2A_DTK * 2 * 8) { continue; }
+                const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
+                const uint32_t p = min(t0 + j, k1 - 1), slot = p % INK2A_KB;
+                const uint8_t *half = ink2a_page(pages, p, kv, block0) + value * INK2A_KB * INK2A_FP4_ROW;
+                asm volatile("ld.global.v2.u32 {%0, %1}, [%2];"
+                    : "=r"(data[batch].x), "=r"(data[batch].y) : "l"(half + slot * INK2A_FP4 + grp * 8) : "memory");
+                asm volatile("ld.global.u8 %0, [%1];" : "=r"(scales[batch])
+                    : "l"(half + INK2A_KB * INK2A_FP4 + slot * 8 + grp) : "memory");
+            }
+            #pragma unroll
+            for (int batch = 0; batch < batches; batch++) {
+                const uint32_t i = threadIdx.x + batch * INK2A_DTHREADS;
+                if (i >= INK2A_DTK * 2 * 8) { continue; }
+                const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
+                uint32_t *dst = (value ? sv[j] : sk[j]) + grp * 8;
+                ink2a_fp4x16(data[batch], scales[batch], dst);
+            }
+        } else if constexpr (FMT == INK2A_FMT_NVFP4) {
             // 32 keys x (K, V) x 8 groups of 16 values, decoded to BF16 pairs.
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * 2 * 8; i += INK2A_DTHREADS) {
                 const uint32_t j = i / 16, value = (i / 8) % 2, grp = i % 8;
@@ -492,7 +518,7 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 uint32_t *dst = (value ? sv[j] : sk[j]) + grp * 8;
                 ink2a_fp4x16(data, half[INK2A_KB * INK2A_FP4 + slot * 8 + grp], dst);
             }
-        } else if constexpr (ASYNC) {
+        } else if constexpr (STAGED) {
             for (uint32_t i = threadIdx.x; i < INK2A_DTK * INK2A_DIM / 8; i += INK2A_DTHREADS) {
                 const uint32_t j = i / (INK2A_DIM / 8), c = i % (INK2A_DIM / 8);
                 const uint32_t p = min(t0 + j, k1 - 1);
@@ -526,7 +552,7 @@ void ink2a_decode(float *partials, const float *q, const uint16_t *rel, const vo
                 dot = fmaf(__uint_as_float(bits & 0xffff0000u), sq[warp][2 * w + 1], dot);
             }
             const uint32_t d = pos - p;
-            const float relative = ASYNC ? __uint_as_float((uint32_t)prefetched_bias << 16)
+            const float relative = STAGED ? __uint_as_float((uint32_t)prefetched_bias << 16)
                 : d < INK2A_EXTENT ? __uint_as_float((uint32_t)bias[d] << 16) : 0.0f;
             score = ink2a_score(dot, relative);
         }

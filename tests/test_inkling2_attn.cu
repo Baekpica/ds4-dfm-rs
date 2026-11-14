@@ -31,14 +31,17 @@ __global__ void inputs(float *q, float *gate, float *sink, uint16_t *rel, uint16
     }
     if (fp4 && i < cap / INK2A_KB * INK2A_BLOCK) {
         const size_t within = i % (INK2A_PAGE / 2);
+        // Mix high address bits so batches and pages carry distinct values.
+        const uint64_t mixed = (uint64_t)i * UINT64_C(0x9e3779b97f4a7c15);
         reinterpret_cast<uint8_t *>(kv)[i] = within < INK2A_KB * INK2A_FP4
-            ? uint8_t((i * 13 + 7) % 256) : uint8_t(0x30 + i % 4);
+            ? uint8_t(mixed >> 32) : uint8_t(0x30 + ((mixed >> 40) & 7));
     }
 }
 
 static void run(uint32_t rows, uint32_t base, Cache format = Cache::Sliding, Phase phase = Phase::Prefill) {
     const bool fp4 = format == Cache::Nvfp4;
-    const uint32_t cap = phase == Phase::Decode ? 3071 : fp4 ? ((base + rows + INK2A_KB - 1) / INK2A_KB) * INK2A_KB : rows + INK2A_EXTENT + 7;
+    const uint32_t cap = fp4 ? ((base + rows + INK2A_KB - 1) / INK2A_KB) * INK2A_KB
+        : phase == Phase::Decode ? 3071 : rows + INK2A_EXTENT + 7;
     const size_t kv_bytes = fp4 ? (size_t)cap / INK2A_KB * INK2A_BLOCK : (size_t)cap * INK2A_ROW * 2;
     const size_t heads = (size_t)rows * INK2A_HEADS, count = heads * INK2A_DIM;
     float *q, *gate, *sink, *ref, *got;
@@ -50,17 +53,26 @@ static void run(uint32_t rows, uint32_t base, Cache format = Cache::Sliding, Pha
     inputs<<<(n + 255) / 256, 256>>>(q, gate, sink, rel, kv, heads, cap, format);
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
     if (phase == Phase::Decode) {
-        assert(!fp4);
-        const uint32_t keys = std::min((uint32_t)INK2A_EXTENT, base + rows);
-        const uint32_t splits = (keys + INK2A_SWA_SPLIT - 1) / INK2A_SWA_SPLIT;
+        const uint32_t keys = fp4 ? base + rows : std::min((uint32_t)INK2A_EXTENT, base + rows);
+        const uint32_t splits = fp4 ? ink2a_splits(keys) : (keys + INK2A_SWA_SPLIT - 1) / INK2A_SWA_SPLIT;
         float *partials;
         check(cudaMalloc(&partials, heads * INK2A_SPLITS * INK2A_PARTIAL * sizeof(float)));
         const dim3 decode_grid(splits, INK2A_KV_HEADS, rows);
-        ink2a_decode<INK2A_FMT_BF16><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
-            cap, INK2A_EXTENT, base, splits);
+        if (fp4) {
+            ink2a_decode<INK2A_FMT_NVFP4><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
+                cap, 0, base, splits);
+        } else {
+            ink2a_decode<INK2A_FMT_BF16><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
+                cap, INK2A_EXTENT, base, splits);
+        }
         ink2a_merge<<<heads, INK2A_DIM>>>(ref, partials, sink, gate, splits);
-        ink2a_decode<INK2A_FMT_BF16, true><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
-            cap, INK2A_EXTENT, base, splits);
+        if (fp4) {
+            ink2a_decode<INK2A_FMT_NVFP4, true><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
+                cap, 0, base, splits);
+        } else {
+            ink2a_decode<INK2A_FMT_BF16, true><<<decode_grid, INK2A_DTHREADS>>>(partials, q, rel, kv,
+                cap, INK2A_EXTENT, base, splits);
+        }
         ink2a_merge<<<heads, INK2A_DIM>>>(got, partials, sink, gate, splits);
         check(cudaFree(partials));
     } else if (fp4) {
@@ -96,8 +108,13 @@ int main() {
     for (uint32_t base : {0u, 7u, 30u, 31u, 32u, 62u, 63u, 64u, 126u, 127u, 128u,
             1022u, 1023u, 1024u, 3070u, 3071u, 9217u, 32768u}) {
         run(1, base, Cache::Sliding, Phase::Decode);
+        run(1, base, Cache::Nvfp4, Phase::Decode);
     }
-    for (uint32_t base : {1023u, 3071u}) { run(8, base, Cache::Sliding, Phase::Decode); }
+    run(1, 65536, Cache::Nvfp4, Phase::Decode);
+    for (uint32_t base : {1023u, 3071u}) {
+        run(8, base, Cache::Sliding, Phase::Decode);
+        run(8, base, Cache::Nvfp4, Phase::Decode);
+    }
     for (uint32_t rows : {9u, 63u, 64u, 65u, 129u, 2048u}) {
         run(rows, 0);
         run(rows, 3 * (rows + INK2A_EXTENT + 7) + 31);
