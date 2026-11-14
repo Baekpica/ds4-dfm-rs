@@ -1,4 +1,4 @@
-# Inkling-2 Small VQ optimization on GB10, November 14
+# Inkling-2 Small VQ optimization on GB10, November 14–15
 
 This campaign starts at `53043039` with the
 [published artifact](https://huggingface.co/Baekpica/Inkling-2-Small-VQ-GGUF)
@@ -35,7 +35,11 @@ python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 \
 ```
 
 Nsight Systems attributes kernels within `ds4.prefill` / `ds4.decode`;
-profiled throughput is excluded from A/B rates. NCU profiles isolated
+profiled throughput is excluded from A/B rates. Decode rounds disable PDL
+only for attribution (`DS4_GLMVQ_PDL=0`): dependent-launch timestamps can
+include predecessor waits. A/B throughput keeps default PDL enabled. Earlier
+P1–P3 Q4/expert decode timings with PDL are not exclusive compute costs.
+NCU profiles isolated
 production shapes with `--clock-control none`, never the full model.
 Raw traces, counters, full logits, generated IDs, build logs, source diffs,
 memory/clocks and process receipts stay in ignored `scratch/inkling2-perf/`.
@@ -188,7 +192,7 @@ with no decode code change. All eight runs exit 0 with equal, finite
 memory is 7.33 GiB, PSI is zero, and busy clocks are 2,177–2,184 MHz,
 mostly 2,184. The retained trace reduces full attention to 251.780 ms;
 prefill wall time is 5,850.501 ms. This is the third adopted Prefill round;
-Decode rounds have not yet begun.
+The following rounds target plain Decode.
 
 The attention fixture now covers 36 NVFP4 cases in addition to the
 12 sliding cases: query widths 9, 63, 64, 65, 129 and 2,048, each at
@@ -204,3 +208,105 @@ and address work; its end-to-end benefit was not tested or counted.
 
 Production executable SHA256:
 `4af7fc639822f85bd6d15781fb309c536d25599cb2f5da6aa7d31f977d28186b`.
+
+
+## D1: group the one-row input projections
+
+The retained P3 trace with PDL disabled spends 2,465.520 ms (28.53% of
+8,642.745 ms decode) in Q/gate/r and K/V projections. Each layer reads
+39.15 MB of Q4 weights: a 163.1 µs floor at 240 GB/s, against 200.64 µs
+measured. The separate small r/k/v matrices use scalar kernels; the large
+Q/gate matrices use staged streams. An isolated r projection takes
+20.22 µs, with 52.26% long-scoreboard stalls and about 98 GB/s useful
+bandwidth. Its in-model time is 14.13 µs; NCU cache replay and the isolated
+input differ and must not be treated as the same measurement.
+
+`inkling2_mm` now reuses the existing `ds4_gpu_gvq_q4_decode_many` helper
+at one row. Q/gate/r share one launch, and sliding-layer K/V share another.
+Full-layer K and V retain their distinct inputs. Unsupported formats use
+the existing fallback; `DS4_INKLING2_Q4_GROUP=0` disables the dispatch.
+No CUDA kernel, persistent tensor or allocation is added. The helper stages
+small matrices with two splits instead of their scalar eight-split path;
+this changes accumulation order (class 5.2).
+
+The isolated replay uses the actual five layer-0 Q4 payloads, verified by
+SHA256, synthetic BF16 inputs, and a large-shared-memory primer. Sixteen
+rotating copies total 626 MB, with 117 MB of small matrices, exceeding L2;
+the initial three-copy experiment was cache-biased and is excluded. The
+small BF16 sink operation between projections is omitted. Three pairs:
+
+| Layer type | Separate projections (µs) | Grouped (µs) |
+|---|---|---|
+| Sliding | 198.474 / 198.203 / 199.436 | 172.348 / 173.276 / 176.423 |
+| Full | 199.707 / 198.251 / 205.792 | 180.892 / 182.860 / 183.217 |
+
+NCU's grouped Q/gate/r kernel takes 158.98 µs for 33.84 MB, about 89% of
+the 141.0 µs bandwidth floor. It uses 46 registers, 10.368 KB shared memory
+and no spills. In the retained whole-model trace, the target falls to
+2,141.941 ms (−13.12%) and 26,624 launches from 61,440. Decode wall time
+falls to 8,331.216 ms, with 98.49% GPU coverage. These PDL-off traces explain
+the target; the following unprofiled rates use default PDL.
+
+### Arithmetic gate
+
+`tests/inkling2_quality` teacher-forces the pinned
+`tests/fixtures/inkling2-decode-quality.json`: eight authored multilingual,
+code, math and operations answers, plus 32,729- and 65,496-token prefixes,
+128 assistant positions each. Official template/tokenizer hashes and all
+token IDs are pinned in the fixture (SHA256
+`7138b14cf16000ea3c2b28a881680f945721ab8ec40672a269721740c7bb416d`).
+This is an arithmetic regression corpus, not a held-out capability score.
+The Rust recorder checks every usable vocabulary logit for finiteness and
+records stable F64 log-sum-exp NLL and top-1. Its model-free self-test checks
+normalization, ties, extreme logits and invalid inputs.
+
+Three fresh guarded processes compare separate projections, the accepted
+`DS4_INKLING2_GAIN_DOT=0` arithmetic switch with separate projections, and
+the candidate. All 1,280 positions pass finite checks in each process.
+Movement from the first configuration:
+
+| Positions | NLL MAE, noise → candidate | NLL RMS, noise → candidate | Top-1 changes, noise → candidate |
+|---|---:|---:|---:|
+| All 1,280 | 0.030592 → 0.031119 | 0.066852 → 0.071854 | 19 → 19 |
+| Short, 1,024 | 0.027977 → 0.029464 | 0.066311 → 0.072515 | 12 → 12 |
+| 32K, 128 | 0.040326 → 0.037912 | 0.072290 → 0.075324 | 5 → 3 |
+| 64K, 128 | 0.041778 → 0.037572 | 0.065490 → 0.062366 | 2 → 4 |
+
+Baseline / noise / candidate mean NLL is 1.305673 / 1.305274 / 1.303290;
+target top-1 correct is 866 / 864 / 868. Not every movement is smaller than
+the noise reference: global MAE/RMS is slightly larger, and math NLL rises
+0.018277 with the same 91 correct targets. At 32K, candidate and noise both
+score 84 correct versus 87 baseline; at 64K, candidate retains 53 versus
+52 for noise. This supports the bounded arithmetic gate, with no aggregate
+quality loss observed; it does not establish general capability or MTP
+quality. Independent read-only review agrees with this interpretation.
+
+### Fresh full-model comparison
+
+Decode rounds extend generation from the Prefill rounds' 64 to 256 tokens
+in both arms. The baseline is the archived P3 executable, with ABBAAB order.
+
+| Fresh pair | Prefill P3 → D1 (tok/s) | Decode P3 → D1 (tok/s) |
+|---|---:|---:|
+| 8K, 1 | 1394.51 → 1390.58 | 29.45 → 31.38 |
+| 8K, 2 | 1384.71 → 1380.80 | 30.02 → 30.88 |
+| 8K, 3 | 1386.69 → 1396.06 | 29.68 → 31.42 |
+| Mean | 1388.64 → 1389.15 (+0.04%) | 29.717 → 31.227 (+5.08%) |
+| 32K, one confirmation pair | 1347.70 → 1343.03 (−0.35%) | 27.85 → 29.61 (+6.32%) |
+
+All three decode pairs improve, with nonoverlapping ranges 29.45–30.02 and
+30.88–31.42 tok/s. About 2% variation remains within each arm despite the
+same 2,184 MHz busy clocks, 56–62 °C temperatures at 8K, zero PSI and equal
+256-token 8K continuations; no specific cause for that residual variation
+is established. Minimum available memory over the eight speed runs is
+7.39 GiB. Prefill logits are finite and equal over all 200,058 vocabulary
+entries at both contexts. At 32K, greedy continuations diverge at token 57;
+that pair follows different continuations thereafter, so the identical
+8K workloads are the repeated performance evidence and teacher-forced
+positions are the arithmetic gate.
+
+The compiled dispatch regression passes 144 combinations of counts,
+widths, switch state and fallback outcomes. Production, NVTX and quality
+builds, NLL self-test and independent code review pass. This is **Decode
+round 1**. Production executable SHA256:
+`077c5dae4b60afc67da48bd77f26bf5b60ceba1e641e852b90d2fbeb466e3a48`.

@@ -372,12 +372,24 @@ checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
 resume rule with its image cut, the ring spans a copy takes, the bank
 checkpoint rules and the snapshot sizes, model-free. Its GPU fixtures check
 fixed residual stack/query widths and attention bias prefetch against their
-original paths;
+original paths; projection dispatch covers the one-row grouped path and
+its unsupported-format fallback;
 `make test-inkling2-vit-attn` checks the tower's flash attention against an
 F64 softmax on a GPU.
 
-See the [November 14 optimization record](inkling2-optimization-2026-11-14.md)
+See the [November 14–15 optimization record](inkling2-optimization-2026-11-14.md)
 for measured text prefill/decode changes and their bounds.
+
+`make tests/inkling2_quality CUDA_ARCH=sm_121` builds the Rust arithmetic
+recorder; `tests/inkling2_quality --self-test` checks its NLL math without a
+model. Run it under the host memory guard with `MODEL_DIR`,
+`tests/fixtures/inkling2-decode-quality.json` and an output JSON path as its
+three arguments. It records NLL/top-1 at 1,280 fixed assistant positions,
+including 32K/64K prefixes, and checks full-vocabulary finiteness. Compare
+fresh baseline, candidate and an existing arithmetic switch (such as
+`DS4_INKLING2_GAIN_DOT=0`) on the same host; no fixed universal tolerance is
+built in. The fixture pins authored text and official template/tokenizer
+hashes. It is a numerical regression check, not a general ability benchmark.
 
 ## Not yet supported
 
@@ -397,5 +409,6 @@ for measured text prefill/decode changes and their bounds.
 | `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
 | `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
 | `DS4_INKLING2_FAR_TILES=0` | resident NVFP4 prefill attention checks masks and relative biases on every score, including old complete tiles |
+| `DS4_INKLING2_Q4_GROUP=0` | one-row Q4 projections run separately, with the scalar path for small matrices |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |

@@ -1006,7 +1006,7 @@ tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
-	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn test-inkling2-res test-inkling2-attn
+	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn test-inkling2-res test-inkling2-attn test-inkling2-projections
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1027,6 +1027,9 @@ test-inkling2-sync-keep:
 
 test-inkling2-banks:
 	python3 tests/test_inkling2_banks.py
+
+test-inkling2-projections:
+	python3 tests/test_inkling2_projections.py
 
 # The ViT flash attention against an F64 softmax (needs a GPU).
 tests/test_inkling2_vit_attn: tests/test_inkling2_vit_attn.cu cuda/inkling2_vit_attn.cuh
@@ -1072,7 +1075,7 @@ gate-iquest: test-iquest-model-free
 gate-qwen: test-ple-formats pq2-0-test test-qwen35-ref test-vit-image
 gate-glm53: test-glm53-fit test-vit-image
 gate-mimo2: test-mimo2-sync-keep
-gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res test-inkling2-attn
+gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res test-inkling2-attn test-inkling2-projections
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
 
 .PHONY: test-gemma4-memory
@@ -1931,6 +1934,13 @@ tests/beam_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/beam_quality" $@
 
+tests/inkling2_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example inkling2_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/inkling2_quality" $@
+
 tests/minimax_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example minimax_quality --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
@@ -2753,7 +2763,7 @@ BUILD_PROGRAMS := \
     ds4 ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
     ds4-eval ds4-rs ds4-server ds4-server-c ds4-server-rs ds4_cpu ds4_native ds4_server_test \
     ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
-    tests/beam_mtp_gate tests/beam_quality tests/bench_glm53_attention tests/bench_glm53_pool \
+    tests/beam_mtp_gate tests/beam_quality tests/inkling2_quality tests/bench_glm53_attention tests/bench_glm53_pool \
     tests/bench_glm53_shared tests/bench_glm53_stream tests/cuda_long_context_smoke \
     tests/cuda_tokentile_ldmatrix tests/ds41_boundary_verify tests/glm53_mtp_gate tests/glm53_nll \
     tests/glm53_state_gate tests/glm_vq_quality tests/glm_vq_state tests/iquest_attention_profile \
