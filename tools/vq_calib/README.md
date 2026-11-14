@@ -216,13 +216,14 @@ CPU only (CUDA hidden, the process pins itself to `--threads` CPUs, default 32).
 written with a sorted header, so a re-run reproduces every file byte for byte.
 
 ```sh
-W=/work/inkling2/calib
-python3 -I build_calib_inkling2.py fetch --out $W          # bounded downloads under $W/raw
-python3 -I build_calib_inkling2.py build --out $W          # calib.* + heldout.*
-python3 -I build_calib_inkling2.py build-images --out $W   # images.* + images_heldout.* (fetches its sources)
-python3 -I build_calib_inkling2.py check --out $W          # ids < 200058, row starts, window disjointness,
-                                                           # image placeholders, samples_decoded.txt, SHA256SUMS
-python3 -I build_calib_inkling2.py reprefix --raw-prefix none --out $W   # raw rows without <|begin_of_text|>
+M=Inkling-2-Small   # tokenizer.json, chat_template.jinja, processor_config.json of 086a047e
+W=inkling2-calib    # the calibration directory
+python3 -I build_calib_inkling2.py fetch --model $M --out $W          # bounded downloads under $W/raw
+python3 -I build_calib_inkling2.py build --model $M --out $W          # calib.* + heldout.*
+python3 -I build_calib_inkling2.py build-images --model $M --out $W   # images.* + images_heldout.*
+python3 -I build_calib_inkling2.py check --model $M --out $W          # ids < 200058, row starts, window
+                                                  # disjointness, image placeholders, samples_decoded.txt, SHA256SUMS
+python3 -I build_calib_inkling2.py reprefix --raw-prefix none --model $M --out $W   # raw rows without <|begin_of_text|>
 ```
 
 ## Tests

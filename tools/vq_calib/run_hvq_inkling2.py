@@ -21,8 +21,8 @@ Per layer l:
 Every rank keeps its sequences' residual stream (the current layer input and the inputs of the block
 boundary layers, BF16) in host memory. Layers before --first are re-run without statistics (catch-up).
 
-    torchrun --nproc-per-node 4 run_hvq_inkling2.py --calib /work/inkling2/calib/calib.safetensors \
-        --out /work/inkling2/convert --stats /work/inkling2/stats
+    torchrun --nproc-per-node 4 run_hvq_inkling2.py --source $SRC --calib $W/calib/calib.safetensors \
+        --out $W/convert --stats $W/stats
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -353,6 +353,8 @@ def fit_shard(lw, wt, hess, cb, cb_bytes, layer, var, hvq, experts, out_dir, ran
 # --------------------------------------------------------------------------------- driver
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--calib', required=True, type=Path)
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--stats', required=True, type=Path)
@@ -369,7 +371,7 @@ def main():
     ap.add_argument('--chunk-tokens', type=int, default=65536)
     ap.add_argument('--baseline-every', type=int, default=8)
     ap.add_argument('--save-hess-layers', default='')
-    ap.add_argument('--hess-dir', type=Path, default=Path('/work/inkling2/hess'))
+    ap.add_argument('--hess-dir', type=Path, help='--save-hess-layers: where the Hessians go')
     ap.add_argument('--stop-after', type=int, default=-1, help='stop after this layer (tests)')
     ap.add_argument('--images', type=Path, help='image calibration sequences (input_ids, offsets) from build_calib_inkling2.py build-images')
     ap.add_argument('--image-features', type=Path, help='their vision features (inkling2_vision.py)')
@@ -428,7 +430,7 @@ def main():
          'my_tokens': n_tok, 'my_sequences': len(mine), 'calib_sha256': calib_sha, 'run_id': run_id,
          'convert_layers': sorted(convert), 'variant': var, 'all_ranks': True})
 
-    src = R.Source()
+    src = R.Source(a.source)
     glob = R.Globals(src, dev, head=False)
     hid = torch.empty((n_tok, R.H), dtype=torch.bfloat16)
     for i, c0, n in seqs:

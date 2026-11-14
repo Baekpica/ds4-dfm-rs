@@ -25,7 +25,6 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
-SRC = Path('/models/Inkling-2-Small-MXFP8')
 SOURCE_REPO = 'thinkingmachines/Inkling-2-Small-MXFP8'
 SOURCE_REV = '086a047e8b7ff2ac902dd52355328ddb66b16914'
 TRANSFORMERS_REV = '109a7d19bf667168837f32929e00b791e195d14d'
@@ -57,7 +56,7 @@ def is_boundary(l):
 class Source:
     """Pinned MXFP8 checkpoint: tensor names -> shard, threaded reads into (pinned) host memory."""
 
-    def __init__(self, root=SRC, index=None):
+    def __init__(self, root, index=None):
         self.root = Path(root)
         index = Path(index) if index else self.root / 'model.safetensors.index.json'
         self.map = json.loads(index.read_text())['weight_map']

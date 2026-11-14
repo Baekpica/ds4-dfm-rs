@@ -62,12 +62,10 @@ import time
 
 import numpy as np
 
-ROOT = Path('/work/inkling2/calib')
-RAW = ROOT / 'raw'
-MODEL = Path('/work/inkling2/src-small')
+ROOT = RAW = MODEL = None                              # --out, OUT/raw, --model (main)
 MODEL_REPO = 'thinkingmachines/Inkling-2-Small'
 MODEL_REV = '086a047e8b7ff2ac902dd52355328ddb66b16914'   # src-small/.cache/huggingface (download metadata)
-DS4_PROMPTS = Path('/ds4-dfm-rs/gguf-tools/imatrix/dataset/prompts.jsonl')
+DS4_PROMPTS = Path(__file__).resolve().parents[2] / 'gguf-tools/imatrix/dataset/prompts.jsonl'
 DS4_REV = '32a4168332615a4d3c9b01b579623197caf7b6c8'   # as DS41; prompts.jsonl is unchanged since (sha256 266fa7d4...)
 SEED = 20261022                                        # DS41's: the same documents are fetched and pooled
 MAX_LEN = 32768
@@ -1552,8 +1550,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('stage', choices=['fetch', 'build', 'check', 'reprefix', 'build-images', 'all'])
     p.add_argument('--only', nargs='*')
-    p.add_argument('--out', type=Path, default=ROOT, help=f'calibration directory (downloads under OUT/raw); default {ROOT}')
-    p.add_argument('--model', type=Path, default=MODEL, help='Inkling-2 directory (tokenizer, chat_template.jinja, processor)')
+    p.add_argument('--out', type=Path, required=True, help='calibration directory (downloads under OUT/raw)')
+    p.add_argument('--model', type=Path, required=True, help='Inkling-2 directory (tokenizer, chat_template.jinja, processor)')
     p.add_argument('--ds4-prompts', type=Path, default=DS4_PROMPTS)
     p.add_argument('--raw-prefix', choices=sorted(RAW_PREFIXES), default=RAW_PREFIX,
                    help='first token of raw-text rows: begin_of_text (<|begin_of_text|> 200028, default) or none')

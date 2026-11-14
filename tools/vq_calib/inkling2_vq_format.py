@@ -14,7 +14,7 @@ Expert parts (`layer-LL-experts.gguf`, LL = 00..47) hold one E4M3 codebook
 up = rows 1::2 of the source `w13_weight`, [2304, 4608]; down = `w2_weight`, [4608, 2304]).
 
     python3 inkling2_vq_format.py PART.gguf [--receipt receipts/layer-LL-experts.json]
-    python3 inkling2_vq_format.py --parts /work/inkling2/parts [--layers 0-47] [--require-all]
+    python3 inkling2_vq_format.py --parts $W/parts [--layers 0-47] [--require-all]
 
 The strict reader rejects an unsupported family/version/variant, foreign or unknown metadata
 namespaces, duplicate names or keys, gaps, overlaps, truncation, trailing bytes, bad shapes, types or

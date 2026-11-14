@@ -7,8 +7,8 @@ gains under D. This reads the layer's stored codebook (`CONVERT/layer-LL/codeboo
 statistics (`STATS/layer-LL.safetensors`), so it needs no second moments and no calibration pass, and writes
 the same layout as run_hvq_inkling2.py (one rank file), so assemble_experts_inkling2.py builds its parts.
 
-    convert_t0_inkling2.py --convert /work/inkling2/convert --stats /work/inkling2/stats \
-        --out /work/inkling2/convert-ivq --layers 0-47 [--gpu-rank 0 --gpu-world 4]
+    convert_t0_inkling2.py --source $SRC --convert $W/convert --stats $W/stats \
+        --out $W/convert-ivq --layers 0-47 [--gpu-rank 0 --gpu-world 4]
 """
 import argparse
 import hashlib
@@ -81,6 +81,8 @@ def convert(l, a, dev, hvq, src):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--convert', type=Path, required=True)
     ap.add_argument('--stats', type=Path, required=True)
     ap.add_argument('--out', type=Path, required=True)
@@ -91,7 +93,7 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = False
     import ds41_hvq as hv
     dev = torch.device('cuda')
-    hvq, src = hv.Hvq(), R.Source()
+    hvq, src = hv.Hvq(), R.Source(a.source)
     for l in parse_layers(a.layers):
         if l % a.gpu_world != a.gpu_rank or (a.out / f'layer-{l:02d}' / 'receipt.json').exists():
             continue

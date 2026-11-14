@@ -9,7 +9,7 @@ gate/up/down order, and `receipts/layer-LL-experts.json` (file and every payload
 conversion record). Every payload is re-hashed while it is copied and the finished part is verified by
 the strict reader (verify_expert_part, with sampled row decodes).
 
-    assemble_experts_inkling2.py --convert /work/inkling2/convert --parts /work/inkling2/parts --layers 0-47
+    assemble_experts_inkling2.py --convert $W/convert --parts $W/parts --layers 0-47
 """
 import argparse
 import hashlib

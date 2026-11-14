@@ -143,8 +143,8 @@ class Body:
 
 
 # ----------------------------------------------------------------------------------- forward
-def run(seqs, dev, kv_fmt='bf16', experts=None, body=None, only_layers=None, keep_routes=True, log=print):
-    src = R.Source()
+def run(source, seqs, dev, kv_fmt='bf16', experts=None, body=None, only_layers=None, keep_routes=True, log=print):
+    src = R.Source(source)
     glob = R.Globals(src, dev, head=False)
     states = []
     for s in seqs:
@@ -205,6 +205,8 @@ def summarize(rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('mode', choices=['teacher', 'variant', 'merge'])
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--data', type=Path, required=True)
     ap.add_argument('--manifest', type=Path)
     ap.add_argument('--features', type=Path)
@@ -234,7 +236,7 @@ def main():
     only = set(int(x) for x in a.only_layers.split(',') if x) or None
     body = Body(a.body, dev) if a.body else None
     log = lambda m: print(m, flush=True)
-    outs = run(mine, dev, a.kv_fmt, a.experts, body, only, log=log)
+    outs = run(a.source, mine, dev, a.kv_fmt, a.experts, body, only, log=log)
     if a.mode == 'teacher':
         for s, o in zip(mine, outs):
             save_file({'final': o['final'], **{f'routes.{l}': r for l, r in o['routes'].items()}},
@@ -244,7 +246,7 @@ def main():
     for s in mine:
         t = load_file(str(a.teacher / f'seq-{s["i"]:05d}.safetensors'))
         teacher.append({'final': t['final'], 'routes': {int(k.split('.')[1]): v for k, v in t.items() if k.startswith('routes.')}})
-    src = R.Source()
+    src = R.Source(a.source)
     head = src.read(['model.llm.unembed.weight'])['model.llm.unembed.weight'].to(dev)
     if body is not None:
         e = body.r.entries.get('model.llm.unembed.weight')

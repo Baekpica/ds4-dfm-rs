@@ -6,7 +6,7 @@ Inkling2Model.forward replaces the normalised text embedding of every image plac
 one merger output row, in order; this module computes those rows so the layer-streamed reference can
 inject them (`features` [n_image_tokens, 4608] BF16 per sequence).
 
-    inkling2_vision.py --images /work/inkling2/calib/images.safetensors --out /work/inkling2/calib/image_features.safetensors
+    inkling2_vision.py --source $SRC --images $W/calib/images.safetensors --out $W/calib/image_features.safetensors
 """
 import argparse
 import hashlib
@@ -69,12 +69,14 @@ def features(model, pixel_values, grid_thw):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--images', type=Path, required=True)
     ap.add_argument('--out', type=Path, required=True)
     a = ap.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     dev = torch.device('cuda')
-    src = R.Source()
+    src = R.Source(a.source)
     model, _ = load_vision(src, dev)
     t = load_file(str(a.images))
     ids, off = t['input_ids'].long(), t['offsets'].long()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Markdown tables for EVALUATION.md from the evaluation summaries and the conversion receipts.
 
-    report_inkling2.py --eval /work/inkling2/eval --convert /work/inkling2/convert --out /work/inkling2/eval/tables.md
+    report_inkling2.py --eval $W/eval --convert $W/convert --out $W/eval/tables.md
 """
 import argparse
 import json

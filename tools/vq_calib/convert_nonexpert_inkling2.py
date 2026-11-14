@@ -35,19 +35,19 @@ readable, one source revision, one calib_sha256 equal to the SHA-256 of --calib,
 to the --calib text tokens plus the --images image-sequence tokens; it then writes the merged receipt.
 Test builds (--unit-importance, --layers, --no-head) go elsewhere (--output), never into parts/.
 
-Encoders: /ds4-dfm-rs/gguf-tools/quants.c (ds4q_quantize_chunk), built here with
+Encoders: this checkout's gguf-tools/quants.c (ds4q_quantize_chunk), built here with
 gcc -O3 -ffp-contract=off. Every quantized payload is decoded by numpy and by an independent C decoder;
 both must agree bit for bit before the relative MSE is recorded. Every written part is re-read with the
 strict inkling2_vq_format.PartReader: layout, metadata round trip, payload SHA-256 (preserved tensors
 against their source bytes) and a second numpy + C decode of every quantized payload from the file,
 which must reproduce the decode measured at encode time (SHA-256 of the decoded F32 stream).
 
-    python3 convert_nonexpert_inkling2.py embed
-    python3 convert_nonexpert_inkling2.py vision
-    python3 convert_nonexpert_inkling2.py mtp
-    python3 convert_nonexpert_inkling2.py body --stats /work/inkling2/stats      # release body, then merge
-    python3 convert_nonexpert_inkling2.py body --unit-importance --output /work/inkling2/test/parts-unit/body-nonexpert.gguf
-    python3 convert_nonexpert_inkling2.py merge
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W embed      # parts under $W/parts
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W vision
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W mtp
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W body --stats $W/stats   # release body, then merge
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W body --unit-importance --output $W/test/parts-unit/body-nonexpert.gguf
+    python3 convert_nonexpert_inkling2.py --source $SRC --work $W merge
 """
 import os
 for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
@@ -76,14 +76,10 @@ F32, F16, Q8_0, Q4_K, BF16 = fmt.F32, fmt.F16, fmt.Q8_0, fmt.Q4_K, fmt.BF16
 TYPE_NAMES = {F32: 'F32', F16: 'F16', Q8_0: 'Q8_0', Q4_K: 'Q4_K', BF16: 'BF16'}
 NS = fmt.NS
 
-SOURCE = Path('/models/Inkling-2-Small-MXFP8')
+SOURCE = None                             # --source: the source checkpoint directory
 SOURCE_REPO = 'thinkingmachines/Inkling-2-Small-MXFP8'
-DS4 = Path('/ds4-dfm-rs')
-WORK = Path('/work/inkling2')
-PARTS = WORK / 'parts'
-CALIB = WORK / 'calib' / 'calib.safetensors'
-IMAGES = WORK / 'calib' / 'images.safetensors'
-BUILD = WORK / 'build' / 'nonexpert-native'
+DS4 = TOOLS.parents[1]                    # this checkout (gguf-tools/quants.c)
+WORK = PARTS = CALIB = IMAGES = BUILD = None   # --work and the paths under it (configure)
 P = 'model.llm.'
 EMBED = P + 'embed.weight'
 UNEMBED = P + 'unembed.weight'
@@ -266,7 +262,8 @@ def load_f32(src, name):
 
 # ---------------------------------------------------------------- encoder / decoders
 
-def build_native(out=BUILD):
+def build_native(out=None):
+    out = out or BUILD
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     helper = out / 'inkling2_nx_decode.c'
@@ -1357,12 +1354,22 @@ def cmd_verify(a):
                           'seconds': round(time.monotonic() - t0, 1), **v}), flush=True)
 
 
+def configure(source, work):
+    """Point the converter at the source checkpoint and the work directory."""
+    global SOURCE, WORK, PARTS, CALIB, IMAGES, BUILD
+    SOURCE, WORK = source, work
+    PARTS, BUILD = work / 'parts', work / 'build' / 'nonexpert-native'
+    CALIB, IMAGES = work / 'calib' / 'calib.safetensors', work / 'calib' / 'images.safetensors'
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', type=Path, help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8)')
+    ap.add_argument('--work', type=Path, help='work directory: parts/, calib/, build/')
     sub = ap.add_subparsers(dest='cmd', required=True)
     for name in ('embed', 'vision', 'mtp', 'body'):
         s = sub.add_parser(name)
-        s.add_argument('--output', help=f'default {PARTS}/<part>.gguf')
+        s.add_argument('--output', help='default WORK/parts/<part>.gguf')
         s.add_argument('--receipt', help='default <output dir>/receipts/<stem>.json')
         s.add_argument('--overwrite', action='store_true')
         s.add_argument('--workers', type=int, default=4, help='encoder processes (workers x threads <= 32 here)')
@@ -1370,16 +1377,16 @@ def main():
         if name == 'body':
             s.add_argument('--stats', help='statistics directory (layer-LL-nonexpert.safetensors, head.safetensors)')
             s.add_argument('--unit-importance', action='store_true', help='test build: all-ones importance')
-            s.add_argument('--calib', default=str(CALIB),
-                           help='release body: the text calibration set the statistics must come from (SHA-256, tokens)')
-            s.add_argument('--images', default=str(IMAGES),
-                           help='release body: the image calibration sequences the statistics also cover (tokens); '
+            s.add_argument('--calib', help='default WORK/calib/calib.safetensors; '
+                           'release body: the text calibration set the statistics must come from (SHA-256, tokens)')
+            s.add_argument('--images', help='default WORK/calib/images.safetensors; '
+                           'release body: the image calibration sequences the statistics also cover (tokens); '
                                 '"" for text-only statistics')
             s.add_argument('--layers', help='test builds only: subset of layers, e.g. 0,5,47 or 0-2')
             s.add_argument('--no-head', action='store_true',
                            help='test builds only: skip unembed, the norms and the attn_res queries')
     s = sub.add_parser('merge')
-    s.add_argument('--parts', help=f'parts directory with receipts/ (default {PARTS})')
+    s.add_argument('--parts', help='parts directory with receipts/ (default WORK/parts)')
     s.add_argument('--allow-test-body', action='store_true',
                    help='test directories: accept an all-tensor test body (unit importance); marks the receipt test_build')
     s = sub.add_parser('verify')
@@ -1387,6 +1394,13 @@ def main():
     s.add_argument('--receipt', help='receipt of a single PART (default <dir>/receipts/<stem>.json)')
     s.add_argument('--threads', type=int, default=16)
     a = ap.parse_args()
+    # verify builds the C decoder under --work too; every other command also reads --source.
+    if not a.work or (a.cmd != 'verify' and not a.source):
+        ap.error(f'{a.cmd} needs --work' + ('' if a.cmd == 'verify' else ' and --source'))
+    configure(a.source, a.work)
+    if a.cmd == 'body':
+        a.calib = str(CALIB) if a.calib is None else a.calib
+        a.images = str(IMAGES) if a.images is None else a.images
     {'embed': cmd_embed, 'vision': cmd_vision, 'mtp': cmd_mtp, 'body': cmd_body, 'merge': cmd_merge,
      'verify': cmd_verify}[a.cmd](a)
 

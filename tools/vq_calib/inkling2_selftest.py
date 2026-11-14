@@ -88,6 +88,8 @@ def masks(t, dev):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--layers', default='0,5,6,11')
     ap.add_argument('--tokens', type=int, default=512)
     ap.add_argument('--out')
@@ -96,12 +98,12 @@ def main():
     dev = torch.device('cuda')
     from transformers.models.inkling2.configuration_inkling2 import Inkling2TextConfig
     from transformers import AutoTokenizer
-    src = R.Source()
+    src = R.Source(a.source)
     cfg = Inkling2TextConfig(**{k: v for k, v in src.config['text_config'].items() if k != 'torch_dtype'})
     cfg._attn_implementation = 'eager'
     cfg._experts_implementation = 'eager'
-    tok = AutoTokenizer.from_pretrained(str(R.SRC))
-    text = open('/ds4-dfm-rs/README.md').read()[:20000]
+    tok = AutoTokenizer.from_pretrained(str(a.source))
+    text = (Path(__file__).resolve().parents[2] / 'README.md').read_text()[:20000]
     ids = torch.tensor(tok.encode(text)[:a.tokens], device=dev)
     t = ids.numel()
     glob = R.Globals(src, dev, head=False)

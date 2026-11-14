@@ -4,7 +4,7 @@ routes and final logits of a few prompts, computed by inkling2_ref.py with the G
 Q4_K body exactly as stored (every weight restored to BF16 as the runtime restores it), with K/V in BF16
 and in the NVFP4 contract. All prompts and both K/V formats run layer-synchronously in one pass.
 
-    goldens_inkling2.py --parts /work/inkling2/parts --out /work/inkling2/goldens
+    goldens_inkling2.py --source $SRC --parts $W/parts --out $W/goldens [--probe $W/test/vision_probe.pt]
 """
 import argparse
 import hashlib
@@ -18,15 +18,14 @@ import inkling2_ref as R
 from inkling2_eval import Body, GvqExperts, q4k_dequant
 
 
-def prompts(tok):
+def prompts(tok, probe):
     chat = tok.apply_chat_template([{'role': 'user', 'content': 'What is the capital of France? Answer in one word.'}],
                                    tokenize=True, reasoning_effort='none')
     chat = chat['input_ids'] if hasattr(chat, 'keys') else chat
     chat = [int(t) for t in (chat[0] if chat and isinstance(chat[0], list) else chat)]
     out = {'raw_paris': ([200028] + tok.encode('The capital of France is'), None),
            'chat_capital': (list(chat) + [200001], None)}
-    probe = Path('/work/inkling2/test/vision_probe.pt')
-    if probe.exists():
+    if probe and probe.exists():
         p = torch.load(probe)
         out['image_red_blue'] = (p['ids'].tolist() + [200001], p['features'])
     return out
@@ -34,19 +33,22 @@ def prompts(tok):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--source', type=Path, required=True,
+                    help='the source checkpoint (thinkingmachines/Inkling-2-Small-MXFP8 at R.SOURCE_REV)')
     ap.add_argument('--parts', type=Path, required=True)
+    ap.add_argument('--probe', type=Path, help='image_red_blue: token ids and vision features (torch.save)')
     ap.add_argument('--out', type=Path, required=True)
     a = ap.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     from transformers import AutoTokenizer
     dev = torch.device('cuda')
     a.out.mkdir(parents=True, exist_ok=True)
-    tok = AutoTokenizer.from_pretrained(str(R.SRC))
-    src = R.Source()
+    tok = AutoTokenizer.from_pretrained(str(a.source))
+    src = R.Source(a.source)
     glob = R.Globals(src, dev, head=False)
     body = Body(a.parts / 'body-nonexpert.gguf', dev)
     states = []
-    for name, (ids, feats) in prompts(tok).items():
+    for name, (ids, feats) in prompts(tok, a.probe).items():
         for kv in ('bf16', 'nvfp4'):
             ids_t = torch.tensor(ids, device=dev)
             h = glob.embed_ids(ids_t)

@@ -5,8 +5,8 @@ Every part is re-verified with the strict reader against its conversion receipt 
 SHA-256) before it is linked into the release; the tensor manifest is built from those receipts and the
 source mapping of the non-expert receipt must account for every source tensor exactly once.
 
-    assemble_release_inkling2.py --parts /work/inkling2/parts --docs /work/inkling2/release-docs \
-        --tools /ds4-dfm-rs/tools/vq_calib --out /work/inkling2/release
+    assemble_release_inkling2.py --parts $W/parts --docs $W/release-docs \
+        --tools tools/vq_calib --out $W/release
 """
 import argparse
 import hashlib
