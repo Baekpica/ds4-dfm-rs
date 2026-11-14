@@ -210,21 +210,25 @@ image, 10 KiB per ViT row; every other activation runs in 4,096-row tiles, so
 the tower peaks near 0.85 GB at 10,609 tokens. An image of one tile runs the
 same launches as an untiled pass.
 
+The attention runs flash style (`cuda/inkling2_vit_attn.cuh`): S and P stay
+in registers and P rounds to BF16 unnormalized, as the reference's SDPA keeps
+it. V4.1's path (`DS4_INKLING2_VIT_FLASH=0`) materializes S and P per query
+tile, ~460 GB of traffic per layer at 10,609 tokens. Encoding takes 0.06 s
+for 18 tokens, 0.13 s for 510, 0.38 s for 1,647, 2.6 s for 7,676 and 4.5 s
+for 10,609 (V4.1's path: 0.23, 1.41, 49.4 and 108.7 s).
+
 Checked against transformers' tower transcribed in PyTorch (BF16, SDPA) on the
 same pixels, nine images from 8 to 10,609 tokens (PNG with and without alpha,
 JPEG with EXIF rotation, a 12 MP photo, a 4,096-pixel square and a
 6,000 x 4,000 image downsampled): host pixels equal the processor's bit for
-bit. The tiled pass leaves every row of the six smaller images (8 to 1,647
-tokens) bit-identical to the untiled one: cos mean 0.9991-0.99986, relative
-RMS mean 0.017-0.041, where the reference against itself with SDPA's math
-backend gives 0.9996-0.99986 and 0.016-0.028; at 7,107-10,609 tokens cos
-mean 0.99902-0.99930 and relative RMS 0.033-0.039 (the math backend's scores
-do not fit). Answers name the colors of synthetic images, a cartoon, the
-text of a Chinese trading-app screenshot and the shapes and text of
-4,096-pixel images. Encoding takes 0.06 s for 18 tokens, 0.23 s for 510,
-1.41 s for 1,647, 49.4 s for 7,676 and 108.7 s for 10,609: V4.1's attention
-materializes S and P per query tile, ~460 GB of traffic per layer at 10,609
-tokens.
+bit. Up to 1,647 tokens rows cos mean 0.99924-0.99987, relative RMS mean
+0.016-0.037, where the reference against itself with SDPA's math backend
+gives 0.9996-0.99986 and 0.017-0.028; at 7,107-10,609 tokens cos mean
+0.99925-0.99946 and relative RMS 0.029-0.034 (V4.1's path 0.033-0.039; the
+math backend's scores do not fit). The tiled pass alone left every row of
+the six smaller images bit-identical. Answers name the colors of synthetic
+images (six squares in order, in one request), a cartoon, the text of a
+Chinese trading-app screenshot and the shapes and text of 4,096-pixel images.
 
 Each image is named by an FNV-1a tag of its bytes, and the live state keeps
 the rows below the first image a prompt does not share (the same placeholder
@@ -366,7 +370,9 @@ essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
 resume rule with its image cut, the ring spans a copy takes, the bank
-checkpoint rules and the snapshot sizes, model-free.
+checkpoint rules and the snapshot sizes, model-free;
+`make test-inkling2-vit-attn` checks the tower's flash attention against an
+F64 softmax on a GPU.
 
 ## Not yet supported
 
@@ -383,3 +389,4 @@ checkpoint rules and the snapshot sizes, model-free.
 | `DS4_INKLING2_DSPARK_GATE=0` | draft on every step (no rate gate) |
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
+| `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |

@@ -1037,6 +1037,7 @@ extern "C" int ds4_gpu_ink2_logits(ds4_gpu_tensor *logits, uint32_t rows) {
 }
 
 #include "cuda/inkling2_draft.cuh"
+#include "cuda/inkling2_vit_attn.cuh"
 
 /* Vision tower pieces (transformers Inkling2VisionModel @109a7d19; the forward
  * is ds4_inkling2_vision.inc). F32 compute, values rounded to BF16 where the
@@ -1171,14 +1172,22 @@ extern "C" uint32_t ds4_gpu_ink2_vit_attn_rows(uint32_t n) {
     return (uint32_t)(qc < 1 ? 1 : qc > n ? n : qc);
 }
 
-/* ds4_gpu_v41_dense_attn_tensor for query rows [q0, q0 + m) of BF16 rows:
- * S = Q K^T, row softmax, P V per head and query tile, the tiles counted
- * from row 0 as the whole-image call counts them. o: m rows, BF16 values. */
+/* Query rows [q0, q0 + m) of BF16 rows through the flash kernel
+ * (cuda/inkling2_vit_attn.cuh), or with DS4_INKLING2_VIT_FLASH=0 through
+ * ds4_gpu_v41_dense_attn_tensor's algebra: S = Q K^T, row softmax, P V per
+ * head and query tile, the tiles counted from row 0 as the whole-image call
+ * counts them. o: m rows, BF16 values. */
 extern "C" int ds4_gpu_ink2_vit_attn(ds4_gpu_tensor *o, const ds4_gpu_tensor *qkv16, uint32_t n, uint32_t q0,
         uint32_t m) {
     const uint32_t H = DS4_INK2_VIT_HEADS, D = DS4_INK2_VIT_HEAD, HD = H * D, W = 3u * HD;
-    if (!o || !qkv16 || !g_cublas_ready || !n || !m || q0 > n || m > n - q0 || !gvq_floats(o, (uint64_t)m * HD) ||
+    if (!o || !qkv16 || !n || !m || q0 > n || m > n - q0 || !gvq_floats(o, (uint64_t)m * HD) ||
         ds4_gpu_tensor_bytes(qkv16) < (uint64_t)n * W * sizeof(__nv_bfloat16)) { return 0; }
+    static const bool flash = !getenv("DS4_INKLING2_VIT_FLASH") || strcmp(getenv("DS4_INKLING2_VIT_FLASH"), "0");
+    if (flash) {
+        return cuda_ok(ink2_vit_flash((float *)o->ptr, (const __nv_bfloat16 *)qkv16->ptr, n, q0, m,
+            ds4_current_stream()), "Inkling-2 vision flash attention");
+    }
+    if (!g_cublas_ready) { return 0; }
     const uint64_t qc = ds4_gpu_ink2_vit_attn_rows(n);
     float *S = (float *)v41_grow(&g_vis_s, (uint64_t)H * qc * n * 4, "vision attn S");
     __nv_bfloat16 *P = (__nv_bfloat16 *)v41_grow(&g_vis_p, (uint64_t)H * qc * n * 2, "vision attn P");

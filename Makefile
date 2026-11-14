@@ -1006,7 +1006,7 @@ tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish \
-	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks
+	test-mimo2-sync-keep test-inkling2-sync-keep test-inkling2-banks test-inkling2-vit-attn
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -1027,6 +1027,13 @@ test-inkling2-sync-keep:
 
 test-inkling2-banks:
 	python3 tests/test_inkling2_banks.py
+
+# The ViT flash attention against an F64 softmax (needs a GPU).
+tests/test_inkling2_vit_attn: tests/test_inkling2_vit_attn.cu cuda/inkling2_vit_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+test-inkling2-vit-attn: tests/test_inkling2_vit_attn
+	./tests/test_inkling2_vit_attn
 
 # CI. The workflow runs exactly the four ci-* targets, one parallel job each.
 # CI holds only checks that cover every family; a new check joins a group
@@ -2266,7 +2273,7 @@ INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_kv.inc 
 	ds4_inkling2_batch.inc ds4_inkling2_bank_payload.inc
 ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_draft.cuh \
-	cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
+	cuda/inkling2_vit_attn.cuh cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
