@@ -11,7 +11,7 @@ the loader verifies the model's tensor spans. No weights change.
 
 One GB10, 48 SMs, CUDA 13.4.92 (`sm_121a`), driver user/kernel
 610.57.04/615.71.10. The enabled, successful `nvidia-clocks.service` keeps
-300–2,200 MHz; busy samples were 2,184 MHz. Boot identity:
+300–2,200 MHz; busy samples were mostly 2,184 MHz, spanning 2,177–2,190 MHz. Boot identity:
 `94cfabbf-7a48-4692-b38a-78e43e9be86d`. No profiler changes clocks.
 Floors use the [GB10 measurements](gb10-hardware.md): 240 GB/s streaming,
 107.8 TFLOPS F16/BF16 and 215.6 TFLOPS FP8 at the clock cap.
@@ -22,7 +22,7 @@ prefill, and `speed-bench/promessi_sposi.txt`. CPU affinity is
 `5-9,15-19`. After the previous process exits, caches are cleared. The host
 memory guard reserves/trips at 2 GiB, records PSI, and enforces a 1,800 s
 deadline. Requested max/high are 128 GiB; admission sets effective limits
-from available memory (116.4/115.4 GiB in these runs).
+from available memory (115.8–116.4 / 114.8–115.4 GiB across the round speed runs).
 
 ```sh
 make -j10 ds4-bench ds4-bench-perf CUDA_ARCH=sm_121
@@ -503,3 +503,67 @@ quality builds and independent code/dispatch reviews pass. This is
 **Decode round 3**, qualified at 32K/64K, completing three Prefill and
 three Decode rounds. The final round executable SHA256 is
 `671bc6615f70343d8f37b249ecbcf5069a48b8081c333c3e24823b544b073dfa`.
+
+## Final published-protocol comparison (`457e60f4`)
+
+After all six atomic optimization commits, three fresh original (`53043039`)
+and three fresh final processes run in ABBAAB order. This uses the original
+published suffix protocol: 2,048–65,536 in 2,048-token steps, 2,048 new
+prompt tokens and 128 forced greedy tokens at each frontier, all K/V resident,
+default PDL, no drafter. The model, corpus, affinity, guards and clock policy
+are matched. [Raw CSVs and metadata](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt) pin both binary hashes.
+
+| Fresh run | Mean prefill tok/s | Mean decode tok/s |
+|---|---:|---:|
+| base 1 | 965.64 | 23.3206 |
+| base 2 | 979.90 | 23.4972 |
+| base 3 | 981.34 | 23.4122 |
+| final 1 | 1,248.08 | 30.0756 |
+| final 2 | 1,244.34 | 29.7875 |
+| final 3 | 1,253.89 | 29.5966 |
+| Original median of run means | 979.90 | 23.4122 |
+| Final median of run means | 1,248.08 | 29.7875 |
+| Gain | +27.37% | +27.23% |
+
+Final run ranges are 1,244.3–1,253.9 prefill / 29.60–30.08 decode. These whole-campaign
+gains compare fresh original and final runs, not the historical card's
+979.6 / 23.62 values. Round percentages are not multiplied to obtain them.
+The published plot uses final run 1 (median prefill); each summary phase
+uses its own median of three run means.
+
+Final decode means decline 30.076 → 29.788 → 29.597 tok/s across the three
+runs (1.6%), while prefill does not move monotonically. Final busy samples
+reach 75–76 °C and include the 2,177 MHz bin; original runs reach 71–72 °C
+and use 2,184–2,190 MHz. These observations do not explain all of the rate
+variation, which remains unassigned. Even the slowest final run exceeds
+the fastest original run in both phases; the raw ranges are retained.
+
+All six runs exit 0, all 192 frontiers have 200,058 finite logits and
+128 valid generated IDs. All-six prefill logits match exactly at
+32/32 frontiers, and generated IDs at
+13/32. D1/D2's arithmetic changes are judged by the
+1,280-position empirical-noise NLL/top-1 gate above, not by greedy identity.
+Within each arm, all 32 frontiers' logits and generated IDs repeat exactly
+across the three processes.
+Busy clocks span 2,177–2,190 MHz, minimum available memory
+is 7.75 GiB and PSI is zero in these valid sweeps.
+
+One earlier cold-load attempt was stopped with SIGTERM before any frontier
+after sustained high memory pressure. It is preserved and excluded. Its
+effective max/high limits were 114.3/113.3 GiB with less initial headroom;
+after process exit and cache recovery, the unchanged command loaded normally.
+No context, guard or clock setting was relaxed. The precise pressure cause
+is not assigned beyond the observed lower admission headroom.
+
+Final production/NVTX/quality builds and `make gate-inkling2` pass. The four
+common CI groups pass: `ci-lint`, serialized `ci-rust`, `ci-parity`, and
+`ci-model-free`. The first host test invocation incorrectly exported the
+build-only `CUDA_ARCH=sm_121` into the scout auto-replay fixtures, which reject
+unreviewed runtime controls. The host groups pass without that make override;
+the GPU binaries retain their explicit sm_121a build. Production compiler
+warning lines are unchanged from the original build. Independent reviews
+found no remaining required code changes.
+
+This completes three adopted Prefill and three adopted Decode rounds.
+No weights, native context limit or serving capability declarations change.
+No new serving, 1M, SSD, DSpark or vision qualification is claimed.

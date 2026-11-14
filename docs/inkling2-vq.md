@@ -263,15 +263,26 @@ the release's own references:
 
 ## Performance
 
-The 2K-64K sweep ([record](../speed-bench/gb10_spark_inkling2_1401989b.meta.txt):
-three fresh `ds4-bench` processes at `c705705b`, 2,048 new tokens and 128
-forced greedy tokens per frontier, busy SM clock 2,190 MHz): **979.6 prefill
-/ 23.62 decode** tok/s, medians of run means (2K-32K: 1,061.5 / 24.28).
+The November 15 [2K–64K record](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt) uses three fresh `ds4-bench`
+processes at `457e60f4`, 2,048 new tokens and 128 forced greedy tokens per
+frontier, all K/V resident, default PDL and no drafter. Medians of run means:
+**1,248.1 prefill / 29.79 decode** tok/s (2K–32K:
+1,333.2 / 30.72).
+Fresh matched `53043039` runs give 979.9 / 23.41: **+27.37% / +27.23%**.
+Final run means span 1,244.3–1,253.9 / 29.60–30.08; see the
+[three-Prefill/three-Decode report](inkling2-optimization-2026-11-14.md) for numerical gates,
+target attribution and D3's 32K boundary.
 
 | Frontier | 2K | 8K | 16K | 32K | 48K | 64K |
 |---|---|---|---|---|---|---|
-| Prefill | 1,089.3 | 1,117.4 | 1,064.0 | 978.7 | 905.1 | 832.4 |
-| Decode | 24.81 | 24.73 | 24.34 | 23.61 | 23.00 | 22.38 |
+| Prefill | 1,303.0 | 1,395.6 | 1,339.7 | 1,245.2 | 1,172.0 | 1,087.8 |
+| Decode | 31.46 | 31.38 | 30.85 | 29.83 | 28.92 | 28.05 |
+
+Per-frontier medians of three. Busy clocks 2,177–2,190 MHz;
+minimum available memory 7.75 GiB and PSI 0 across the six valid runs.
+
+The following SSD/1M measurements are inherited from the initial release;
+they were not rerun by this resident text campaign.
 
 Resident against the SSD tier (same corpus, 2,048-row chunks; prefill over
 the span since the previous frontier, 32 decoded tokens; prefill tok/s /
