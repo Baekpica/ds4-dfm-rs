@@ -183,6 +183,9 @@ enum {
     INKLING2_HIST = DS4_INK2_HISTORY * (2 * DS4_INK2_KV + 2 * DS4_INK2_HIDDEN),
 };
 
+// The template's image placeholder; the host expands one per image token.
+enum { INKLING2_IMAGE_PAD = 200054 };
+
 static uint32_t inkling2_prefill_cap(uint32_t ctx) {
     uint32_t cap = INKLING2_PREFILL_DEFAULT;
     const char *value = getenv("DS4_INKLING2_PREFILL_CHUNK");

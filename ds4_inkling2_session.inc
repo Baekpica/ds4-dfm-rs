@@ -83,8 +83,6 @@ static bool inkling2_resume_restore(ds4_session *s, int slot, uint32_t at) {
     return ok;
 }
 
-enum { INKLING2_IMAGE_PAD = 200054 };
-
 /* `tag` != 0: a media sync whose spans the graph holds (g->span_*). A prompt
  * resumes on the live state only under the same images; identical
  * placeholders over other pixels prefill again. A placeholder no span covers

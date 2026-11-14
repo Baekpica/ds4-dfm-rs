@@ -53262,6 +53262,7 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_beam_payload.inc"
 #include "ds4_minimax_payload.inc"
 #include "ds4_axk2_payload.inc"
+#include "ds4_inkling2_payload.inc"
 #include "ds4_beam_batch.inc"
 #include "ds4_minimax_batch.inc"
 #include "ds4_axk2_batch.inc"
@@ -56416,7 +56417,10 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
         return s->checkpoint_valid && s->minimax_graph_ready
             ? minimax_payload_bytes(&s->minimax_graph, (uint32_t)s->checkpoint.len) : 0;
     }
-    if (ds4_session_is_inkling2(s)) { return 0; }
+    if (ds4_session_is_inkling2(s)) {
+        return s->checkpoint_valid && s->inkling2_graph_ready
+            ? inkling2_payload_bytes(&s->inkling2_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
     if (ds4_session_is_axk2(s)) {
         return s->checkpoint_valid && s->axk2_graph_ready
             ? axk2_payload_bytes(&s->axk2_graph, (uint32_t)s->checkpoint.len) : 0;
@@ -56653,8 +56657,9 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
         return beam_payload_save(&s->beam_graph, s->checkpoint.v, (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
     if (ds4_session_is_inkling2(s)) {
-        payload_set_err(err, errlen, "Inkling-2 session snapshots are not supported");
-        return 1;
+        if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "Inkling-2 has no snapshot-ready checkpoint"); return 1; }
+        return inkling2_payload_save(&s->inkling2_graph, s->checkpoint.v, (uint32_t)s->checkpoint.len, s->logits, fp,
+            err, errlen);
     }
     if (ds4_session_is_minimax(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "MiniMax has no snapshot-ready checkpoint"); return 1; }
@@ -57303,15 +57308,11 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         return session_solar_load_payload(
             s, fp, &remaining, h, err, errlen);
     }
-    if (ds4_session_is_inkling2(s)) {
-        payload_set_err(err, errlen, "Inkling-2 session snapshots are not supported");
-        return 1;
-    }
     if (ds4_session_is_glm53(s) || ds4_session_is_qwen4exp(s) || ds4_session_is_motif3(s) ||
         ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s) || ds4_session_is_inkling2(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
@@ -57327,6 +57328,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             ? beam_payload_restore(&s->beam_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_minimax(s)
             ? minimax_payload_restore(&s->minimax_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_inkling2(s)
+            ? inkling2_payload_restore(&s->inkling2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_axk2(s)
             ? axk2_payload_restore(&s->axk2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_naive(s)
