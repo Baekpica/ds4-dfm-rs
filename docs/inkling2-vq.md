@@ -120,6 +120,33 @@ deviation that changes proposals only.
 MiniMax's rate gate (`DS4_INKLING2_DSPARK_GATE=0` disables it) decodes plainly
 for a cooldown while trials keep tokens slower than plain decodes.
 
+Through the server, 512 tokens per request, decode tok/s (code / explanation /
+Korean / arithmetic / Italian prose continuation; plain on the default
+server, 2 drafts at `-c 131072 --mem-floor-gb 2`):
+
+| Requests | Plain | 2 drafts, gate | 2 drafts, no gate |
+|---|---|---|---|
+| greedy | 24.9 / 24.9 / 24.8 / 25.0 / 24.6 | 29.6 / 25.9 / 25.8 / 34.2 / 22.0 | 30.4 / 27.8 / 27.1 / 33.4 / 18.2 |
+| sampled (T 0.7, top-p 0.95) | 24.8 / 24.7 / 24.8 / 24.9 / 24.4 | 27.8 / 24.8 / 23.7 / 31.9 / 22.9 | 28.7 / 25.0 / 23.9 / 32.5 / 17.6 |
+
+With the gate drafting adds 10.7% to the greedy mean and 6.1% to the sampled
+one; the prose continuation loses 11% (6% sampled), 26% (28%) without it.
+Doubling each pause that follows a losing probe (16 to 256 tokens) halved the
+prose loss but lowered the ten requests' mean from 26.86 to 26.46 tok/s:
+rejected.
+
+Greedy drafting against plain decoding, 512 tokens after five prompts (code,
+explanation, Korean travel plan, arithmetic, an Italian prose continuation),
+gate off, the drafted stream then teacher-forced through plain decoding: 2
+and 3 drafts commit the same stream, so a trial's rejected proposals leave
+no trace. 11, 11, 7, 4 and 15 rows commit a token that is not the plain
+argmax; each trails the plain top-1 by at most 0.37 logits (most below 0.2,
+several exact ties), where 18-22% of plain rows lead by less than 0.5:
+verify rows run the batched kernels, whose arithmetic differs from one-row
+decoding. Plain 23.8-24.9 tok/s; 2 drafts 30.7 / 28.2 / 27.5 / 33.8 / 21.2,
+3 drafts 32.5 / 27.7 / 27.7 / 37.1 / 20.1 (2.77 / 2.35 / 2.30 / 3.11 / 1.71
+tokens per trial).
+
 Acceptance, 256 greedy tokens after four chat prompts (code, explanation,
 Korean travel plan, arithmetic), committed tokens per trial:
 
@@ -261,35 +288,69 @@ attention state), the row workspace (1.11 GiB at 2,048 rows), the image
 reserve (1.26 GB: the tower at 4,096 tokens and the rows of four images) and,
 with MTP, the drafter part (1.87 GB) and its runtime (0.63 GiB at 1M). A 1M
 context quotes 123.6 GB without MTP and 126.2 GB with it against ~126.8 GB
-available (4 GiB floor included). Measured at 1M: MemAvailable ~5.8 GiB
+available (4 GiB floor included). The server quotes again after the open,
+against the memory the load left: ~9.9 GiB without the drafter, ~8 GiB with
+it. The native context needs 9.16 GiB without drafting and 9.79 GiB with it
+(7.79 GiB at a 2 GiB floor), so DSpark serves up to 131,072 positions with
+`--mem-floor-gb 2` (6.52 GiB). Two banks at 131,072 positions (1.6 GiB each)
+also take the 2 GiB floor. Measured at 1M with `ds4`: MemAvailable ~5.8 GiB
 without the drafter, 2.7 GiB with it (minimum 2.37).
 
 ## Serving
 
 ```sh
 ./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF                 # 1,048,576 tokens, K/V past 262,144 on the SSD
-./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --mtp-mode on --mtp-draft 3
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --mtp-mode on --mtp-draft 3 -c 131072 --mem-floor-gb 2
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --mtp-mode off --max-seqs 2 -c 131072 --mem-floor-gb 2   # two banks
+./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --kv-disk-dir DIR                       # disk KV
 ./ds4-server --cuda -m Inkling-2-Small-VQ-GGUF --check-config  # the memory quote only
 ```
 
-DSpark and partial reuse are `Present` ([capabilities](serving-capabilities.md)):
-drafting needs `--mtp-mode on`.
+The native context, DSpark and images run on the serial lane; banks are
+opt-in (`--max-seqs 2` or more, without drafting; [capabilities](serving-capabilities.md)).
+DSpark stays `Present` and needs `--mtp-mode on`: a qualified drafter
+drafts by default, and the default plan (the native context, the image
+reserve and the 4 GiB floor) does not hold it ([Memory](#memory)).
 
-One serial lane. Full-layer rows are positional; the convolution histories
+**Serial lane.** Full-layer rows are positional; the convolution histories
 have no positional index, so a sync copies them, with every sliding ring's
 1,023 rows below, where its final chunk starts (a resent turn resumes there)
 and at its end (a re-rendered continuation resumes there however long the
 answer that displaced the rings was): 174 MB per copy, two copies. A resume
 restores the copy, restarts the SSD tier's window at the resumed block (one
 block read back from the file) and drops the draft rings' displaced rows.
-`ds4 --serving-check` (3,781-token prompt, 2,048-row chunks): prefix, rewind
-and continue reuse work (top-1 17/17; prefix and rewind exact); disk KV,
-snapshots and banks are neither declared nor implemented. `make gate-inkling2`
-checks the resume rule and the ring spans a copy takes, model-free.
+
+**Banks.** Each bank owns its full-layer blocks (with its own SSD tier past
+the resident threshold), sliding rings and histories over graph 0's scratch;
+forwards run bank by bank. Blocks fork straight from the source bank; a fork
+below its frontier restores a checkpoint slot (the histories and every
+ring's 1,023 rows: 174 MB) taken every 4,096-aligned 1/24 of the context, at
+history ends and at request boundaries, in at most eight slots funded from
+what the banks leave.
+
+**Disk KV and snapshots** (`IK21`): tokens, logits, the full layers' blocks
+below n wherever the tier keeps them, every ring's last 1,023 rows in
+position order and the histories; `IK22` adds the drafter's committed
+context rows (each local draft layer's last 1,032, the global one's up to
+65,537) and its Markov row. Rows are placed by position, so a payload loads
+into a graph of another chunk size or resident threshold. Image prompts are
+not saved: tokens do not name the pixels. A drafting session's snapshot
+restores its drafter exactly: greedy drafting (2 drafts, gate off) from a
+saved and loaded state commits the same 256 tokens in the same trials as
+from the live state, for five prompts resident and with every block past
+the first in the tier's file or window.
+
+`ds4 --serving-check` with the [checklist](benchmarks/serving-checklist-2026-11-02/README.md)'s
+essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
+(2,048-row chunks) and with the SSD tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`,
+512-row chunks): reuse prefix, rewind and continue (top-1 17/17), disk and
+snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
+checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
+resume rule, the ring spans a copy takes, the bank checkpoint rules and the
+snapshot sizes, model-free.
 
 ## Not yet supported
 
-- No disk KV, snapshots or banks.
 - Images above 4,096 tokens; audio and video (the model has neither).
 
 ## Diagnostic switches

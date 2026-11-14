@@ -11,8 +11,9 @@ for exact provenance. Historical entries retain their original scope.
 - Adds [Inkling-2-Small VQ](docs/inkling2-vq.md) (`inkling2_vq`), contributed
   by Baekpica (PR #151): the 12-bit hVQ release directory, NVFP4 full-layer
   K/V with an SSD tier past 262,144 positions for the native 1M context, the
-  DSpark drafter behind `--mtp-mode on`, image input and resume at the common
-  prefix.
+  DSpark drafter behind `--mtp-mode on`, image input, resume at the common
+  prefix, disk KV and session snapshots, and opt-in banks with checkpoint
+  forks.
 - DeepSeek V4.1 prefill is another 14.5–16% faster at 2K–32K: q4_K
   projections of prefill blocks run on the GLM VQ family's FP16 tensor-core
   kernel (`glmvq_q4p`) instead of cuBLAS over a per-call BF16 weight copy,
