@@ -390,3 +390,4 @@ F64 softmax on a GPU.
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
+| `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |

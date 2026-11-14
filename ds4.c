@@ -75395,9 +75395,12 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
         return e && e->backend == DS4_BACKEND_CUDA && minimax_banks_enabled();
     }
-    // Inkling-2's DSpark drafts on the serial lane only.
+    // Inkling-2's banks are opt-in (DS4_INKLING2_BATCH, which the server sets
+    // from --max-seqs): a width-one server keeps the serial session, whose
+    // sync resumes at the common prefix. DSpark drafts there only.
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
-        return e && e->backend == DS4_BACKEND_CUDA && !inkling2_drafting(e);
+        const char *enabled = getenv("DS4_INKLING2_BATCH");
+        return e && e->backend == DS4_BACKEND_CUDA && !inkling2_drafting(e) && enabled && strcmp(enabled, "1") == 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         return e && e->backend == DS4_BACKEND_CUDA;

@@ -399,6 +399,7 @@ fn server_environment(root: &Path) -> Result<(BTreeMap<String, String>, Vec<Stri
                 "DS4_CONT_PREFILL_NOFENCE",
                 "DS4_DOTS3_BATCH",
                 "DS4_EXAONE_PREFILL_CHUNK",
+                "DS4_INKLING2_BATCH",
                 "DS4_MEM_FLOOR_GB",
                 "DS4_MOTIF3_PREFILL_CHUNK",
                 "DS4_NATIVE_PREFILL_CHUNK",

@@ -1238,6 +1238,7 @@ pub(crate) fn bank_opt_in_env(family: ModelFamily) -> Option<&'static str> {
         ModelFamily::Dots3Note => Some("DS4_DOTS3_BATCH"),
         ModelFamily::Step37 => Some("DS4_STEP37_BATCH"),
         ModelFamily::Qwen4Exp => Some("DS4_QWEN_BATCH"),
+        ModelFamily::Inkling2Vq => Some("DS4_INKLING2_BATCH"),
         _ => None,
     }
 }
@@ -1797,10 +1798,16 @@ impl ResolvedPlan {
             out.push(("DS4_SERVER_CONTINUOUS".into(), "1".into()));
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
-        // serial MTP; Qwen width 1 is still a bank.
+        // serial MTP, Inkling-2's the serial session; Qwen width 1 is still a
+        // bank.
         if let Some(key) = self
             .family
-            .filter(|f| matches!(f, ModelFamily::Step37 | ModelFamily::Dots3Note))
+            .filter(|f| {
+                matches!(
+                    f,
+                    ModelFamily::Step37 | ModelFamily::Dots3Note | ModelFamily::Inkling2Vq
+                )
+            })
             .and_then(bank_opt_in_env)
         {
             out.push((
@@ -2673,9 +2680,9 @@ enum BankDriver {
 /// serially, or an opt-in family stayed at width one without a bank.
 ///
 /// This mirrors the native admission gate: Inkling refuses banks
-/// outright; Qwen, Step and dots3 require their batch environment switch to
-/// be `1` (which `env_overrides` publishes from the resolved width), and
-/// the remaining families are persistent.
+/// outright; Qwen, Step, dots3 and Inkling-2 require their batch environment
+/// switch to be `1` (which `env_overrides` publishes from the resolved
+/// width), and the remaining families are persistent.
 fn bank_driver(
     req: &ServingRequest,
     caps: ServingCaps,
@@ -3736,6 +3743,28 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.code == "mtp_lane"));
+    }
+
+    // Native builds Inkling-2 banks only behind its switch: a width-one
+    // server keeps the serial session, whose sync resumes at the common
+    // prefix (an identical resend, a re-rendered answer).
+    #[test]
+    fn inkling2_banks_need_the_switch() {
+        let (family, variant) = (ModelFamily::Inkling2Vq, Variant::Inkling2SmallVq);
+        let switch = |p: &ResolvedPlan| {
+            p.env_overrides()
+                .into_iter()
+                .find(|(k, _)| k == "DS4_INKLING2_BATCH")
+                .map(|(_, v)| v)
+        };
+        let p = plan(ServingRequest::default(), family, variant);
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(switch(&p).as_deref(), Some("0"));
+        let req = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(2),
+            ..ServingRequest::default()
+        };
+        assert_eq!(switch(&plan(req, family, variant)).as_deref(), Some("1"));
     }
 
     #[test]
