@@ -8,6 +8,17 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+## v0.1.6 — 2026-11-18
+
+[Release ledger, benchmarks and upgrade notes](docs/releases/v0.1.6.md).
+
+- Inkling-2-Small hVQ improved from 979.9 to 1,248.1 tok/s for incremental
+  prefill and from 23.41 to 29.79 tok/s for plain decode across 2K–64K.
+  [Six-round report](docs/inkling2-optimization-2026-11-14.md).
+- GLM-5.3 Flash Uncensored mixed quant improved from 183.2 to 784.7 tok/s
+  for incremental prefill and from 15.09 to 18.92 tok/s for plain decode
+  over 2K–64K, with one baseline run and three final runs.
+  [Sweep](docs/benchmarks/glm53-mixed-spark-64k-2026-11-02/README.md).
 - GLM-5.3-Flash VQ opens the Sage-S2.1-Flash, Swift1.5-GLM-5.3-Flash
   and Nex-N2.6 hVQ releases. The serial lane serves base64 images through
   the embedded tower and accepts client-projected `prompt_embeds` on

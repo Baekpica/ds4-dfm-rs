@@ -285,12 +285,14 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 
 <a id="status"></a>
 
-The current repository version is **v0.1.5**. Its
-[ledger](docs/releases/v0.1.5.md) collects the VQ family additions, sampled
-speculation and standard sampling since v0.1.4. Earlier ledgers
-preserve the Rust baseline, performance workflow, shared Jinja and serving
-qualification. Dated reports retain their recorded build, artifact and
-workload; they do not describe live processes.
+The current repository version is **v0.1.6**. Its release ledger covers
+Gemma-4 and Inkling-2 VQ, GLM hVQ derivatives, prefix reuse and the
+measured DGX Spark throughput changes since v0.1.5.
+[Release ledger and upgrade notes](docs/releases/v0.1.6.md).
+
+Earlier ledgers preserve the Rust baseline, performance workflow, shared
+Jinja and serving qualification. Dated reports retain their recorded
+build, artifact and workload.
 
 ## Contributing
 
