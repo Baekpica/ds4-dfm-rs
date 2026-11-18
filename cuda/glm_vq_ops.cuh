@@ -400,7 +400,8 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_split_row(const float 
         #pragma unroll
         for (uint32_t h = 0; h < GLMVQ_HC; h++) { sum = glmvq_add(sum, glmvq_mul(coeff[h], x[j][h])); }
         value[j] = glmvq_round(sum);
-        out[t + j * GLMVQ_THREADS] = value[j];
+        // The norm below reads the registers: `output` is optional.
+        if (output) { out[t + j * GLMVQ_THREADS] = value[j]; }
         squares = glmvq_add(squares, glmvq_mul(value[j], value[j]));
     }
     if (!norm) { return; }

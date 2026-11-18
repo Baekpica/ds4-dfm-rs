@@ -220,6 +220,9 @@ bits per weight = 13/8 + 8/8 = 2.625
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
   next half's RMS and 24 mapping dots in the same pass, with cp.async staging
   the next W tile and rows behind the current ones; the split collapses.
+  Its consumers read only the normed rows, so the collapsed ones stay in
+  registers (67 MB less per 4,096-row call; `DS4_GLMVQ_SPLIT_CUR=1` writes
+  them).
   The residual holds BF16-rounded values, so prefill stores it as BF16
   (32 KB per row instead of 64).
 - **Projections.** Q4_K from 256 tokens runs on FP16 tensor cores

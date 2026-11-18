@@ -51,6 +51,7 @@ struct ds4_gvq_ctx {
     bool q4_mma;
     bool gate_up;
     bool split_row;
+    bool split_cur;
     bool gain_dot;
     bool q4_round;
     bool q4_prefill;
@@ -604,6 +605,8 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         return nullptr;
     }
     ctx->split_row = !split_row || strcmp(split_row, "0");
+    const char *split_cur = getenv("DS4_GLMVQ_SPLIT_CUR");
+    ctx->split_cur = split_cur && !strcmp(split_cur, "1");
     const char *q4_prefill = getenv("DS4_GLMVQ_Q4_PREFILL");
     if (q4_prefill && strcmp(q4_prefill, "0") && strcmp(q4_prefill, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_PREFILL accepts 0 or 1\n");
@@ -1244,8 +1247,12 @@ extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_
         // GLM rows preload their streams under the Sinkhorn (bit-identical);
         // DS4_GLMVQ_SPLIT_PRELOAD=0 keeps the generic loop.
         if (ctx->split_row && width == GLMVQ_HC_WIDTH) {
+            // The graph reads only `norm` after a normed split: the collapsed
+            // rows stay in registers (67 MB less per 4,096-row call;
+            // DS4_GLMVQ_SPLIT_CUR=1 writes them).
+            float *collapsed = n && !ctx->split_cur ? nullptr : (float *)out->ptr;
             glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split_row<R>, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
-                (const float *)mix->ptr, r, s, b, (float *)out->ptr, (float *)split->ptr, iterations, eps, w, n, norm_eps);
+                (const float *)mix->ptr, r, s, b, collapsed, (float *)split->ptr, iterations, eps, w, n, norm_eps);
             return;
         }
         glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split<R>,
