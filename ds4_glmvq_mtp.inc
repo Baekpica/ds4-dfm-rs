@@ -51,12 +51,15 @@ static bool gvq_mtp_block(ds4_glm53_gpu_graph *g, const ds4_model *m,
  * ffn_out and kv_rank buffers are scratch); `concat` holds n x 2 rows. */
 static bool gvq_mtp_kv(ds4_glm53_gpu_graph *a, const ds4_model *m,
         const ds4_weights *w, const ds4_gpu_tensor *hidden, const int *tokens,
-        uint32_t n, uint32_t pos, ds4_gpu_tensor *concat) {
+        uint32_t n, uint32_t pos, ds4_gpu_tensor *concat, const float *embeddings) {
     const ds4_layer_weights *l = &w->layer[GLMVQ_TRUNK];
-    return ds4_gpu_tensor_write(a->token, 0u, tokens, (uint64_t)n * sizeof(int32_t)) &&
+    const bool embedded = embeddings
+        ? ds4_gpu_tensor_write(a->cur, 0u, embeddings, (uint64_t)n * DS4_N_EMBD * sizeof(float)) &&
+          ds4_gpu_gvq_round(a->cur, (uint64_t)n * DS4_N_EMBD)
+        : ds4_gpu_tensor_write(a->token, 0u, tokens, (uint64_t)n * sizeof(int32_t)) &&
         ds4_gpu_embed_tokens_quant_tensor(a->cur, a->token, m->map, m->size,
-            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, DS4_N_EMBD) &&
-        gvq_norm(a, m, a->attn_out, hidden, l->nextn_hnorm, n, DS4_N_EMBD) &&
+            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, DS4_N_EMBD);
+    return embedded && gvq_norm(a, m, a->attn_out, hidden, l->nextn_hnorm, n, DS4_N_EMBD) &&
         gvq_norm(a, m, a->ffn_out, a->cur, l->nextn_enorm, n, DS4_N_EMBD) &&
         ds4_gpu_gvq_concat(concat, a->ffn_out, a->attn_out, n, DS4_N_EMBD) &&
         gvq_mm(a, m, a->cur, l->nextn_eh_proj, concat, n, DS4_GVQ_BF16) &&
@@ -72,11 +75,11 @@ static bool gvq_mtp_kv(ds4_glm53_gpu_graph *a, const ds4_model *m,
  * parked in mtp_rows[0]) or for the first trial's draft step. */
 static bool gvq_mtp_prefill(ds4_glm53_gpu_graph *g, ds4_glm53_gpu_graph *a,
         const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows,
-        uint32_t first, bool pending) {
+        uint32_t first, bool pending, const float *embeddings) {
     const uint64_t bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
     if (pending) {
         ds4_gpu_tensor *hidden = ds4_gpu_tensor_view(g->mtp_rows, 0u, bytes);
-        const bool ok = hidden && gvq_mtp_kv(a, m, w, hidden, tokens, 1u, first - 1u, g->mtp_concat);
+        const bool ok = hidden && gvq_mtp_kv(a, m, w, hidden, tokens, 1u, first - 1u, g->mtp_concat, embeddings);
         ds4_gpu_tensor_free(hidden);
         if (!ok) { return false; }
         g->mtp_len = first;
@@ -89,7 +92,8 @@ static bool gvq_mtp_prefill(ds4_glm53_gpu_graph *g, ds4_glm53_gpu_graph *a,
         ds4_gpu_hc_weighted_sum_tensor(a->cur, a->hc_cur, a->hc_mean, DS4_N_EMBD, DS4_N_HC) &&
         ds4_gpu_gvq_round(a->cur, (uint64_t)rows * DS4_N_EMBD) &&
         gvq_norm(a, m, a->norm, a->cur, w->output_norm, rows, DS4_N_EMBD) &&
-        gvq_mtp_kv(a, m, w, a->norm, tokens + 1, rows - 1u, first, concat);
+        gvq_mtp_kv(a, m, w, a->norm, tokens + 1, rows - 1u, first, concat,
+            embeddings ? embeddings + DS4_N_EMBD : NULL);
     ds4_gpu_tensor_free(concat);
     if (!ok) { return false; }
     if (!g->mtp_len) { g->mtp_min = first; }

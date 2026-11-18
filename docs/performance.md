@@ -195,6 +195,24 @@ tokens) prefills at 1,343.8 tok/s (two fresh runs, MTP off). The
 and quality screens. Throughput does not
 qualify serving limits or long-context quality.
 
+### Sage-S2.1-Flash hVQ
+
+On one DGX Spark, the median of three run means over 2K–64K rose from
+**1,098.0 to 1,230.3 tok/s for prefill** and **29.94 to 32.51 tok/s for
+decode**. Each frontier added 2,048 tokens and generated 128 greedy
+tokens. The original media-enabled build used two fixed MTP drafts. The
+final build used up to three drafts with a 3.0 confidence margin. Decode
+improved at 23 of 32 frontiers and fell from 36.85 to 30.55 tok/s at 32K.
+
+![Sage hVQ incremental prefill and decode on one DGX Spark](../speed-bench/gb10_spark_sage_hvq_ed42e39d_64k.png)
+
+With 2,048-row chunks, prefill at the 524,288-token frontier rose from
+745.86 to 1,015.46 tok/s. The last 57,344 tokens at 1,040,384 ran at
+556.61 → 856.73 tok/s. In a separate HTTP test, Sage retrieved the fact
+planted midway through a 900,068-token prompt. All throughput measurements
+in this section use Sage. Swift and Nex share its tensor shapes and kernels.
+[Sweep, long-context curve and raw data](glm53-vq-optimization-2026-11-18.md).
+
 ## Ling-3.1-flash VQ
 
 Ling-3.1-flash with GVQ1 routed experts and Q4_K/FP8 nonexperts, v2 trunk

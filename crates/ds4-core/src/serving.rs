@@ -237,7 +237,7 @@ pub struct EngineFacts {
     pub ipc_pending: bool,
     /// Actual native drafter import result after open; overrides manifest intent.
     pub drafter_shared: Option<bool>,
-    /// `Some(false)` once the native fit refused the continuous lane.
+    /// `Some(false)` when the host quote or the native fit rules out the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.
     pub partial_reuse: Option<bool>,
@@ -752,8 +752,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
-            // The VQ release opens without its vision tower.
-            media_serial: false,
+            // The named vision part shares the base mapping; images use the serial session.
+            media_serial: true,
         },
         ModelFamily::IQuestQ1 => ServingCaps {
             family,

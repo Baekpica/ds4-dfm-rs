@@ -255,6 +255,7 @@ tests/naive_banks
 /tests/mimo2_vq_quality
 /tests/mimo2_ga8
 /tests/test_axk2_topk
+/tests/test_glm_vq_index_walk
 /tests/test_axk2_flash
 /tests/test_axk2_q8
 /tests/test_axk2_decode

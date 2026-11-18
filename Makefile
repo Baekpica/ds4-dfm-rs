@@ -2007,6 +2007,16 @@ tests/libglm_vq_index.so: tests/test_glm_vq_index.cu cuda/glm_vq_index.cuh cuda/
 test-glm-vq-index: tests/libglm_vq_index.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_index.py --lib $< --model "$(GLMVQ_MODEL)"
 
+# The persistent index kernel against the fused one, bit for bit (no model);
+# DS4_IDX_BIG=1 also times 256K and 1M contexts (9 GiB of scores).
+tests/test_glm_vq_index_walk: tests/test_glm_vq_index_walk.cu cuda/glm_vq_index.cuh cuda/glm_vq_linear.cuh \
+	cuda/glm_vq_ops.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_glm53_compact.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-index-walk
+test-glm-vq-index-walk: tests/test_glm_vq_index_walk
+	./tests/test_glm_vq_index_walk
+
 .PHONY: test-glm-vq-cache
 test-glm-vq-cache: tests/test_glm_vq_cache
 	./tests/test_glm_vq_cache
@@ -2209,11 +2219,13 @@ test-minimax-artifacts: tests/test_minimax_artifacts
 	./tests/test_minimax_artifacts
 
 # The second run is DeepSeek V4.1's shape: 18 input stages on down, an odd
-# number of 13th-bit plane words per unit.
+# number of 13th-bit plane words per unit. The third is GLM-5.3's (288
+# experts, top-8) with its gate-clamp SwiGLU.
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
 	DS4_MW_H=5120 DS4_MW_F=2304 DS4_MW_E=384 DS4_MW_USED=6 DS4_MW_ROWS=2048 ./tests/test_minimax_mma8w
+	DS4_MW_H=4096 DS4_MW_F=2048 DS4_MW_E=288 DS4_MW_USED=8 DS4_MW_CLAMP=gate ./tests/test_minimax_mma8w
 
 # MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
 tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
@@ -2384,6 +2396,7 @@ tests/test_glm53_mtp: tests/test_glm53_mtp.c ds4_glm53_mtp.inc ds4_gpu.h
 
 test-glm53-mtp: tests/test_glm53_mtp
 	./tests/test_glm53_mtp
+	./tests/test_glm53_mtp gate
 
 tests/test_glm53_banks: tests/test_glm53_banks.c ds4_glm53_batch.inc ds4_glm53_compact.h
 	$(CC) $(CFLAGS) -Werror -I. -o $@ $< -lm
@@ -2816,7 +2829,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_gemma4_primitives tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_glm_vq_index_walk tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

@@ -23,7 +23,7 @@ static std::mt19937 rng(7);
 template <typename T> static T *up(const std::vector<T> &v) { T *p; CK(cudaMalloc(&p, v.size() * sizeof(T))); CK(cudaMemcpy(p, v.data(), v.size() * sizeof(T), cudaMemcpyHostToDevice)); return p; }
 template <typename T> static std::vector<T> down(const T *p, size_t n) { std::vector<T> v(n); CK(cudaMemcpy(v.data(), p, n * sizeof(T), cudaMemcpyDeviceToHost)); return v; }
 
-static int q4_case(uint32_t rows, uint32_t cols, uint32_t tokens, const glmvq_q4_config *config) {
+static uint8_t *q4_weights(uint32_t rows, uint32_t cols) {
     const uint32_t blocks = cols / GLMVQ_Q4_BLOCK;
     std::vector<uint8_t> w((size_t)rows * blocks * GLMVQ_Q4_BYTES);
     std::uniform_int_distribution<int> byte(0, 255);
@@ -33,10 +33,40 @@ static int q4_case(uint32_t rows, uint32_t cols, uint32_t tokens, const glmvq_q4
         w[b * GLMVQ_Q4_BYTES] = d & 255; w[b * GLMVQ_Q4_BYTES + 1] = d >> 8;
         w[b * GLMVQ_Q4_BYTES + 2] = m & 255; w[b * GLMVQ_Q4_BYTES + 3] = m >> 8;
     }
+    return up(w);
+}
+
+// Compare the three distinct KDA projections with their separate one-row launches.
+static int q4_group_case(const glmvq_q4_config *config) {
+    constexpr uint32_t rows = 8192, cols = 4096;
+    const uint32_t sizes[] = {rows, rows, rows};
+    const size_t bytes = (size_t)rows * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    std::vector<float> x(cols);
+    std::normal_distribution<float> nd(0, 1);
+    for (auto &v : x) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    uint8_t *data = q4_weights(3 * rows, cols);
+    const void *weights[] = {data, data + bytes, data + 2 * bytes};
+    float *dx = up(x), *one, *many;
+    CK(cudaMalloc(&one, 3 * rows * sizeof(float)));
+    CK(cudaMalloc(&many, 3 * rows * sizeof(float)));
+    float *outs[] = {many, many + rows, many + 2 * rows};
+    for (unsigned i = 0; i < 3; ++i) {
+        CK(glmvq_q4_decode(weights[i], dx, one + i * rows, rows, cols, 1, 0, config));
+    }
+    CK(glmvq_q4_decode_many(weights, outs, sizes, 3, cols, dx, 1, 0, config, glmvq_q4_split(rows, cols)));
+    const bool equal = down(one, 3 * rows) == down(many, 3 * rows);
+    printf("q4 KDA group of three 8192 x 4096 projections: %s\n", equal ? "ok" : "FAIL");
+    cudaFree(data); cudaFree(dx); cudaFree(one); cudaFree(many);
+    return !equal;
+}
+
+static int q4_case(uint32_t rows, uint32_t cols, uint32_t tokens, const glmvq_q4_config *config) {
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK;
+    uint8_t *dw = q4_weights(rows, cols);
     std::normal_distribution<float> nd(0, 1);
     std::vector<float> x((size_t)tokens * cols);
     for (auto &v : x) { v = nd(rng); }
-    uint8_t *dw = up(w); float *dx = up(x), *dy, *d1;
+    float *dx = up(x), *dy, *d1;
     CK(cudaMalloc(&dy, (size_t)tokens * rows * 4)); CK(cudaMalloc(&d1, (size_t)rows * 4));
     CK(glmvq_q4_decode(dw, dx, dy, rows, cols, tokens, 0, config));
     CK(cudaDeviceSynchronize());
@@ -491,6 +521,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--vq")) { return vq_cases(blocks); }
     glmvq_q4_config config;
     CK(glmvq_q4_prepare(&config, GLMVQ_Q4_AUTO));
+    if (argc == 2 && !strcmp(argv[1], "--q4-group")) { return q4_group_case(&config); }
     int failures = 0;
     for (uint32_t rows : {1u, 3u, 64u}) {
         failures += split_row_case<__nv_bfloat16>(rows);
@@ -525,6 +556,7 @@ int main(int argc, char **argv) {
     failures += index_case(37, 3000);
     failures += index_case(256, 8000);
     failures += vq_cases(blocks);
+    failures += q4_group_case(&config);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);
     return failures != 0;
 }

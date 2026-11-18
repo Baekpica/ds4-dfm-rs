@@ -862,7 +862,7 @@ fn start_client(
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     if clients
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < limit).then_some(count + 1)
         })
         .is_err()

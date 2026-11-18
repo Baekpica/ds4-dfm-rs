@@ -952,7 +952,7 @@ fn vit_tower(family: ModelFamily) -> Option<vit_image::Tower> {
     match family {
         ModelFamily::Qwen4Exp => Some(vit_image::Tower::Qwen),
         ModelFamily::Ling3Vl => Some(vit_image::Tower::Ling),
-        ModelFamily::Glm53 => Some(vit_image::Tower::Glm),
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq => Some(vit_image::Tower::Glm),
         _ => None,
     }
 }
@@ -1736,8 +1736,7 @@ impl Model {
         {
             return Err(Error {
                 code: 1,
-                message: "GLM VQ requires one CUDA model with embedded MTP and vision disabled"
-                    .into(),
+                message: "GLM VQ requires one CUDA model with embedded MTP and vision".into(),
             });
         }
         if identified.shape.family == ModelFamily::Ling31Vq
@@ -2306,7 +2305,8 @@ impl Model {
             dspark,
             vocab,
             chat_template,
-            vision_ready: tuning.vision_path.is_some(),
+            vision_ready: tuning.vision_path.is_some()
+                || identified.shape.family == ModelFamily::Glm53Vq,
             mtp_draft_tokens: tuning.mtp_draft_tokens,
             runtime_budget,
             v41_ctx: v41_wire.as_ref().map(|w| w.ctx),
@@ -2423,7 +2423,7 @@ impl Model {
         const GLM_IMAGE_TOKEN: i32 = 154854;
         let marker = match self.family {
             ModelFamily::Inkling | ModelFamily::Inkling2Vq => INKLING_IMAGE_TOKEN,
-            ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
+            ModelFamily::Glm53 | ModelFamily::Glm53Vq => GLM_IMAGE_TOKEN,
             ModelFamily::Ling3Vl => ling3vl::IMAGE_TOKEN as i32,
             _ => {
                 return Err(Error {
@@ -3216,6 +3216,40 @@ impl Session<'_> {
         }
         out.truncate(rows as usize * crate::mimo2::VISION_WIDTH);
         Ok(out)
+    }
+
+    /// Prefill a complete sequence of projected GLM input rows. Virtual IDs
+    /// cannot share a prefix with any text request. Every embedding sync is cold.
+    pub fn sync_glm_embeddings(&mut self, tokens: &[i32], rows: &[f32]) -> Result<()> {
+        if self.host.family != ModelFamily::Glm53Vq
+            || tokens.is_empty()
+            || tokens.len() > i32::MAX as usize
+            || tokens.len().checked_mul(4096) != Some(rows.len())
+            || tokens.iter().any(|&id| id != -1)
+            || rows.iter().any(|x| !x.is_finite())
+        {
+            return Err(Error {
+                code: 1,
+                message: "invalid GLM embedding rows".into(),
+            });
+        }
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_sync_glm_embeddings(
+                self.raw.as_ptr(),
+                tokens.as_ptr(),
+                tokens.len() as i32,
+                rows.as_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(tokens);
+        Ok(())
     }
 
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {

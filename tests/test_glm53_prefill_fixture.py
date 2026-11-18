@@ -40,7 +40,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="fresh evidence directory")
-    parser.add_argument("cases", nargs="*", default=["tail", "window", "bind", "alignment", "caps"])
+    parser.add_argument("cases", nargs="*", default=["tail", "window", "bind", "alignment", "caps", "projected"])
     parser.add_argument("--source", type=Path, default=ROOT / "ds4_glm53_graph.inc")
     parser.add_argument("--cc", default=os.environ.get("CC", "cc"))
     args = parser.parse_args()

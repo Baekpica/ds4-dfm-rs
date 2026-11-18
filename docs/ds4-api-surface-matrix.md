@@ -100,6 +100,22 @@ Responses: {"type":"input_image","image_url":"data:image/jpeg;base64,..."}
 Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"..."}}
 ```
 
+## Projected prompt rows (`prompt_embeds`)
+
+GLM VQ artifacts accept `prompt_embeds` on legacy Completions in place of
+`prompt`: a base64 Safetensors file with one finite BF16 matrix named
+`prompt_embeds`, shape `[tokens, 4096]`. The field name is vLLM's; the
+payload is Safetensors, never a pickled tensor. The rows are a complete
+embedded prompt, so a client splices in rows its own encoder projected
+(video frames through the released vision tower, a derivative's scientific
+projectors) around the model's token embeddings.
+
+- The request takes the serial lane and always prefills cold: nothing is
+  reused, stored to disk or kept for a later turn. Embedded MTP drafts from
+  the supplied rows.
+- `prompt` must be absent or empty. Other families refuse the field.
+- The 64 MiB body limit admits about 6,100 rows per request.
+
 ## Output-budget (`max_tokens`) semantics today
 
 All four parsers reject negative decode budgets with an endpoint-native

@@ -168,6 +168,15 @@ bits per weight = 13/8 + 8/8 = 2.625
   latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys:
   direct GEMVs for both absorptions and a single-pass flash kernel whose
   keys split across 48 CTAs, joined by a combine kernel.
+- **Top pools.** Each DSA layer keeps the 512 best of the row's pool scores.
+  The DeepSeek indexer kernels sort (score, index) pairs: 68–88 µs per
+  decode row and 3–6 ms per 4,096 prefill rows, by pool count. To 65,536
+  pools (256K tokens) a radix select takes over (`cuda/axk2_topk.cuh`: four
+  8-bit digit passes, a count and a write): 16 µs per decode row at 64K and
+  0.6–1.7 ms per 4,096 rows at 8K–64K, the same pools in pool order
+  instead of score order. Past that a row no longer sits in L2 beside the
+  others and the single-pass stream is cheaper.
+  `DS4_GLMVQ_TOPK_RADIX=0` keeps the stream.
 - **Dependent launch.** A token runs about 1,300 short kernels. Decode and
   verify widths launch them with programmatic dependent launch: each kernel
   lets its successor start, which stages its constant weights (or prefetches
@@ -189,6 +198,16 @@ bits per weight = 13/8 + 8/8 = 2.625
   is decoded about once per chunk; the reduce adds the shared expert. Gate
   and down outputs are stored as BF16 (their rounding boundary), and the up
   epilogue writes down's E4M3 rows and 1×128 scales itself.
+- **Warp-specialized experts.** Sixteen warps that each gather codewords,
+  transpose residual words and issue MMAs alternate conversion and MMA
+  bursts across one barrier per stage. Chunks of 4,096 rows take the kernel
+  written for MiniMax (`cuda/minimax_mma8w.cuh`): four producer warps build
+  each stage's A fragments in a ring, four consumer warps only load them and
+  run the MMAs, one persistent CTA per SM. Gate and up are separate launches
+  over one E4M3 input; a pass quantizes SwiGLU with the gate clamp for down.
+  Same 128-K promotion and gain order, same outputs: a 4,096-row R13 layer
+  takes 26.5 → 19.9 ms and an R13+8 layer 35.0 → 28.0 ms.
+  `DS4_GLMVQ_MMA8W=0` keeps the previous kernel.
 - **KDA.** One CTA per (64-token chunk, head) reads the raw q/k/v/forget rows
   once, reproduces the recurrence's inputs exactly and writes an operand record
   (q e^G, (k e^(G_last-G))ᵀ, −W, causal q·k in F16; U in F32). One CTA per head
@@ -207,9 +226,25 @@ bits per weight = 13/8 + 8/8 = 2.625
   3,840-row call). Index scores are BF16 MMAs folded over the 32 heads in
   registers, so no per-key buffer exists and the context follows the
   model's native 1M.
+- **Index scores walk the pools.** They are the one prefill cost that grows
+  with context: 2 x 32 x 128 FLOP per row and pool. A CTA of 4 rows x 128
+  pools restaged 65 KB of F32 query per pool tile and ran at 36 of the 108
+  TFLOPS peak, 29 at 1M where the keys (67 MB) leave L2. A CTA now keeps
+  sixteen rows in registers as B fragments (254 registers, no spill) and
+  walks every pool in cp.async tiles, pools as the A operand, one ldmatrix
+  per eight MMAs; all CTAs walk in one order and meet each tile in L2.
+  The same scores bit for bit at 75-77 TFLOPS: 4,096 rows take 15.4 → 7.4
+  ms per layer at 64K, 59.3 → 28.8 at 256K, and 2,048 rows 154.3 → 57.0 at
+  1M. When row groups would leave SMs idle, they split the pool tiles
+  across blocks. At 64K, a 128-row append takes 0.22 ms per layer. Under
+  sixteen rows the previous dispatch is faster (19 µs for four verify
+  rows). `DS4_GLMVQ_INDEX_WALK=0` selects that dispatch at every width.
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
   next half's RMS and 24 mapping dots in the same pass, with cp.async staging
   the next W tile and rows behind the current ones; the split collapses.
+  Its consumers read only the normed rows, so the collapsed ones stay in
+  registers (67 MB less per 4,096-row call; `DS4_GLMVQ_SPLIT_CUR=1` writes
+  them).
   The residual holds BF16-rounded values, so prefill stores it as BF16
   (32 KB per row instead of 64).
 - **Projections.** Q4_K from 256 tokens runs on FP16 tensor cores
@@ -225,7 +260,7 @@ bits per weight = 13/8 + 8/8 = 2.625
   DSA q leaves q4p as BF16 rows; the DSA and KDA heads and the SwiGLU rows
   enter it as BF16 rows, prepared directly.
 
-### MTP (one or two drafts)
+### MTP depth and confidence
 
 ```
 draft:  h(s-1), token s ──MTP layer──▶ d1 ──▶ d2 …     (layer 45, own KV)
@@ -249,10 +284,14 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
   rows past the frontier are rewritten before any read.
 - **Draft context.** Prefill fills the draft layer's KV from the prompt;
   without it early drafts see only decoded tokens.
-- **Depth.** Routed-expert bytes grow almost linearly with verify rows
-  (consecutive tokens share few experts), so one or two drafts win. Serve
-  with `--cuda --mtp-draft 2 --temp 0` (two drafts); `DS4_GLMVQ_MTP_DRAFT=N`
-  caps drafts per verify for measurement.
+- **Depth.** The draft head returns its top token and the lead over its
+  runner-up. Below `--mtp-margin` (default 3.0), the target verifies that
+  proposal and drafting resumes in the next cycle. A margin of 0 selects
+  fixed depth. On Sage hVQ, `--mtp-mode on --mtp-draft 3` averaged
+  37.91 tok/s against 36.87 at depth two over five 2K–64K frontiers.
+  Three drafts helped most at the frontiers with high acceptance.
+  `DS4_GLMVQ_MTP_DRAFT=N` caps the depth for measurement.
+  `DS4_GLMVQ_MTP_STATS=1` logs each trial's width, kept rows and margins.
 
 ## Serving: prefix reuse and disk KV
 
@@ -274,6 +313,56 @@ stripped content, keeping the reasoning only when the client returns it:
 
 At 1M, one bank, a 30K conversation's next turn takes 1.3 s to the first
 token instead of 25 s. Suffixes under 32 tokens still cost 1–2 s of prefill.
+
+## Images and projected prompts
+
+The release directory carries the source's 24-block vision tower as one BF16
+part (347 tensors; the patch projection is stored as a 1,176 x 1,024 matrix).
+The engine binds it from the model's own map: there is no `--vision` file.
+
+- **Images.** `image_url` parts (base64 PNG or JPEG, at most four per
+  request) take the serial lane, also on a banked boot. The host decodes,
+  resizes and packs the patches ([`vit_image`](../crates/ds4-core/src/vit_image.rs));
+  the tower runs in F32 on the BF16 weights and its rows replace the image
+  placeholders the template renders.
+- **Memory.** A serial graph reserves 3.75 GiB for four images of up to
+  8,000 merged tokens each. A persistent text bank also needs a second
+  graph for image requests. On an idle GB10 with 118.5 GiB available,
+  Sage and Swift gave the same native 1M, two-draft serial quotes. A
+  4 GiB floor admitted 2,048 prefill rows at 114.67 GiB. A 2 GiB floor
+  admitted 4,096 rows at 117.98 GiB. Use `--check-config` on the serving
+  host because the available memory determines which chunk fits. With
+  automatic bank count and reuse, the planner tries smaller banked chunks
+  first, then one serial graph with exact reuse. A forced bank count or
+  partial reuse still needs room for both graphs.
+- **Projected prompts.** `/v1/completions` accepts `prompt_embeds` in place
+  of `prompt`: a base64 Safetensors file with one finite BF16 matrix
+  `prompt_embeds` of shape `[tokens, 4096]`, a complete embedded prompt
+  ([API matrix](ds4-api-surface-matrix.md#projected-prompt-rows-prompt_embeds)).
+  A client splices rows its own encoder projected (video frames through the
+  released tower, a derivative's scientific projectors) around the token
+  embeddings. The request prefills cold on the serial lane, nothing is
+  reused or stored, and the draft layer takes the same rows.
+
+## Derivatives
+
+Fine-tunes that keep GLM-5.3-Flash's topology open as this family: the
+loader checks each release's `config.json` against the family contract and
+every part against `files.json`, and the release's own `chat_template.jinja`
+renders its prompts.
+
+| Artifact | Source revision | Input |
+|---|---|---|
+| [Sage-S2.1-Flash hVQ](https://huggingface.co/Baekpica/Sage-S2.1-Flash-VQ-GGUF) | [`internlm/Sage-S2.1-Flash-FP8@716e6436`](https://huggingface.co/internlm/Sage-S2.1-Flash-FP8/tree/716e6436905650b7be93e1b7dedfb0bb95afd3a3) | Its own template ([reference renders](../tests/fixtures/chat-template/models/sage/provenance.json)): media parts render as placeholders and earlier reasoning is always replayed. Nine scientific projectors ship as client-side Safetensors; their rows arrive as `prompt_embeds`. |
+| [Swift1.5-GLM-5.3-Flash hVQ](https://huggingface.co/Baekpica/Swift1.5-GLM-5.3-Flash-VQ-GGUF) | [`ukisai/Swift1.5-GLM-5.3-Flash@1a9bcb4d`](https://huggingface.co/ukisai/Swift1.5-GLM-5.3-Flash/tree/1a9bcb4d808f51e7eb043d6c471e8b616fd84bb5) | The GLM VQ release's template, byte for byte. |
+| [Nex-N2.6 hVQ](https://huggingface.co/Baekpica/Nex-N2.6-VQ-GGUF) | [`nex-agi/Nex-N2.6@98747229`](https://huggingface.co/nex-agi/Nex-N2.6/tree/987472298e7867721576ac49a253a6f5b526013e) | The GLM VQ release's template, byte for byte. |
+
+All three use the 19-layer R13+8 layout above (56 parts, 88.0 GiB) with
+Hessian-calibrated index assignment (hVQ): the tensor shapes, kernels and
+memory plan are GLM-5.3-Flash VQ's, so speed is measured on one of them.
+Sage's upstream tokenizer wrapper encodes control-token spellings typed in
+message content as plain text; the host tokenizes rendered chat like the
+stock tokenizer, so such spellings in content still become control tokens.
 
 ## Numerical contract
 
@@ -386,6 +475,14 @@ cycle to 68.9 ms (two interleaved pairs, 39.51 → 39.58 tok/s); its 0.3 ms
 per decoded token stays inside the ±1.5% fresh-run spread.
 
 ## Measured performance
+
+On Sage-S2.1-Flash hVQ the November 18 build measured 1,230.3 tok/s
+incremental prefill and 32.51 tok/s decode in the 2K–64K sweep with
+three gated drafts. The last prefill increment at 1,040,384 tokens ran
+at 856.73 tok/s. The same build served Sage and Swift with their native
+1M context, embedded MTP and vision. Sage retrieved a planted code in a
+900,068-token HTTP request.
+[Rounds, raw curves and serving checks](glm53-vq-optimization-2026-11-18.md).
 
 The [2K–64K README sweep after #88](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
 (`3dd964ba`; 2,048-token incremental prefill, 128 tokens, three fresh

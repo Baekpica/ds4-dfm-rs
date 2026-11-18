@@ -1,0 +1,9 @@
+{
+  "repo": "internlm/Sage-S2.1-Flash-FP8",
+  "revision": "716e6436905650b7be93e1b7dedfb0bb95afd3a3",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "66a4b6d9bc6ee2eb11fe62472ae237adc6f8428fad4857138dd9806bbac2740e",
+  "tokenizer_config_sha256": "c1a7d3e22519a4d3975f6860bd020630e2e4cb4155e758b6c231ee77c0f0e73d",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/internlm/Sage-S2.1-Flash-FP8/blob/716e6436905650b7be93e1b7dedfb0bb95afd3a3/chat_template.jinja"
+}

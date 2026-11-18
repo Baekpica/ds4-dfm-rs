@@ -16,7 +16,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 ROOT = Path(__file__).parent
-FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling", "inkling2")
+FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling", "inkling2", "sage")
 CLOCK = datetime.fromtimestamp(0, timezone.utc)
 TOOL = {
     "type": "function",
@@ -127,8 +127,8 @@ def model_cases(family):
         }
         return {"name": name, "context": context, "reject": reject}
 
-    off_name = "user_none_effort" if family in ("glm", "k2") else "user_thinking_off"
-    # K2 rejects none; GLM maps it to Max and still opens a thinking block.
+    off_name = "user_none_effort" if family in ("glm", "k2", "sage") else "user_thinking_off"
+    # K2 rejects none; GLM and Sage map it to Max and still open a thinking block.
     off_reject = "Unsupported reasoning_effort" if family == "k2" else None
     cases = [
         case(off_name, [USER], render_options(family, Thinking.OFF), reject=off_reject),
@@ -152,13 +152,13 @@ def model_cases(family):
         ]}]
         cases.append(case("image_placeholders", images, {"add_vision_id": True}))
 
-    if family in ("dots", "glm"):
+    if family in ("dots", "glm", "sage"):
         cases.extend([
             case("keep_history_thinking", MULTITURN, {"clear_thinking": False}),
             case("clear_history_thinking", MULTITURN, {"clear_thinking": True}),
         ])
 
-    if family in ("solar", "glm"):
+    if family in ("solar", "glm", "sage"):
         pair = copy.deepcopy(TOOL_HISTORY)
         second = copy.deepcopy(pair[1]["tool_calls"][0])
         second["id"] = "call_02"
@@ -184,6 +184,18 @@ def model_cases(family):
             {"type": "input_audio"},
         ]}]
         cases.append(case("media_reminders", media))
+
+    if family == "sage":
+        # Sage's GLM-derived template renders media parts as placeholders
+        # and replays earlier reasoning whatever clear_thinking says.
+        media = [{"role": "user", "content": [
+            {"type": "image"},
+            {"type": "video"},
+            {"type": "input_audio"},
+            {"type": "text", "text": "입력을 설명해 줘."},
+        ]}]
+        cases.append(case("media_placeholders", media))
+        cases.append(case("user_low_effort", [USER], {"reasoning_effort": "low"}))
 
     if family == "k2":
         cases.extend([

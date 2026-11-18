@@ -246,6 +246,11 @@ pub trait DecodeIo {
         };
         Ok(vec![marker; self.vision_probe(data)?.token_count as usize])
     }
+    fn sync_glm_embeddings(&mut self, _tokens: &[i32], _rows: &[f32]) -> Result<(), GenerateError> {
+        Err(GenerateError::Unsupported(
+            "projected input rows are unavailable",
+        ))
+    }
     fn sync_vision_prompt(
         &mut self,
         _tokens: &[i32],
@@ -1264,6 +1269,9 @@ pub struct GenerateOutcome {
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
+    if parsed.prompt_embeds.is_some() && model_id != ds4_core::Variant::Glm53FlashVq as i32 {
+        return Some("prompt_embeds requires the GLM GVQ1 serial runtime");
+    }
     let syntax = syntax_for_model_id(model_id);
     if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
         return Some("video input requires MiMo or MiniMax");
@@ -1394,7 +1402,8 @@ pub fn render_prompt_ex(
 }
 
 pub(crate) fn ordinary_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
-    parsed.api == Api::Openai
+    parsed.prompt_embeds.is_none()
+        && parsed.api == Api::Openai
         && !think_mode_enabled(parsed.think_mode)
         && !parsed.has_tools
         && !parsed.has_tool_results
@@ -2594,13 +2603,18 @@ pub(crate) fn prepare_serial_prompt(
         })?;
     }
 
-    let prompt = engine.render_request(&parsed)?;
-    let tokens = match parsed.kind {
-        ReqKind::Completion => {
-            let text = std::str::from_utf8(&prompt).unwrap_or("");
-            engine.tokenize_text(text)?
-        }
-        ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
+    let (prompt, tokens) = if let Some(rows) = &parsed.prompt_embeds {
+        (Vec::new(), vec![-1; rows.len() / 4096])
+    } else {
+        let prompt = engine.render_request(&parsed)?;
+        let tokens = match parsed.kind {
+            ReqKind::Completion => {
+                let text = std::str::from_utf8(&prompt).unwrap_or("");
+                engine.tokenize_text(text)?
+            }
+            ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
+        };
+        (prompt, tokens)
     };
     let MediaPrompt {
         tokens,
@@ -2704,7 +2718,9 @@ pub(crate) fn generate_terminal_prepared(
     }
     engine.begin_trace();
     let t_prefill = Instant::now();
-    let sync_result = if !vision.is_empty() || !audios.is_empty() || !videos.is_empty() {
+    let sync_result = if let Some(rows) = &parsed.prompt_embeds {
+        engine.sync_glm_embeddings(&tokens, rows).map(|()| 0)
+    } else if !vision.is_empty() || !audios.is_empty() || !videos.is_empty() {
         engine
             .sync_mimo_prompt(&tokens, &vision, &audios, &videos)
             .map(|()| 0)
@@ -4752,6 +4768,19 @@ impl DecodeIo for NativeDecode<'_> {
         self.model
             .audio_probe(data)
             .map_err(|error| GenerateError::Engine(error.to_string()))
+    }
+
+    fn sync_glm_embeddings(&mut self, tokens: &[i32], rows: &[f32]) -> Result<(), GenerateError> {
+        self.session_disk_storable = false;
+        self.thinking_visible = None;
+        self.reuse = ReuseTaken::Cold;
+        self.prompt_sync_elapsed = None;
+        let started = Instant::now();
+        self.session()?
+            .sync_glm_embeddings(tokens, rows)
+            .map_err(|e| GenerateError::Engine(e.to_string()))?;
+        self.prompt_sync_elapsed = Some(started.elapsed());
+        Ok(())
     }
 
     fn sync_vision_prompt(

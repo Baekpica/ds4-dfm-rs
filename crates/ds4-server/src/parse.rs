@@ -216,6 +216,7 @@ pub struct ParsedRequest {
     pub tool_schemas: String,
     pub tool_orders: Vec<ToolSchemaOrder>,
     pub prompt_text: Option<String>,
+    pub prompt_embeds: Option<Arc<[f32]>>,
     pub needs: u32,
 }
 
@@ -265,6 +266,7 @@ impl ParsedRequest {
             tool_schemas: String::new(),
             tool_orders: Vec::new(),
             prompt_text: None,
+            prompt_embeds: None,
             needs: 0,
         }
     }
@@ -289,6 +291,9 @@ impl ParsedRequest {
         });
         if !self.audios.is_empty() || !self.videos.is_empty() {
             self.needs |= crate::route::NEED_AUDIO;
+        }
+        if self.prompt_embeds.is_some() {
+            self.needs |= crate::route::NEED_PROMPT_EMBEDS;
         }
         if self.eos_policy != EosPolicy::Default {
             self.needs |= crate::route::NEED_EOS_POLICY;
@@ -340,14 +345,27 @@ fn base64_value(c: u8) -> Option<u32> {
 }
 
 fn decode_media_base64(src: &str, request_remaining: usize) -> Result<Vec<u8>, String> {
+    decode_base64(src, CHAT_IMAGE_MAX_BYTES, request_remaining)
+}
+
+fn decode_base64(
+    src: &str,
+    item_limit: usize,
+    request_remaining: usize,
+) -> Result<Vec<u8>, String> {
     let src = src.as_bytes();
     if src.is_empty() || src.len() & 3 != 0 {
         return Err("invalid media base64 length".into());
     }
     let padding = usize::from(src[src.len() - 1] == b'=') + usize::from(src[src.len() - 2] == b'=');
     let decoded = src.len() / 4 * 3 - padding;
-    if decoded == 0 || decoded > CHAT_IMAGE_MAX_BYTES {
-        return Err("media exceeds 10 MiB decoded limit".into());
+    if decoded == 0 || decoded > item_limit {
+        return Err(if item_limit == CHAT_IMAGE_MAX_BYTES {
+            "media exceeds 10 MiB decoded limit"
+        } else {
+            "prompt embeddings exceed the decoded body limit"
+        }
+        .into());
     }
     if decoded > request_remaining {
         return Err("media exceeds 20 MiB request limit".into());
@@ -3397,6 +3415,55 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     Ok(r)
 }
 
+/// One data-only Safetensors BF16 matrix. The HTTP body limit also bounds
+/// the allocation, including encoded bytes and the widened native input.
+fn decode_prompt_embeds(encoded: &str) -> Result<Arc<[f32]>, String> {
+    let limit = crate::http::MAX_BODY / 4 * 3;
+    let bytes = decode_base64(encoded, limit, limit)?;
+    glm_embedding_rows(&bytes)
+}
+
+fn glm_embedding_rows(bytes: &[u8]) -> Result<Arc<[f32]>, String> {
+    let invalid = || "expected a Safetensors BF16 prompt_embeds matrix of width 4096".to_string();
+    let prefix = bytes.get(..8).ok_or_else(invalid)?;
+    let header_size =
+        usize::try_from(u64::from_le_bytes(prefix.try_into().unwrap())).map_err(|_| invalid())?;
+    if header_size > 16 * 1024 {
+        return Err(invalid());
+    }
+    let end = 8 + header_size;
+    let header: serde_json::Value =
+        serde_json::from_slice(bytes.get(8..end).ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let entries = header.as_object().ok_or_else(invalid)?;
+    if entries
+        .keys()
+        .any(|k| k != "prompt_embeds" && k != "__metadata__")
+    {
+        return Err(invalid());
+    }
+    let entry = entries.get("prompt_embeds").ok_or_else(invalid)?;
+    let shape = entry["shape"].as_array().ok_or_else(invalid)?;
+    let data = &bytes[end..];
+    if entry["dtype"] != "BF16"
+        || shape.len() != 2
+        || shape[1] != 4096
+        || data.is_empty()
+        || data.len() % (2 * 4096) != 0
+        || shape[0].as_u64() != Some((data.len() / (2 * 4096)) as u64)
+        || entry["data_offsets"] != serde_json::json!([0, data.len()])
+    {
+        return Err(invalid());
+    }
+    let rows: Vec<_> = data
+        .chunks_exact(2)
+        .map(|p| f32::from_bits(u32::from(u16::from_le_bytes([p[0], p[1]])) << 16))
+        .collect();
+    if rows.iter().any(|v| !v.is_finite()) {
+        return Err("nonfinite prompt embeddings".into());
+    }
+    Ok(rows.into())
+}
+
 pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, String> {
     let mut r = ParsedRequest::init(ReqKind::Completion, env);
     let mut err = String::new();
@@ -3435,6 +3502,14 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
                 }
                 None => false,
             }
+        } else if key == "prompt_embeds" {
+            if r.prompt_embeds.is_some() {
+                return Err("duplicate prompt_embeds".into());
+            }
+            let value =
+                json_string(&mut p).ok_or("prompt_embeds must be a base64 Safetensors string")?;
+            r.prompt_embeds = Some(decode_prompt_embeds(&value)?);
+            true
         } else if key == "model" {
             match json_string(&mut p) {
                 Some(m) => {
@@ -3540,9 +3615,12 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     if p.peek() != Some(b'}') {
         return bad(&mut err, "invalid JSON request");
     }
-    let Some(prompt) = prompt else {
+    if prompt.is_none() && r.prompt_embeds.is_none() {
         return Err("missing prompt".into());
-    };
+    }
+    if r.prompt_embeds.is_some() && prompt.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Err("supply one complete prompt or prompt_embeds".into());
+    }
     apply_think(
         &mut r,
         got_thinking,
@@ -3550,7 +3628,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
         reasoning_effort,
         env.engine_defaults,
     )?;
-    r.prompt_text = Some(prompt);
+    r.prompt_text = prompt;
     r.finish_needs();
     Ok(r)
 }
@@ -3982,6 +4060,46 @@ pub fn parse_request(
         WireSurface::OpenaiCompletion => parse_completion_request(env, body),
         WireSurface::Anthropic => parse_anthropic_request(env, body),
         WireSurface::Responses => parse_responses_request(env, body),
+    }
+}
+
+#[cfg(test)]
+mod glm_embedding_tests {
+    use super::glm_embedding_rows;
+    use serde_json::json;
+
+    fn matrix(shape: [u32; 2], dtype: &str, sample: u16) -> Vec<u8> {
+        let mut header = json!({"prompt_embeds":{
+            "shape":shape,"dtype":dtype,"data_offsets":[0,8192]
+        }})
+        .to_string()
+        .into_bytes();
+        header.resize(header.len().next_multiple_of(8), b' ');
+        let mut bytes = Vec::from((header.len() as u64).to_le_bytes());
+        bytes.extend(header);
+        for _ in 0..4096 {
+            bytes.extend(sample.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn projected_rows_keep_bf16_values() {
+        let v = glm_embedding_rows(&matrix([1, 4096], "BF16", 0xbf80)).unwrap();
+        assert_eq!(v.len(), 4096);
+        assert!(v.iter().all(|x| *x == -1.0));
+    }
+
+    #[test]
+    fn projected_rows_check_geometry_and_finite_values() {
+        for example in [
+            matrix([2, 4096], "BF16", 0),
+            matrix([1, 4096], "F16", 0),
+            matrix([1, 4096], "BF16", 0x7fc0),
+            vec![0xff; 8],
+        ] {
+            assert!(glm_embedding_rows(&example).is_err());
+        }
     }
 }
 

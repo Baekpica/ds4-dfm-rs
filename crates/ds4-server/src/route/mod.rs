@@ -22,6 +22,8 @@ pub const NEED_IMAGE: u32 = 1 << 12;
 // ROUTE_CONT_MASK, so those requests cannot land on the continuous lane.
 pub const NEED_AUDIO: u32 = 1 << 13;
 pub const NEED_EOS_POLICY: u32 = 1 << 14;
+// Projected rows use the GLM serial graph.
+pub const NEED_PROMPT_EMBEDS: u32 = 1 << 15;
 
 pub const ROUTE_CONT_MASK: u32 = NEED_STREAMING
     | NEED_PER_ROW_SAMPLING

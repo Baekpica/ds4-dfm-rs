@@ -91,12 +91,27 @@ static bool gvq_mm_rows(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tens
     return ok;
 }
 
+// One decode row streams a group's Q4_K matrices in one launch (KDA q/k/v:
+// three 18.9 MB matrices); DS4_GLMVQ_Q4_GROUP=0 keeps a launch per matrix.
+static bool gvq_q4_group(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *value = getenv("DS4_GLMVQ_Q4_GROUP");
+        on = !value || strcmp(value, "0");
+    }
+    return on != 0;
+}
+
 // Projections of one input (q/k/v, gate/up, ...): prefill prepares it once.
 static bool gvq_mm_many(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
     uint32_t index[4];
+    if (count > 4u) { return false; }
     for (uint32_t c = 0; c < count; c++) { index[c] = glmvq_index(m, ws[c]); }
-    const bool ok = count <= 4 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    // The group declines (0) unless every output equals its own launch's.
+    const bool ok = (rows == 1u && count > 1u && gvq_q4_group() &&
+                     ds4_gpu_gvq_q4_decode_group(g->gvq, outs, index, count, x, 1u)) ||
+        ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
     if (!ok) { fprintf(stderr, "ds4: GLM VQ linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;
 }
@@ -218,7 +233,7 @@ static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
         gvq_mm(g, m, g->idx_weights, l->indexer_proj, g->norm, rows, DS4_GVQ_BF16) &&
         ds4_gpu_gvq_index(g->gvq, g->idx_scores, g->idx_q, g->idx_weights,
             g->layer_pool[il], pools, rows, pos) &&
-        ds4_gpu_indexer_topk_tensor(g->idx_pools, g->idx_scores, pools, rows, topk, 0u, UINT32_MAX) &&
+        ds4_gpu_gvq_topk(g->gvq, g->idx_pools, g->idx_scores, pools, rows) &&
         ds4_gpu_glm53_pool_expand(g->idx_selected, g->idx_pools, rows, pos,
             topk, DS4_GLM53_INDEX_TOPK, DS4_GLM53_MAX_SELECTED);
 }

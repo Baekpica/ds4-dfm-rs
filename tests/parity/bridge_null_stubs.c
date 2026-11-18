@@ -159,6 +159,11 @@ int ds4_session_sync_multimodal(ds4_session *s,
     (void)s; (void)prompt; (void)spans; (void)span_count; (void)err; (void)errlen;
     STUB("ds4_session_sync_multimodal");
 }
+int ds4_session_sync_glm_embeddings(ds4_session *s, const ds4_tokens *prompt,
+                                    const float *rows, char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)rows; (void)err; (void)errlen;
+    STUB("ds4_session_sync_glm_embeddings");
+}
 int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
                               const ds4_inkling_pixels *images, uint32_t image_count,
                               const ds4_inkling_audio *audios, uint32_t audio_count,

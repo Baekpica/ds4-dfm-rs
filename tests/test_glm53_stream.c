@@ -677,10 +677,11 @@ static void check_group_ctor(fixture *f) {
 /* The generator includes the actual engine-close body. Unrelated family,
  * vocabulary and device cleanup are mocked; expert I/O/free remain real. */
 typedef struct {
-    void *qwen_ple_cuda, *qwen_ple_store;
+    void *qwen_ple_cuda, *qwen_ple_store, *gemma4_stream;
     ds4_weights weights;
+    ds4_mtp_weights mtp_weights;
     bool mtp_ready, dspark_ready;
-    ds4_model mtp_model, dspark_model, vision_model, model;
+    ds4_model mtp_model, dspark_model, vision_model, audio_model, model;
     ds4_glm53_stream glm53_stream;
     float *directional_steering_dirs;
     char *directional_steering_file;
@@ -714,6 +715,7 @@ static void close_model(ds4_model *m) {
 #define qwen4exp_report_ple_stats(...) ((void)0)
 #define ds4_qwen38_ple_cuda_destroy(...) ((void)0)
 #define ds4_ple_store_close(...) ((void)0)
+#define gemma4_stream_free(...) ((void)0)
 #define vocab_free(...) ((void)0)
 #define ds4_threads_shutdown(...) ((void)0)
 #define mimo2_media_free(...) ((void)0)
@@ -727,6 +729,7 @@ static void close_model(ds4_model *m) {
 #undef v41_vision_cleanup
 #undef v41_kvreuse_cleanup
 #undef mimo2_media_free
+#undef gemma4_stream_free
 #undef ds4_threads_shutdown
 #undef vocab_free
 #undef ds4_ple_store_close

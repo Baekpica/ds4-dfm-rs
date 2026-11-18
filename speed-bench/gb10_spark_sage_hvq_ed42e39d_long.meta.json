@@ -1,0 +1,105 @@
+{
+  "date": "2026-11-18",
+  "model": "Baekpica/Sage-S2.1-Flash-VQ-GGUF@74381f7a53356a16dc53218314bba50672238291",
+  "source_before": "0374fed5 plus release media patch and Rust 1.100.0",
+  "source_after": "60268312b7429b0c9e276c446362489bb643ee30",
+  "host": "GB10 sm_121a, CUDA 13.5.37, driver 620.70.06, 300–2200 MHz, Rust 1.100.0",
+  "prompt": "speed-bench/promessi_sposi.txt repeated five times",
+  "prompt_sha256": "a47b41f0e0d32d1d093350f1b8ba8d2e974ec18b2262df6e1c7d7a00c80d4cf3",
+  "args": "--threads 8 --ctx-start 65536 --ctx-max 1040384 --step-incr 65536 --gen-tokens 0",
+  "environment": {
+    "DS4_GLMVQ_PREFILL_ROWS": "2048"
+  },
+  "guard": "reserve/trip 2 GiB, PSI full limit 40, one fresh process per arm",
+  "measurement": "one continuous session per arm, incremental prefill, no decode or snapshots. Total prefill time is reconstructed from the rounded CSV rates.",
+  "frontiers": [
+    65536,
+    131072,
+    196608,
+    262144,
+    327680,
+    393216,
+    458752,
+    524288,
+    589824,
+    655360,
+    720896,
+    786432,
+    851968,
+    917504,
+    983040,
+    1040384
+  ],
+  "arms": {
+    "base": {
+      "csv": "gb10_spark_sage_hvq_28a08b4a_long.csv",
+      "sha256": "28a08b4aca72346aa32930a67256e41d5422d1a0c4236c45ec4ce7b26d38372a",
+      "tps": [
+        1094.32,
+        1053.61,
+        1004.58,
+        962.91,
+        920.4,
+        855.08,
+        782.22,
+        745.86,
+        714.46,
+        686.68,
+        660.51,
+        635.1,
+        613.66,
+        592.43,
+        573.78,
+        556.61
+      ],
+      "prefill_seconds": 1399.118322127231,
+      "wall_seconds": 1458.052136182785,
+      "available_min_gib": 10.910724639892578,
+      "psi_full_avg10_max": 2.17,
+      "busy_sm_mhz": [
+        2177,
+        2184.0,
+        2190
+      ],
+      "busy_c": [
+        52.56,
+        77.66
+      ]
+    },
+    "new": {
+      "csv": "gb10_spark_sage_hvq_ed42e39d_long.csv",
+      "sha256": "ed42e39df33c13afa24e79d39a4f782648ae5056d450a83c6f9247291a4880d2",
+      "tps": [
+        1231.29,
+        1203.55,
+        1168.23,
+        1134.58,
+        1089.91,
+        1063.1,
+        1036.89,
+        1015.46,
+        991.79,
+        969.61,
+        948.31,
+        927.49,
+        909.15,
+        891.29,
+        874.03,
+        856.73
+      ],
+      "prefill_seconds": 1032.0226696962984,
+      "wall_seconds": 1092.046600818634,
+      "available_min_gib": 11.0257568359375,
+      "psi_full_avg10_max": 0.0,
+      "busy_sm_mhz": [
+        2177,
+        2184,
+        2190
+      ],
+      "busy_c": [
+        62.8,
+        80.3
+      ]
+    }
+  }
+}

@@ -52,6 +52,7 @@ documented whole-model results are omitted.
 | MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
 | GLM-5.3 Flash VQ R13+8 + Q4_K | 1,101.3 | 30.93 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
+| Sage-S2.1-Flash hVQ | 1,230.3 | 32.51 | [2K–64K incremental sweep, gated MTP 3](docs/performance.md#sage-s21-flash-hvq) |
 | Ling-3.1-flash VQ v2 + Q4_K/FP8 | 774.1 | 17.70 | [2K–64K sweep, plain; MTP 2 to 32K: 23.58](docs/performance.md#ling-31-flash-vq) |
 | Beam-1.0 VQ (12/13-bit GVQ1 + Q4_K) | 830.4 | 15.86 | [2K–64K sweep, plain; DFlash2 on chat: 30.9](docs/performance.md#beam-10-vq) |
 | MiniMax-M3.1 Flash VQ (13-bit GVQ1 + R8 + Q4_K) | 1,011.0 | 22.10 | [2K–64K sweep, DSpark 3 gated, 512K session](docs/performance.md#minimax-m31-flash-vq) |
@@ -84,7 +85,7 @@ record qualification separately from throughput.
 
 ### Build
 
-The repository pins Rust 1.98.0, `rustfmt` and `clippy` in
+The repository pins Rust 1.100.0, `rustfmt` and `clippy` in
 [`rust-toolchain.toml`](rust-toolchain.toml). CUDA builds require the local
 CUDA toolkit, C/C++ build tools and CMake (ds4-core builds libjpeg-turbo).
 
@@ -160,14 +161,17 @@ loading a model, and preserve unrelated servers and resident owners.
 <a id="model-zoo"></a>
 
 The LLM table lists explicit GGUF/VQ layouts and execution paths. It combines
-the supported artifacts and Model Zoo; see also the
-[`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
-collection. Feature and context limits remain specific to each artifact.
+the supported artifacts and Model Zoo. Feature and context limits apply to
+the artifact named in each runtime guide. Browse the releases in the
+[VQ collection](https://huggingface.co/collections/Baekpica/ds4-vq-for-dgx-spark)
+and the [mixed-quant collection](https://huggingface.co/collections/Baekpica/ds4-mxq-for-dgx-spark).
 
 | Model | GGUF architecture | Artifact | Runtime guide / scope |
 |---|---|---|---|
 | DeepSeek V4 Flash / PRO | `deepseek4` | [antirez GGUF](https://huggingface.co/antirez/deepseek-v4-gguf/tree/main) | Flash live oracle, DeepSeek MTP and DSpark |
 | DeepSeek V4.1 Flash | `deepseek4` (V4.1 shape) | [YoungAi VQ GGUF + GR/RB sidecars](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash) + [DeepSeek Engram](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) | [Port by JLFN (#80)](https://github.com/Baekpica/ds4-dfm-rs/pull/80); [serial CUDA, embedded MTP and limits](docs/deepseek41-flash.md) |
+| DeepSeek V4.1 Flash 1017 | `deepseek4` (V4.1 shape) | [VQ](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-VQ-GGUF) / [iVQ](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-iVQ-GGUF) / [hVQ](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF) | [2K–64K sweep measured on the 1017 hVQ release](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-hVQ-GGUF#speed) |
+| DeepSeek V4.1 Flash 1017 UNCENSORED | `deepseek4` (V4.1 shape) | [Baekpica UNCENSORED VQ](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-UNCENSORED-VQ-GGUF) | Release card records a loader check. Artifact-specific Spark serving is unmeasured. |
 | Solar Open2 250B | `solar-open2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF) | KDA/GQA state and persistent banks |
 | K-EXAONE 236B A23B | `exaone-moe` | [Baekpica mixed quant](https://huggingface.co/Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF) | LLLG KV; [partial reuse limits](docs/ds4-dfm-model-families.md#partial-prefix-reuse) |
 | Motif-3 | `motif3` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | Latent KV, SWA rings and persistent banks |
@@ -180,13 +184,19 @@ collection. Feature and context limits remain specific to each artifact.
 | Prism Bonsai 2 27B | `qwen35` | [Pinned PQ2_0](docs/BONSAI.md) | Serial CUDA text and CPU reference; [limits](docs/BONSAI.md) |
 | GLM 5.3 Flash | `glm5-next` | [antirez Q2](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [vision](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [Historical 2K text/image qualification](docs/ds4-dfm-model-families.md#glm-53-flash-release-scope) |
 | GLM 5.3 Flash Uncensored | `glm5-next` | [Baekpica mixed IQ2_XXS/IQ2_XS/Q2_K + BF16 vision](https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF) | [Optional SSD streaming, banks, MTP, native 1M and cached HTTP/image gates](docs/glm53-uncensored.md) |
-| GLM 5.3 Flash VQ | `glm5-next` (GVQ1 parts) | [Baekpica VQ experts (R13+8 on 19 layers) + Q4_K nonexperts](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF) | [GVQ1 v2 format, embedded MTP (two drafts), native 1M context, partial reuse and disk KV; 2K–64K measured](docs/glm53-vq.md) |
+| GLM 5.3 Flash VQ | `glm5-next` (GVQ1 parts) | [Baekpica VQ experts (R13+8 on 19 layers) + Q4_K nonexperts](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF) | [GVQ1 v2 format, embedded MTP (two drafts) and vision tower, native 1M context, partial reuse and disk KV; 2K–64K measured](docs/glm53-vq.md) |
+| GLM 5.3 Flash Uncensored VQ | `glm5-next` (GVQ1 parts) | [Baekpica VQ experts + Q4_K](https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-VQ-GGUF) | GVQ1 v2 with R13+8 on 19 layers. [Release-specific speed and quality evidence](https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-VQ-GGUF#speed-and-quality). |
+| Sage-S2.1-Flash hVQ | `glm5-next` (GVQ1 parts) | [Baekpica Sage hVQ](https://huggingface.co/Baekpica/Sage-S2.1-Flash-VQ-GGUF) | [Native 1M serving, 900K-token retrieval, Sage template, images, projected video and MTP 3](docs/glm53-vq-optimization-2026-11-18.md#serving-and-memory) |
+| Swift1.5-GLM-5.3-Flash hVQ | `glm5-next` (GVQ1 parts) | [Baekpica Swift1.5 hVQ](https://huggingface.co/Baekpica/Swift1.5-GLM-5.3-Flash-VQ-GGUF) | [Native 1M serving with MTP 2, images, OCR, projected video and tool follow-up](docs/glm53-vq-optimization-2026-11-18.md#serving-and-memory) |
+| Nex-N2.6 hVQ | `glm5-next` (GVQ1 parts) | [Baekpica Nex hVQ](https://huggingface.co/Baekpica/Nex-N2.6-VQ-GGUF) | [GLM VQ family layout and template](docs/glm53-vq.md#derivatives). Spark execution on this release is unverified. |
 | K2-Horizon 375B A23B | `k2-horizon` | [Baekpica MQ87](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [32K one bank, IFM tools, no MTP](docs/ds4-dfm-model-families.md#k2-horizon-375b-release-scope) |
 | Inkling Small | `inkling` | [Baekpica MQ85GB](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + [MTP-BF16](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [Serial text/image/audio input](docs/inkling-small.md) |
 | Step 3.7 Flash | `step35` | [Baekpica MQ83 + MTP + vision](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [Opt-in text banks/MTP, disk KV; images serial](docs/step37-serving-2026-09-13.md) |
 | Ling-3.0-flash-VL | `bailingmoe3` | [Baekpica MQ-Q5 + BF16 mmproj](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [Images, persistent banks, disk KV and YaRN](docs/ling3-flash-vl.md) |
 | Ling-3.1-flash VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K/FP8 nonexperts](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF) | [Embedded MTP (two drafts), FP8 latent KV, native 262K in two banks or one MTP bank; 2K–64K measured](docs/ling31-flash-vq.md) |
+| Ling-3.1-flash-1019 VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica 1019 all-12-bit VQ](https://huggingface.co/Baekpica/Ling-3.1-flash-1019-VQ-GGUF) | [MTP, serving recipe and measured 2K–64K sweep](https://huggingface.co/Baekpica/Ling-3.1-flash-1019-VQ-GGUF#measured-on-dgx-spark-gb10) |
 | Beam-1.0 VQ | `beam_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K nonexperts](https://huggingface.co/Baekpica/Beam-1.0-501B-A23B-VQ-GGUF) | [Harmony output, FP8 full-layer KV, native 1M in one bank, serial DFlash2 drafting; 2K–64K measured](docs/beam-vq.md) |
+| MiniMax-M3.1-Flash VQ | `minimax_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K](https://huggingface.co/Baekpica/MiniMax-M3.1-Flash-VQ-GGUF) | [Sparse attention, vision/video tower and DSpark](docs/minimax-vq.md). [GB10 measurements](https://huggingface.co/Baekpica/MiniMax-M3.1-Flash-VQ-GGUF#dgx-spark-performance). |
 | A.X-K2 VQ | `axk2_vq` (GVQ1 release directory) | [Baekpica 9/10-bit VQ experts + Q4_K/Q8_0 nonexperts](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF) | [MLA with the DSA indexer, FP8 latent and key rows, native 262K in one bank, Hermes tools, no drafter; 2K–64K measured](docs/axk2-vq.md) |
 | MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |

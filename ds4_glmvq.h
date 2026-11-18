@@ -135,6 +135,9 @@ int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit, ds4_gvq_rows out_rows);
 int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count);
+/* Argmax of `count` logits and its margin over the runner-up:
+ * out[0] = index, out[1] = the margin's F32 bits. */
+int ds4_gpu_gvq_draft_pick(ds4_gpu_tensor *out, const ds4_gpu_tensor *logits, uint32_t count);
 /* Stream-ordered device copy launched like the `rows`-wide kernels around
  * it; a driver memcpy between dependent launches stalled MTP prefill. */
 int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset, const ds4_gpu_tensor *src,
@@ -159,6 +162,9 @@ int ds4_gpu_gvq_pool(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache,
 int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *weights,
     const ds4_gpu_tensor *cache, uint32_t pools, uint32_t rows, uint32_t first);
+/* The DS4_GLM53_INDEX_TOPK / DS4_GLM53_POOL_SIZE best pools of each row. */
+int ds4_gpu_gvq_topk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
+    const ds4_gpu_tensor *scores, uint32_t pools, uint32_t rows);
 uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim);
 /* Flash attention scratch for `rows` query rows. */
 uint64_t ds4_gpu_gvq_flash_bytes(uint32_t rows);

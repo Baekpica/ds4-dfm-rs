@@ -137,6 +137,8 @@ static bool glm53_mtp_copy(ds4_glm53_gpu_graph *d, ds4_glm53_gpu_graph *s, uint3
                                           min * row, (len - min) * row)) { return false; }
     d->mtp_len = len; d->mtp_min = min; return true;
 }
+static uint64_t glm53_mtp_verify_bytes(void) { return 0u; }
+static void glm53_mtp_verify_clear(ds4_glm53_gpu_graph *g) { (void)g; }
 static uint64_t glm53_mtp_ckpt_bytes(const ds4_glm53_gpu_graph *g) { (void)g; return 8u; }
 static bool glm53_mtp_ckpt(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *t,
         uint64_t base, glm53_mtp_move mode) {
