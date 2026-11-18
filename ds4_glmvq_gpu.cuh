@@ -1379,6 +1379,43 @@ extern "C" int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset, const 
     return cuda_ok(cudaGetLastError(), "GLM VQ copy");
 }
 
+/* A draft's pick: the argmax of one logits row (the lower index on a tie, as
+ * argmax_kernel) and its logit margin over the runner-up, the draft head's
+ * confidence. out[0] = index, out[1] = the margin's F32 bits. */
+__global__ void __launch_bounds__(1024) gvq_draft_pick(uint32_t *out, const float *logits, uint32_t n) {
+    __shared__ float top[1024], next[1024];
+    __shared__ uint32_t at[1024];
+    const uint32_t t = threadIdx.x;
+    float best = -INFINITY, second = -INFINITY;
+    uint32_t index = 0;
+    for (uint32_t i = t; i < n; i += 1024) {
+        const float v = logits[i];
+        if (v > best) { second = best; best = v; index = i; }
+        else { second = fmaxf(second, v); }
+    }
+    top[t] = best; next[t] = second; at[t] = index;
+    __syncthreads();
+    for (uint32_t stride = 512; stride; stride >>= 1) {
+        if (t < stride) {
+            const float l = top[t], r = top[t + stride];
+            const bool right = r > l || (r == l && at[t + stride] < at[t]);
+            // The runner-up is the losing side's best or either side's own.
+            next[t] = fmaxf(right ? l : r, fmaxf(next[t], next[t + stride]));
+            if (right) { top[t] = r; at[t] = at[t + stride]; }
+        }
+        __syncthreads();
+    }
+    if (t) { return; }
+    out[0] = at[0];
+    out[1] = __float_as_uint(top[0] - next[0]);
+}
+
+extern "C" int ds4_gpu_gvq_draft_pick(ds4_gpu_tensor *out, const ds4_gpu_tensor *logits, uint32_t count) {
+    if (!out || out->bytes < 2u * sizeof(uint32_t) || !count || !gvq_floats(logits, count)) { return 0; }
+    gvq_draft_pick<<<1, 1024, 0, ds4_current_stream()>>>((uint32_t *)out->ptr, (const float *)logits->ptr, count);
+    return cuda_ok(cudaGetLastError(), "GLM VQ draft pick");
+}
+
 extern "C" int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count) {
     if (!count || !gvq_floats(values, count)) { return 0; }
     glmvq_round_rows<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(

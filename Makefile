@@ -2396,6 +2396,7 @@ tests/test_glm53_mtp: tests/test_glm53_mtp.c ds4_glm53_mtp.inc ds4_gpu.h
 
 test-glm53-mtp: tests/test_glm53_mtp
 	./tests/test_glm53_mtp
+	./tests/test_glm53_mtp gate
 
 tests/test_glm53_banks: tests/test_glm53_banks.c ds4_glm53_batch.inc ds4_glm53_compact.h
 	$(CC) $(CFLAGS) -Werror -I. -o $@ $< -lm

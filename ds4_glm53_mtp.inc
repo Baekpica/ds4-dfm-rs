@@ -207,9 +207,13 @@ static bool glm53_mtp_step(ds4_glm53_gpu_graph *owner, const ds4_model *m,
     ds4_glm53_gpu_graph *g = &active;
 #ifndef __APPLE__
     if (g->gvq) {
+        // The routing ids are idle here: they take the pick.
+        uint32_t pick[2] = {0u, 0u};
         const bool ok = gvq_mtp_block(g, m, w, hidden, token, pos, owner->mtp_min) &&
-            ds4_gpu_argmax_tensor(g->token, g->logits, DS4_N_VOCAB) &&
-            ds4_gpu_tensor_read(g->token, 0u, next, sizeof(*next));
+            ds4_gpu_gvq_draft_pick(g->selected, g->logits, DS4_N_VOCAB) &&
+            ds4_gpu_tensor_read(g->selected, 0u, pick, sizeof(pick));
+        *next = (int)pick[0];
+        memcpy(&owner->mtp_margin_last, &pick[1], sizeof(float));
         glm53_graph_unbind(g);
         if (ok) { owner->mtp_len = pos + 1u; }
         return ok && *next >= 0 && (uint32_t)*next < DS4_N_VOCAB;
@@ -407,8 +411,16 @@ static bool glm53_mtp_trial(ds4_glm53_gpu_graph *g, const ds4_model *m,
     g->mtp_trial[0] = first;
     for (uint32_t i = 0u; i + 1u < n; i++) {
         const ds4_gpu_tensor *hidden = i ? g->mtp_hidden : g->last_hidden;
+        g->mtp_margin_last = INFINITY;
         if (!glm53_mtp_step(g, m, w, hidden, g->mtp_trial[i], start - 1u + i,
                             &g->mtp_trial[i + 1u])) { return false; }
+        g->mtp_margin[i + 1u] = g->mtp_margin_last;
+        // A draft its head barely preferred is often wrong, and a draft
+        // after it counts only if it is right: verify it, draft no deeper.
+        if (g->mtp_margin_last < g->mtp_margin_min) {
+            n = i + 2u;
+            break;
+        }
     }
 #ifdef GLM53_MTP_VERIFY
     if (batched) {
@@ -534,9 +546,12 @@ int ds4_session_glm53_trial(ds4_session *s, int first, int max_tokens,
         draft_cap = value ? atoi(value) : 0;
     }
     if (g->gvq && draft_cap > 0 && n > (uint32_t)draft_cap + 1u) { n = (uint32_t)draft_cap + 1u; }
+    g->mtp_margin_min = g->gvq ? s->engine->mtp_margin : 0.0f;
 #endif
     if (!glm53_mtp_trial(g, &s->engine->model, &s->engine->weights,
             first, n, s->logits, tokens, target)) { return glm53_mtp_fail(s, err, len); }
+    // The margin gate may have kept fewer rows.
+    n = g->mtp_trial_n;
     if (spec_sampling(&s->spec)) {
         // The batched GLM VQ verify leaves its rows on the device.
         const float *rows = g->mtp_logit_rows ? g->mtp_logit_rows + DS4_N_VOCAB : NULL;
@@ -557,10 +572,22 @@ int ds4_session_glm53_commit(ds4_session *s, int keep, char *err, size_t len) {
         return 1;
     }
     ds4_glm53_gpu_graph *g = &s->glm53_graph;
+#ifdef GLM53_MTP_VERIFY
+    const uint32_t rows = g->mtp_trial_n;
+#endif
     if (!glm53_mtp_accept(g, (uint32_t)keep, s->logits)) {
         (void)glm53_mtp_fail(s, err, len);
         return 1;
     }
+#ifdef GLM53_MTP_VERIFY
+    static int stats = -1;
+    if (stats < 0) { const char *v = getenv("DS4_GLMVQ_MTP_STATS"); stats = v && !strcmp(v, "1"); }
+    if (stats && g->gvq) {
+        fprintf(stderr, "gvq-mtp n=%u keep=%d", rows, keep);
+        for (uint32_t i = 1; i < rows; i++) { fprintf(stderr, " %.4f", g->mtp_margin[i]); }
+        fputc('\n', stderr);
+    }
+#endif
     for (int i = 0; i < keep; i++) { token_vec_push(&s->checkpoint, g->mtp_trial[i]); }
     if (keep > 1) { ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint32_t)keep - 1u); }
     s->mtp_draft_valid = false;

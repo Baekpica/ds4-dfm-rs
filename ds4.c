@@ -23256,6 +23256,8 @@ typedef struct {
     uint32_t mtp_rewind_n;
     uint32_t mtp_saved_len[GLM53_MTP_SAVES], mtp_saved_min[GLM53_MTP_SAVES];
     int mtp_trial[GLM53_MTP_ROWS];
+    /* Each draft's logit margin over its runner-up (index: its trial row). */
+    float mtp_margin[GLM53_MTP_ROWS], mtp_margin_last, mtp_margin_min;
     bool mtp_ready;
     ds4_gpu_tensor *recurrent[DS4_MAX_LAYER];
     ds4_gpu_tensor *q_conv_state[DS4_MAX_LAYER];

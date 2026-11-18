@@ -10,7 +10,7 @@
 
 enum {
     DS4_N_EMBD = 2, DS4_N_KV_LORA = 2, DS4_N_VOCAB = 8,
-    GLM53_MTP_ROWS = 4, GLM53_MTP_SAVES = GLM53_MTP_ROWS + 1,
+    GLM53_MTP_ROWS = 4, GLM53_MTP_DRAFTS = GLM53_MTP_ROWS - 1, GLM53_MTP_SAVES = GLM53_MTP_ROWS + 1,
     FIXTURE_CTX = 32, FIXTURE_START = 5, STATE_FLOATS = 8
 };
 typedef struct { int unused; } ds4_model, ds4_weights;
@@ -28,9 +28,13 @@ typedef struct {
     uint32_t mtp_rewind_n;
     uint32_t mtp_saved_len[GLM53_MTP_SAVES], mtp_saved_min[GLM53_MTP_SAVES];
     int mtp_trial[GLM53_MTP_ROWS];
+    float mtp_margin[GLM53_MTP_ROWS], mtp_margin_last, mtp_margin_min;
 } ds4_glm53_gpu_graph;
 static uint64_t allocated;
 static unsigned copies, forwards, steps;
+/* When set, the margin the fixture's k-th draft of a trial reports. */
+static const float *step_margins;
+static unsigned step_margin_at;
 static int fail_copy;
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "GLM MTP FAIL %d: %s\n", __LINE__, #x); exit(1); \
@@ -96,6 +100,7 @@ static bool fixture_step(ds4_glm53_gpu_graph *g, const ds4_model *m,
     out[0] = h[0] + (float)token + 0.5f;
     out[1] = h[1] + (float)pos + 0.25f;
     *next = (token + 1) % DS4_N_VOCAB;
+    if (step_margins) { g->mtp_margin_last = step_margins[step_margin_at++]; }
     g->mtp_len = pos + 1u;
     steps++;
     return true;
@@ -108,7 +113,12 @@ static bool fixture_forward(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (pos != g->cache_len || pos >= g->ctx_cap) { return false; }
     if (g->mtp_len && g->mtp_len != pos - 1u) { g->mtp_len = g->mtp_min = 0u; }
     int unused;
-    if (!fixture_step(g, m, w, g->last_hidden, token, pos - 1u, &unused)) { return false; }
+    // A target row's own step is no draft: it reports no margin.
+    const float *margins = step_margins;
+    step_margins = NULL;
+    const bool stepped = fixture_step(g, m, w, g->last_hidden, token, pos - 1u, &unused);
+    step_margins = margins;
+    if (!stepped) { return false; }
     float *state = (float *)g->state_pool->data;
     state[0] += (float)(token + pos); /* recurrent state */
     state[1] = state[1] * 2.0f + (float)token; /* convolution carry */
@@ -222,7 +232,43 @@ static void check_pending(void) {
     puts("GLM MTP: shared-bank stale pending commit rejected");
 }
 
+/* The margin gate stops drafting after the first draft under the floor and
+ * still verifies it: the trial is an ungated trial of the rows it kept. */
+static void check_gate(void) {
+    ds4_model m = {0}; ds4_weights w = {0};
+    const struct { float margins[GLM53_MTP_DRAFTS], floor; unsigned rows; } cases[] = {
+        {{9.0f, 9.0f, 9.0f}, 3.0f, 4u},
+        {{9.0f, 1.0f, 9.0f}, 3.0f, 3u},
+        {{0.5f, 9.0f, 9.0f}, 3.0f, 2u},
+        {{3.0f, 2.99f, 9.0f}, 3.0f, 3u},
+        {{0.5f, 0.5f, 0.5f}, 0.0f, 4u},
+    };
+    for (unsigned c = 0u; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        ds4_glm53_gpu_graph g, plain;
+        float logits[DS4_N_VOCAB], other[DS4_N_VOCAB];
+        init(&g, logits); init(&plain, other);
+        int tokens[GLM53_MTP_ROWS], target[GLM53_MTP_ROWS], ptokens[GLM53_MTP_ROWS], ptarget[GLM53_MTP_ROWS];
+        const unsigned rows = cases[c].rows;
+        g.mtp_margin_min = cases[c].floor;
+        step_margins = cases[c].margins; step_margin_at = 0u;
+        CHECK(glm53_mtp_trial(&g, &m, &w, 4, GLM53_MTP_ROWS, logits, tokens, target));
+        step_margins = NULL;
+        CHECK(g.mtp_trial_n == rows && g.cache_len == FIXTURE_START + rows && step_margin_at == rows - 1u);
+        CHECK(glm53_mtp_trial(&plain, &m, &w, 4, rows, other, ptokens, ptarget));
+        CHECK(memcmp(tokens, ptokens, rows * sizeof(*tokens)) == 0);
+        CHECK(memcmp(target, ptarget, rows * sizeof(*target)) == 0);
+        CHECK(glm53_mtp_accept(&g, rows, logits) && glm53_mtp_accept(&plain, rows, other));
+        CHECK(g.mtp_len == plain.mtp_len && g.mtp_min == plain.mtp_min);
+        CHECK(memcmp(g.state_pool->data, plain.state_pool->data, g.state_bytes) == 0);
+        CHECK(memcmp(logits, other, sizeof(logits)) == 0);
+        release(&g); release(&plain);
+        CHECK(!allocated);
+    }
+    puts("GLM MTP: margin gate keeps the rows of an ungated trial");
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "gate") == 0) { check_gate(); return 0; }
     if (argc == 2 && strcmp(argv[1], "rewind") == 0) { check_rewind(); return 0; }
     if (argc == 2 && strcmp(argv[1], "stale") == 0) { check_stale(); return 0; }
     if (argc == 2 && strcmp(argv[1], "pending") == 0) { check_pending(); return 0; }

@@ -260,7 +260,7 @@ bits per weight = 13/8 + 8/8 = 2.625
   DSA q leaves q4p as BF16 rows; the DSA and KDA heads and the SwiGLU rows
   enter it as BF16 rows, prepared directly.
 
-### MTP (one or two drafts)
+### MTP depth and confidence
 
 ```
 draft:  h(s-1), token s ──MTP layer──▶ d1 ──▶ d2 …     (layer 45, own KV)
@@ -284,10 +284,14 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
   rows past the frontier are rewritten before any read.
 - **Draft context.** Prefill fills the draft layer's KV from the prompt;
   without it early drafts see only decoded tokens.
-- **Depth.** Routed-expert bytes grow almost linearly with verify rows
-  (consecutive tokens share few experts), so one or two drafts win. Serve
-  with `--cuda --mtp-draft 2 --temp 0` (two drafts); `DS4_GLMVQ_MTP_DRAFT=N`
-  caps drafts per verify for measurement.
+- **Depth.** The draft head returns its top token and the lead over its
+  runner-up. Below `--mtp-margin` (default 3.0), the target verifies that
+  proposal and drafting resumes in the next cycle. A margin of 0 selects
+  fixed depth. On Sage hVQ, `--mtp-mode on --mtp-draft 3` averaged
+  37.91 tok/s against 36.87 at depth two over five 2K–64K frontiers.
+  Three drafts helped most at the frontiers with high acceptance.
+  `DS4_GLMVQ_MTP_DRAFT=N` caps the depth for measurement.
+  `DS4_GLMVQ_MTP_STATS=1` logs each trial's width, kept rows and margins.
 
 ## Serving: prefix reuse and disk KV
 
