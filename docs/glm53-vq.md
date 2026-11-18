@@ -476,6 +476,14 @@ per decoded token stays inside the ±1.5% fresh-run spread.
 
 ## Measured performance
 
+On Sage-S2.1-Flash hVQ the November 18 build measured 1,230.3 tok/s
+incremental prefill and 32.51 tok/s decode in the 2K–64K sweep with
+three gated drafts. The last prefill increment at 1,040,384 tokens ran
+at 856.73 tok/s. The same build served Sage and Swift with their native
+1M context, embedded MTP and vision. Sage retrieved a planted code in a
+900,068-token HTTP request.
+[Rounds, raw curves and serving checks](glm53-vq-optimization-2026-11-18.md).
+
 The [2K–64K README sweep after #88](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
 (`3dd964ba`; 2,048-token incremental prefill, 128 tokens, three fresh
 processes) records 1,163.5 prefill and 35.08 decode tok/s with two MTP drafts

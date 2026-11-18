@@ -111,6 +111,10 @@ Other recipes and dated gates retain their hardware and workload limits.
 The [performance guide](performance.md) explains the README examples.
 These reports preserve successful gates, rejected experiments and unresolved limits.
 
+- [November 18 GLM VQ optimization rounds](glm53-vq-optimization-2026-11-18.md)
+  cover Sage hVQ prefill, plain and speculative decode, long-context scaling
+  and serving checks on its Swift sibling.
+
 - **Serving checklist:** [November 2, 19 local artifacts](benchmarks/serving-checklist-2026-11-02/README.md),
   every bank, reuse, disk and snapshot item declared beside measured.
 - **Ling-3.1 1019:** [October 28 follow-up](ling31-optimization-2026-10-28-followup.md),

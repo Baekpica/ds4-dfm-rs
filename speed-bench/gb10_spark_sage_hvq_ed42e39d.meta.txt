@@ -1,0 +1,26 @@
+Sage-S2.1-Flash hVQ on one DGX Spark, 2026-11-18
+Before: 0374fed5f6757d45246e9fafbcad181531f2857e plus the release media patch and Rust 1.100.0.
+Before ds4-bench-perf SHA256 28a08b4aca72346aa32930a67256e41d5422d1a0c4236c45ec4ce7b26d38372a
+After source 60268312b7429b0c9e276c446362489bb643ee30
+After ds4-bench-perf SHA256 ed42e39df33c13afa24e79d39a4f782648ae5056d450a83c6f9247291a4880d2
+Artifact: Baekpica/Sage-S2.1-Flash-VQ-GGUF@74381f7a53356a16dc53218314bba50672238291. All 56 GGUF shard hashes and sizes are in files.json.
+files.json SHA256 c71dbae5c1a2d65f9c029dcd0f16c3e36b02295b689ffc22bb4b6782c157ab21. tensor-manifest.json SHA256 33ddf6a1a2032c01cf8f264a3dbd24103441ac0e769c49bfa42a76043a123421.
+Host: GB10, 48 SMs, driver 620.70.06, CUDA 13.5.37, sm_121a, Rust 1.100.0. CUDA runtime and cuBLAS from the system CUDA 13.5 toolkit.
+Boot: 4f6a4c0e-0b6c-4e4e-9520-4423a2017c6b. nvidia-clocks.service active/exited, successful 300-2200 MHz policy on this boot. Unit disabled for future boots.
+Corpus: speed-bench/promessi_sposi.txt SHA256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f.
+One GPU job at a time, fresh process per CSV. Cold launch after clear_cache, one warm session per sweep, default PDL, one sequence, no SSD tier.
+python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 --reserve-gib 2 --trip-gib 2 --psi-full-limit 40 --timeout 3600 --log <log> -- taskset -c 5-9,15-19 <bench> --cuda -m <release> --prompt-file speed-bench/promessi_sposi.txt --threads 8 --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv <csv> <arm options>
+Order: three original runs before the rounds, three final runs afterward. DS4_GLMVQ_MTP=1 in both.
+Before: --mtp-draft 2 --mtp-margin 0. After: --mtp-draft 3 --dump-frontier-logits-dir <proof>, default margin 3.0. All other GLM VQ controls take build defaults.
+Prefill times incremental session.sync only. Frontier dumps and snapshot save/restore are outside its timer. The original sweep has no logits capture.
+Per-run clock extrema below are restricted to the guard lifetime and >=80% GPU utilization. Earlier clock loggers continued sampling after process exit.
+Median of the three arithmetic run means over all 32 frontiers, tok/s. Each frontier prefills 2,048 new tokens and emits 128 forced greedy tokens.
+base gb10_spark_sage_hvq_28a08b4a_{1,2,3}.csv: prefill_tps 1098.03250, gen_tps 29.93719
+final gb10_spark_sage_hvq_ed42e39d_{1,2,3}.csv: prefill_tps 1230.30156, gen_tps 32.51313
+{"name": "b0-sweep-1", "rows": 32, "prefill_mean": 1100.3309375, "decode_mean": 30.0140625, "min_available_gib": 12.760322570800781, "psi_full_max": 0.36, "busy_sm_mhz": [2177, 2184, 2190], "busy_c": [54.12, 73.21], "seconds": 258.70169281959534}
+{"name": "b0-sweep-2", "rows": 32, "prefill_mean": 1098.0325, "decode_mean": 29.9371875, "min_available_gib": 10.950809478759766, "psi_full_max": 2.63, "busy_sm_mhz": [2177, 2184.0, 2190], "busy_c": [59.57, 75.04], "seconds": 263.176589012146}
+{"name": "b0-sweep-3", "rows": 32, "prefill_mean": 1096.3790625, "decode_mean": 29.91375, "min_available_gib": 11.546875, "psi_full_max": 0.32, "busy_sm_mhz": [2177, 2184, 2190], "busy_c": [60.07, 74.66], "seconds": 260.3627223968506}
+{"name": "final-sweep-1", "rows": 32, "prefill_mean": 1230.3015625, "decode_mean": 32.513125, "min_available_gib": 18.775493621826172, "psi_full_max": 0.0, "busy_sm_mhz": [2184, 2184.0, 2190], "busy_c": [59.51, 75.04], "seconds": 242.8144931793213}
+{"name": "final-sweep-2", "rows": 32, "prefill_mean": 1226.6175, "decode_mean": 32.4996875, "min_available_gib": 18.83094024658203, "psi_full_max": 0.0, "busy_sm_mhz": [2184, 2184, 2190], "busy_c": [58.51, 74.63], "seconds": 244.12739777565002}
+{"name": "final-sweep-3", "rows": 32, "prefill_mean": 1234.22125, "decode_mean": 32.569375, "min_available_gib": 18.816707611083984, "psi_full_max": 0.0, "busy_sm_mhz": [2184, 2184, 2190], "busy_c": [59.27, 74.1], "seconds": 242.4478783607483}
+Final-run repeatability: {"identical_final_logits_frontiers": 32, "identical_final_token_sequences": 32, "frontiers_per_run": 32, "output_tokens_per_run": 4096, "speculative_cycles_per_final_run": [2038, 2038, 2038]}

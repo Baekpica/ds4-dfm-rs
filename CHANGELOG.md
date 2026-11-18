@@ -8,13 +8,17 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
-- GLM-5.3-Flash VQ serves the vision tower embedded in its release
-  directory and opens three derivatives as the same family (Sage-S2.1-Flash,
-  Swift1.5-GLM-5.3-Flash and Nex-N2.6 hVQ): base64 images on the serial
-  lane, `prompt_embeds` on `/v1/completions` for rows a client projected,
-  and a 3.75 GiB image reserve in the plan (the default 1M plan prefills
-  2,048-row chunks beside it).
+- GLM-5.3-Flash VQ opens the Sage-S2.1-Flash, Swift1.5-GLM-5.3-Flash
+  and Nex-N2.6 hVQ releases. The serial lane serves base64 images through
+  the embedded tower and accepts client-projected `prompt_embeds` on
+  `/v1/completions`. Sage and Swift served at native 1M with automatic
+  lane selection, 2,048-row chunks and a 4 GiB floor. Sage retrieved a
+  planted identifier in a 900,068-token HTTP request.
   [Family page](docs/glm53-vq.md#images-and-projected-prompts).
+- On Sage hVQ, the 2K–64K sweep improved from 1,098.0 to 1,230.3 tok/s
+  for incremental prefill and from 29.94 to 32.51 tok/s for decode. The
+  last increment at 1,040,384 tokens improved from 556.61 to 856.73 tok/s.
+  [Four prefill and three decode rounds](docs/glm53-vq-optimization-2026-11-18.md).
 - Pins Rust 1.100.0 (was 1.98.0) in `rust-toolchain.toml`, the host-parity
   workflow and the README, and clears the three warnings new on it.
 - Adds [Inkling-2-Small VQ](docs/inkling2-vq.md) (`inkling2_vq`), contributed
