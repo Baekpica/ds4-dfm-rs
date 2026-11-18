@@ -168,6 +168,15 @@ bits per weight = 13/8 + 8/8 = 2.625
   latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys:
   direct GEMVs for both absorptions and a single-pass flash kernel whose
   keys split across 48 CTAs, joined by a combine kernel.
+- **Top pools.** Each DSA layer keeps the 512 best of the row's pool scores.
+  The DeepSeek indexer kernels sort (score, index) pairs: 68–88 µs per
+  decode row and 3–6 ms per 4,096 prefill rows, by pool count. To 65,536
+  pools (256K tokens) a radix select takes over (`cuda/axk2_topk.cuh`: four
+  8-bit digit passes, a count and a write): 16 µs per decode row at 64K and
+  0.6–1.7 ms per 4,096 rows at 8K–64K, the same pools in pool order
+  instead of score order. Past that a row no longer sits in L2 beside the
+  others and the single-pass stream is cheaper.
+  `DS4_GLMVQ_TOPK_RADIX=0` keeps the stream.
 - **Dependent launch.** A token runs about 1,300 short kernels. Decode and
   verify widths launch them with programmatic dependent launch: each kernel
   lets its successor start, which stages its constant weights (or prefetches

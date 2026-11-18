@@ -159,6 +159,9 @@ int ds4_gpu_gvq_pool(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache,
 int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *weights,
     const ds4_gpu_tensor *cache, uint32_t pools, uint32_t rows, uint32_t first);
+/* The DS4_GLM53_INDEX_TOPK / DS4_GLM53_POOL_SIZE best pools of each row. */
+int ds4_gpu_gvq_topk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
+    const ds4_gpu_tensor *scores, uint32_t pools, uint32_t rows);
 uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim);
 /* Flash attention scratch for `rows` query rows. */
 uint64_t ds4_gpu_gvq_flash_bytes(uint32_t rows);

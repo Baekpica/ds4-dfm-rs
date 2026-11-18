@@ -218,7 +218,7 @@ static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
         gvq_mm(g, m, g->idx_weights, l->indexer_proj, g->norm, rows, DS4_GVQ_BF16) &&
         ds4_gpu_gvq_index(g->gvq, g->idx_scores, g->idx_q, g->idx_weights,
             g->layer_pool[il], pools, rows, pos) &&
-        ds4_gpu_indexer_topk_tensor(g->idx_pools, g->idx_scores, pools, rows, topk, 0u, UINT32_MAX) &&
+        ds4_gpu_gvq_topk(g->gvq, g->idx_pools, g->idx_scores, pools, rows) &&
         ds4_gpu_glm53_pool_expand(g->idx_selected, g->idx_pools, rows, pos,
             topk, DS4_GLM53_INDEX_TOPK, DS4_GLM53_MAX_SELECTED);
 }

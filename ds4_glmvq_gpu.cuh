@@ -8,6 +8,7 @@
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_index.cuh"
+#include "cuda/axk2_topk.cuh"
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_mma8.cuh"
 #include "cuda/minimax_mma8w.cuh"
@@ -70,6 +71,7 @@ struct ds4_gvq_ctx {
     glmvq_launch launch;
     bool index_fused;
     bool index_walk;
+    bool topk_radix;
     uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
     uint64_t kda_mma_calls = 0;
@@ -560,6 +562,8 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
     const char *walk = getenv("DS4_GLMVQ_INDEX_WALK");
     ctx->index_walk = ctx->index_fused && (!walk || strcmp(walk, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_index_walk,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDW_SMEM), "GLM VQ index walk shared memory");
+    const char *radix = getenv("DS4_GLMVQ_TOPK_RADIX");
+    ctx->topk_radix = !radix || strcmp(radix, "0");
     // Scratch omits the cuBLAS dot buffer for prefill rows while fused is on.
     if ((!fused || strcmp(fused, "0")) && !ctx->index_fused) {
         fprintf(stderr, "ds4: GLM VQ fused index unavailable; set DS4_GLMVQ_INDEX_FUSED=0\n");
@@ -1552,6 +1556,26 @@ extern "C" int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
         (const float *)query->ptr, (const float *)weights->ptr,
         (const __nv_bfloat16 *)cache->ptr, pools, rows, first,
         ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream), "GLM VQ index scores");
+}
+
+/* The top pools of each row. Radix select reads a row six times and wins
+ * while rows sit in L2: 4,096 rows of 16K pools take 1.7 ms against the
+ * streaming sort's 5.5, one decode row 15 us against 88. Past 65,536 pools
+ * (256K tokens) the stream's single pass is cheaper. Both select the same
+ * pools; the radix order is the pool order, not the score order
+ * (DS4_GLMVQ_TOPK_RADIX=0: the stream everywhere). */
+enum { GVQ_TOPK = DS4_GLM53_INDEX_TOPK / DS4_GLM53_POOL_SIZE, GVQ_TOPK_RADIX_POOLS = 65536 };
+
+extern "C" int ds4_gpu_gvq_topk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *scores, uint32_t pools, uint32_t rows) {
+    if (!ctx || !ctx->topk_radix || pools > GVQ_TOPK_RADIX_POOLS || ds4_capture_active()) {
+        return ds4_gpu_indexer_topk_tensor(selected, scores, pools, rows, GVQ_TOPK, 0u, UINT32_MAX);
+    }
+    if (!rows || pools < GVQ_TOPK || !gvq_floats(scores, (uint64_t)rows * pools) ||
+        !selected || selected->bytes < (uint64_t)rows * GVQ_TOPK * sizeof(uint32_t)) { return 0; }
+    axk2_topk_kernel<GVQ_TOPK><<<rows, AXK2_TOPK_THREADS, 0, ds4_current_stream()>>>((uint32_t *)selected->ptr,
+        (const float *)scores->ptr, pools, pools);
+    return cuda_ok(cudaGetLastError(), "GLM VQ top pools");
 }
 
 extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
