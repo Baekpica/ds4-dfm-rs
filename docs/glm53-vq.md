@@ -189,6 +189,16 @@ bits per weight = 13/8 + 8/8 = 2.625
   is decoded about once per chunk; the reduce adds the shared expert. Gate
   and down outputs are stored as BF16 (their rounding boundary), and the up
   epilogue writes down's E4M3 rows and 1×128 scales itself.
+- **Warp-specialized experts.** Sixteen warps that each gather codewords,
+  transpose residual words and issue MMAs alternate conversion and MMA
+  bursts across one barrier per stage. Chunks of 4,096 rows take the kernel
+  written for MiniMax (`cuda/minimax_mma8w.cuh`): four producer warps build
+  each stage's A fragments in a ring, four consumer warps only load them and
+  run the MMAs, one persistent CTA per SM. Gate and up are separate launches
+  over one E4M3 input; a pass quantizes SwiGLU with the gate clamp for down.
+  Same 128-K promotion and gain order, same outputs: a 4,096-row R13 layer
+  takes 26.5 → 19.9 ms and an R13+8 layer 35.0 → 28.0 ms.
+  `DS4_GLMVQ_MMA8W=0` keeps the previous kernel.
 - **KDA.** One CTA per (64-token chunk, head) reads the raw q/k/v/forget rows
   once, reproduces the recurrence's inputs exactly and writes an operand record
   (q e^G, (k e^(G_last-G))ᵀ, −W, causal q·k in F16; U in F32). One CTA per head

@@ -5,7 +5,8 @@
  * without the GVR8 residual. Random books, indices and routes; no model.
  * DS4_MW_H / DS4_MW_F / DS4_MW_E / DS4_MW_USED select another shape
  * (DeepSeek V4.1: 5120 / 2304 / 384 / 6, whose down input is 18 stages:
- * an odd number of plane words per unit).
+ * an odd number of plane words per unit; GLM-5.3: 4096 / 2048 / 288 / 8).
+ * DS4_MW_CLAMP=gate checks GLM's and MiMo's SwiGLU form instead of MiniMax's.
  * Gate rows, up scales, E4M3 down inputs (un-permuted) and down rows must
  * agree bit for bit; each kernel's time and MMA rate are printed.
  * DS4_MW_ITERS=N repeats the timed launches (default 5); DS4_MW_ONLY=gate|
@@ -88,7 +89,7 @@ static matrix_set make_set() {
 
 static float elapsed(cudaEvent_t a, cudaEvent_t b) { float ms = 0; CK(cudaEventElapsedTime(&ms, a, b)); return ms; }
 
-template <bool RES>
+template <bool RES, glmvq_clamp CLAMP>
 static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, const uint8_t *res_book,
         const float *x, const uint32_t *grouped_d, const std::vector<uint32_t> &grouped, const std::vector<uint32_t> &offsets,
         uint32_t pairs, int iters, const char *only) {
@@ -135,25 +136,25 @@ static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, co
     mw_quant<<<(uint32_t)((xb * 32 + 255) / 256), 256>>>(x8w, xsw, x, xb);
     CK(cudaGetLastError());
     int blocks[3] = {};
-    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_OAI, RES>(&blocks[0])));
-    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_UP, 13, GLMVQ_CLAMP_OAI, RES>(&blocks[1])));
-    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_OAI, RES>(&blocks[2])));
+    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_GATE, 13, CLAMP, RES>(&blocks[0])));
+    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_UP, 13, CLAMP, RES>(&blocks[1])));
+    CK((glmvq_mma8_prepare<OLD_BM, OLD_BT, 1, GLMVQ_MMA_DOWN, 13, CLAMP, RES>(&blocks[2])));
     constexpr uint32_t shared8 = glmvq_mma8_bytes<OLD_BM, OLD_BT, 13, RES>(), threads8 = glmvq_mma8_threads<OLD_BM, 1>();
     int device = 0, sms = 0;
     CK(cudaGetDevice(&device));
     CK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
     auto old_gate = [&] {
-        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_OAI, RES><<<
+        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_GATE, 13, CLAMP, RES><<<
             std::min(nold * (F / OLD_BM), (uint32_t)blocks[0]), threads8, shared8>>>(src_d, old_d, nold, book, x8o, xso,
             grouped_d, USED, gate_o, nullptr, down_o, F, H, LIMIT, nullptr, nullptr, res_book);
     };
     auto old_up = [&] {
-        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_UP, 13, GLMVQ_CLAMP_OAI, RES><<<
+        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_UP, 13, CLAMP, RES><<<
             std::min(nold * (F / OLD_BM), (uint32_t)blocks[1]), threads8, shared8>>>(src_d, old_d, nold, book, x8o, xso,
             grouped_d, USED, gate_o, nullptr, down_o, F, H, LIMIT, mid_o, ms_o, res_book);
     };
     auto old_down = [&] {
-        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_OAI, RES><<<
+        glmvq_mma8_kernel<OLD_BM, OLD_BT, 1, GLMVQ_MMA_DOWN, 13, CLAMP, RES><<<
             std::min(nold * (H / OLD_BM), (uint32_t)blocks[2]), threads8, shared8>>>(src_d, old_d, nold, book, mid_o, ms_o,
             grouped_d, USED, gate_o, nullptr, down_o, H, F, LIMIT, nullptr, nullptr, res_book);
     };
@@ -166,7 +167,7 @@ static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, co
         CK((mw_launch<GLMVQ_MMA_GATE, RES>(ws_d + nws, nws, book, res_book, x8w, xsw, token_d, down_w, nullptr, F, H,
             (uint32_t)sms, 0)));
         const uint64_t warps = (uint64_t)pairs * (F / GLMVQ_MMA8_K);
-        mw_swiglu_quant<<<(uint32_t)((warps * 32 + 255) / 256), 256>>>(mid_w, ms_w, gate_w, down_w, F, pairs, LIMIT);
+        mw_swiglu_quant<CLAMP><<<(uint32_t)((warps * 32 + 255) / 256), 256>>>(mid_w, ms_w, gate_w, down_w, F, pairs, LIMIT);
     };
     auto ws_down = [&] {
         CK((mw_launch<GLMVQ_MMA_DOWN, RES>(ws_d + 2 * nws, nws, book, res_book, mid_w, ms_w, token_d, nullptr, down_w, H, F,
@@ -272,10 +273,14 @@ int main() {
     for (uint32_t i = 0; i < pairs; i++) { grouped[cursor[route[i]]++] = i; }
     auto *grouped_d = (uint32_t *)dev(pairs * 4, grouped.data());
     int fail = 0;
+    const char *clamp = getenv("DS4_MW_CLAMP");
+    const bool gate = clamp && !strcmp(clamp, "gate");
     printf("R13 (no residual):\n");
-    fail |= run_case<false>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only);
+    fail |= gate ? run_case<false, GLMVQ_CLAMP_GATE>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only)
+                 : run_case<false, GLMVQ_CLAMP_OAI>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only);
     printf("R13+8 (residual):\n");
-    fail |= run_case<true>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only);
+    fail |= gate ? run_case<true, GLMVQ_CLAMP_GATE>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only)
+                 : run_case<true, GLMVQ_CLAMP_OAI>(sets, book, res_book, x_d, grouped_d, grouped, offsets, pairs, iters, only);
     printf("%s\n", fail ? "FAIL" : "PASS");
     return fail;
 }

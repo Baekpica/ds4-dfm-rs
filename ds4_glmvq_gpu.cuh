@@ -10,6 +10,7 @@
 #include "cuda/glm_vq_index.cuh"
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_mma8.cuh"
+#include "cuda/minimax_mma8w.cuh"
 #include "cuda/glm_vq_flash.cuh"
 #include "cuda/glm_vq_decode.cuh"
 #include "cuda/glm_vq_fp8.cuh"
@@ -88,6 +89,10 @@ struct ds4_gvq_ctx {
     // 2,048-token chunks route ~57 tokens per expert: 64-token items decode
     // each weight tile about once instead of twice (DS4_GLMVQ_MMA8_T64=0: 32).
     uint32_t mma8_tokens = GVQ_MMA_TOKENS;
+    // Warp-specialized FP8 kernels (mw_kernel), one persistent CTA per SM.
+    bool mma8w = false;
+    uint32_t mma8w_blocks = 0;
+    std::vector<mw_item> witems;
     std::vector<glmvq_mma_item> items;
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
@@ -344,9 +349,9 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
         fprintf(stderr, "ds4: GLM VQ flash attention calls=%llu\n", (unsigned long long)ctx->flash_calls);
     }
     if (ctx->mma) {
-        fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu fp8=%d\n",
+        fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu fp8=%d warp=%d\n",
             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
-            (unsigned long long)ctx->mma->bytes, ctx->mma8 ? 1 : 0);
+            (unsigned long long)ctx->mma->bytes, ctx->mma8 ? 1 : 0, ctx->mma8w ? 1 : 0);
     }
     if (ctx->decode) {
         fprintf(stderr, "ds4: GLM VQ direct decode calls=%llu workspace=%llu\n",
@@ -363,6 +368,23 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
 
 // Q4_K matrices whose shapes and scales fit the q4p FP16 folding: one
 // header pass per matrix at creation, then one readback.
+// mw_kernel keeps the layer books and its ring in one CTA per SM
+// (DS4_GLMVQ_MMA8W=0 keeps glmvq_mma8_kernel).
+static bool gvq_mmaw_blocks(uint32_t *blocks) {
+    const char *enabled = getenv("DS4_GLMVQ_MMA8W");
+    if (enabled && !strcmp(enabled, "0")) { return false; }
+    int device = 0, limit = 0, sms = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return false;
+    }
+    if ((uint32_t)limit < mw_bytes<true>() || (uint32_t)limit < mw_bytes<false>() || sms <= 0) { return false; }
+    *blocks = (uint32_t)sms;
+    return true;
+}
+
 static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     const size_t count = ctx->model->source.size();
     ctx->q4p_fit.assign(count, 0);
@@ -651,6 +673,8 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
                                       : res8(std::integral_constant<uint32_t, GVQ_MMA_TOKENS>{});
                 ctx->mma8_res = ctx->mma8 && res;
                 if (ctx->mma8 && !ctx->mma8_res) { (void)cudaGetLastError(); }
+                // DS4_GLMVQ_MMA8_T64=0 asks for glmvq_mma8_kernel's 32-token tiles.
+                ctx->mma8w = wide && ctx->mma8_res && gvq_mmaw_blocks(&ctx->mma8w_blocks);
                 if (!ctx->mma8) {
                     (void)cudaGetLastError();
                     fprintf(stderr, "ds4: GLM VQ FP8 MMA unavailable; using BF16 register MMA\n");
@@ -659,6 +683,7 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
             ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);
             if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }
             ctx->items.reserve((uint64_t)rows * GVQ_USED);
+            if (ctx->mma8w) { ctx->witems.reserve(3ull * rows * GVQ_USED); }
             ctx->order.resize((uint64_t)rows * GVQ_USED);
             ctx->token_used.resize(rows);
         } else {
@@ -1916,6 +1941,91 @@ static bool gvq_mma_fits(const ds4_gvq_ctx *ctx, const uint32_t *matrices) {
     return true;
 }
 
+// Token row of each grouped pair: mw_kernel's gate and up read token rows.
+__global__ void gvq_pair_tokens(uint32_t *token_of, const uint32_t *map, uint32_t pairs) {
+    const uint32_t p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p < pairs) { token_of[p] = map[p] / GVQ_USED; }
+}
+
+/* Prefill experts on the warp-specialized FP8 kernels (cuda/minimax_mma8w.cuh).
+ * glmvq_mma8_kernel aligned all sixteen warps on one barrier per 128-k stage:
+ * codeword gathers, then MMAs (tensor pipe 34%). Here four producer warps
+ * stage indices and token rows through an mbarrier ring while four consumer
+ * warps run the MMAs, and a codeword is the B fragment itself.
+ *
+ *   quant ─▶ gate ─▶ up ─▶ swiglu+quant ─▶ down ─▶ reduce
+ *   x8,xs    BF16    BF16   mid8,ms          BF16    F32 (+ shared expert)
+ *
+ * Gate, up and down rows equal glmvq_mma8_kernel's (tests/test_minimax_mma8w);
+ * the SwiGLU rows and their 1x128 scales come from mw_swiglu_quant instead of
+ * the up epilogue, with the same values. The FP8 planes, the pair tokens and
+ * the items share the grouped-x region, so the workspace does not grow. */
+template <bool RES>
+static int gvq_mmaw_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
+        const ds4_gpu_tensor *weights, const uint32_t *matrices, const uint32_t *offsets,
+        uint32_t rows, float clamp, const float *addend, uint32_t *order) {
+    const uint64_t pairs = (uint64_t)rows * GVQ_USED, count = (uint64_t)rows * GVQ_HIDDEN;
+    uint8_t *cursor = (uint8_t *)ctx->mma->ptr;
+    auto *x8 = cursor;
+    auto *xs = (float *)(x8 + count);
+    auto *mid8 = (uint8_t *)(xs + count / GLMVQ_MMA8_K);
+    auto *ms = (float *)(mid8 + pairs * GVQ_FFN);
+    auto *token = (uint32_t *)(ms + pairs * GVQ_FFN / GLMVQ_MMA8_K);
+    auto *witems = (mw_item *)(token + pairs);
+    cursor += pairs * GVQ_HIDDEN * sizeof(__nv_bfloat16);
+    auto *gate = (__nv_bfloat16 *)cursor; cursor += pairs * GVQ_FFN * sizeof(float);
+    auto *up = (__nv_bfloat16 *)cursor; cursor += pairs * GVQ_FFN * sizeof(__nv_bfloat16);
+    auto *down = (__nv_bfloat16 *)cursor;
+
+    ctx->witems.clear();
+    for (uint32_t m = 0; m < 3; m++) {
+        for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
+            const glmvq_matrix &vq = ctx->model->source[matrices[m * GVQ_EXPERTS + e]].vq;
+            for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += MW_BT) {
+                ctx->witems.push_back({start, min((uint32_t)MW_BT, offsets[e + 1] - start), vq.gain, vq.main,
+                    vq.plane, vq.res, 0});
+            }
+        }
+    }
+    const uint32_t n = (uint32_t)ctx->witems.size() / 3;
+    // Items end inside the grouped-x region (BF16 pairs x hidden).
+    if ((uint8_t *)(witems + 3ull * n) > (uint8_t *)gate) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    if (!cuda_ok(cudaMemcpyAsync(witems, ctx->witems.data(), ctx->witems.size() * sizeof(mw_item),
+            cudaMemcpyHostToDevice, stream), "GLM VQ warp-specialized items") ||
+        !cuda_ok(cudaMemcpyAsync(order, ctx->order.data(), pairs * sizeof(*order),
+            cudaMemcpyHostToDevice, stream), "GLM VQ MMA order")) { return 0; }
+    const auto *book = (const uint8_t *)ctx->model->source[matrices[0]].vq.book;
+    const uint8_t *res_book = RES ? gvq_res_book(ctx, matrices) : nullptr;
+    const auto *grouped = (const uint32_t *)ctx->pairs->ptr;
+    ctx->mma_calls++;
+    ctx->mma_items += n;
+
+    const uint64_t xb = count / GLMVQ_MMA8_K;
+    mw_quant<<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
+        x8, xs, (const float *)input->ptr, xb);
+    gvq_pair_tokens<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, grouped, (uint32_t)pairs);
+    const uint32_t sms = ctx->mma8w_blocks;
+    cudaError_t err = mw_launch<GLMVQ_MMA_GATE, RES>(witems, n, book, res_book, x8, xs, token, gate, nullptr,
+        GVQ_FFN, GVQ_HIDDEN, sms, stream);
+    if (err == cudaSuccess) {
+        err = mw_launch<GLMVQ_MMA_GATE, RES>(witems + n, n, book, res_book, x8, xs, token, up, nullptr,
+            GVQ_FFN, GVQ_HIDDEN, sms, stream);
+    }
+    if (err == cudaSuccess) {
+        const uint64_t warps = pairs * (GVQ_FFN / GLMVQ_MMA8_K);
+        mw_swiglu_quant<GLMVQ_CLAMP_GATE><<<(uint32_t)((warps * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS),
+            GLMVQ_THREADS, 0, stream>>>(mid8, ms, gate, up, GVQ_FFN, (uint32_t)pairs, clamp);
+        err = mw_launch<GLMVQ_MMA_DOWN, RES>(witems + 2 * n, n, book, res_book, mid8, ms, token, nullptr, down,
+            GVQ_HIDDEN, GVQ_FFN, sms, stream);
+    }
+    if (!cuda_ok(err, "GLM VQ warp-specialized experts")) { return 0; }
+    glmvq_mma_reduce<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
+        (float *)out->ptr, (const __nv_bfloat16 *)down, (const float *)weights->ptr, grouped, order,
+        GVQ_USED, GVQ_HIDDEN, count, addend);
+    return cuda_ok(cudaGetLastError(), "GLM VQ warp-specialized MMA");
+}
+
 static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
         const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, float clamp, const float *addend) {
@@ -1927,19 +2037,23 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *down = (float *)cursor; cursor += pairs * GVQ_HIDDEN * sizeof(*down);
     auto *work = (glmvq_mma_item *)cursor; cursor += pairs * sizeof(*work);
     auto *order = (uint32_t *)cursor;
-    ctx->items.clear();
     const uint8_t *res_book = gvq_res_book(ctx, matrices);
+    std::fill(ctx->token_used.begin(), ctx->token_used.begin() + rows, 0);
+    for (uint32_t i = 0; i < pairs; i++) {
+        const uint32_t token = ctx->grouped[i] / GVQ_USED;
+        ctx->order[token * GVQ_USED + ctx->token_used[token]++] = i;
+    }
+    if (ctx->mma8w) {
+        return res_book ? gvq_mmaw_moe<true>(ctx, out, input, weights, matrices, offsets, rows, clamp, addend, order)
+                        : gvq_mmaw_moe<false>(ctx, out, input, weights, matrices, offsets, rows, clamp, addend, order);
+    }
+    ctx->items.clear();
     const uint32_t per_item = ctx->mma8 ? ctx->mma8_tokens : (uint32_t)GVQ_MMA_TOKENS;
     for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
         for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += per_item) {
             ctx->items.push_back({{matrices[e], matrices[GVQ_EXPERTS + e], matrices[2 * GVQ_EXPERTS + e]},
                 start, min(per_item, offsets[e + 1] - start)});
         }
-    }
-    std::fill(ctx->token_used.begin(), ctx->token_used.begin() + rows, 0);
-    for (uint32_t i = 0; i < pairs; i++) {
-        const uint32_t token = ctx->grouped[i] / GVQ_USED;
-        ctx->order[token * GVQ_USED + ctx->token_used[token]++] = i;
     }
     const cudaStream_t stream = ds4_current_stream();
     if (!cuda_ok(cudaMemcpyAsync(work, ctx->items.data(), ctx->items.size() * sizeof(*work),
