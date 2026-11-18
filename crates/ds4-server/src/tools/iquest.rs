@@ -17,7 +17,27 @@ fn python_space(c: char) -> bool {
 
 pub(crate) fn call_body(body: &[u8], orders: &[ToolSchemaOrder]) -> Option<ToolCall> {
     let body = std::str::from_utf8(body).ok()?;
-    let first = body.find(KEY_START).unwrap_or(body.len());
+    read_call(
+        body,
+        orders,
+        [KEY_START, KEY_END, VALUE_START, VALUE_END],
+        "",
+    )
+    .map(|(c, _)| c)
+}
+
+pub(super) fn read_call<'a>(
+    body: &'a str,
+    orders: &[ToolSchemaOrder],
+    [key_start, key_end, value_start, value_end]: [&str; 4],
+    close: &str,
+) -> Option<(ToolCall, &'a str)> {
+    let end = if close.is_empty() {
+        body.len()
+    } else {
+        body.find(close)?
+    };
+    let first = body.find(key_start).unwrap_or(end).min(end);
     let name = body[..first].trim_matches(python_space);
     if name.is_empty() {
         return None;
@@ -25,19 +45,26 @@ pub(crate) fn call_body(body: &[u8], orders: &[ToolSchemaOrder]) -> Option<ToolC
     let order = tool_schema_orders_find(orders, name);
     let mut tail = &body[first..];
     let mut args = Map::new();
-    while !tail.trim_start_matches(python_space).is_empty() {
-        tail = tail
-            .trim_start_matches(python_space)
-            .strip_prefix(KEY_START)?;
-        let end = tail.find(KEY_END)?;
+    loop {
+        tail = tail.trim_start_matches(python_space);
+        if (close.is_empty() && tail.is_empty()) || (!close.is_empty() && tail.starts_with(close)) {
+            let call = ToolCall {
+                name: name.to_owned(),
+                arguments: Value::Object(args).to_string(),
+                ..Default::default()
+            };
+            return Some((call, &tail[close.len()..]));
+        }
+        tail = tail.strip_prefix(key_start)?;
+        let end = tail.find(key_end)?;
         let key = tail[..end].trim_matches(python_space);
         if key.is_empty() {
             return None;
         }
-        tail = tail[end + KEY_END.len()..]
+        tail = tail[end + key_end.len()..]
             .trim_start_matches(python_space)
-            .strip_prefix(VALUE_START)?;
-        let end = tail.find(VALUE_END)?;
+            .strip_prefix(value_start)?;
+        let end = tail.find(value_end)?;
         let raw = &tail[..end];
         let value = if tool_schema_order_prop_type(order, key) == Some("string") {
             Value::String(raw.to_owned())
@@ -46,13 +73,8 @@ pub(crate) fn call_body(body: &[u8], orders: &[ToolSchemaOrder]) -> Option<ToolC
             serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
         };
         args.insert(key.to_owned(), value);
-        tail = &tail[end + VALUE_END.len()..];
+        tail = &tail[end + value_end.len()..];
     }
-    Some(ToolCall {
-        name: name.to_owned(),
-        arguments: Value::Object(args).to_string(),
-        ..Default::default()
-    })
 }
 
 pub(super) fn split(text: &[u8], thinking: bool) -> (&[u8], Vec<u8>) {

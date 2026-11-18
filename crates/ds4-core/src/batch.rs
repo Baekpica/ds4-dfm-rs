@@ -231,10 +231,12 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.sample_exclude = a.exclude_eos.then_some(tramp_sample_exclude);
     r.step_accept = Some(if t.family == crate::ModelFamily::IQuestQ1 {
         crate::iquest::accept_banked
+    } else if t.family == crate::ModelFamily::Hy4 {
+        crate::step37_mtp::accept_banked::<6>
     } else if t.family == crate::ModelFamily::NaiveN05 {
         crate::naive_mtp::accept_banked
     } else {
-        crate::step37_mtp::accept_banked
+        crate::step37_mtp::accept_banked::<4>
     });
     r.alive = Some(tramp_alive);
     r.on_admitted = Some(tramp_on_admitted);

@@ -1148,6 +1148,7 @@ fn thinking_bank_retire_key(
         || matches!(
             syntax,
             ModelSyntax::IQuestQ1
+                | ModelSyntax::Hy4
                 | ModelSyntax::Ling3Vl
                 | ModelSyntax::BeamVq
                 | ModelSyntax::MinimaxVq

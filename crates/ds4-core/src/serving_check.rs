@@ -946,9 +946,11 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
     // The MTP row runs only when the drafter is bound: a model served
     // without its sidecar keeps the unchecked placeholder, and a bound one
     // must prove the stream, not just the declaration.
-    if model.family() == ModelFamily::Gemma4Vq && model.mtp().is_some() {
+    if matches!(model.family(), ModelFamily::Gemma4Vq | ModelFamily::Hy4)
+        && model.drafter_path().is_some()
+    {
         list.mtp_bound = true;
-        let measured = match gemma4_mtp_gate(model, prompt, ctx, DECODE_TOKENS) {
+        let measured = match gemma4_mtp::sidecar_gate(model, prompt, ctx, DECODE_TOKENS) {
             Ok(report) => {
                 let detail = match &report.block {
                     Some(block) => format!(
@@ -1169,6 +1171,7 @@ mod tests {
             Variant::Axk2Vq,
             Variant::Mimo26FlashVq,
             Variant::Inkling2SmallVq,
+            Variant::Hy4FlashMxq,
         ];
         // Gemma-4 VQ has no forward in this tree yet and declares no serving
         // lane; it joins this sweep when the engine lands.
@@ -1198,7 +1201,8 @@ mod tests {
                 | Variant::Axk2Vq
                 | Variant::Mimo26FlashVq
                 | Variant::Gemma4A4bVq
-                | Variant::Inkling2SmallVq => {}
+                | Variant::Inkling2SmallVq
+                | Variant::Hy4FlashMxq => {}
             }
         }
         all

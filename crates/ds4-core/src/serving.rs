@@ -672,6 +672,7 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
+        | ModelFamily::Hy4
         | ModelFamily::Inkling2Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
@@ -732,6 +733,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        ModelFamily::Hy4 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::hy4::CONTEXT),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: true,
+        },
         // Short two-bank HTTP gates qualify partial reuse and disk restore
         // (docs/benchmarks/glm53-vq-serving-reuse-2026-10-19).
         ModelFamily::Glm53Vq => ServingCaps {
@@ -1718,6 +1739,7 @@ impl ServingCaps {
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
             Variant::Inkling2SmallVq => "inkling2_vq",
+            Variant::Hy4FlashMxq => "hy_v4_flash",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1919,6 +1941,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
             Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
+            Some(ModelFamily::Hy4) => Some("DS4_HY4_PREFILL_CHUNK"),
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
@@ -3086,6 +3109,19 @@ mod tests {
         assert!(p.env_overrides().iter().any(|(key, value)| {
             key == controls["native_prefill_env"].as_str().unwrap() && value == "1280"
         }));
+
+        let hy4 = plan(
+            ServingRequest {
+                native_chunk: Some(256),
+                ..ServingRequest::default()
+            },
+            ModelFamily::Hy4,
+            Variant::Hy4FlashMxq,
+        );
+        assert!(hy4
+            .env_overrides()
+            .iter()
+            .any(|(key, value)| key == "DS4_HY4_PREFILL_CHUNK" && value == "256"));
 
         let req = ServingRequest {
             ctx: 2048,

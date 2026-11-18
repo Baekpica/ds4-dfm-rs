@@ -54,6 +54,8 @@ impl ChatOptions {
             (19, None) => "minimal",
             // MiniMax has no "none" effort; off closes the think span instead.
             (id, None) if minimax_model(id) => "low",
+            (id, None) if id == crate::Variant::Hy4FlashMxq as i32 => "no_think",
+            (id, Low) if id == crate::Variant::Hy4FlashMxq as i32 => "high",
             (_, None) => "none",
             (_, Low) => "low",
             (_, High) => "high",
@@ -95,6 +97,10 @@ impl Template {
 
     /// Read only artifact metadata; never load weights or a GPU model.
     pub fn from_model(path: &Path) -> Result<Option<Self>> {
+        if path.is_dir() && crate::hy4::is_release(path) {
+            let gguf = crate::hy4::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() && crate::beam_vq::is_release(path) {
             let gguf = crate::beam_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -140,7 +146,9 @@ impl Template {
         } else {
             path.parent().unwrap_or_else(|| Path::new("."))
         };
-        if path.is_dir() && !crate::gemma4_vq::is_release(path) {
+        if gguf.get_string("general.architecture") == Some(b"hy_v4_flash") {
+            crate::hy4::chat_assets(dir).map_err(asset_error)?;
+        } else if path.is_dir() && !crate::gemma4_vq::is_release(path) {
             let beam = crate::beam_vq::is_release(path);
             let minimax = crate::minimax_vq::is_release(path);
             let axk2 = crate::axk2_vq::is_release(path);

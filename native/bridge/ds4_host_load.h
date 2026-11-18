@@ -3,8 +3,22 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+typedef struct ds4_hy4_span {
+    uint32_t start, frames, height, width;
+    int32_t token;
+    const float *features;
+} ds4_hy4_span;
 #include <stdio.h>
 #include <string.h>
+
+/* Model-owned SSD row provider. dst is [4 layers, count, 16 heads, 98 bytes].
+ * The preceding zero to two tokens belong to this sequence's accepted prefix. */
+typedef struct ds4_host_hy4 {
+    void *user;
+    int (*rows)(void *user, const int32_t *previous, uint32_t n_previous,
+                const int32_t *tokens, uint32_t count, uint8_t *dst, size_t bytes);
+} ds4_host_hy4;
 
 /* Host tensor directory consumed by native load.  Layout is the bridge ABI
  * for Model::open.  When installed, ds4.c skips parse_tensors and applies

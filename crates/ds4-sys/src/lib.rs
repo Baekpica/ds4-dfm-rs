@@ -417,6 +417,33 @@ pub struct ds4_bridge_model_open_options {
     pub audio_tensors: *const ds4_host_tensor_dir,
     pub mtp_tensors: *const ds4_host_tensor_dir,
     pub dspark_tensors: *const ds4_host_tensor_dir,
+    pub hy4: *const ds4_host_hy4,
+}
+
+#[repr(C)]
+pub struct ds4_hy4_span {
+    pub start: u32,
+    pub frames: u32,
+    pub height: u32,
+    pub width: u32,
+    pub token: i32,
+    pub features: *const f32,
+}
+
+#[repr(C)]
+pub struct ds4_host_hy4 {
+    pub user: *mut c_void,
+    pub rows: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const i32,
+            u32,
+            *const i32,
+            u32,
+            *mut u8,
+            usize,
+        ) -> c_int,
+    >,
 }
 
 #[repr(C)]
@@ -790,6 +817,24 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_hy4_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_hy4_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_step37_trial(
         s: *mut ds4_bridge_session,
         first: i32,
@@ -1001,6 +1046,25 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_hy4_encode_vision(
+        s: *mut ds4_bridge_session,
+        pixels: *const f32,
+        gh: u32,
+        gw: u32,
+        rows: *mut f32,
+        err: *mut c_char,
+        len: usize,
+    ) -> c_int;
+    pub fn ds4_bridge_hy4_sync_media(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n: i32,
+        spans: *const ds4_hy4_span,
+        count: u32,
+        tag: u64,
+        err: *mut c_char,
+        len: usize,
+    ) -> c_int;
     pub fn ds4_bridge_minimax_sync_media(
         s: *mut ds4_bridge_session,
         tokens: *const i32,

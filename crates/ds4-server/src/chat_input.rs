@@ -46,8 +46,10 @@ pub fn render(
         return Ok(parsed.prompt_text.clone().unwrap_or_default().into_bytes());
     }
     let mut messages = messages(parsed)?;
-    if model_id != ds4_core::Variant::IQuestQ1 as i32 {
-        // IQuest assigns developer its own control token; older families use system.
+    if model_id != ds4_core::Variant::IQuestQ1 as i32
+        && model_id != ds4_core::Variant::Hy4FlashMxq as i32
+    {
+        // IQuest and Hy4 preserve the developer role in the source template.
         for message in &mut messages {
             if message["role"] == "developer" {
                 message["role"] = "system".into();

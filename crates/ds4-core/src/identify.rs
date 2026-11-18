@@ -180,6 +180,9 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
             ));
         }
     };
+    if shape.family == crate::ModelFamily::Hy4 {
+        crate::hy4::validate(g).map_err(|e| IdentifyError::Artifact(e.token()))?;
+    }
     if shape.family == crate::ModelFamily::Glm53Vq
         && !matches!(g.get_u32("glm_vq.format_version"), Some(1 | 2))
     {
@@ -198,6 +201,9 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
 
 pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
     if path.is_dir() {
+        if crate::hy4::is_release(path) {
+            return crate::hy4::identify(path);
+        }
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::identify(path);
         }

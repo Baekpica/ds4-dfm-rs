@@ -39,6 +39,7 @@ pub enum ModelFamily {
     Axk2Vq = 18,
     Gemma4Vq = 19,
     Inkling2Vq = 20,
+    Hy4 = 21,
 }
 
 impl ModelFamily {
@@ -64,6 +65,7 @@ impl ModelFamily {
             "naive_n05_flash" => Some(Self::NaiveN05),
             "iquest_q1" => Some(Self::IQuestQ1),
             "gemma4_vq" => Some(Self::Gemma4Vq),
+            "hy_v4_flash" => Some(Self::Hy4),
             "inkling2_vq" => Some(Self::Inkling2Vq),
             _ => None,
         }
@@ -91,6 +93,7 @@ impl ModelFamily {
             Self::NaiveN05 => "naive_n05_flash",
             Self::IQuestQ1 => "iquest_q1",
             Self::Gemma4Vq => "gemma4_vq",
+            Self::Hy4 => "hy_v4_flash",
             Self::Inkling2Vq => "inkling2_vq",
         }
     }
@@ -124,6 +127,7 @@ pub enum Variant {
     Mimo26FlashVq = 22,
     Gemma4A4bVq = 23,
     Inkling2SmallVq = 24,
+    Hy4FlashMxq = 25,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -386,6 +390,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
         Some(b"mimo2_vq") => ArchRoute::Fixed(Variant::Mimo26FlashVq),
         Some(b"gemma4_vq") => ArchRoute::Fixed(Variant::Gemma4A4bVq),
+        Some(b"hy_v4_flash") => ArchRoute::Fixed(Variant::Hy4FlashMxq),
         Some(b"inkling2_vq") => ArchRoute::Fixed(Variant::Inkling2SmallVq),
         Some(_) => ArchRoute::Unsupported,
     }
@@ -417,6 +422,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Axk2Vq => SHAPE_AXK2_VQ,
         Variant::Mimo26FlashVq => SHAPE_MIMO26_FLASH_VQ,
         Variant::Gemma4A4bVq => SHAPE_GEMMA4_A4B_VQ,
+        Variant::Hy4FlashMxq => SHAPE_HY4,
         Variant::Inkling2SmallVq => SHAPE_INKLING2_VQ,
     }
 }
@@ -1393,6 +1399,46 @@ pub(crate) const SHAPE_BEAM_VQ: Shape = Shape {
     rope_freq_base: 10_000.0,
     rope_orig_ctx: 1_048_576,
     ..SHAPE_K2_HORIZON_375B
+};
+
+// Twelve IndexPool MLA blocks (0, 1, then every fourth), 30 SWA-512 blocks.
+pub(crate) const SHAPE_HY4: Shape = Shape {
+    name: "Hy4-flash-MXQ",
+    family: ModelFamily::Hy4,
+    variant: Variant::Hy4FlashMxq,
+    n_layer: 42,
+    n_embd: 3072,
+    n_vocab: 120832,
+    n_value_dim: 512,
+    n_lora_q: 1024,
+    n_expert_used: 16,
+    n_ff_exp: 1536,
+    n_ff_dense: 13824,
+    n_ff_shexp: 1536,
+    n_swa: 512,
+    n_swa_head: 64,
+    n_swa_kv_lora: 512,
+    n_swa_key_mla: 256,
+    n_indexer_head: 16,
+    n_indexer_head_dim: 128,
+    n_indexer_top_k: 2048,
+    n_hc: 4,
+    n_leading_dense: 1,
+    n_key_mla: 256,
+    n_value_mla: 256,
+    n_full_attn_count: 12,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 1e-6,
+    rms_eps: 1e-5,
+    expert_weight_scale: 3.998,
+    swiglu_clamp_exp: 10.0,
+    rope_freq_base: 10_000_000.0,
+    rope_freq_base_swa: 10_000.0,
+    rope_orig_ctx: 1_048_576,
+    ..SHAPE_LING30_FLASH_VL
 };
 
 // Inkling-2-Small: 48 q / 8 KV heads of 128 over hidden 4608; every sixth

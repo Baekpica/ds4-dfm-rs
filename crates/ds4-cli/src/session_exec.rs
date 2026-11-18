@@ -29,6 +29,7 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note
         | ModelFamily::Glm53
+        | ModelFamily::Hy4
         | ModelFamily::Glm53Vq => u64::from(shape.n_hc) * u64::from(shape.n_embd),
     }
 }

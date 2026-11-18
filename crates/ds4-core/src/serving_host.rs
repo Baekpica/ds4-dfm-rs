@@ -583,9 +583,15 @@ fn quote_native_rows(
             },
             0,
         ),
+        (ModelFamily::Hy4, Some(s)) => {
+            let (kv, scratch) = crate::hy4::serving_bytes(ctx, native);
+            // Each speculating bank retains all six target logits until commit.
+            let logits_rows = if mtp_on { 7 } else { 1 };
+            let bank = kv + logits_rows * u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32;
+            (bank, scratch, 0, 0)
+        }
         // Each bank owns its latent, rope and index-key rows, host logits
-        // and history; graph 0 owns the row workspace and the host
-        // embedding staging. No drafter.
+        // and history; graph 0 owns the row workspace and host embedding staging.
         (ModelFamily::Axk2Vq, Some(s)) => (
             axk2_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             axk2_workspace_bytes(ctx, u64::from(native))
@@ -909,6 +915,18 @@ fn quote_native_rows(
         } else {
             0
         }
+    } else if caps.family == ModelFamily::Hy4 {
+        if host.vision || facts.vision_loaded {
+            let serial = if quote_batch_alloc(req, caps, facts) {
+                let (kv, scratch) = crate::hy4::serving_bytes(ctx, native);
+                kv + scratch
+            } else {
+                0
+            };
+            crate::hy4::media::workspace_bytes(ctx) + serial
+        } else {
+            0
+        }
     } else if caps.family == ModelFamily::Inkling2Vq {
         if host.vision || facts.vision_loaded {
             crate::inkling2_vq::media_bytes()
@@ -1036,6 +1054,18 @@ pub fn attach_host_quote(
             })
             .unwrap_or(0)
     };
+    // GB10 builds a second, aligned copy of all three Hy4 Q8 projections.
+    // The native builder keeps the original tensors for batched matmuls.
+    if caps.family == ModelFamily::Hy4
+        && req.backend == Backend::Cuda
+        && std::env::var_os("DS4_CUDA_NO_DERIVED_WEIGHTS").is_none()
+        && std::env::var("DS4_CUDA_BUILD_ARTIFACTS").as_deref() != Ok("0")
+        && std::env::var("DS4_CUDA_NO_Q8_ALIGNED").map_or(true, |v| v.is_empty() || v == "0")
+        && crate::serving_cuda::device().is_some_and(|d| d.integrated)
+    {
+        // Eleven 32-head and thirty 64-head layers; 34 bytes per Q8_0 block.
+        weights_bytes += (11 * 32 + 30 * 64) * 256u64 * (1024 + 2 * 3072) / 32 * 34;
+    }
     // A Gemma-4 host-cold lane does not put the mapping on the device: the
     // map install promotes every non-cold tensor and leaves each cold record
     // a GVQ header (ds4: "152 resident spans, 2.35 GiB device-resident,
@@ -1094,6 +1124,10 @@ pub fn attach_host_quote(
     // MiMo VQ releases map their own vision and audio parts (the open's
     // `media_paths`): price them and their media workspace without `--vision`.
     let release_media = match (caps.variant, model_path) {
+        (Variant::Hy4FlashMxq, Some(path)) => crate::hy4::release_root(path)
+            .ok()
+            .filter(|root| root.join(crate::hy4::sidecar::VISION_FILE).is_file())
+            .map(|_| 0),
         (Variant::Mimo26FlashVq, Some(path)) => match crate::mimo2_vq::media_paths(path) {
             (Some(v), Some(a)) => {
                 Some(artifact_span_bytes(Some(&v)) + artifact_span_bytes(Some(&a)))
@@ -1105,7 +1139,12 @@ pub fn attach_host_quote(
         (Variant::Inkling2SmallVq, Some(path)) => crate::inkling2_vq::has_vision(path).then_some(0),
         _ => None,
     };
-    let vision_bytes = artifact_span_bytes(vision_path) + release_media.unwrap_or(0);
+    let vision_bytes = if caps.family == ModelFamily::Hy4 {
+        // Optional explicit --vision also streams one layer per frame.
+        0
+    } else {
+        artifact_span_bytes(vision_path) + release_media.unwrap_or(0)
+    };
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
     let drafter_pending = req.backend == Backend::Cuda
         && !resident
@@ -1284,6 +1323,9 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     // A GVQ1 release directory maps its named parts; an unreadable listing
     // prices 0 here and fails validation when the model opens.
     if path.is_dir() {
+        if crate::hy4::is_release(path) {
+            return crate::hy4::trunk_bytes(path).unwrap_or(0);
+        }
         // Gemma-4's release keeps the MTP sidecar as a part, but the base
         // open maps only the trunk and the embedding; the drafter is a
         // separate --mtp file, priced through artifact_span_bytes. Charging
@@ -1489,6 +1531,7 @@ fn parse_nvidia_mib(raw: &str) -> Option<u64> {
 
 fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
+        ModelFamily::Hy4 => crate::hy4::PREFILL_MAX,
         ModelFamily::IQuestQ1 => crate::iquest::PREFILL_MAX,
         ModelFamily::Mimo2 => MIMO_NATIVE_MAX,
         ModelFamily::NaiveN05 => crate::naive::PREFILL_MAX,
@@ -1515,6 +1558,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
+        ModelFamily::Hy4 => env_u32("DS4_HY4_PREFILL_CHUNK", 512, 1, crate::hy4::PREFILL_MAX),
         ModelFamily::IQuestQ1 => env_u32(
             "DS4_IQUEST_PREFILL_CHUNK",
             crate::iquest::PREFILL,
@@ -3414,6 +3458,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Inkling2Vq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::Hy4
         )
     {
         return serial;

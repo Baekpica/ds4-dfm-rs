@@ -200,6 +200,7 @@ pub enum ModelSyntax {
     MinimaxVq = 20,
     Axk2Vq = 21,
     Gemma4 = 23,
+    Hy4 = 25,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -224,6 +225,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,
         15 => ModelSyntax::IQuestQ1,
+        25 => ModelSyntax::Hy4,
         19 => ModelSyntax::BeamVq,
         20 => ModelSyntax::MinimaxVq,
         21 => ModelSyntax::Axk2Vq,
@@ -247,6 +249,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
         ModelSyntax::IQuestQ1 => IQUEST_TOOL_CALL_START,
+        ModelSyntax::Hy4 => crate::tools::hy4::START,
         // Harmony opens a call as the next assistant message, after analysis;
         // `=` merges into the recipient's first token.
         ModelSyntax::BeamVq => "<|start|>assistant to",
@@ -2476,6 +2479,9 @@ pub fn render_chat_choice_ex(
         ModelSyntax::NaiveN05 => Err(RenderError(
             "Naive input requires its official Jinja template",
         )),
+        ModelSyntax::Hy4 => Err(RenderError(
+            "Hy4 input requires its official Jinja template",
+        )),
         ModelSyntax::IQuestQ1 => Err(RenderError(
             "IQuest input requires its official Jinja template",
         )),
@@ -2569,6 +2575,11 @@ pub fn render_live_tool_tail(
             return Err(RenderError(
                 "Naive tool results require retained history and Jinja",
             ));
+        }
+        ModelSyntax::Hy4 => {
+            return Err(RenderError(
+                "Hy4 tool results require retained history and Jinja",
+            ))
         }
         ModelSyntax::IQuestQ1 => {
             return Err(RenderError(

@@ -741,10 +741,7 @@ fn main() {
         let mut opened = EngineFacts {
             drafter_shared: Some(model.drafter_shared()),
             mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
-            vision_loaded: model.family() == ds4_core::ModelFamily::Glm53Vq
-                || model_options
-                    .iter()
-                    .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
+            vision_loaded: model.has_vision(),
             ..facts.clone()
         };
         model

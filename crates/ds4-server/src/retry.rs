@@ -69,6 +69,7 @@ pub fn syntax_skips_recovery(syntax: ModelSyntax) -> bool {
             | ModelSyntax::Dots3
             | ModelSyntax::Axk2Vq
             | ModelSyntax::Gemma4
+            | ModelSyntax::Hy4
     )
 }
 
@@ -365,6 +366,7 @@ pub fn try_repair_tool_call_format(format: ChatFormat, s: &[u8]) -> Option<Vec<u
         | ChatFormat::K2Horizon
         | ChatFormat::Inkling
         | ChatFormat::IQuestQ1
+        | ChatFormat::Hy4
         | ChatFormat::Beam
         | ChatFormat::Minimax
         | ChatFormat::Gemma4 => None,

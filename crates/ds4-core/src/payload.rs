@@ -43,6 +43,7 @@ const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
 const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
 const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
 const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
+const LAYOUT_HY4: u32 = u32::from_le_bytes(*b"HYF1");
 // Inkling-2: IK22 carries the drafter's context rows (words 8 and 9 count
 // them per local and for the global draft layer); IK21 none.
 const LAYOUT_INKLING2: u32 = u32::from_le_bytes(*b"IK21");
@@ -75,6 +76,7 @@ pub enum PayloadLayout {
     Axk2Vq,
     Gemma4Vq,
     Inkling2Vq,
+    Hy4,
 }
 
 impl PayloadLayout {
@@ -100,6 +102,7 @@ impl PayloadLayout {
             LAYOUT_BEAM => Self::BeamVq,
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
+            LAYOUT_HY4 => Self::Hy4,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
             LAYOUT_INKLING2 | LAYOUT_INKLING2_DRAFT => Self::Inkling2Vq,
             _ => Self::DeepSeek,
@@ -126,6 +129,7 @@ impl PayloadLayout {
             Self::BeamVq => ModelFamily::BeamVq,
             Self::MinimaxVq => ModelFamily::MinimaxVq,
             Self::Axk2Vq => ModelFamily::Axk2Vq,
+            Self::Hy4 => ModelFamily::Hy4,
             Self::Gemma4Vq => ModelFamily::Gemma4Vq,
             Self::Inkling2Vq => ModelFamily::Inkling2Vq,
         }
@@ -147,6 +151,7 @@ impl PayloadLayout {
                         | Self::BeamVq
                         | Self::MinimaxVq
                         | Self::Axk2Vq
+                        | Self::Hy4
                         | Self::Gemma4Vq
                         | Self::Inkling2Vq
                 ))
@@ -356,6 +361,24 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("session payload token count does not match live rows"));
             }
         }
+        PayloadLayout::Hy4 => {
+            let h = &p.fields;
+            if p.version() != VERSION
+                || p.tokens.is_empty()
+                || p.token_count() > p.ctx()
+                || p.ctx() > crate::hy4::CONTEXT
+                || h[3] == 0
+                || h[3] > p.ctx().min(crate::hy4::PREFILL_MAX)
+                || h[4] != 42
+                || h[6] > 1
+                || h[8..12] != [0, 4, 512, 120832]
+                || h[12] != p.token_count()
+                || p.tokens.len() != p.token_count() as usize
+                || p.tokens.iter().any(|&t| t >= h[11])
+            {
+                return Err(err("invalid Hy4 session payload prefix"));
+            }
+        }
         PayloadLayout::MinimaxVq => {
             // MMX2 word 8 counts only committed draft-context rows. The
             // native codec owns the exact tensor lengths and wrapped spans.
@@ -538,6 +561,7 @@ impl SessionLedger {
                 | PayloadLayout::Glm53Vq
                 | PayloadLayout::MinimaxVq
                 | PayloadLayout::Inkling2Vq
+                | PayloadLayout::Hy4
         ) {
             validate_layout(prefix)?;
         }
@@ -958,6 +982,39 @@ mod tests {
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::BeamVq, 1048576).is_err());
+    }
+
+    #[test]
+    fn hy4_prefix_identity() {
+        let mut prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                4096,
+                512,
+                42,
+                u32::from_le_bytes(*b"HYF1"),
+                1,
+                3,
+                0,
+                4,
+                512,
+                120832,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        let read = |p: &HostPrefix, family| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, 3)
+        };
+        assert_eq!(
+            read(&prefix, ModelFamily::Hy4).unwrap().tokens,
+            prefix.tokens
+        );
+        assert!(read(&prefix, ModelFamily::DeepSeek4).is_err());
+        prefix.fields[6] = 2;
+        assert!(read(&prefix, ModelFamily::Hy4).is_err());
     }
 
     #[test]

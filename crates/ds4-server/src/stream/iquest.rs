@@ -5,7 +5,9 @@ use crate::parse::{ToolCall, ToolSchemaOrder};
 use crate::render::{IQUEST_TOOL_CALL_END, IQUEST_TOOL_CALL_START};
 use crate::tools::iquest::call_body;
 
-use super::utf8_stream_safe_len;
+use super::{utf8_stream_safe_len, ChatFormat};
+use crate::tools::hy4;
+use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub(super) enum Fragment {
@@ -15,23 +17,46 @@ pub(super) enum Fragment {
 
 #[derive(Debug, Default)]
 pub(super) struct Channels {
+    hy4: bool,
+    pending: VecDeque<ToolCall>,
     pub(super) pos: usize,
     pub(super) calls: i32,
     pub(super) text: Vec<u8>,
 }
 
 impl Channels {
+    pub(super) fn for_tools(format: ChatFormat, enabled: bool) -> Option<Self> {
+        (enabled && matches!(format, ChatFormat::IQuestQ1 | ChatFormat::Hy4)).then(|| Self {
+            hy4: format == ChatFormat::Hy4,
+            ..Default::default()
+        })
+    }
+
+    fn next_call(&mut self) -> Option<Fragment> {
+        let call = self.pending.pop_front()?;
+        let index = self.calls;
+        self.calls += 1;
+        Some(Fragment::Call(index, call))
+    }
+
     pub(super) fn advance(
         &mut self,
         raw: &[u8],
         final_: bool,
         orders: &[ToolSchemaOrder],
     ) -> Option<Fragment> {
+        if let Some(call) = self.next_call() {
+            return Some(call);
+        }
         if self.pos >= raw.len() {
             return None;
         }
-        let start = IQUEST_TOOL_CALL_START.as_bytes();
-        let end = IQUEST_TOOL_CALL_END.as_bytes();
+        let (start, end) = if self.hy4 {
+            (hy4::START, hy4::END)
+        } else {
+            (IQUEST_TOOL_CALL_START, IQUEST_TOOL_CALL_END)
+        };
+        let (start, end) = (start.as_bytes(), end.as_bytes());
         let tail = &raw[self.pos..];
         let marker = tail.windows(start.len()).position(|x| x == start);
         let limit = if let Some(rel) = marker {
@@ -40,11 +65,17 @@ impl Channels {
                 if let Some(rel) = raw[first..].windows(end.len()).position(|x| x == end) {
                     let close = first + rel;
                     let next = close + end.len();
-                    if let Some(call) = call_body(&raw[first..close], orders) {
+                    let body = &raw[first..close];
+                    if self.hy4 {
+                        if let Some(calls) = hy4::group(body, orders) {
+                            self.pending.extend(calls);
+                        }
+                    } else if let Some(call) = call_body(body, orders) {
+                        self.pending.push_back(call);
+                    }
+                    if let Some(call) = self.next_call() {
                         self.pos = next;
-                        let index = self.calls;
-                        self.calls += 1;
-                        return Some(Fragment::Call(index, call));
+                        return Some(call);
                     }
                     next
                 } else if final_ {

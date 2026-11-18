@@ -16,6 +16,7 @@ mod axk2;
 mod beam;
 mod gemma4;
 mod glm_vq;
+mod hy4;
 mod inkling;
 mod ling31;
 mod ling3vl;
@@ -279,6 +280,7 @@ impl Vocab {
                             || matches!(
                                 family,
                                 ModelFamily::Step37
+                                    | ModelFamily::Hy4
                                     | ModelFamily::Ling3Vl
                                     | ModelFamily::Mimo2
                                     | ModelFamily::NaiveN05
@@ -368,6 +370,7 @@ impl Vocab {
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
             ModelFamily::Inkling | ModelFamily::Inkling2Vq => inkling::specials(self)?,
+            ModelFamily::Hy4 => hy4::specials(self, g)?,
             ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Ling31Vq => ling31::specials(self, g)?,
@@ -681,6 +684,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Beam release metadata"))?;
             return Self::load_tables(&g, family, Some(beam::tables(path)?));
         }
+        if family == ModelFamily::Hy4 {
+            let g = crate::hy4::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Hy4 release metadata"))?;
+            return Self::load(&g, family);
+        }
         if family == ModelFamily::Axk2Vq {
             let g = crate::axk2_vq::metadata(path)
                 .map_err(|_| TokError::InvalidTokenizer("A.X-K2 release metadata"))?;
@@ -727,6 +735,7 @@ impl Vocab {
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
                 | ModelFamily::Gemma4Vq
+                | ModelFamily::Hy4
                 | ModelFamily::Inkling2Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
@@ -777,6 +786,9 @@ impl Vocab {
             )),
             ModelFamily::MinimaxVq => Some(TokError::InvalidTokenizer(
                 "MiniMax VQ chat requires official Jinja",
+            )),
+            ModelFamily::Hy4 => Some(TokError::InvalidTokenizer(
+                "Hy4 chat requires official Jinja",
             )),
             ModelFamily::Inkling2Vq => Some(TokError::InvalidTokenizer(
                 "Inkling-2 VQ chat requires official Jinja",
@@ -1447,6 +1459,98 @@ fn bpe_rank(vocab: &Vocab, a: &[u8], b: &[u8]) -> i32 {
     vocab.merge_rank.get(&key).copied().unwrap_or(-1)
 }
 
+/// A heap entry: merge rank, left index, right index, and the stamp of each
+/// end at the time the pair was ranked.
+type PairEntry = (i32, u32, u32, u32, u32);
+
+/// The symbol list as links over the original indices. A symbol keeps its
+/// index when it absorbs its right neighbour, so the pair on either side of
+/// it is a different pair under the same two indices; its stamp tells them
+/// apart.
+struct Chain {
+    next: Vec<u32>,
+    prev: Vec<u32>,
+    live: Vec<bool>,
+    stamp: Vec<u32>,
+}
+
+impl Chain {
+    /// Whether the entry still names two adjacent live symbols with the
+    /// bytes it was ranked on.
+    fn holds(&self, &(_, i, j, si, sj): &PairEntry) -> bool {
+        let (a, b) = (i as usize, j as usize);
+        b < self.live.len()
+            && self.live[a]
+            && self.live[b]
+            && self.next[a] == j
+            && self.stamp[a] == si
+            && self.stamp[b] == sj
+    }
+}
+
+/// BPE over the symbol list, as tokenizers' `Word::merge_all` runs it:
+/// merge the adjacent pair with the lowest rank, leftmost on a tie, and rank
+/// the two pairs the merge creates at once, until no pair has a rule. A
+/// min-heap of `PairEntry` replaces a rescan per merge, which was quadratic:
+/// 34.5 s of a 35.0 s TTFT at 61,871 prompt tokens (GB10, 2026-11-05).
+fn merge_by(sym: &mut Vec<Vec<u8>>, rank_of: impl Fn(&[u8], &[u8]) -> i32) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n = sym.len();
+    if n < 2 {
+        return;
+    }
+    let n32 = n as u32;
+    let mut chain = Chain {
+        next: (1..=n32).collect(),
+        prev: (0..n32).map(|i| i.wrapping_sub(1)).collect(),
+        live: vec![true; n],
+        stamp: vec![0; n],
+    };
+    let entry = |sym: &[Vec<u8>], chain: &Chain, i: u32, j: u32| {
+        let rank = rank_of(&sym[i as usize], &sym[j as usize]);
+        let stamps = (chain.stamp[i as usize], chain.stamp[j as usize]);
+        (rank >= 0).then_some(Reverse((rank, i, j, stamps.0, stamps.1)))
+    };
+    let mut heap: BinaryHeap<Reverse<PairEntry>> = (0..n32 - 1)
+        .filter_map(|i| entry(sym, &chain, i, i + 1))
+        .collect();
+
+    while let Some(Reverse(top)) = heap.pop() {
+        if !chain.holds(&top) {
+            continue;
+        }
+        let (_, i, j, _, _) = top;
+        let (a, b) = (i as usize, j as usize);
+        let right = std::mem::take(&mut sym[b]);
+        sym[a].extend_from_slice(&right);
+        chain.stamp[a] = chain.stamp[a].wrapping_add(1);
+        chain.live[b] = false;
+
+        // The merged symbol pairs with both neighbours.
+        let after = chain.next[b];
+        chain.next[a] = after;
+        if after < n32 {
+            chain.prev[after as usize] = i;
+            heap.extend(entry(sym, &chain, i, after));
+        }
+        let before = chain.prev[a];
+        if before < n32 {
+            heap.extend(entry(sym, &chain, before, i));
+        }
+    }
+
+    // Index 0 only ever absorbs, so the live chain starts there.
+    let mut out = Vec::with_capacity(n);
+    let mut i = 0usize;
+    while i < n {
+        out.push(std::mem::take(&mut sym[i]));
+        i = chain.next[i] as usize;
+    }
+    *sym = out;
+}
+
 fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
     let encoded = byte_encode(raw);
     // Source BPE with ignore_merges=true: whole vocabulary pieces
@@ -1471,6 +1575,26 @@ fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
         off += n;
     }
 
+    if vocab.family == ModelFamily::Hy4 {
+        merge_by(&mut sym, |a, b| bpe_rank(vocab, a, b));
+    } else {
+        merge_in_rounds(vocab, &mut sym);
+    }
+
+    for s in &sym {
+        if let Some(&token) = vocab.token_to_id.get(s) {
+            out.push(token);
+        } else {
+            for j in 0..s.len() {
+                if let Some(&token) = vocab.token_to_id.get(&s[j..j + 1]) {
+                    out.push(token);
+                }
+            }
+        }
+    }
+}
+
+fn merge_in_rounds(vocab: &Vocab, sym: &mut Vec<Vec<u8>>) {
     loop {
         let mut best_rank = i32::MAX;
         for i in 0..sym.len().saturating_sub(1) {
@@ -1501,18 +1625,6 @@ fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
             }
         }
         sym.truncate(write);
-    }
-
-    for s in &sym {
-        if let Some(&token) = vocab.token_to_id.get(s) {
-            out.push(token);
-        } else {
-            for j in 0..s.len() {
-                if let Some(&token) = vocab.token_to_id.get(&s[j..j + 1]) {
-                    out.push(token);
-                }
-            }
-        }
     }
 }
 
@@ -2431,7 +2543,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
         ModelFamily::Inkling | ModelFamily::Inkling2Vq => inkling::encode(vocab, text, out),
-        ModelFamily::Step37 => step37::encode(vocab, text, out),
+        ModelFamily::Hy4 | ModelFamily::Step37 => step37::encode(vocab, text, out),
         ModelFamily::IQuestQ1 => {
             use unicode_normalization::UnicodeNormalization;
 
@@ -2478,7 +2590,8 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     if matches!(
         vocab.family,
-        ModelFamily::Inkling
+        ModelFamily::Hy4
+            | ModelFamily::Inkling
             | ModelFamily::Inkling2Vq
             | ModelFamily::Glm53Vq
             | ModelFamily::Step37

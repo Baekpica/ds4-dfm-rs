@@ -129,6 +129,7 @@ typedef struct {
     const ds4_host_tensor_dir *audio_tensors;
     const ds4_host_tensor_dir *mtp_tensors;
     const ds4_host_tensor_dir *dspark_tensors;
+    const ds4_host_hy4 *hy4;
 } ds4_bridge_model_open_options;
 
 typedef struct {
@@ -226,6 +227,11 @@ int ds4_bridge_ling31_trial(ds4_bridge_session *s, int32_t first, int32_t max_to
                             int32_t *tokens, int32_t *target, int32_t cap,
                             char *err, size_t errlen);
 int ds4_bridge_ling31_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_hy4_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen);
+int ds4_bridge_hy4_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);
@@ -276,6 +282,9 @@ int ds4_bridge_mimo2_encode_audio(ds4_bridge_session *s, const float *mel, uint3
                                   char *err, size_t errlen);
 int ds4_bridge_minimax_encode_vision(ds4_bridge_session *s, const float *patches, uint32_t grid_t,
                                      uint32_t grid_h, uint32_t grid_w, float *out, char *err, size_t errlen);
+int ds4_bridge_hy4_encode_vision(ds4_bridge_session *s,const float *pixels,uint32_t gh,uint32_t gw,float *rows,char *err,size_t len);
+int ds4_bridge_hy4_sync_media(ds4_bridge_session *s,const int32_t *tokens,int32_t n,const struct ds4_hy4_span *spans,
+                               uint32_t count,uint64_t tag,char *err,size_t len);
 int ds4_bridge_minimax_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
                                   const uint32_t *starts, const uint32_t *counts,
                                   const float *const *rows, uint32_t nspans, uint64_t tag,

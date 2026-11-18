@@ -16,6 +16,7 @@ use crate::render::{
 
 pub(crate) mod beam;
 pub(crate) mod gemma4;
+pub(crate) mod hy4;
 pub(crate) mod iquest;
 pub(crate) mod minimax;
 use crate::stream::{think_end, think_start, ChatFormat};
@@ -1972,6 +1973,7 @@ pub fn parse_generated_message(
         // Malformed tool envelopes must not become user-visible raw text.
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
         ModelSyntax::BeamVq => beam::parse(text, orders),
+        ModelSyntax::Hy4 => Some(hy4::parse(text, require_thinking_closed, orders)),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
         ModelSyntax::Gemma4 => Some(gemma4::parse(text, require_thinking_closed)),
@@ -2089,7 +2091,7 @@ pub fn parse_generated_for_response(
     };
     // A malformed call still belongs to the answer channel. Falling back to
     // the entire generation would expose Gemma's thought channel as content.
-    let (content, reasoning) = if syntax == ModelSyntax::Gemma4 {
+    let (content, reasoning) = if matches!(syntax, ModelSyntax::Gemma4 | ModelSyntax::Hy4) {
         split_reasoning_response(text, format, require_thinking_closed)
     } else {
         (text.to_vec(), Vec::new())
@@ -2161,6 +2163,7 @@ fn dsml_find_declared_tool_root(s: &[u8], orders: &[ToolSchemaOrder]) -> Option<
 pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder]) -> Option<usize> {
     match format {
         ChatFormat::IQuestQ1 => find_substr(s, crate::render::IQUEST_TOOL_CALL_START.as_bytes()),
+        ChatFormat::Hy4 => find_substr(s, hy4::START.as_bytes()),
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALLS.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"<tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_START.as_bytes()),
@@ -2210,6 +2213,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder])
 pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
     match format {
         ChatFormat::IQuestQ1 => find_substr(s, crate::render::IQUEST_TOOL_CALL_END.as_bytes()),
+        ChatFormat::Hy4 => find_substr(s, hy4::END.as_bytes()),
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALL_END.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"</tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_END.as_bytes()),
@@ -2421,6 +2425,7 @@ fn stop_list_stream_safe_len(stops: &[String], text_len: usize) -> usize {
 fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
     let marks: &[&[u8]] = match format {
         ChatFormat::IQuestQ1 => &[crate::render::IQUEST_TOOL_CALL_START.as_bytes()],
+        ChatFormat::Hy4 => &[hy4::START.as_bytes()],
         ChatFormat::SolarOpen2 => &[SOLAR_TOOL_CALLS.as_bytes()],
         ChatFormat::Exaone => &[b"<tool_call>"],
         ChatFormat::Qwen4Exp => &[QWEN_TOOL_CALL_START.as_bytes()],

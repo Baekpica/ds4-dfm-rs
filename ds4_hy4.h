@@ -1,0 +1,55 @@
+#ifndef DS4_HY4_H
+#define DS4_HY4_H
+#include <stdint.h>
+typedef struct ds4_gpu_tensor ds4_gpu_tensor;
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Indices are logical token slots. Only sliding layers wrap their MLA cache.
+ * The short ring holds unpooled IndexPool operands across appends and rewinds. */
+typedef struct {
+    ds4_gpu_tensor *latent, *rope, *groups, *recent;
+    uint32_t cap, recent_cap;
+    int fp8;
+} ds4_hy4_cache;
+
+const float *ds4_gpu_hy4_weight(const void *map, uint64_t size, uint64_t offset, uint64_t bytes);
+int ds4_gpu_hy4_add(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+                    const float *gate, uint32_t n);
+int ds4_gpu_hy4_vision_pos(ds4_gpu_tensor *x, const ds4_gpu_tensor *table, uint32_t gh, uint32_t gw);
+int ds4_gpu_hy4_embed(ds4_gpu_tensor *streams, const ds4_gpu_tensor *embed, uint32_t rows);
+int ds4_gpu_hy4_hc(ds4_gpu_tensor *out, ds4_gpu_tensor *post, const ds4_gpu_tensor *streams,
+                   const ds4_gpu_tensor *mix, const float *scale, const float *base, uint32_t rows);
+int ds4_gpu_hy4_residual(ds4_gpu_tensor *streams, const ds4_gpu_tensor *branch, const ds4_gpu_tensor *post,
+                         uint32_t rows);
+int ds4_gpu_hy4_unpack(ds4_gpu_tensor *out, const ds4_gpu_tensor *records, const float *norm,
+                       uint32_t layer, uint32_t rows);
+int ds4_gpu_hy4_engram(ds4_gpu_tensor *streams, const ds4_gpu_tensor *kv, const ds4_gpu_tensor *ids,
+                       const float *bias, const float *wk, const float *wq, const float *gamma,
+                       const float *scales, uint32_t rows);
+int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
+                       uint32_t count, float limit);
+int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down, const ds4_gpu_tensor *weights,
+                        uint32_t rows);
+int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t heads,
+                     uint32_t stride, uint32_t tail, float theta);
+int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x, const void *map,
+                        uint64_t size, uint64_t offset, uint32_t rows, uint32_t heads, uint32_t in,
+                        uint32_t stride, uint32_t width);
+int ds4_gpu_hy4_store(ds4_hy4_cache *cache, const ds4_gpu_tensor *raw, const float *norm, uint32_t pos,
+                      uint32_t rows);
+int ds4_gpu_hy4_pool(ds4_hy4_cache *cache, const ds4_gpu_tensor *values, const ds4_gpu_tensor *gates,
+                     const ds4_gpu_tensor *positions, const float *ape, const float *norm, uint32_t pos,
+                     uint32_t rows);
+int ds4_gpu_hy4_index(ds4_gpu_tensor *selected, ds4_gpu_tensor *tiles, ds4_gpu_tensor *best,
+                      const ds4_gpu_tensor *q, const ds4_gpu_tensor *w, const ds4_hy4_cache *cache,
+                      uint32_t pos, uint32_t rows);
+int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *q,
+                          const ds4_hy4_cache *cache, const ds4_gpu_tensor *selected, const float *sinks,
+                          uint32_t pos, uint32_t rows, uint32_t heads, int draft);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

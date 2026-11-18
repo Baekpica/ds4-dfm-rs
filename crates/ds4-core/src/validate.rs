@@ -1971,6 +1971,7 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
     match shape.family {
         ModelFamily::Inkling => crate::inkling::validate_main(g),
         ModelFamily::Step37 => crate::Step37Plan::validate(g),
+        ModelFamily::Hy4 => crate::hy4::validate(g),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::validate(g),
         ModelFamily::Mimo2 if shape.variant == Variant::Mimo26FlashVq => Err(ValidateError::Token(
             "MiMo VQ requires a complete release directory",
@@ -2125,6 +2126,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::MinimaxVq => crate::shape::SHAPE_MINIMAX_VQ,
                         Variant::Axk2Vq => crate::shape::SHAPE_AXK2_VQ,
                         Variant::Gemma4A4bVq => crate::shape::SHAPE_GEMMA4_A4B_VQ,
+                        Variant::Hy4FlashMxq => crate::shape::SHAPE_HY4,
                         Variant::Inkling2SmallVq => crate::shape::SHAPE_INKLING2_VQ,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,

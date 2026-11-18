@@ -20,6 +20,9 @@ mod gemma4_vq;
 mod gguf;
 mod glm_mtp;
 mod glm_vq;
+mod hy4;
+pub use hy4::media as hy4_media;
+pub use hy4::snapshot_inputs as hy4_snapshot_inputs;
 mod identify;
 mod inkling;
 mod inkling2_mtp;
@@ -358,6 +361,8 @@ struct Inkling2Spans {
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
         "MTP draft tokens must be positive"
+    } else if family == ModelFamily::Hy4 && draft > 5 {
+        "Hy4 DFly2 provides five proposals per block"
     } else if family == ModelFamily::IQuestQ1 && draft > iquest::DRAFT_SLOTS as i32 {
         "IQuest-Q1 accepts at most seven recursive draft tokens"
     } else if matches!(family, ModelFamily::Glm53 | ModelFamily::Glm53Vq)
@@ -751,6 +756,7 @@ pub struct Model {
     bind_plan: BindPlan,
     mtp: Option<SiblingAttach>,
     dspark: Option<SiblingAttach>,
+    block_drafter: Option<CString>,
     vocab: Vocab,
     chat_template: Option<chat_template::Template>,
     vision_ready: bool,
@@ -761,6 +767,7 @@ pub struct Model {
     /// family.  The server boots its ctx from here.
     v41_ctx: Option<u32>,
     _distributed: Option<FfiDistributed>,
+    _hy4_engram: Option<Box<hy4::Engram>>,
     /// Released after the native engine is freed (fields drop after `drop`).
     _instance_lock: std::fs::File,
     _not_send: PhantomData<*const ()>,
@@ -1437,6 +1444,13 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Hy4 {
+        let g = hy4::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: e.token(),
+        })?;
+        let vocab = Vocab::load(&g, shape.family);
+        (g, vocab)
     } else if shape.family == ModelFamily::Inkling2Vq {
         let g = inkling2_vq::metadata(path).map_err(|e| Error {
             code: 1,
@@ -1840,7 +1854,7 @@ impl Model {
         // itself: no sibling bind map.
         let dflash = matches!(
             identified.shape.family,
-            ModelFamily::Mimo2 | ModelFamily::BeamVq
+            ModelFamily::Mimo2 | ModelFamily::BeamVq | ModelFamily::Hy4
         ) && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
             && (backend != Backend::Cuda || distributed.is_some() || dspark_path.is_some())
@@ -1859,7 +1873,9 @@ impl Model {
         if dflash {
             let root = std::path::PathBuf::from(path);
             let path = std::path::Path::new(mtp_path.unwrap());
-            if identified.shape.family == ModelFamily::BeamVq {
+            if identified.shape.family == ModelFamily::Hy4 {
+                hy4::sidecar::draft(path)?;
+            } else if identified.shape.family == ModelFamily::BeamVq {
                 beam_vq::dflash2::inspect(path).map_err(|message| Error { code: 1, message })?;
             } else if identified.shape.variant == Variant::Mimo26FlashVq {
                 // Only the release's own DFlash part, hashed with the release.
@@ -2121,7 +2137,7 @@ impl Model {
         };
         let mut ffi_plan = pack_bind_plan(&bind_plan, &inventory)?;
         let mut ffi_bind = pack_host_bind_map(&bind_plan)?;
-        let mapping = if Path::new(path).is_dir() {
+        let mapping = if Path::new(path).is_dir() || identified.shape.family == ModelFamily::Hy4 {
             ShardMapping::Named
         } else {
             ShardMapping::Legacy
@@ -2154,6 +2170,20 @@ impl Model {
         // file used to end the process inside the native binder.
         if let Some(vision) = tuning.vision_path.as_deref() {
             sibling::probe_vision_sidecar(identified.shape, backend, distributed, vision)?;
+        }
+        if identified.shape.family == ModelFamily::Hy4 && tuning.vision_path.is_none() {
+            let root = hy4::release_root(Path::new(path)).map_err(|e| Error {
+                code: 1,
+                message: e.token(),
+            })?;
+            let tower = root.join(hy4::sidecar::VISION_FILE);
+            if tower.try_exists().map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })? {
+                hy4::sidecar::vision(&tower)?;
+                tuning.vision_path = Some(tower.to_string_lossy().into_owned());
+            }
         }
         // MiniMax maps its release's vision part (read only for media).
         if identified.shape.family == ModelFamily::MinimaxVq {
@@ -2212,6 +2242,28 @@ impl Model {
             tuning.mem_floor_gb,
             tuning.mem_budget_mb,
         );
+        let mut hy4_engram = if identified.shape.family == ModelFamily::Hy4 {
+            if backend != Backend::Cuda || distributed.is_some() {
+                return Err(Error {
+                    code: 1,
+                    message: "Hy4 requires one CUDA device".into(),
+                });
+            }
+            Some(Box::new(hy4::Engram::open(Path::new(path), &g).map_err(
+                |e| Error {
+                    code: 1,
+                    message: e.token(),
+                },
+            )?))
+        } else {
+            None
+        };
+        let hy4_feed = hy4_engram
+            .as_deref_mut()
+            .map(|reader| ds4_sys::ds4_host_hy4 {
+                user: std::ptr::from_mut(reader).cast(),
+                rows: Some(hy4::read_rows),
+            });
         let opt = ds4_bridge_model_open_options {
             model_path: c_path.as_ptr(),
             vision_path: vision_path
@@ -2255,6 +2307,7 @@ impl Model {
             audio_tensors: audio_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
             mtp_tensors: mtp_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
             dspark_tensors: dspark_dir.as_mut().map_or(ptr::null(), |d| d.as_c()),
+            hy4: hy4_feed.as_ref().map_or(ptr::null(), std::ptr::from_ref),
         };
         let mut ffi_distributed = distributed.map(pack_distributed).transpose()?;
         // Every native draw (serial, banks, verify rows) is the Rust sampler.
@@ -2303,6 +2356,7 @@ impl Model {
             bind_plan,
             mtp,
             dspark,
+            block_drafter: dflash_path,
             vocab,
             chat_template,
             vision_ready: tuning.vision_path.is_some()
@@ -2311,6 +2365,7 @@ impl Model {
             runtime_budget,
             v41_ctx: v41_wire.as_ref().map(|w| w.ctx),
             _distributed: ffi_distributed,
+            _hy4_engram: hy4_engram,
             _instance_lock: instance_lock,
             _not_send: PhantomData,
         })
@@ -2339,6 +2394,15 @@ impl Model {
         self.mtp.as_ref()
     }
 
+    /// The external predictor bound at open, including native block drafters.
+    pub fn drafter_path(&self) -> Option<&str> {
+        self.mtp
+            .as_ref()
+            .or(self.dspark.as_ref())
+            .map(SiblingAttach::path)
+            .or_else(|| self.block_drafter.as_deref()?.to_str().ok())
+    }
+
     /// Draft width requested at open. Embedded MiMo MTP runs only above 1.
     pub fn mtp_draft_tokens(&self) -> i32 {
         self.mtp_draft_tokens
@@ -2356,6 +2420,10 @@ impl Model {
 
     pub fn vocab(&self) -> &Vocab {
         &self.vocab
+    }
+
+    pub fn has_vision(&self) -> bool {
+        self.vision_ready
     }
 
     pub(crate) fn raw_ptr(&self) -> *mut ds4_bridge_model {
@@ -2408,6 +2476,10 @@ impl Model {
 
     /// Replace one template image marker with the model's complete image span.
     pub fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>> {
+        if self.family == ModelFamily::Hy4 && self.vision_ready {
+            let v = hy4_media::still(data).map_err(|message| Error { code: 1, message })?;
+            return Ok(vec![hy4_media::IMAGE; v.tokens() as usize]);
+        }
         if self.family == ModelFamily::Step37 && self.vision_ready {
             return step37::Step37Media::tokens(data);
         }
@@ -2716,6 +2788,7 @@ impl Session<'_> {
         if !matches!(
             self.host.family,
             ModelFamily::Step37
+                | ModelFamily::Hy4
                 | ModelFamily::Ling3Vl
                 | ModelFamily::Dots3Note
                 | ModelFamily::Mimo2
@@ -3254,6 +3327,21 @@ impl Session<'_> {
 
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Hy4 {
+            let visuals = images
+                .iter()
+                .map(|i| {
+                    hy4_media::still(i.data)
+                        .map(|v| (i.token_offset, v))
+                        .map_err(|message| Error { code: 1, message })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let refs = visuals
+                .iter()
+                .map(|(start, v)| (*start, v))
+                .collect::<Vec<_>>();
+            return self.sync_hy4_media(tokens, &refs);
+        }
         if self.host.family == ModelFamily::Mimo2 {
             return self.sync_mimo(tokens, images, &[], &[], &[]);
         }
@@ -3758,7 +3846,10 @@ impl Session<'_> {
             return self.eval_inkling_argmax(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Step37 {
-            return self.eval_step37_argmax(first, max_tokens, eos, limit);
+            return self.eval_block_argmax::<4>(first, max_tokens, eos, limit);
+        }
+        if self.host.family == ModelFamily::Hy4 {
+            return self.eval_block_argmax::<6>(first, max_tokens, eos, limit);
         }
         if self.host.family == ModelFamily::Dots3Note {
             return self.eval_dots3_argmax(first, max_tokens, eos, limit);
@@ -4617,6 +4708,41 @@ mod tests {
     }
 
     #[no_mangle]
+    extern "C" fn ds4_bridge_hy4_trial(
+        _s: *mut ds4_bridge_session,
+        first: i32,
+        _max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        if first == 3 {
+            // SAFETY: the tested wrapper supplies four live output slots.
+            unsafe {
+                *tokens = first;
+                *target = 1;
+            }
+            return 1;
+        }
+        if first == -2 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        -1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_hy4_commit(
+        _s: *mut ds4_bridge_session,
+        _keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        1
+    }
+    #[no_mangle]
     extern "C" fn ds4_bridge_step37_trial(
         _s: *mut ds4_bridge_session,
         first: i32,
@@ -5173,7 +5299,7 @@ mod tests {
             });
             session.host.replace_checkpoint(&[1, 2, 3]);
             assert!(session
-                .eval_step37_argmax(first, 4, 99, &mut |p| p.len())
+                .eval_block_argmax::<4>(first, 4, 99, &mut |p| p.len())
                 .is_err());
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
