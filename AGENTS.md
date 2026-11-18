@@ -242,6 +242,10 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **Batch loads in single-block kernels.** One load per dependent add exposes
   ~1 µs per iteration: a one-block 16K RMS took 19 µs, 6.8 µs with 16 loads in
   flight per thread and the same accumulation order.
+- **Check short appends on persistent kernels.** GLM's index walk gave a
+  block sixteen rows. Four verify rows left 47 SMs idle and cost 1.37 ms
+  per layer at 64K. The four-row fused tile took 19 µs. A 128-row append
+  filled the GPU by splitting the pool tiles across blocks (0.22 ms).
 - **No host syncs on the hot path.** Any `ds4_gpu_tensor_read/write`
   (`cudaMemcpy`) drains the stream; per-layer routing readback plus an item
   upload cost ~1.3 ms per decoded token. Keep routing and tables on device.

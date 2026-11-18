@@ -235,7 +235,10 @@ bits per weight = 13/8 + 8/8 = 2.625
   per eight MMAs; all CTAs walk in one order and meet each tile in L2.
   The same scores bit for bit at 75-77 TFLOPS: 4,096 rows take 15.4 → 7.4
   ms per layer at 64K, 59.3 → 28.8 at 256K, and 2,048 rows 154.3 → 57.0 at
-  1M. `DS4_GLMVQ_INDEX_WALK=0` keeps the previous kernel.
+  1M. When row groups would leave SMs idle, they split the pool tiles
+  across blocks. At 64K, a 128-row append takes 0.22 ms per layer. Under
+  sixteen rows the previous dispatch is faster (19 µs for four verify
+  rows). `DS4_GLMVQ_INDEX_WALK=0` selects that dispatch at every width.
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
   next half's RMS and 24 mapping dots in the same pass, with cp.async staging
   the next W tile and rows behind the current ones; the split collapses.

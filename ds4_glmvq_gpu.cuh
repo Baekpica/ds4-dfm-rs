@@ -1539,12 +1539,12 @@ extern "C" int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
         !gvq_floats(weights, (uint64_t)rows * GLMVQ_INDEX_HEADS) ||
         !cache || (uint64_t)pools * DS4_GLM53_POOL_DIM > cache->bytes / sizeof(__nv_bfloat16) ||
         !gvq_stream(ctx)) { return 0; }
-    // Prefill rows score pools in registers; decode/verify rows keep cuBLAS.
-    if (ctx->index_walk && rows >= GLMVQ_IDX_ROWS) {
-        glmvq_index_walk<<<(rows + GLMVQ_IDW_ROWS - 1) / GLMVQ_IDW_ROWS, GLMVQ_IDW_THREADS, GLMVQ_IDW_SMEM, ctx->stream>>>(
-            (float *)scores->ptr, (const float *)query->ptr, (const float *)weights->ptr,
-            (const __nv_bfloat16 *)cache->ptr, pools, rows, first);
-        return cuda_ok(cudaGetLastError(), "GLM VQ index walk");
+    // Four verify rows fill a quarter of a walk CTA. The fused kernel
+    // takes 19 us at 64K, against 32 us for the walk split across SMs.
+    if (ctx->index_walk && rows >= GLMVQ_IDW_ROWS) {
+        return cuda_ok(glmvq_index_walk_launch((float *)scores->ptr, (const float *)query->ptr,
+            (const float *)weights->ptr, (const __nv_bfloat16 *)cache->ptr, pools, rows, first, ctx->stream),
+            "GLM VQ index walk");
     }
     if (ctx->index_fused && rows >= GLMVQ_IDX_ROWS) {
         const dim3 grid((pools + GLMVQ_IDX_POOLS - 1) / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);

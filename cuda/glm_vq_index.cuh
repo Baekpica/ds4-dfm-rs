@@ -292,14 +292,18 @@ static constexpr auto glmvq_index_fused_f16 = glmvq_index_fused_t<__half>;
  * All CTAs walk the tiles in one order, so a tile leaves DRAM once and the
  * others meet it in L2: a 1M context holds 67 MB of keys. The dots (k order,
  * A and B swapped) and the head sum are the fused kernel's, bit for bit.
- * One row per warp ran even to 256K and 10% slower at 1M. */
+ * One row per warp ran even to 256K and 10% slower at 1M.
+ *
+ * Fewer row groups than SMs (short appends) would walk on a few SMs only:
+ * blockIdx.y then splits the pools into spans of `span` tiles. Under one
+ * row group (four verify rows) the fused kernel wastes fewer MMAs. */
 enum { GLMVQ_IDW_WARPS = 8, GLMVQ_IDW_SUB = 2, GLMVQ_IDW_ROWS = GLMVQ_IDW_WARPS * GLMVQ_IDW_SUB,
        GLMVQ_IDW_POOLS = 128, GLMVQ_IDW_THREADS = 32 * GLMVQ_IDW_WARPS };
 static constexpr uint32_t GLMVQ_IDW_SMEM = 2u * GLMVQ_IDW_POOLS * GLMVQ_IDX_PITCH * sizeof(__nv_bfloat16);
 
 __global__ void __launch_bounds__(GLMVQ_IDW_THREADS, 1) glmvq_index_walk(float *out,
         const float *query, const float *weights, const __nv_bfloat16 *pool,
-        uint32_t pools, uint32_t rows, uint32_t first) {
+        uint32_t pools, uint32_t rows, uint32_t first, uint32_t span) {
     extern __shared__ __align__(16) uint8_t idw_shared[];
     constexpr uint32_t D = DS4_GLM53_POOL_DIM, H = GLMVQ_INDEX_HEADS, TILES = H / 8, STEPS = D / 16;
     constexpr uint32_t SUB = GLMVQ_IDW_SUB;
@@ -344,12 +348,13 @@ __global__ void __launch_bounds__(GLMVQ_IDW_THREADS, 1) glmvq_index_walk(float *
         }
     };
 
-    const uint32_t tiles = (pools + GLMVQ_IDW_POOLS - 1u) / GLMVQ_IDW_POOLS;
+    const uint32_t first_tile = blockIdx.y * span;
+    const uint32_t tiles = min((pools + GLMVQ_IDW_POOLS - 1u) / GLMVQ_IDW_POOLS, first_tile + span);
     // ldmatrix row of this lane: pool (lane & 15) of the 16, dims k + 8 * (lane >> 4).
     const uint32_t a_at = (lane & 15u) * GLMVQ_IDX_PITCH + (lane >> 4) * 8u;
-    stage(0);
+    stage(first_tile);
     asm volatile("cp.async.commit_group;" ::: "memory");
-    for (uint32_t tile = 0; tile < tiles; tile++) {
+    for (uint32_t tile = first_tile; tile < tiles; tile++) {
         // The next tile loads under this one's MMAs.
         if (tile + 1u < tiles) { stage(tile + 1u); }
         asm volatile("cp.async.commit_group;" ::: "memory");
@@ -401,6 +406,23 @@ __global__ void __launch_bounds__(GLMVQ_IDW_THREADS, 1) glmvq_index_walk(float *
         }
         __syncthreads();
     }
+}
+
+// One CTA per row group and pool span: spans only while row groups leave SMs idle.
+static cudaError_t glmvq_index_walk_launch(float *out, const float *query, const float *weights,
+        const __nv_bfloat16 *pool, uint32_t pools, uint32_t rows, uint32_t first, cudaStream_t stream) {
+    int device = 0, sms = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || sms <= 0) {
+        return cudaErrorUnknown;
+    }
+    const uint32_t groups = (rows + GLMVQ_IDW_ROWS - 1u) / GLMVQ_IDW_ROWS;
+    const uint32_t tiles = (pools + GLMVQ_IDW_POOLS - 1u) / GLMVQ_IDW_POOLS;
+    const uint32_t spans = groups >= (uint32_t)sms ? 1u : min(tiles, ((uint32_t)sms + groups - 1u) / groups);
+    const uint32_t span = (tiles + spans - 1u) / spans;
+    glmvq_index_walk<<<dim3(groups, (tiles + span - 1u) / span), GLMVQ_IDW_THREADS, GLMVQ_IDW_SMEM, stream>>>(
+        out, query, weights, pool, pools, rows, first, span);
+    return cudaGetLastError();
 }
 
 #endif

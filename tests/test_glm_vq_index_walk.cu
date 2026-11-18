@@ -52,8 +52,9 @@ static void fused(const Case &c) {
 }
 
 static void walk(const Case &c) {
-    glmvq_index_walk<<<(c.rows + GLMVQ_IDW_ROWS - 1) / GLMVQ_IDW_ROWS, GLMVQ_IDW_THREADS, GLMVQ_IDW_SMEM>>>(c.b, c.q, c.w,
-        c.pool, c.pools, c.rows, c.first);
+    if (!check("walk launch", glmvq_index_walk_launch(c.b, c.q, c.w, c.pool, c.pools, c.rows, c.first, 0))) {
+        exit(1);
+    }
 }
 
 static bool equal(uint32_t rows, uint32_t pools, uint32_t first, uint32_t seed) {
@@ -111,18 +112,19 @@ int main() {
     printf("glm vq index walk: scores equal the fused kernel's\n");
 
     const char *big = getenv("DS4_IDX_BIG");
-    const uint32_t rows = 4096;
-    for (uint32_t pools : {2048u, 8192u, 16384u, 65536u, 262144u}) {
+    // Four verify rows (which keep the fused kernel) and a short append at 64K, then prefill chunks.
+    const uint32_t shapes[][2] = {{4, 16384}, {128, 16384}, {4096, 2048}, {4096, 8192}, {4096, 16384},
+                                  {4096, 65536}, {2048, 262144}};
+    for (const auto &shape : shapes) {
+        const uint32_t n = shape[0], pools = shape[1];
         if (pools > 16384u && !(big && !strcmp(big, "1"))) { continue; }
-        // A 1M context prefills 2,048-row chunks by default.
-        const uint32_t n = pools > 65536u ? 2048u : rows;
         Case c;
         if (!make(c, n, pools, pools * DS4_GLM53_POOL_SIZE - n, 99)) { return 1; }
-        const int reps = pools > 16384u ? 3 : 10;
+        const int reps = pools > 16384u ? 3 : 20;
         const float f = time_ms([&] { fused(c); }, reps), w = time_ms([&] { walk(c); }, reps);
         if (!check("time", cudaDeviceSynchronize())) { return 1; }
         const double tflop = 2.0 * n * GLMVQ_INDEX_HEADS * (double)pools * DS4_GLM53_POOL_DIM / 1e12;
-        printf("  %u rows x %6u pools: fused %8.2f ms (%5.1f TFLOPS)  walk %8.2f ms (%5.1f TFLOPS)\n",
+        printf("  %4u rows x %6u pools: fused %8.3f ms (%5.1f TFLOPS)  walk %8.3f ms (%5.1f TFLOPS)\n",
             n, pools, f, tflop / f * 1e3, w, tflop / w * 1e3);
     }
     return 0;
