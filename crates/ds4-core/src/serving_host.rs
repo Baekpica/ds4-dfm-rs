@@ -315,6 +315,31 @@ pub fn fill_quote_facts(
     shape: Option<Shape>,
     host: QuoteHost,
 ) {
+    quote_native_rows(facts, req, caps, shape, host);
+    // GLM VQ banks retain their graph while images use a second one. Auto
+    // can serve both modalities on one serial graph if even one bank is too large.
+    if caps.family == ModelFamily::Glm53Vq
+        && req.backend == Backend::Cuda
+        && req.max_seqs == MaxSeqs::Auto
+        && req.prefix_reuse != PrefixReuse::Partial
+        && facts.cont_lane.is_none()
+        && crate::resolve_plan(req, Some(caps), facts)
+            .quote
+            .is_some_and(|q| q.total > q.available)
+    {
+        facts.cont_lane = Some(false);
+        facts.banks_fitted = Some(1);
+        quote_native_rows(facts, req, caps, shape, host);
+    }
+}
+
+fn quote_native_rows(
+    facts: &mut EngineFacts,
+    req: &ServingRequest,
+    caps: ServingCaps,
+    shape: Option<Shape>,
+    host: QuoteHost,
+) {
     // The resolved CLI cap is published to the allocator's family env.
     // Defaults and existing env apply only when no explicit CLI cap is set.
     let ctx_tokens = req.ctx.max(1) as u32;
@@ -965,7 +990,7 @@ pub fn fill_quote_facts(
         return;
     }
     fitted.native_chunk = Some((native / 2).max(1));
-    fill_quote_facts(facts, &fitted, caps, shape, host);
+    quote_native_rows(facts, &fitted, caps, shape, host);
 }
 
 /// Layer interval a distributed slice keeps resident.
@@ -2060,7 +2085,10 @@ fn quote_bank_lane(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts)
 
 // Static coalescing still creates banks when the continuous driver is off.
 fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
-    if req.backend != Backend::Cuda || caps.banks == BankLane::Serial {
+    if req.backend != Backend::Cuda
+        || caps.banks == BankLane::Serial
+        || (caps.family == ModelFamily::Glm53Vq && facts.cont_lane == Some(false))
+    {
         return false;
     }
 
@@ -3954,6 +3982,67 @@ mod tests {
         assert_eq!(quote(140 * GIB, None), Some(4096));
         // Rows stop at 1,024: a host too small for that reports the overflow.
         assert_eq!(quote(100 * GIB, None), Some(1024));
+    }
+
+    #[test]
+    fn glm_vq_auto_fits_one_media_session() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        let caps = serving_caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        let request = ServingRequest {
+            ctx: 1_048_576,
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(2),
+            mem_floor_gb: 4,
+            ..ServingRequest::default()
+        };
+        let quote = |req: &ServingRequest, available| {
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                req,
+                caps,
+                Some(SHAPE_GLM53_VQ),
+                QuoteHost {
+                    weights_bytes: 94_491_697_792,
+                    mtp_bytes: 0,
+                    available_bytes: available,
+                    native_chunk: None,
+                    vision: false,
+                },
+            );
+            crate::resolve_plan(req, Some(caps), &facts)
+        };
+        // Measured Swift release and memory on GB10. The second graph for
+        // images cannot fit beside a text bank, even at 1,024 prefill rows.
+        let available = 127_114_059_776;
+        let auto = quote(&request, available);
+        assert!(auto.may_listen(), "{}", auto.report());
+        assert_eq!(auto.effective.ctx, request.ctx);
+        assert_eq!(auto.effective.max_seqs, 1);
+        assert_eq!(auto.effective.prefix_reuse, ReuseKind::Exact);
+        assert_eq!(auto.effective.mtp_draft, Some(2));
+        assert_eq!(auto.effective.mem_floor_gb, 4);
+        let media = auto.quote.as_ref().unwrap().media_reserve;
+        assert_eq!(media, glm_media_bytes() + 3 * 8000 * 4 * 1176 * SIZEOF_F32);
+        let bank = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(1),
+            ..request.clone()
+        };
+        let partial = ServingRequest {
+            prefix_reuse: PrefixReuse::Partial,
+            ..request.clone()
+        };
+        for req in [bank, partial] {
+            assert!(!quote(&req, available).may_listen());
+        }
+        let roomy = quote(&request, 180 * GIB);
+        assert!(roomy.may_listen());
+        assert_eq!(roomy.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(roomy.quote.unwrap().media_reserve > media);
+        assert!(!quote(&request, 100 * GIB).may_listen());
     }
 
     #[test]

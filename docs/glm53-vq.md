@@ -325,11 +325,16 @@ The engine binds it from the model's own map: there is no `--vision` file.
   resizes and packs the patches ([`vit_image`](../crates/ds4-core/src/vit_image.rs));
   the tower runs in F32 on the BF16 weights and its rows replace the image
   placeholders the template renders.
-- **Memory.** The plan reserves 3.75 GiB for four maximum-size images (8,000
-  merged tokens each). At the native 1M context with two drafts and a 4 GiB
-  floor the 4,096-row prefill chunk no longer fits beside it, so the plan
-  halves the rows (2,048: 112.9 of 117.8 GiB available on GB10; never below
-  1,024). `--mem-floor-gb 2` keeps 4,096 rows.
+- **Memory.** A serial graph reserves 3.75 GiB for four images of up to
+  8,000 merged tokens each. A persistent text bank also needs a second
+  graph for image requests. On an idle GB10 with 118.5 GiB available,
+  Sage and Swift gave the same native 1M, two-draft serial quotes. A
+  4 GiB floor admitted 2,048 prefill rows at 114.67 GiB. A 2 GiB floor
+  admitted 4,096 rows at 117.98 GiB. Use `--check-config` on the serving
+  host because the available memory determines which chunk fits. With
+  automatic bank count and reuse, the planner tries smaller banked chunks
+  first, then one serial graph with exact reuse. A forced bank count or
+  partial reuse still needs room for both graphs.
 - **Projected prompts.** `/v1/completions` accepts `prompt_embeds` in place
   of `prompt`: a base64 Safetensors file with one finite BF16 matrix
   `prompt_embeds` of shape `[tokens, 4096]`, a complete embedded prompt

@@ -616,9 +616,10 @@ fn main() {
     // A family whose caps refuse banks has no multi-sequence graph to open;
     // asking native for one only reports the refusal. Bonsai (qwen35) is the
     // resident case: its session is the trunk state itself.
-    let banks_available = plan
-        .caps
-        .is_some_and(|caps| caps.bank_support != Support::None);
+    let banks_available = facts.cont_lane != Some(false)
+        && plan
+            .caps
+            .is_some_and(|caps| caps.bank_support != Support::None);
     let cont_width =
         if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() || !banks_available {
             0
