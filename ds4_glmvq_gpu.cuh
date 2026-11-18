@@ -69,6 +69,7 @@ struct ds4_gvq_ctx {
     bool flash;
     glmvq_launch launch;
     bool index_fused;
+    bool index_walk;
     uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
     uint64_t kda_mma_calls = 0;
@@ -555,6 +556,10 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
     const char *fused = getenv("DS4_GLMVQ_INDEX_FUSED");
     ctx->index_fused = (!fused || strcmp(fused, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_index_fused,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDX_SMEM), "GLM VQ fused index shared memory");
+    // The persistent form of the same scores (DS4_GLMVQ_INDEX_WALK=0: fused).
+    const char *walk = getenv("DS4_GLMVQ_INDEX_WALK");
+    ctx->index_walk = ctx->index_fused && (!walk || strcmp(walk, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_index_walk,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDW_SMEM), "GLM VQ index walk shared memory");
     // Scratch omits the cuBLAS dot buffer for prefill rows while fused is on.
     if ((!fused || strcmp(fused, "0")) && !ctx->index_fused) {
         fprintf(stderr, "ds4: GLM VQ fused index unavailable; set DS4_GLMVQ_INDEX_FUSED=0\n");
@@ -1531,6 +1536,12 @@ extern "C" int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
         !cache || (uint64_t)pools * DS4_GLM53_POOL_DIM > cache->bytes / sizeof(__nv_bfloat16) ||
         !gvq_stream(ctx)) { return 0; }
     // Prefill rows score pools in registers; decode/verify rows keep cuBLAS.
+    if (ctx->index_walk && rows >= GLMVQ_IDX_ROWS) {
+        glmvq_index_walk<<<(rows + GLMVQ_IDW_ROWS - 1) / GLMVQ_IDW_ROWS, GLMVQ_IDW_THREADS, GLMVQ_IDW_SMEM, ctx->stream>>>(
+            (float *)scores->ptr, (const float *)query->ptr, (const float *)weights->ptr,
+            (const __nv_bfloat16 *)cache->ptr, pools, rows, first);
+        return cuda_ok(cudaGetLastError(), "GLM VQ index walk");
+    }
     if (ctx->index_fused && rows >= GLMVQ_IDX_ROWS) {
         const dim3 grid((pools + GLMVQ_IDX_POOLS - 1) / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);
         glmvq_index_fused<<<grid, GLMVQ_IDX_THREADS, GLMVQ_IDX_SMEM, ctx->stream>>>((float *)scores->ptr,

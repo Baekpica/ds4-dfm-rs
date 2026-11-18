@@ -2007,6 +2007,16 @@ tests/libglm_vq_index.so: tests/test_glm_vq_index.cu cuda/glm_vq_index.cuh cuda/
 test-glm-vq-index: tests/libglm_vq_index.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_index.py --lib $< --model "$(GLMVQ_MODEL)"
 
+# The persistent index kernel against the fused one, bit for bit (no model);
+# DS4_IDX_BIG=1 also times 256K and 1M contexts (9 GiB of scores).
+tests/test_glm_vq_index_walk: tests/test_glm_vq_index_walk.cu cuda/glm_vq_index.cuh cuda/glm_vq_linear.cuh \
+	cuda/glm_vq_ops.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_glm53_compact.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-index-walk
+test-glm-vq-index-walk: tests/test_glm_vq_index_walk
+	./tests/test_glm_vq_index_walk
+
 .PHONY: test-glm-vq-cache
 test-glm-vq-cache: tests/test_glm_vq_cache
 	./tests/test_glm_vq_cache
@@ -2818,7 +2828,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_gemma4_primitives tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_glm_vq_index_walk tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \
