@@ -8,6 +8,8 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Pins Rust 1.100.0 (was 1.98.0) in `rust-toolchain.toml`, the host-parity
+  workflow and the README, and clears the three warnings new on it.
 - Adds [Inkling-2-Small VQ](docs/inkling2-vq.md) (`inkling2_vq`), contributed
   by Baekpica (PR #151): the 12-bit hVQ release directory, NVFP4 full-layer
   K/V with an SSD tier past 262,144 positions for the native 1M context, the

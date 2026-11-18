@@ -108,10 +108,7 @@ pub fn continued_store_target(opt: &Options, last_store_tokens: i32, live_tokens
 
 pub fn bank_checkpoint_due(opt: &Options, committed: i32, stored_tokens: i32) -> bool {
     let step = continued_step(opt);
-    if step <= 0 || committed < opt.min_tokens || committed < stored_tokens + step {
-        return false;
-    }
-    true
+    step > 0 && committed >= opt.min_tokens && committed >= stored_tokens + step
 }
 
 pub fn file_size_bytes(text_bytes: u64, payload_bytes: u64, trailer_bytes: u64) -> Option<u64> {
