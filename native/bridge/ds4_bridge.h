@@ -192,6 +192,8 @@ void ds4_bridge_session_free(ds4_bridge_session *s);
 int ds4_bridge_session_sync(ds4_bridge_session *s,
                             const int32_t *tokens, int n_tokens,
                             char *err, size_t errlen);
+int ds4_bridge_sync_glm_embeddings(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                   const float *rows, char *err, size_t errlen);
 int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const int32_t *tokens, int n_tokens,
                                    const ds4_bridge_vision_input *images,

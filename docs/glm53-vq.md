@@ -275,6 +275,51 @@ stripped content, keeping the reasoning only when the client returns it:
 At 1M, one bank, a 30K conversation's next turn takes 1.3 s to the first
 token instead of 25 s. Suffixes under 32 tokens still cost 1–2 s of prefill.
 
+## Images and projected prompts
+
+The release directory carries the source's 24-block vision tower as one BF16
+part (347 tensors; the patch projection is stored as a 1,176 x 1,024 matrix).
+The engine binds it from the model's own map: there is no `--vision` file.
+
+- **Images.** `image_url` parts (base64 PNG or JPEG, at most four per
+  request) take the serial lane, also on a banked boot. The host decodes,
+  resizes and packs the patches ([`vit_image`](../crates/ds4-core/src/vit_image.rs));
+  the tower runs in F32 on the BF16 weights and its rows replace the image
+  placeholders the template renders.
+- **Memory.** The plan reserves 3.75 GiB for four maximum-size images (8,000
+  merged tokens each). At the native 1M context with two drafts and a 4 GiB
+  floor the 4,096-row prefill chunk no longer fits beside it, so the plan
+  halves the rows (2,048: 112.9 of 117.8 GiB available on GB10; never below
+  1,024). `--mem-floor-gb 2` keeps 4,096 rows.
+- **Projected prompts.** `/v1/completions` accepts `prompt_embeds` in place
+  of `prompt`: a base64 Safetensors file with one finite BF16 matrix
+  `prompt_embeds` of shape `[tokens, 4096]`, a complete embedded prompt
+  ([API matrix](ds4-api-surface-matrix.md#projected-prompt-rows-prompt_embeds)).
+  A client splices rows its own encoder projected (video frames through the
+  released tower, a derivative's scientific projectors) around the token
+  embeddings. The request prefills cold on the serial lane, nothing is
+  reused or stored, and the draft layer takes the same rows.
+
+## Derivatives
+
+Fine-tunes that keep GLM-5.3-Flash's topology open as this family: the
+loader checks each release's `config.json` against the family contract and
+every part against `files.json`, and the release's own `chat_template.jinja`
+renders its prompts.
+
+| Artifact | Source revision | Input |
+|---|---|---|
+| [Sage-S2.1-Flash hVQ](https://huggingface.co/Baekpica/Sage-S2.1-Flash-VQ-GGUF) | [`internlm/Sage-S2.1-Flash-FP8@716e6436`](https://huggingface.co/internlm/Sage-S2.1-Flash-FP8/tree/716e6436905650b7be93e1b7dedfb0bb95afd3a3) | Its own template ([reference renders](../tests/fixtures/chat-template/models/sage/provenance.json)): media parts render as placeholders and earlier reasoning is always replayed. Nine scientific projectors ship as client-side Safetensors; their rows arrive as `prompt_embeds`. |
+| [Swift1.5-GLM-5.3-Flash hVQ](https://huggingface.co/Baekpica/Swift1.5-GLM-5.3-Flash-VQ-GGUF) | [`ukisai/Swift1.5-GLM-5.3-Flash@1a9bcb4d`](https://huggingface.co/ukisai/Swift1.5-GLM-5.3-Flash/tree/1a9bcb4d808f51e7eb043d6c471e8b616fd84bb5) | The GLM VQ release's template, byte for byte. |
+| [Nex-N2.6 hVQ](https://huggingface.co/Baekpica/Nex-N2.6-VQ-GGUF) | [`nex-agi/Nex-N2.6@98747229`](https://huggingface.co/nex-agi/Nex-N2.6/tree/987472298e7867721576ac49a253a6f5b526013e) | The GLM VQ release's template, byte for byte. |
+
+All three use the 19-layer R13+8 layout above (56 parts, 88.0 GiB) with
+Hessian-calibrated index assignment (hVQ): the tensor shapes, kernels and
+memory plan are GLM-5.3-Flash VQ's, so speed is measured on one of them.
+Sage's upstream tokenizer wrapper encodes control-token spellings typed in
+message content as plain text; the host tokenizes rendered chat like the
+stock tokenizer, so such spellings in content still become control tokens.
+
 ## Numerical contract
 
 Each optimization keeps the source rounding boundaries unless it states a

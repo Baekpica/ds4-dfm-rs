@@ -127,8 +127,8 @@ static int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
 
 static bool gvq_mtp_prefill(ds4_glm53_gpu_graph *g, ds4_glm53_gpu_graph *a,
         const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows,
-        uint32_t first, bool pending) {
-    (void)g; (void)a; (void)m; (void)w; (void)tokens; (void)rows; (void)first; (void)pending;
+        uint32_t first, bool pending, const float *projected) {
+    (void)projected; (void)g; (void)a; (void)m; (void)w; (void)tokens; (void)rows; (void)first; (void)pending;
     return false;
 }
 
@@ -223,8 +223,31 @@ static void check_caps(void) {
     puts("GLM prefill: default window preserves small-cache, context and row fallbacks");
 }
 
+static void check_projected_tokens(void) {
+    ds4_glm53_gpu_graph graph;
+    ds4_glm53_stream stream;
+    const ds4_model model = {0};
+    const ds4_weights weights = {0};
+    CHECK(run_prefill(0u, 1u, 0u, FAIL_NONE, &graph, &stream));
+    graph.cache_len = 0u;
+    call_count = bind_count = 0u;
+    tokens[0] = -1;
+    CHECK(!glm53_graph_prefill(&graph, &model, &weights, tokens, 1u, 0u, embeddings, logits));
+    graph.gvq = &graph;
+    CHECK(!glm53_graph_prefill(&graph, &model, &weights, tokens, 1u, 0u, NULL, logits));
+    tokens[0] = -2;
+    CHECK(!glm53_graph_prefill(&graph, &model, &weights, tokens, 1u, 0u, embeddings, logits));
+    tokens[0] = DS4_N_VOCAB;
+    CHECK(!glm53_graph_prefill(&graph, &model, &weights, tokens, 1u, 0u, embeddings, logits));
+    tokens[0] = -1;
+    CHECK(glm53_graph_prefill(&graph, &model, &weights, tokens, 1u, 0u, embeddings, logits));
+    CHECK(graph.cache_len == 1u && call_count == 1u);
+    puts("GLM VQ projected embedding sentinel and text token bounds pass");
+}
+
 int main(int argc, char **argv) {
     CHECK(argc == 2);
+    if (!strcmp(argv[1], "projected")) { check_projected_tokens(); return 0; }
     if (!strcmp(argv[1], "tail")) { check_unwind(FAIL_TAIL); return 0; }
     if (!strcmp(argv[1], "window")) { check_unwind(FAIL_WINDOW); return 0; }
     if (!strcmp(argv[1], "bind")) { check_unwind(FAIL_BIND); return 0; }

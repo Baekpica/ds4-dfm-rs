@@ -1321,14 +1321,20 @@ fn prepare_client(
     None
 }
 
+fn serial_media(model_id: i32, needs: u32) -> bool {
+    needs & crate::route::NEED_PROMPT_EMBEDS != 0
+        || (needs & NEED_IMAGE != 0
+            && (syntax_for_model_id(model_id) == ModelSyntax::Mimo2
+                || model_id == ds4_core::Variant::Glm53FlashVq as i32))
+}
+
 fn route_for_model(
     model_id: i32,
     needs: u32,
     surface: WireSurface,
     env: &RouteEnv,
 ) -> RouteDecision {
-    // MiMo feature spans live in the serial session, including under a banked boot.
-    if needs & NEED_IMAGE != 0 && syntax_for_model_id(model_id) == ModelSyntax::Mimo2 {
+    if serial_media(model_id, needs) {
         return RouteDecision {
             lane: LANE_SERIAL,
             reason: REASON_CONT_UNAVAILABLE,
@@ -1347,9 +1353,7 @@ fn run_prepared<W: TerminalSink>(
     arrived_at: Option<Instant>,
 ) -> Settlement {
     let model_id = engine.as_ref().map_or(0, |engine| engine.model_id());
-    let mimo_image =
-        !job.parsed.images.is_empty() && syntax_for_model_id(model_id) == ModelSyntax::Mimo2;
-    let cont_gate = if mimo_image {
+    let cont_gate = if serial_media(model_id, job.parsed.needs) {
         None
     } else {
         match (cont.as_deref(), engine.is_some()) {

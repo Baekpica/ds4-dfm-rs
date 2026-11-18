@@ -365,6 +365,14 @@ int ds4_bridge_session_sync(ds4_bridge_session *s,
     return session_sync(s, tokens, n_tokens, NULL, NULL, err, errlen);
 }
 
+int ds4_bridge_sync_glm_embeddings(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                   const float *rows, char *err, size_t errlen)
+{
+    if (!s || !s->session) { set_err(err, errlen, "missing GLM session"); return 1; }
+    ds4_tokens prompt = {.v = (int *)(void *)tokens, .len = n_tokens, .cap = n_tokens};
+    return ds4_session_sync_glm_embeddings(s->session, &prompt, rows, err, errlen);
+}
+
 int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const int32_t *tokens, int n_tokens,
                                    const ds4_bridge_vision_input *images,

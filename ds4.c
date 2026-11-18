@@ -9430,9 +9430,7 @@ static uint64_t glm53_vision_required_offset(
     return glm53_vision_required_tensor(m, name, ndim, dims)->abs_offset;
 }
 
-static void glm53_vision_weights_bind(
-        ds4_glm53_vision_weights *w,
-        const ds4_model          *m) {
+static void glm53_vision_validate_sidecar(const ds4_model *m) {
     ds4_str arch = {0};
     if (!model_get_string(m, "general.architecture", &arch) ||
         !ds4_streq(arch, "glm5-next-vision"))
@@ -9461,6 +9459,10 @@ static void glm53_vision_weights_bind(
                       required_u32(m, "glm5-next-vision.temporal_patch_size"), 2u);
     config_expect_u32("vision spatial_merge_size",
                       required_u32(m, "glm5-next-vision.spatial_merge_size"), 2u);
+}
+
+static void glm53_vision_weights_bind(
+        ds4_glm53_vision_weights *w, const ds4_model *m) {
 
     static const uint64_t d1024[] = {1024u};
     static const uint64_t d4096[] = {4096u};
@@ -9474,11 +9476,13 @@ static void glm53_vision_weights_bind(
     static const uint64_t d4096_10240[] = {4096u, 10240u};
     static const uint64_t d10240_4096[] = {10240u, 4096u};
     static const uint64_t patch_dims[] = {14u, 14u, 2u, 3u, 1024u};
+    static const uint64_t flat_patch[] = {1176u, 1024u};
+    const bool flat = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
     static const uint64_t downsample_dims[] = {2u, 2u, 1024u, 4096u};
 
     memset(w, 0, sizeof(*w));
     w->patch_weight = glm53_vision_required_offset(
-            m, "model.visual.patch_embed.proj.weight", 5, patch_dims);
+            m, "model.visual.patch_embed.proj.weight", flat ? 2 : 5, flat ? flat_patch : patch_dims);
     w->patch_bias = glm53_vision_required_offset(
             m, "model.visual.patch_embed.proj.bias", 1, d1024);
     w->post_norm = glm53_vision_required_offset(
@@ -74131,6 +74135,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         return 0;
     }
 #ifndef DS4_NO_GPU
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
+        /* Rust validates the logical patch geometry and token IDs in the release. */
+        glm53_vision_weights_bind(&e->vision_weights, &e->model);
+        e->vision_image_token = 154854;
+        e->vision_start_token = 154830;
+        e->vision_end_token = 154831;
+        e->vision_ready = true;
+    }
     if (opt->vision_path && opt->vision_path[0]) {
         /* V4.1 takes the sidecar as the model's own vision tower (--vision-gguf
          * in the reference install.sh); the other families take it as their
@@ -74200,6 +74212,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             e->vision_start_token = 128000;
             e->vision_end_token = 128002;
         } else {
+            glm53_vision_validate_sidecar(&e->vision_model);
             glm53_vision_weights_bind(&e->vision_weights, &e->vision_model);
             e->vision_image_token = (int)required_u32(
                     &e->vision_model, "glm5-next-vision.image_token_id");
@@ -74779,7 +74792,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
-        if (e->vision_ready) {
+        if (e->vision_ready && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
+            e->vision_map_ready = true; /* The main named-part map includes the tower. */
+        } else if (e->vision_ready) {
             e->vision_map_ready = ds4_gpu_set_aux_model_map_range(
                     e->vision_model.map,
                     e->vision_model.size,
@@ -75238,7 +75253,7 @@ int ds4_engine_vision_probe(ds4_engine *e,
         };
         return 1;
     }
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) {
+    if (!ds4_model_is_glm()) {
         if (error && error_cap) snprintf(error, error_cap, "vision encoder is not loaded");
         return 0;
     }
@@ -75263,7 +75278,7 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
     return 0;
 #else
-    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) {
+    if (!e || !e->vision_ready || !e->vision_map_ready || !ds4_model_is_glm()) {
         if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready");
         return 0;
     }
@@ -75290,15 +75305,17 @@ int ds4_engine_vision_encode_patches(ds4_engine *e, const float *patches,
     return 0;
 #else
     const uint64_t token_count = (uint64_t)grid_h * grid_w / 4u;
-    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+    if (!e || !e->vision_ready || !e->vision_map_ready || !ds4_model_is_glm() ||
         !patches || (grid_h & 1u) || (grid_w & 1u) || token_count == 0u || token_count > 8000u) {
         if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready or the grid is invalid");
         return 0;
     }
     float *embedding = xmalloc((size_t)token_count * 4096u * sizeof(float));
+    const ds4_model *tower = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+        ? &e->model : &e->vision_model;
     if (!ds4_gpu_glm53_vision_encode(
-            embedding, patches, grid_h, grid_w, e->vision_model.map,
-            e->vision_model.size, &e->vision_weights)) {
+            embedding, patches, grid_h, grid_w, tower->map,
+            tower->size, &e->vision_weights)) {
         free(embedding);
         if (error && error_cap) snprintf(error, error_cap, "GLM-5.3 vision encoding failed");
         return 0;
@@ -78109,7 +78126,7 @@ static int ds4_session_sync_glm53(
         ds4_session *s,
         const ds4_tokens *prompt,
         const ds4_vision_span *spans,
-        uint32_t span_count,
+        uint32_t span_count, const float *prompt_embeddings,
         char *err,
         size_t errlen) {
     ds4_engine *e = s->engine;
@@ -78127,9 +78144,10 @@ static int ds4_session_sync_glm53(
         return 1;
     }
     const int image_token = e->vision_ready ? e->vision_image_token : 154854;
-    if (!glm53_vision_spans_validate(
+    const bool text_only = span_count == 0u && !prompt_embeddings;
+    if (!prompt_embeddings && !glm53_vision_spans_validate(
             prompt, spans, span_count, image_token, err, errlen)) return 1;
-    if (span_count == 0u) {
+    if (text_only) {
         for (int i = 0; i < prompt->len; i++) {
             if (prompt->v[i] == image_token) {
                 snprintf(err, errlen, "image tokens require multimodal sync");
@@ -78138,7 +78156,7 @@ static int ds4_session_sync_glm53(
         }
     }
 
-    int start = span_count == 0u ? (int)glm53_sync_keep(s, prompt) : 0;
+    int start = text_only ? (int)glm53_sync_keep(s, prompt) : 0;
     const int slot = start && start < s->checkpoint.len
         ? serial_ckpt_find(s, (uint32_t)start) : -1;
     if (start && start >= s->checkpoint.len) {
@@ -78166,7 +78184,7 @@ static int ds4_session_sync_glm53(
     for (uint32_t pos = (uint32_t)start; pos < (uint32_t)prompt->len;) {
         uint32_t rows = (uint32_t)prompt->len - pos;
         if (rows > s->prefill_cap) { rows = s->prefill_cap; }
-        const float *embedding = NULL;
+        const float *embedding = prompt_embeddings ? prompt_embeddings + (uint64_t)pos * DS4_N_EMBD : NULL;
         if (span_index < span_count) {
             const ds4_vision_span *span = &spans[span_index];
             const uint32_t end = span->token_start + span->embedding.token_count;
@@ -78183,7 +78201,7 @@ static int ds4_session_sync_glm53(
         }
         const bool last = pos + rows == (uint32_t)prompt->len;
         // Where the final chunk starts: a resent turn resumes here.
-        if (last && span_count == 0u && pos > (uint32_t)start) { glm53_sync_capture(s, pos); }
+        if (last && text_only && pos > (uint32_t)start) { glm53_sync_capture(s, pos); }
         if (!glm53_graph_prefill(g, &e->model, &e->weights,
                 prompt->v + pos, rows, pos, embedding, last ? s->logits : NULL)) {
             snprintf(err, errlen, "GLM-5.3 prefill failed at position %u", pos);
@@ -78198,7 +78216,7 @@ static int ds4_session_sync_glm53(
         }
     }
     // The prompt's end: a re-rendered continuation resumes here.
-    if (span_count == 0u) { glm53_sync_capture(s, (uint32_t)prompt->len); }
+    if (text_only) { glm53_sync_capture(s, (uint32_t)prompt->len); }
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
@@ -79284,7 +79302,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     ds4_engine *e = s->engine;
     const char *backend_name = ds4_backend_name(e->backend);
     if (ds4_session_is_glm53(s)) {
-        return ds4_session_sync_glm53(s, prompt, NULL, 0u, err, errlen);
+        return ds4_session_sync_glm53(s, prompt, NULL, 0u, NULL, err, errlen);
     }
     if (ds4_session_is_qwen4exp(s)) {
         ds4_qwen_gpu_graph *g = &s->qwen_graph;
@@ -79809,6 +79827,23 @@ cleanup:
 #endif
 }
 
+int ds4_session_sync_glm_embeddings(ds4_session *s, const ds4_tokens *prompt,
+                                    const float *rows, char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)prompt; (void)rows;
+    if (err && errlen) { snprintf(err, errlen, "CUDA prompt embeddings are unavailable"); }
+    return 1;
+#else
+    if (!s || !prompt || !prompt->v || !rows || prompt->len <= 0 || prompt->len > s->ctx_size ||
+        !ds4_session_is_glm53(s) || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) {
+        if (err && errlen) { snprintf(err, errlen, "invalid GLM VQ prompt embeddings"); }
+        return 1;
+    }
+    if (ds4_session_ensure_graph(s, err, errlen) != 0) { return 1; }
+    return ds4_session_sync_glm53(s, prompt, NULL, 0u, rows, err, errlen);
+#endif
+}
+
 int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_tokens *prompt,
                                 const ds4_vision_span *spans,
@@ -79829,7 +79864,7 @@ int ds4_session_sync_multimodal(ds4_session *s,
     }
     if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
     return ds4_session_sync_glm53(
-        s, prompt, spans, span_count, err, errlen);
+        s, prompt, spans, span_count, NULL, err, errlen);
 #endif
 }
 

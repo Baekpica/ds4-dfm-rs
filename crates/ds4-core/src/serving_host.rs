@@ -83,6 +83,9 @@ const GLM_NATIVE_MAX: u32 = 2048;
 // GLM53_VQ_PREFILL_MAX: VQ rereads every routed expert once per chunk.
 const GLMVQ_NATIVE_DEFAULT: u32 = 4096;
 const GLMVQ_NATIVE_MAX: u32 = 4096;
+// Rows halve to fit the native context beside the image reserve; below
+// 1,024 the routed experts' weight stream dominates a chunk.
+const GLMVQ_NATIVE_MIN: u32 = 1024;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
 const LING31_LATENT_ENV: &str = "DS4_LING31_LATENT";
 const LING31_FLASH_ENV: &str = "DS4_LING31_FLASH";
@@ -849,16 +852,17 @@ pub fn fill_quote_facts(
         } else {
             0
         }
-    } else if caps.family == ModelFamily::Glm53 {
-        if host.vision || facts.vision_loaded {
+    } else if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
+        if caps.family == ModelFamily::Glm53Vq || host.vision || facts.vision_loaded {
+            let graph = GlmGraph::of(caps.family);
             // Images use a separate lazy serial graph while text banks
             // retain their private histories and shared workspace.
             let serial = if quote_batch_alloc(req, caps, facts) {
                 shape
                     .map(|s| {
-                        glm_graph_bytes(s, ctx, u64::from(native), GlmGraph::Source).saturating_add(
+                        glm_graph_bytes(s, ctx, u64::from(native), graph).saturating_add(
                             if req.mtp_mode == MtpMode::On {
-                                glm_mtp_bytes(s, ctx, GlmGraph::Source)
+                                glm_mtp_bytes(s, ctx, graph)
                             } else {
                                 0
                             },
@@ -868,7 +872,15 @@ pub fn fill_quote_facts(
             } else {
                 0
             };
-            glm_media_bytes().saturating_add(serial)
+            // Rust packs the whole request before encoding its images in order.
+            let other_host_patches = if caps.family == ModelFamily::Glm53Vq {
+                3 * 8000 * 4 * 1176 * SIZEOF_F32
+            } else {
+                0
+            };
+            glm_media_bytes()
+                .saturating_add(other_host_patches)
+                .saturating_add(serial)
         } else {
             0
         }
@@ -914,6 +926,7 @@ pub fn fill_quote_facts(
     // fixed workspace terms dominate.
     let halves = match caps.family {
         ModelFamily::Glm53 => native > 1,
+        ModelFamily::Glm53Vq => native > GLMVQ_NATIVE_MIN,
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
         ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
         _ => false,
@@ -931,7 +944,8 @@ pub fn fill_quote_facts(
         MaxSeqs::Auto
             if matches!(
                 caps.family,
-                ModelFamily::Ling31Vq
+                ModelFamily::Glm53Vq
+                    | ModelFamily::Ling31Vq
                     | ModelFamily::BeamVq
                     | ModelFamily::MinimaxVq
                     | ModelFamily::Axk2Vq
@@ -3890,11 +3904,56 @@ mod tests {
     }
 
     #[test]
-    fn glm_vq_reserves_no_media_lane() {
-        // The VQ artifact opens without a vision tower: no image lane to fund.
+    fn glm_vq_embedded_vision_quote() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
-        assert_eq!(glm_vq_quote(8192, None).media_reserve_bytes, Some(0));
+        assert_eq!(
+            glm_vq_quote(8192, None).media_reserve_bytes,
+            Some(glm_media_bytes() + 3 * 8000 * 4 * 1176 * SIZEOF_F32)
+        );
+    }
+
+    #[test]
+    fn glm_vq_halves_rows_beside_the_image_reserve() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        // The 19-layer R13+8 release at its native 1M context, two drafts
+        // and a 4 GiB floor on a 117.8 GiB host: the 4,096-row workspace no
+        // longer fits beside the 3.75 GiB image reserve, 2,048 rows do.
+        let quote = |available: u64, native_chunk: Option<u32>| {
+            let req = ServingRequest {
+                ctx: 1 << 20,
+                native_chunk,
+                max_seqs: MaxSeqs::Off,
+                prefix_reuse: PrefixReuse::Off,
+                mtp_mode: MtpMode::On,
+                mtp_draft: Some(2),
+                mem_floor_gb: 4,
+                ..ServingRequest::default()
+            };
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                serving_caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq),
+                Some(SHAPE_GLM53_VQ),
+                QuoteHost {
+                    weights_bytes: 94_491_696_768,
+                    mtp_bytes: 0,
+                    available_bytes: available,
+                    native_chunk: None,
+                    vision: false,
+                },
+            );
+            facts.native_chunk
+        };
+        assert_eq!(quote(126_447_779_840, None), Some(2048));
+        assert_eq!(quote(126_447_779_840, Some(4096)), Some(2048));
+        assert_eq!(quote(140 * GIB, None), Some(4096));
+        // Rows stop at 1,024: a host too small for that reports the overflow.
+        assert_eq!(quote(100 * GIB, None), Some(1024));
     }
 
     #[test]

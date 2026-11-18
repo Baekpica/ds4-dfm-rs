@@ -752,8 +752,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
-            // The VQ release opens without its vision tower.
-            media_serial: false,
+            // The named vision part shares the base mapping; images use the serial session.
+            media_serial: true,
         },
         ModelFamily::IQuestQ1 => ServingCaps {
             family,

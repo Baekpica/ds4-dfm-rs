@@ -678,6 +678,15 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_sync_glm_embeddings(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: c_int,
+        rows: *const f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_session_sync_vision(
         s: *mut ds4_bridge_session,
         tokens: *const i32,

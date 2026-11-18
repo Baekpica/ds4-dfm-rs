@@ -325,7 +325,7 @@ static bool gvq_mtp_rows(ds4_glm53_gpu_graph *g, const ds4_model *m,
     ds4_glm53_gpu_graph a;
     if (!glm53_graph_bind(&a, g, n)) { return false; }
     ds4_gpu_tensor *hidden = ds4_gpu_tensor_view(g->mtp_rows, 0u, n * bytes);
-    const bool ok = hidden && gvq_mtp_kv(&a, m, w, hidden, g->mtp_trial, n, pos, g->mtp_concat);
+    const bool ok = hidden && gvq_mtp_kv(&a, m, w, hidden, g->mtp_trial, n, pos, g->mtp_concat, NULL);
     ds4_gpu_tensor_free(hidden);
     glm53_graph_unbind(&a);
     return ok;

@@ -821,6 +821,11 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
     if (!g || !g->ready || !model || !weights || !tokens || !rows ||
         pos0 != g->cache_len || pos0 > g->ctx_cap || rows > g->ctx_cap - pos0) { return false; }
     for (uint32_t t = 0; t < rows; t++) {
+#ifndef __APPLE__
+        /* A projected GVQ1 row has no vocabulary ID. Both trunk and MTP
+         * consume the supplied embedding when the host uses this sentinel. */
+        if (tokens[t] == -1 && g->gvq && host_embeddings) { continue; }
+#endif
         if (tokens[t] < 0 || (uint32_t)tokens[t] >= DS4_N_VOCAB) { return false; }
     }
     const glm53_stream_stats before = glm53_stream_snap(g->stream);
@@ -852,8 +857,8 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
 #ifndef __APPLE__
         // GLM VQ MTP: park the previous chunk's last hidden for its KV row.
         const uint32_t first = pos0 + done;
-        const bool draft_kv = g->gvq && g->mtp_ready && !host_embeddings;
-        const bool pending = draft_kv && g->mtp_len && g->mtp_len == first - 1u;
+        const bool draft_kv = g->gvq && g->mtp_ready;
+        const bool pending = draft_kv && first > 0u && g->mtp_len == first - 1u;
         bool ok = !pending || ds4_gpu_gvq_copy(g->mtp_rows, 0u, g->last_hidden, 0u,
             (uint64_t)DS4_N_EMBD * sizeof(float), 1u);
 #else
@@ -863,7 +868,8 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
             host_embeddings ? host_embeddings + (uint64_t)done * DS4_N_EMBD : NULL,
             done + chunk == rows ? host_logits : NULL);
 #ifndef __APPLE__
-        ok = ok && (!draft_kv || gvq_mtp_prefill(g, &active, model, weights, tokens + done, chunk, first, pending));
+        ok = ok && (!draft_kv || gvq_mtp_prefill(g, &active, model, weights, tokens + done, chunk, first, pending,
+            host_embeddings ? host_embeddings + (uint64_t)done * DS4_N_EMBD : NULL));
 #endif
         if (ok && ds4_gpu_tensor_ptr(active.hc_cur) != ds4_gpu_tensor_ptr(g->hc_cur)) {
             ds4_gpu_tensor *swap = g->hc_cur;

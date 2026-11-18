@@ -8,6 +8,13 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- GLM-5.3-Flash VQ serves the vision tower embedded in its release
+  directory and opens three derivatives as the same family (Sage-S2.1-Flash,
+  Swift1.5-GLM-5.3-Flash and Nex-N2.6 hVQ): base64 images on the serial
+  lane, `prompt_embeds` on `/v1/completions` for rows a client projected,
+  and a 3.75 GiB image reserve in the plan (the default 1M plan prefills
+  2,048-row chunks beside it).
+  [Family page](docs/glm53-vq.md#images-and-projected-prompts).
 - Pins Rust 1.100.0 (was 1.98.0) in `rust-toolchain.toml`, the host-parity
   workflow and the README, and clears the three warnings new on it.
 - Adds [Inkling-2-Small VQ](docs/inkling2-vq.md) (`inkling2_vq`), contributed

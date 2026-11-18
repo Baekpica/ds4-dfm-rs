@@ -1396,6 +1396,8 @@ int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
 int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
                              const ds4_step37_pixels *crops, uint32_t crop_count,
                              char *err, size_t errlen);
+int ds4_session_sync_glm_embeddings(ds4_session *s, const ds4_tokens *prompt,
+                                    const float *rows, char *err, size_t errlen);
 int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_tokens *prompt,
                                 const ds4_vision_span *spans,
