@@ -1403,7 +1403,7 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     if matches!(
         caps.family,
-        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::Hy4
     ) {
         if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
             issues.push(error("mtp_draft", failure.message));
@@ -4669,6 +4669,20 @@ mod tests {
                 .env_overrides()
                 .iter()
                 .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
+        }
+    }
+
+    #[test]
+    fn hy4_plan_checks_the_five_draft_slots() {
+        for depth in [5, 6] {
+            let req = ServingRequest {
+                mtp_mode: MtpMode::On,
+                mtp_path: Some("dfly2-q8_0.gguf".into()),
+                mtp_draft: Some(depth),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Hy4, Variant::Hy4FlashMxq);
+            assert_eq!(p.issues.iter().any(|i| i.code == "mtp_draft"), depth > 5);
         }
     }
 
