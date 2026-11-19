@@ -139,6 +139,22 @@ static bool hy4_hc_pre(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *f
                           n) &&
            hy4_pre_norm(g, m, norm, n);
 }
+/* Whether a branch's input step first applies the preceding branch. */
+typedef enum { HY4_FRESH, HY4_CARRY } hy4_carry;
+typedef enum { HY4_HC_SPLIT, HY4_HC_FUSED } hy4_hc_mode;
+// Residual, iHC and RMSNorm for the next branch: one pass (HY4_HC_FUSED) or
+// the residual, TF32 mix GEMM, combine and norm launches (DS4_HY4_HC_FUSED=0).
+static bool hy4_branch_in(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *fn, const ds4_tensor *scale,
+                          const ds4_tensor *base, const ds4_tensor *norm, uint32_t n, hy4_carry carry,
+                          hy4_hc_mode mode) {
+    if (mode == HY4_HC_FUSED) {
+        return ds4_gpu_hy4_hc_step(g->streams, g->post, carry == HY4_CARRY ? g->branch : NULL, hy4_weight(m, fn),
+                                   hy4_weight(m, scale), hy4_weight(m, base), hy4_weight(m, norm), g->norm,
+                                   n > 1 ? g->norm_bf16 : NULL, n);
+    }
+    return (carry == HY4_FRESH || ds4_gpu_hy4_residual(g->streams, g->branch, g->post, n)) &&
+           hy4_hc_pre(g, m, fn, scale, base, norm, n);
+}
 static bool hy4_mm_norm(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor *w, uint32_t n) {
     if (n == 1 || w->type != DS4_TENSOR_BF16) {
         return hy4_mm(out, m, w, g->norm, n);
@@ -382,21 +398,35 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
         !ds4_gpu_hy4_embed(g->streams, g->embed, n)) {
         return false;
     }
+    // One CTA per row: prefill widths only; a decode row ran 3 % slower fused.
+    enum { HY4_HC_FUSED_MIN_ROWS = 16 };
+    const char *hc_env = getenv("DS4_HY4_HC_FUSED");
+    const hy4_hc_mode mode = n < HY4_HC_FUSED_MIN_ROWS || (hc_env && strcmp(hc_env, "0") == 0) ? HY4_HC_SPLIT
+                                                                                                : HY4_HC_FUSED;
     for (uint32_t il = 0; il < HY4_LAYERS; il++) {
         const ds4_layer_weights *l = &w->layer[il];
+        // A layer's attention input carries the preceding FFN unless Engram
+        // reads the streams in between.
+        const hy4_carry carry = il && !hy4_engram(il) ? HY4_CARRY : HY4_FRESH;
+        if (il && carry == HY4_FRESH && !ds4_gpu_hy4_residual(g->streams, g->branch, g->post, n)) {
+            return false;
+        }
         // Later SSD reads overlap kernels already queued by the preceding layers.
         if (staged && hy4_engram(il) && !hy4_read_engram(g, e, prev, np, tokens, n, il / 10, 1)) {
             return false;
         }
         if ((hy4_engram(il) && !hy4_memory_branch(g, m, l, il, n)) ||
-            !hy4_hc_pre(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, n) ||
+            !hy4_branch_in(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, n, carry, mode) ||
             !hy4_attention(g, m, l, il, n, pos, NULL) || (head && !hy4_capture_groups(g, il, n, pos)) ||
-            !ds4_gpu_hy4_residual(g->streams, g->branch, g->post, n) ||
-            !hy4_hc_pre(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, n) ||
-            !hy4_ffn(g, m, l, n) || !ds4_gpu_hy4_residual(g->streams, g->branch, g->post, n)) {
+            !hy4_branch_in(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, n, HY4_CARRY,
+                           mode) ||
+            !hy4_ffn(g, m, l, n)) {
             fprintf(stderr, "ds4: Hy4 forward failed at layer %u, position %u, rows %u\n", il, pos, n);
             return false;
         }
+    }
+    if (!ds4_gpu_hy4_residual(g->streams, g->branch, g->post, n)) {
+        return false;
     }
     if (head && !(g->verifying ? hy4_verify_head(g, m, w, n) : hy4_head_row(g, m, w, n - 1, 0))) {
         return false;

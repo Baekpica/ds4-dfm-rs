@@ -78,6 +78,79 @@ __global__ void hc(float *out, float *post, const float *streams, const float *m
         out[row * 3072 + d] = bf(v);
     }
 }
+/* The preceding branch's residual (when `branch` is set), the iHC mix with
+ * exact F32 dots (decode's GEMV arithmetic, not prefill's TF32 GEMM), its
+ * combine and the next RMSNorm in one pass. Thread t owns stream values
+ * t + 256k, which are all four streams of columns t + 256j, so the combine
+ * and the norm stay in registers; their sums keep hc's and the RMSNorm's
+ * orders. post is read for the residual before the new weights land. */
+template <bool RESIDUAL>
+__global__ void __launch_bounds__(256) hc_step(float *streams, float *post, const float *branch, const float *fn,
+                                               const float *scale, const float *base, const float *norm_w,
+                                               float *norm, bf16 *norm_bf16) {
+    const uint32_t row = blockIdx.x, t = threadIdx.x;
+    float *x = streams + (uint64_t)row * 12288;
+    float v[48];
+    #pragma unroll
+    for (uint32_t k = 0; k < 48; k++) {
+        float s = x[t + 256 * k];
+        if constexpr (RESIDUAL) {
+            s = bf(s + post[row * 4 + k / 12] * branch[(uint64_t)row * 3072 + t + 256 * (k % 12)]);
+            x[t + 256 * k] = s;
+        }
+        v[k] = s;
+    }
+    float sq = 0, mix[8] = {};
+    #pragma unroll
+    for (uint32_t k = 0; k < 48; k++) {
+        sq += v[k] * v[k];
+        #pragma unroll
+        for (uint32_t c = 0; c < 8; c++) {
+            mix[c] += v[k] * fn[c * 12288 + t + 256 * k];
+        }
+    }
+    const float inv = rsqrtf(sum(sq) / 12288.f + 1e-5f);
+    #pragma unroll
+    for (uint32_t c = 0; c < 8; c++) {
+        mix[c] = sum(mix[c]);
+    }
+    __shared__ float pre[4];
+    if (t < 4) {
+        pre[t] = sigmoid(mix[t] * inv * scale[0] + base[t]) + 1e-6f;
+        post[row * 4 + t] = 2.f * sigmoid(mix[t + 4] * inv * scale[1] + base[t + 4]) + 1e-6f;
+    }
+    __syncthreads();
+    float o[12], ss = 0;
+    #pragma unroll
+    for (uint32_t j = 0; j < 12; j++) {
+        float a = 0;
+        #pragma unroll
+        for (uint32_t c = 0; c < 4; c++) {
+            a += v[12 * c + j] * pre[c];
+        }
+        o[j] = bf(a);
+        ss += o[j] * o[j];
+    }
+    __shared__ float partial[256];
+    partial[t] = ss;
+    __syncthreads();
+    for (uint32_t stride = 128; stride > 0; stride >>= 1) {
+        if (t < stride) {
+            partial[t] += partial[t + stride];
+        }
+        __syncthreads();
+    }
+    const float sc = rsqrtf(partial[0] / 3072.f + 1e-5f);
+    #pragma unroll
+    for (uint32_t j = 0; j < 12; j++) {
+        const uint32_t d = t + 256 * j;
+        const float y = bf(o[j] * sc * norm_w[d]);
+        norm[(uint64_t)row * 3072 + d] = y;
+        if (norm_bf16) {
+            norm_bf16[(uint64_t)row * 3072 + d] = __float2bfloat16_rn(y);
+        }
+    }
+}
 __global__ void residual(float *streams, const float *branch, const float *post) {
     const uint32_t row = blockIdx.y, c = blockIdx.x, i = row * 4 + c;
     for (unsigned d = threadIdx.x; d < 3072; d += blockDim.x) {
@@ -213,6 +286,18 @@ extern "C" int ds4_gpu_hy4_hc(ds4_gpu_tensor *out, ds4_gpu_tensor *post, const d
                                                  (const float *)s->ptr, (const float *)mix->ptr, scale,
                                                  base);
     return cuda_ok(cudaGetLastError(), "Hy4 iHC");
+}
+extern "C" int ds4_gpu_hy4_hc_step(ds4_gpu_tensor *streams, ds4_gpu_tensor *post, const ds4_gpu_tensor *branch,
+                                   const float *fn, const float *scale, const float *base, const float *norm_w,
+                                   ds4_gpu_tensor *norm, ds4_gpu_tensor *norm_bf16, uint32_t n) {
+    if (!fn || !scale || !base || !norm_w) {
+        return 0;
+    }
+    auto kernel = branch ? hy4::hc_step<true> : hy4::hc_step<false>;
+    kernel<<<n, 256, 0, ds4_current_stream()>>>(
+        (float *)streams->ptr, (float *)post->ptr, branch ? (const float *)branch->ptr : nullptr, fn, scale, base,
+        norm_w, (float *)norm->ptr, norm_bf16 ? (hy4::bf16 *)norm_bf16->ptr : nullptr);
+    return cuda_ok(cudaGetLastError(), "Hy4 residual and iHC");
 }
 extern "C" int ds4_gpu_hy4_residual(ds4_gpu_tensor *s, const ds4_gpu_tensor *b, const ds4_gpu_tensor *p,
                                     uint32_t n) {
