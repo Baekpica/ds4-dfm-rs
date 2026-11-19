@@ -969,6 +969,7 @@ fn quote_native_rows(
         ModelFamily::Glm53Vq => native > GLMVQ_NATIVE_MIN,
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
         ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
+        ModelFamily::Hy4 => native > crate::hy4::PREFILL_MIN,
         _ => false,
     };
     if !halves || host.available_bytes == 0 || facts.cont_lane == Some(true) {
@@ -1555,7 +1556,12 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
-        ModelFamily::Hy4 => env_u32("DS4_HY4_PREFILL_CHUNK", 512, 1, crate::hy4::PREFILL_MAX),
+        ModelFamily::Hy4 => env_u32(
+            "DS4_HY4_PREFILL_CHUNK",
+            crate::hy4::PREFILL,
+            1,
+            crate::hy4::PREFILL_MAX,
+        ),
         ModelFamily::IQuestQ1 => env_u32(
             "DS4_IQUEST_PREFILL_CHUNK",
             crate::iquest::PREFILL,
@@ -5528,6 +5534,40 @@ mod tests {
             facts.media_reserve_bytes = Some(0);
             assert_eq!(resident_runtime(&facts), resident);
         }
+    }
+
+    #[test]
+    fn hy4_rows_default_to_2048_and_halve_to_fit() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_HY4_PREFILL_CHUNK");
+        let caps = serving_caps(ModelFamily::Hy4, Variant::Hy4FlashMxq);
+        assert_eq!(family_native_chunk(caps, 1_048_576), crate::hy4::PREFILL);
+        assert_eq!(family_native_chunk(caps, 1000), 1000);
+        let req = ServingRequest {
+            ctx: 1_048_576,
+            ..Default::default()
+        };
+        let quote = |available: u64| {
+            let host = QuoteHost {
+                weights_bytes: 103 * GIB,
+                mtp_bytes: 0,
+                available_bytes: available,
+                native_chunk: None,
+                vision: false,
+            };
+            fill_family(
+                ModelFamily::Hy4,
+                Variant::Hy4FlashMxq,
+                crate::shape::SHAPE_HY4,
+                &req,
+                host,
+            )
+            .native_chunk
+        };
+        assert_eq!(quote(160 * GIB), Some(crate::hy4::PREFILL));
+        assert_eq!(quote(119 * GIB), Some(crate::hy4::PREFILL / 2));
+        // Halving stops at the floor even when nothing fits.
+        assert_eq!(quote(100 * GIB), Some(crate::hy4::PREFILL_MIN));
     }
 
     #[test]

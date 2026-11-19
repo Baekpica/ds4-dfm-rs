@@ -15,6 +15,10 @@ pub(crate) use release::{chat_assets, identify, inventory, is_release, metadata,
 use crate::{GgufFile, ValidateError};
 
 pub(crate) const PREFILL_MAX: u32 = 8192;
+/// 2,048 rows put ~64 routed rows on each expert; the planner halves to
+/// `PREFILL_MIN` when a long context leaves no room for the workspace.
+pub(crate) const PREFILL: u32 = 2048;
+pub(crate) const PREFILL_MIN: u32 = 512;
 pub(crate) const CONTEXT: u32 = 1_048_576;
 const ARCH: &[u8] = b"hy_v4_flash";
 const RECIPE: &[u8] = b"MQ-Q5-SSD-ENGRAM-FP8";

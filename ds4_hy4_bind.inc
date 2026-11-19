@@ -163,8 +163,9 @@ static void hy4_bind(ds4_weights *w, const ds4_model *m) {
     X(ff_mid, 16 * 1536, float) \
     X(shared, 3072, float)
 
+// The host publishes its fitted cap; 2,048 rows is the standalone default.
 static uint32_t hy4_prefill_cap(uint32_t ctx) {
-    uint32_t cap = 512;
+    uint32_t cap = 2048;
     const char *value = getenv("DS4_HY4_PREFILL_CHUNK");
     if (value && *value) {
         char *end = NULL;
