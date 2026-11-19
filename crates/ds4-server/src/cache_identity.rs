@@ -83,6 +83,15 @@ impl CacheIdentity {
             inputs.push(Input::optional(parent.join("tokenizer_config.json")));
         }
         let shape = identify_gguf(model).map_err(|e| e.to_string())?.shape;
+        if shape.family == ds4_core::ModelFamily::Hy4 {
+            for path in ds4_core::hy4_snapshot_inputs(model).map_err(|e| e.to_string())? {
+                inputs.push(if path.extension().is_some_and(|ext| ext == "bin") {
+                    Input::weights(path)
+                } else {
+                    Input::small(path)
+                });
+            }
+        }
         let ple = if shape.family == ds4_core::ModelFamily::Qwen4Exp {
             Some(add_ple(model, &mut inputs)?)
         } else {

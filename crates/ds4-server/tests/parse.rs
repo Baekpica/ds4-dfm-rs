@@ -973,10 +973,14 @@ fn mimo_video_stays_on_the_serial_lane() {
     assert_eq!(route.lane, ds4_server::LANE_SERIAL);
     assert_eq!(
         generation_blocked(&parsed, 6),
-        Some("video input requires MiMo or MiniMax")
+        Some("video input requires MiMo, MiniMax or Hy4")
     );
     assert_eq!(generation_blocked(&parsed, 12), None);
     assert_eq!(generation_blocked(&parsed, 20), None);
+    assert_eq!(
+        generation_blocked(&parsed, ds4_core::Variant::Hy4FlashMxq as i32),
+        None
+    );
     assert_eq!(
         rust_parse("chat", &body.replace("video/mp4", "video/webm")).unwrap_err(),
         "video input currently requires video/mp4"

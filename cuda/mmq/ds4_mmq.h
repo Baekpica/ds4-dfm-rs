@@ -465,6 +465,10 @@ int ds4_mmq_iq2_xxs_moe(
 int ds4_mmq_mimo2_down(const void *weights, const float *gate, const float *up,
         const int32_t *ids, float *out, int rows, cudaStream_t stream);
 
+// Hy4's clamped SwiGLU + Q5_K down; rows are token/slot assignments.
+int ds4_mmq_hy4_down(const void *weights, const float *gate, const float *up,
+                     const int32_t *ids, float *out, int rows, int bound, cudaStream_t stream);
+
 // Naive retains BF16 SiLU/product boundaries and the existing Down tile.
 int ds4_mmq_naive_down(const void *weights, const float *gate, const float *up,
         const int32_t *ids, float *out, int rows, cudaStream_t stream);

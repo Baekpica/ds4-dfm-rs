@@ -104,6 +104,23 @@ impl MediaBudget {
         self.outputs.saturating_add(self.transient)
     }
 
+    pub(crate) fn admit(
+        &mut self,
+        patches: u64,
+        outputs: u64,
+        transient: u64,
+        prepare: u64,
+    ) -> Result<(), Error> {
+        let cost = MediaCost {
+            patches,
+            outputs,
+            transient,
+        };
+        self.check(cost, prepare)?;
+        self.retain(cost);
+        Ok(())
+    }
+
     fn room(&self) -> u64 {
         self.limit.saturating_sub(self.patches)
     }

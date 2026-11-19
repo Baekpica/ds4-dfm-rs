@@ -112,6 +112,7 @@ pub struct VisionPromptInput {
     pub frames: Vec<ds4_core::PackedVisual>,
     /// A MiniMax image or video, preprocessed by the prepare pass.
     pub minimax: Option<Arc<ds4_core::minimax_media::Visual>>,
+    pub hy4: Option<Arc<ds4_core::hy4_media::Visual>>,
 }
 
 #[derive(Clone, Debug)]
@@ -559,6 +560,14 @@ fn try_store_live(
 ) -> Result<bool, GenerateError> {
     let live = io.live_tokens();
     if live.len() < store.opt.min_tokens.max(0) as usize {
+        return Ok(false);
+    }
+    // Hy4's image and video placeholders carry no pixel identity in a text KV key.
+    if model_id == ds4_core::Variant::Hy4FlashMxq as u8
+        && live
+            .iter()
+            .any(|&t| matches!(t, ds4_core::hy4_media::IMAGE | ds4_core::hy4_media::VIDEO))
+    {
         return Ok(false);
     }
     let tokens = u32::try_from(live.len())
@@ -1273,8 +1282,13 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         return Some("prompt_embeds requires the GLM GVQ1 serial runtime");
     }
     let syntax = syntax_for_model_id(model_id);
-    if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
-        return Some("video input requires MiMo or MiniMax");
+    if !parsed.videos.is_empty()
+        && !matches!(
+            syntax,
+            ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq | ModelSyntax::Hy4
+        )
+    {
+        return Some("video input requires MiMo, MiniMax or Hy4");
     }
     // Inkling-2 keeps Inkling's syntax but has no audio tower.
     if !parsed.audios.is_empty() && model_id == ds4_core::Variant::Inkling2SmallVq as i32 {
@@ -1294,6 +1308,7 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         | ModelSyntax::Step37
         | ModelSyntax::Ling3Vl
         | ModelSyntax::Mimo2
+        | ModelSyntax::Hy4
         | ModelSyntax::MinimaxVq => None,
         ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
         // V4.1 carries its own vision tower as a sidecar; whether that
@@ -1346,6 +1361,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
+        ModelSyntax::Hy4 => ChatFormat::Hy4,
         ModelSyntax::BeamVq => ChatFormat::Beam,
         ModelSyntax::MinimaxVq => ChatFormat::Minimax,
         ModelSyntax::Gemma4 => ChatFormat::Gemma4,
@@ -1468,6 +1484,7 @@ pub(crate) fn thinking_visible_key(
         ModelSyntax::Step37
             | ModelSyntax::Ling3Vl
             | ModelSyntax::IQuestQ1
+            | ModelSyntax::Hy4
             | ModelSyntax::BeamVq
             | ModelSyntax::Axk2Vq
     ) {
@@ -2129,9 +2146,7 @@ impl From<ds4_core::minimax_media::Error> for PrepareError {
 impl PrepareError {
     fn generation(self) -> GenerateError {
         match self {
-            Self::Capacity => GenerateError::Unsupported(
-                "MiniMax media exceeds live memory capacity; retry later",
-            ),
+            Self::Capacity => GenerateError::Unsupported("media exceeds live memory capacity"),
             Self::Generate(error) => error,
         }
     }
@@ -2156,6 +2171,9 @@ fn prepare_media(
             audios: Vec::new(),
             videos: Vec::new(),
         });
+    }
+    if syntax_for_model_id(engine.model_id()) == ModelSyntax::Hy4 {
+        return prepare_hy4(parsed, tokens, None).map_err(PrepareError::generation);
     }
     if syntax_for_model_id(engine.model_id()) == ModelSyntax::Mimo2 {
         return prepare_mimo(engine, parsed, tokens);
@@ -2285,6 +2303,7 @@ fn prepare_media(
             token_offset,
             frames: Vec::new(),
             minimax: None,
+            hy4: None,
         });
         image_index += 1;
     }
@@ -2328,7 +2347,7 @@ fn prepare_minimax(
     let mut vision = Vec::new();
     for message in &parsed.messages {
         for part in &message.parts {
-            let Some((is_video, data)) = minimax_input(parsed, part)? else {
+            let Some((is_video, data)) = visual_input(parsed, part)? else {
                 continue;
             };
             let visual = if is_video {
@@ -2341,13 +2360,14 @@ fn prepare_minimax(
                 token_offset: 0,
                 frames: Vec::new(),
                 minimax: Some(Arc::new(visual)),
+                hy4: None,
             });
         }
     }
     expand_minimax(engine, parsed, tokens, vision).map_err(PrepareError::Generate)
 }
 
-fn minimax_input<'a>(
+fn visual_input<'a>(
     parsed: &'a ParsedRequest,
     part: &ChatPart,
 ) -> Result<Option<(bool, &'a Arc<[u8]>)>, GenerateError> {
@@ -2376,7 +2396,7 @@ fn expand_minimax(
     let mut visuals = Vec::new();
     for message in &parsed.messages {
         for part in &message.parts {
-            let Some((is_video, data)) = minimax_input(parsed, part)? else {
+            let Some((is_video, data)) = visual_input(parsed, part)? else {
                 continue;
             };
             let input = vision
@@ -2408,6 +2428,76 @@ fn expand_minimax(
     .map_err(GenerateError::Engine)?;
     Ok(MediaPrompt {
         tokens,
+        vision,
+        audios: Vec::new(),
+        videos: Vec::new(),
+    })
+}
+
+fn prepare_hy4(
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+    budget: Option<&mut ds4_core::minimax_media::MediaBudget>,
+) -> Result<MediaPrompt, PrepareError> {
+    let mut unbounded = ds4_core::minimax_media::MediaBudget::new(u64::MAX);
+    let budget = budget.unwrap_or(&mut unbounded);
+    use ds4_core::hy4_media::{self, IMAGE, VIDEO};
+    let count = parsed.images.len() + parsed.videos.len();
+    if count > hy4_media::MAX_INPUTS || !parsed.audios.is_empty() {
+        return Err(GenerateError::BadRequest("Hy4 accepts up to four images or videos").into());
+    }
+    let mut inputs = Vec::new();
+    for message in &parsed.messages {
+        for part in &message.parts {
+            if let Some(input) = visual_input(parsed, part)? {
+                inputs.push(input);
+            }
+        }
+    }
+    let mut inputs = inputs.into_iter();
+    let mut expanded = Vec::new();
+    let mut vision = Vec::with_capacity(count);
+    for (i, &id) in tokens.iter().enumerate() {
+        if id != IMAGE && id != VIDEO {
+            expanded.push(id);
+            continue;
+        }
+        let (video, data) = inputs
+            .next()
+            .ok_or(GenerateError::BadRequest("unbound Hy4 visual marker"))?;
+        if (id == VIDEO) != video
+            || i == 0
+            || tokens[i - 1] != id - 2
+            || tokens.get(i + 1) != Some(&(id - 1))
+        {
+            return Err(GenerateError::BadRequest("invalid Hy4 visual markers").into());
+        }
+        let visual = if video {
+            hy4_media::video_budget(data, budget)
+        } else {
+            hy4_media::still_budget(data, budget)
+        }
+        .map_err(|e| match e {
+            ds4_core::minimax_media::Error::Capacity => PrepareError::Capacity,
+            ds4_core::minimax_media::Error::Invalid(_) => {
+                GenerateError::BadRequest("invalid Hy4 image or video").into()
+            }
+        })?;
+        let start = expanded.len();
+        expanded.extend(std::iter::repeat_n(id, visual.tokens() as usize));
+        vision.push(VisionPromptInput {
+            data: data.clone(),
+            token_offset: start as u32,
+            frames: Vec::new(),
+            minimax: None,
+            hy4: Some(Arc::new(visual)),
+        });
+    }
+    if vision.len() != count || inputs.next().is_some() {
+        return Err(GenerateError::BadRequest("missing Hy4 visual marker").into());
+    }
+    Ok(MediaPrompt {
+        tokens: expanded,
         vision,
         audios: Vec::new(),
         videos: Vec::new(),
@@ -2456,6 +2546,7 @@ fn prepare_mimo(
                         token_offset: 0,
                         frames: Vec::new(),
                         minimax: None,
+                        hy4: None,
                     });
                     index += 1;
                 }
@@ -2548,6 +2639,7 @@ fn prepare_mimo(
                         token_offset: 0,
                         frames: packed,
                         minimax: None,
+                        hy4: None,
                     });
                 }
             }
@@ -2625,6 +2717,9 @@ pub(crate) fn prepare_serial_prompt(
         && (!parsed.images.is_empty() || !parsed.videos.is_empty())
     {
         prepare_minimax(engine, &parsed, tokens, media_budget.as_mut())?
+    } else if syntax == ModelSyntax::Hy4 && (!parsed.images.is_empty() || !parsed.videos.is_empty())
+    {
+        prepare_hy4(&parsed, tokens, media_budget.as_mut())?
     } else {
         prepare_media(engine, &parsed, tokens)?
     };
@@ -4288,6 +4383,7 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
             (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
         }
         ds4_core::ModelFamily::Dots3Note => dots3,
+        ds4_core::ModelFamily::Hy4 => sidecar && (1..=5).contains(&draft),
         ds4_core::ModelFamily::Inkling
         | ds4_core::ModelFamily::Step37
         | ds4_core::ModelFamily::NaiveN05 => sidecar,
@@ -4564,7 +4660,7 @@ impl<'a> NativeDecode<'a> {
         let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
         Ok(serial_mtp_ready(
             family,
-            self.model.mtp().is_some() || self.model.dspark().is_some(),
+            self.model.drafter_path().is_some(),
             dots3,
             self.model.mtp_draft_tokens(),
         ) && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none())
@@ -4816,6 +4912,10 @@ impl DecodeIo for NativeDecode<'_> {
         self.reuse = ReuseTaken::Cold;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         // MiniMax images and videos arrive preprocessed, in prompt order.
+        let hy4 = images
+            .iter()
+            .filter_map(|image| image.hy4.as_deref().map(|v| (image.token_offset, v)))
+            .collect::<Vec<_>>();
         let minimax = images
             .iter()
             .filter_map(|image| image.minimax.as_deref())
@@ -4847,7 +4947,9 @@ impl DecodeIo for NativeDecode<'_> {
             .collect::<Vec<_>>();
         let started = Instant::now();
         let session = self.session()?;
-        let result = if !minimax.is_empty() {
+        let result = if !hy4.is_empty() {
+            session.sync_hy4_media(&tokens, &hy4)
+        } else if !minimax.is_empty() {
             session.sync_minimax_media(&tokens, &minimax)
         } else if videos_in.is_empty() {
             session.sync_media(&tokens, &images, &audios)
@@ -6364,6 +6466,19 @@ mod disk_sync_tests {
     }
 
     #[test]
+    fn hy4_visual_tokens_have_no_text_disk_key() {
+        let (dir, mut store) = store("hy4-visual");
+        for pad in [ds4_core::hy4_media::IMAGE, ds4_core::hy4_media::VIDEO] {
+            let mut io = FakeSerial::new(&[1, 2, 3, 4, pad, 6, 7, 8], b"same text");
+            let id = ds4_core::Variant::Hy4FlashMxq as u8;
+            assert!(!try_store_continued(&mut io, &mut store, (id, 4, 4096)).unwrap());
+            assert!(store.entries().is_empty());
+            assert!(io.events.is_empty());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn continued_store_requires_an_exact_frontier_and_advances_only_on_success() {
         let (dir, mut continued_store) = store("continued");
         let mut io = FakeSerial::new(&[1, 2, 3, 4, 5, 6, 7], b"continued");
@@ -7402,6 +7517,7 @@ mod mimo_prepare {
             token_offset: 0,
             frames: Vec::new(),
             minimax: Some(visual.clone()),
+            hy4: None,
         };
         let tokens = vec![ds4_core::minimax_media::IMAGE_PAD];
         let prepared =

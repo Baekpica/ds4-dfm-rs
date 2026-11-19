@@ -1078,6 +1078,12 @@ gate-mimo2: test-mimo2-sync-keep
 gate-inkling2: test-inkling2-sync-keep test-inkling2-banks test-inkling2-res test-inkling2-attn test-inkling2-projections
 gate-gemma4: test-gemma4-ring test-gemma4-memory test-gemma4-mtp-control
 
+.PHONY: gate-hy4
+gate-hy4: tests/test_hy4_cuda
+	./tests/test_hy4_cuda
+	cargo test -p ds4-core --lib hy4
+	cargo test -p ds4-server --test hy4_output
+
 .PHONY: test-gemma4-memory
 test-gemma4-memory:
 	python3 tests/test_gemma4_memory.py
@@ -1941,12 +1947,15 @@ tests/inkling2_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/inkling2_quality" $@
 
-tests/minimax_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
-	cargo rustc -p ds4-cli --example minimax_quality --release --features native -- \
+tests/test_hy4_cuda: tests/test_hy4_cuda.cu ds4_hy4.h ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+tests/minimax_quality tests/hy4_quality: tests/%: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example $* --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_quality" $@
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
 
 tests/mimo2_vq_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example mimo2_vq_quality --release --features native -- \
@@ -2308,6 +2317,9 @@ INKLING2_NATIVE_DEPS = ds4_inkling2.h ds4_inkling2_bind.inc ds4_inkling2_kv.inc 
 ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_res.cuh cuda/inkling2_draft.cuh \
 	cuda/inkling2_vit_attn.cuh cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
+ds4.o ds4_cpu.o: ds4_hy4.h ds4_hy4_bind.inc ds4_hy4_vision.inc ds4_hy4_graph.inc ds4_hy4_payload.inc ds4_hy4_session.inc ds4_hy4_draft.inc ds4_hy4_batch.inc ds4_hy4_bank_payload.inc
+ds4_cuda.o ds4_cuda_range_test.o: ds4_hy4.h ds4_hy4_gpu.cuh cuda/hy4_moe.cuh
+
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
@@ -2786,7 +2798,7 @@ BUILD_PROGRAMS := \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
     tests/gemma4_head_rows tests/gemma4_moe_persist tests/gemma4_mtp_gate tests/gemma4_q4_decode \
-    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/hy4_quality tests/test_hy4_cuda tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \

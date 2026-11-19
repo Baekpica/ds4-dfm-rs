@@ -286,6 +286,27 @@ int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t len) {
     (void)s; (void)keep; (void)err; (void)len;
     STUB("ds4_session_ling31_commit");
 }
+int ds4_session_hy4_trial(ds4_session *s, int first, int max_tokens,
+                          int *tokens, int *target, int cap, char *err, size_t len) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    (void)err; (void)len;
+    STUB("ds4_session_hy4_trial");
+}
+int ds4_session_hy4_commit(ds4_session *s, int keep, char *err, size_t len) {
+    (void)s; (void)keep; (void)err; (void)len;
+    STUB("ds4_session_hy4_commit");
+}
+int ds4_session_hy4_encode_vision(ds4_session *s, const float *pixels, uint32_t gh, uint32_t gw,
+                                  float *rows, char *err, size_t len) {
+    (void)s; (void)pixels; (void)gh; (void)gw; (void)rows; (void)err; (void)len;
+    STUB("ds4_session_hy4_encode_vision");
+}
+int ds4_session_hy4_sync_media(ds4_session *s, const int32_t *tokens, int32_t n,
+                               const struct ds4_hy4_span *spans, uint32_t count,
+                               uint64_t tag, char *err, size_t len) {
+    (void)s; (void)tokens; (void)n; (void)spans; (void)count; (void)tag; (void)err; (void)len;
+    STUB("ds4_session_hy4_sync_media");
+}
 int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen) {
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_mimo2_commit");

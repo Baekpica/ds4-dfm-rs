@@ -29,6 +29,7 @@ pub enum TensorError {
     Mimo2Vq(&'static str),
     Gemma4Vq(&'static str),
     Inkling2Vq(&'static str),
+    Hy4(String),
 }
 
 impl TensorError {
@@ -50,6 +51,7 @@ impl TensorError {
             TensorError::Axk2Vq(reason) => format!("axk2-vq {reason}"),
             TensorError::Mimo2Vq(reason) => format!("mimo2-vq {reason}"),
             TensorError::Gemma4Vq(reason) => format!("gemma4-vq {reason}"),
+            TensorError::Hy4(reason) => format!("hy4 {reason}"),
             TensorError::Inkling2Vq(reason) => format!("inkling2-vq {reason}"),
         }
     }
@@ -390,6 +392,9 @@ fn file_len(path: &Path) -> Result<u64, TensorError> {
 impl TensorInventory {
     pub fn open(path: &Path) -> Result<Self, TensorError> {
         if path.is_dir() {
+            if crate::hy4::is_release(path) {
+                return crate::hy4::inventory(path);
+            }
             if crate::beam_vq::is_release(path) {
                 return crate::beam_vq::open_dir(path);
             }
@@ -420,6 +425,9 @@ impl TensorInventory {
             return crate::glm_vq::open_dir(path);
         }
         let g = GgufFile::open(path)?;
+        if g.get_string("hy4_mxq.part") == Some(b"trunk") {
+            return crate::hy4::inventory(path);
+        }
         Self::from_file(path, &g)
     }
 

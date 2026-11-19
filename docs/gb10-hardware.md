@@ -124,6 +124,7 @@ by MMA latency.
 | Device | Limit |
 |---|---|
 | NVMe `ESL04TBTLCZ` (3.6 TB) | `O_DIRECT`: 6.3 GB/s sequential; 6.2 GB/s of 72 KB random reads at eight in flight (84K IOPS, ~95 µs per wave); ~90K random 4 KiB IOPS; `STATX_DIOALIGN` 512-byte offsets |
+| Same drive, random 4 KiB over one 16.5 GB file (2026-11-19) | 16K IOPS at one read in flight, 236K at 32, 533K at 128, 688K at 512. Phison E27T, DRAM-less: its FTL map lives in host memory (HMB). Rotating four such files (Hy4's Engram tables) misses that map: ~330K at 512 in flight, and a second ring on another core does not help |
 
 ## What the limits imply
 
@@ -144,6 +145,9 @@ by MMA latency.
   model loads under the memory guard, one resident model at a time.
 - **Clock policy changes the peaks.** Compare variants at the same clock and
   state it.
+- **Random-read rate depends on the span.** The SSD's map cache covers tens
+  of GB, so a random-read probe over one file overstates a workload that
+  rotates over more; probe the rotation the workload uses.
 
 ## Re-measuring
 

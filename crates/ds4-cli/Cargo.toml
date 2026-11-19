@@ -94,6 +94,10 @@ name = "beam_quality"
 required-features = ["native"]
 
 [[example]]
+name = "hy4_quality"
+required-features = ["native"]
+
+[[example]]
 name = "minimax_quality"
 required-features = ["native"]
 

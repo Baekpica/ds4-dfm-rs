@@ -1,6 +1,4 @@
-//! The Gemma-4 MTP gate: drafting may change acceptance and speed, never
-//! the target's token stream. `serving_check` runs it when the drafter is
-//! bound; `examples/gemma4_mtp_gate.rs` runs it on its own.
+//! Sidecar drafting checks for target draws, accepted state, snapshots and stops.
 
 use super::*;
 
@@ -18,9 +16,17 @@ pub struct MtpBlock {
     pub stop_payload_equal: bool,
 }
 
-/// The MTP losslessness evidence: the drafting stream, the accepted counts
-/// and the state checks. `block` is None when no verify accepted three or
-/// more tokens inside the budget.
+/// Width-matched target draws and their agreement with ordinary decode.
+#[derive(Clone, Debug)]
+pub struct TargetReplay {
+    pub greedy_rows: usize,
+    pub sampled_rows: usize,
+    pub greedy_stream_equal: bool,
+    pub sampled_stream_equal: bool,
+}
+
+/// The drafting stream, accepted counts and state checks. `block` is None
+/// when no verify accepted three or more tokens inside the budget.
 #[derive(Clone, Debug)]
 pub struct MtpReport {
     pub ids: Vec<i32>,
@@ -30,6 +36,7 @@ pub struct MtpReport {
     pub snapshot_restore: bool,
     pub sampling_ids: Vec<i32>,
     pub sampling_counts: Vec<usize>,
+    pub verify_rows: Option<TargetReplay>,
 }
 
 impl MtpReport {
@@ -336,6 +343,97 @@ pub fn gemma4_mtp_gate(model: &Model, prompt: &[i32], ctx: i32, n: usize) -> Res
     if model.mtp().is_none() {
         return Err(fail("no Gemma-4 drafter is bound"));
     }
+    sidecar_gate(model, prompt, ctx, n)
+}
+
+// Compare each emitted token to a separate sample from its verified row. Replaying
+// with a host cut exposes intermediate logits without changing the verify width.
+fn replay_verify_rows(
+    model: &Model,
+    buf: &TokenBuffer,
+    ctx: i32,
+    n: usize,
+    sampler: crate::Sampler,
+) -> Result<usize> {
+    let eos = model.token_eos();
+    let vocab = model.vocab().n_vocab() as usize;
+    let mut run = model.session(ctx)?;
+    let mut replay = model.session(ctx)?;
+    run.sync(buf)?;
+    let mut snap = SessionSnapshot::new()?;
+    let (mut rng, mut reference) = (MTP_SEED, MTP_SEED);
+    let mut first = run.sample(
+        sampler.temperature,
+        sampler.top_k,
+        sampler.top_p,
+        sampler.min_p,
+        &mut rng,
+    );
+    let pick = |logits: &[f32], rng: &mut u64| crate::sample::draw(logits, &sampler, rng, [-1, -1]);
+    if first != pick(&run.copy_logits(vocab)?, &mut reference) || reference != rng {
+        return Err(fail("the first target draw or RNG differs"));
+    }
+    let mut emitted = 0;
+    while emitted < n && !model.token_is_stop(first) {
+        run.save_snapshot(&mut snap)?;
+        let budget = (n - emitted) as i32;
+        let start_rng = rng;
+        let tokens =
+            run.eval_speculative(first, budget, eos, sampler, &mut rng, &mut |p| p.len())?;
+        if tokens.is_empty() || tokens[0] != first {
+            return Err(fail("missing initiating token"));
+        }
+        let mut next = -1;
+        for i in 0..tokens.len() {
+            replay.load_snapshot(&snap)?;
+            let mut replay_rng = start_rng;
+            let cut = replay.eval_speculative(
+                first,
+                budget,
+                eos,
+                sampler,
+                &mut replay_rng,
+                &mut |p| p.len().min(i + 1),
+            )?;
+            if cut != tokens[..=i] {
+                return Err(fail(format!("row {i} replayed a different prefix")));
+            }
+            let logits = replay.copy_logits(vocab)?;
+            next = pick(&logits, &mut reference);
+            if i + 1 < tokens.len() && next != tokens[i + 1] {
+                return Err(fail(
+                    "a draft differs from the independently sampled target row",
+                ));
+            }
+            if i + 1 == tokens.len() && run.copy_logits(vocab)? != logits {
+                return Err(fail("published verify logits differ after a prefix replay"));
+            }
+        }
+        first = run.sample(
+            sampler.temperature,
+            sampler.top_k,
+            sampler.top_p,
+            sampler.min_p,
+            &mut rng,
+        );
+        if first != next || reference != rng {
+            return Err(fail(format!(
+                "target handoff at {} got {first}, expected {next}, rng_match={}",
+                emitted + tokens.len(),
+                rng == reference
+            )));
+        }
+        emitted += tokens.len();
+    }
+    if emitted == 0 {
+        return Err(fail(
+            "the target stopped before any verify row could be checked",
+        ));
+    }
+    Ok(emitted)
+}
+
+pub(super) fn sidecar_gate(model: &Model, prompt: &[i32], ctx: i32, n: usize) -> Result<MtpReport> {
     if prompt.len() < 2 {
         return Err(fail("the MTP gate needs a prompt of at least two tokens"));
     }
@@ -348,14 +446,31 @@ pub fn gemma4_mtp_gate(model: &Model, prompt: &[i32], ctx: i32, n: usize) -> Res
     let vocab = usize::try_from(model.vocab().n_vocab()).unwrap_or(0);
     let eos = model.token_eos();
     // The engine's switch reading (ds4_gemma4_knob_bool): 1, true or on.
-    let exact = matches!(
-        std::env::var("DS4_GEMMA4_EXACT_PREFILL").as_deref(),
-        Ok("1" | "true" | "on")
-    );
+    let exact = model.family() == ModelFamily::Gemma4Vq
+        && matches!(
+            std::env::var("DS4_GEMMA4_EXACT_PREFILL").as_deref(),
+            Ok("1" | "true" | "on")
+        );
+
+    let sampler = crate::Sampler {
+        temperature: MTP_TEMPERATURE,
+        top_k: 0,
+        top_p: MTP_TOP_P,
+        min_p: 0.0,
+    };
+    let sampled_n = (n / 2).max(4);
+    let replay = if model.family() == ModelFamily::Hy4 {
+        Some((
+            replay_verify_rows(model, &buf, ctx, n, crate::Sampler::GREEDY)?,
+            replay_verify_rows(model, &buf, ctx, sampled_n, sampler)?,
+        ))
+    } else {
+        None
+    };
 
     let plain = mtp_plain_greedy(model, &buf, ctx, n)?;
     let cap = mtp_capture(model, &buf, ctx, n, eos)?;
-    if plain != cap.ids {
+    if replay.is_none() && plain != cap.ids {
         return Err(fail(format!(
             "drafting moved the greedy stream: plain {:?}, drafting {:?}",
             plain, cap.ids
@@ -478,24 +593,24 @@ pub fn gemma4_mtp_gate(model: &Model, prompt: &[i32], ctx: i32, n: usize) -> Res
         return Err(fail("the snapshot stream differs from the fresh stream"));
     }
 
-    let sampler = crate::Sampler {
-        temperature: MTP_TEMPERATURE,
-        top_k: 0,
-        top_p: MTP_TOP_P,
-        min_p: 0.0,
-    };
-    let sampled_n = (n / 2).max(4);
     let sampled_plain = mtp_plain_sampled(model, &buf, ctx, sampled_n, sampler)?;
     let (sampling_ids, sampling_counts) =
         mtp_spec_sampled(model, &buf, ctx, sampled_n, eos, sampler)?;
-    if sampled_plain != sampling_ids {
+    if replay.is_none() && sampled_plain != sampling_ids {
         return Err(fail(format!(
             "sampled ids differ: plain {:?}, drafting {:?}",
             sampled_plain, sampling_ids
         )));
     }
 
+    let verify_rows = replay.map(|(greedy_rows, sampled_rows)| TargetReplay {
+        greedy_rows,
+        sampled_rows,
+        greedy_stream_equal: plain == cap.ids,
+        sampled_stream_equal: sampled_plain == sampling_ids,
+    });
     Ok(MtpReport {
+        verify_rows,
         ids: cap.ids,
         counts: cap.counts,
         block,

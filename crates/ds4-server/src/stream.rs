@@ -37,6 +37,7 @@ pub enum ChatFormat {
     K2Horizon,
     Inkling,
     IQuestQ1,
+    Hy4,
     Beam,
     Minimax,
     Gemma4,
@@ -87,6 +88,7 @@ pub fn think_start(fmt: ChatFormat) -> &'static str {
         // The model opens its own thought channel, so the opener is part of
         // the generated text and must be stripped from the reasoning field.
         ChatFormat::Gemma4 => crate::tools::gemma4::THOUGHT_OPEN,
+        ChatFormat::Hy4 => "<think:opensource>",
         _ => "<think>",
     }
 }
@@ -99,6 +101,7 @@ pub fn think_end(fmt: ChatFormat) -> &'static str {
         ChatFormat::Beam => crate::tools::beam::END,
         ChatFormat::Minimax => crate::tools::minimax::THINK_END,
         ChatFormat::Gemma4 => crate::tools::gemma4::THOUGHT_CLOSE,
+        ChatFormat::Hy4 => "</think:opensource>",
         _ => "</think>",
     }
 }
@@ -910,8 +913,7 @@ pub struct OpenaiStream {
 pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
     OpenaiStream {
         channels: Channels::for_format(r.chat_format),
-        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
-            .then(iquest::Channels::default),
+        iquest: iquest::Channels::for_tools(r.chat_format, r.has_tools),
         minimax: None,
         sent: ToolProjection::default(),
         failed: false,
@@ -1306,8 +1308,7 @@ pub fn anthropic_sse_start_live(
     sse_event(w, "message_start", &msg);
     AnthropicStream {
         channels: Channels::for_format(r.chat_format),
-        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
-            .then(iquest::Channels::default),
+        iquest: iquest::Channels::for_tools(r.chat_format, r.has_tools),
         sent: ToolProjection::default(),
         failed: false,
         mode: if think_mode_enabled(r.think_mode) {
@@ -1712,8 +1713,7 @@ pub fn responses_stream_init(
 ) -> ResponsesStream {
     ResponsesStream {
         channels: Channels::for_format(r.chat_format),
-        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
-            .then(iquest::Channels::default),
+        iquest: iquest::Channels::for_tools(r.chat_format, r.has_tools),
         mode: if think_mode_enabled(r.think_mode) {
             RespMode::Thinking
         } else {

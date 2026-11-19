@@ -2116,7 +2116,10 @@ fn serial_media_budget(
     cfg: &ServerConfig,
     engine: &dyn DecodeIo,
 ) -> Option<ds4_core::minimax_media::MediaBudget> {
-    if syntax_for_model_id(engine.model_id()) != ModelSyntax::MinimaxVq {
+    if !matches!(
+        syntax_for_model_id(engine.model_id()),
+        ModelSyntax::MinimaxVq | ModelSyntax::Hy4
+    ) {
         return None;
     }
     let probe = engine.serial_session_probe();

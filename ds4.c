@@ -76,6 +76,7 @@
 #include "ds4_minimax.h"
 #include "ds4_inkling2.h"
 #include "ds4_axk2.h"
+#include "ds4_hy4.h"
 #include "ds4_mimo2vq.h"
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
@@ -396,6 +397,7 @@ typedef enum {
     DS4_MODEL_FAMILY_AXK2_VQ     = 18,
     DS4_MODEL_FAMILY_GEMMA4      = 19,
     DS4_MODEL_FAMILY_INKLING2_VQ = 20,
+    DS4_MODEL_FAMILY_HY4         = 21,
 } ds4_model_family;
 
 typedef enum {
@@ -428,6 +430,7 @@ typedef enum {
     DS4_VARIANT_GEMMA4_A4B_VQ   = 23,
     /* Mirrors the Rust Variant::Inkling2SmallVq. */
     DS4_VARIANT_INKLING2_VQ     = 24,
+    DS4_VARIANT_HY4_MXQ         = 25,
 } ds4_variant;
 
 typedef struct {
@@ -651,6 +654,20 @@ enum { LING3VL_LAYERS = 42, LING3VL_LAYER_GROUP = 6, LING3VL_MLA_LAYERS = 7 };
 /* Hybrid attention: a block closing a group of six is MLA, the other 35 are
  * recurrent KDA.  n_head_dim is the stored latent row (kv_lora + rope), not a
  * per-head key width; n_key_mla/n_value_mla carry the MLA head geometry. */
+static const ds4_shape DS4_SHAPE_HY4 = {
+    .name = "Hy4-flash-MXQ", .family = DS4_MODEL_FAMILY_HY4, .variant = DS4_VARIANT_HY4_MXQ,
+    .n_layer = 42, .n_embd = 3072, .n_vocab = 120832, .n_head = 32, .n_head_kv = 1,
+    .n_head_dim = 576, .n_value_dim = 512, .n_rot = 64, .n_lora_q = 1024,
+    .n_expert = 512, .n_expert_used = 16, .n_expert_shared = 1,
+    .n_ff_exp = 1536, .n_ff_dense = 13824, .n_ff_shexp = 1536, .n_swa = 512,
+    .n_indexer_head = 16, .n_indexer_head_dim = 128, .n_indexer_top_k = 2048,
+    .n_hc = 4, .n_leading_dense = 1, .n_kv_lora = 512, .n_key_mla = 256, .n_value_mla = 256,
+    .n_swa_head = 64, .n_swa_kv_lora = 512, .n_swa_key_mla = 256, .n_full_attn_count = 12,
+    .use_rope = true, .use_qk_norm = true, .rms_eps = 1e-5f, .hc_eps = 1e-6f,
+    .expert_weight_scale = 3.998f, .swiglu_clamp_exp = 10, .rope_freq_base = 1e7f,
+    .rope_freq_base_swa = 1e4f, .rope_scale_factor = 1, .rope_orig_ctx = UINT64_C(1048576),
+};
+
 static const ds4_shape DS4_SHAPE_LING30_FLASH_VL = {
     .name = "Ling-3.0-flash-VL",
     .family = DS4_MODEL_FAMILY_LING3VL,
@@ -3034,6 +3051,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_NAIVE_N05_FLASH:
         g_ds4_shape = DS4_SHAPE_NAIVE_N05_FLASH;
+        break;
+    case DS4_VARIANT_HY4_MXQ:
+        g_ds4_shape = DS4_SHAPE_HY4;
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
@@ -5599,6 +5619,8 @@ typedef struct {
     /* DeepSeek V4.1 engram gate, only on the engram layers (ids from
      * metadata; core_bind_v41.c:94-98), and the routed experts' single VQ
      * blob (the per-expert gate/up/down tensors do not exist in V4.1). */
+    ds4_tensor *ffn_routed_down, *ffn_routed_up;
+    ds4_tensor *engram_kv_bias, *engram_hc_scale, *engram_pre_gamma, *engram_lookup_norm;
     ds4_tensor *engram_wkv;
     ds4_tensor *engram_q;
     ds4_tensor *engram_k;
@@ -10114,6 +10136,7 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
 #include "ds4_minimax_bind.inc"
 #include "ds4_inkling2_bind.inc"
 #include "ds4_axk2_bind.inc"
+#include "ds4_hy4_bind.inc"
 
 static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
                                   const char *suffix) {
@@ -10649,6 +10672,10 @@ static void weights_bind(
         return;
     }
 
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        hy4_bind(w, m);
+        return;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         axk2_bind(w, m);
         return;
@@ -37418,6 +37445,9 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? inkling2_memory(ctx, inkling2_prefill_cap(ctx)) : m;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? hy4_memory(ctx, hy4_prefill_cap(ctx)) : m;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? axk2_memory(ctx, axk2_prefill_cap(ctx)) : m;
     }
@@ -37906,6 +37936,7 @@ typedef struct {
 #endif
 
 struct ds4_engine {
+    ds4_host_hy4 hy4;
     ds4_model model;
     ds4_model mtp_model;
     ds4_model dspark_model;
@@ -37931,6 +37962,7 @@ struct ds4_engine {
     ds4_dspark_weights dspark_weights;
     ds4_naive_draft naive_draft;
     ds4_beam_draft beam_draft;
+    ds4_hy4_draft hy4_draft;
     ds4_ple_store *qwen_ple_store;
     ds4_qwen38_ple_cuda *qwen_ple_cuda;
     ds4_backend backend;
@@ -45867,6 +45899,10 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
         const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
         return inkling2_memory(ctx, inkling2_prefill_cap(ctx));
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
+        return hy4_memory(ctx, hy4_prefill_cap(ctx));
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
         return axk2_memory(ctx, axk2_prefill_cap(ctx));
@@ -46923,6 +46959,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_minimax_graph.inc"
 #include "ds4_inkling2_graph.inc"
 #include "ds4_axk2_graph.inc"
+#include "ds4_hy4_graph.inc"
 #include "ds4_gemma4_stream.inc"
 #include "ds4_gemma4_graph.inc"
 #include "ds4_mimo2_dflash.inc"
@@ -48455,6 +48492,7 @@ struct ds4_session {
     bool minimax_graph_ready;
     ds4_inkling2_graph inkling2_graph;
     bool inkling2_graph_ready;
+    ds4_hy4_graph hy4_graph;
     ds4_axk2_graph axk2_graph;
     bool axk2_graph_ready;
     ds4_gemma4_graph *gemma4_graph;
@@ -53268,10 +53306,12 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_beam_payload.inc"
 #include "ds4_minimax_payload.inc"
 #include "ds4_axk2_payload.inc"
+#include "ds4_hy4_payload.inc"
 #include "ds4_inkling2_payload.inc"
 #include "ds4_beam_batch.inc"
 #include "ds4_minimax_batch.inc"
 #include "ds4_axk2_batch.inc"
+#include "ds4_hy4_batch.inc"
 #include "ds4_gemma4_batch.inc"
 #include "ds4_inkling2_batch.inc"
 
@@ -54039,6 +54079,10 @@ static bool ds4_session_is_inkling2(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ;
 }
 
+static bool ds4_session_is_hy4(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4;
+}
+
 static bool ds4_session_is_axk2(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ;
 }
@@ -54143,7 +54187,7 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -54616,7 +54660,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -54823,7 +54867,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
         ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -56428,6 +56472,10 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
         return s->checkpoint_valid && s->inkling2_graph_ready
             ? inkling2_payload_bytes(&s->inkling2_graph, (uint32_t)s->checkpoint.len) : 0;
     }
+    if (ds4_session_is_hy4(s)) {
+        return s->checkpoint_valid && s->hy4_graph.ready
+            ? hy4_payload_bytes(&s->hy4_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
     if (ds4_session_is_axk2(s)) {
         return s->checkpoint_valid && s->axk2_graph_ready
             ? axk2_payload_bytes(&s->axk2_graph, (uint32_t)s->checkpoint.len) : 0;
@@ -56671,6 +56719,10 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
     if (ds4_session_is_minimax(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "MiniMax has no snapshot-ready checkpoint"); return 1; }
         return minimax_payload_save(&s->minimax_graph, s->checkpoint.v, (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
+    if (ds4_session_is_hy4(s)) {
+        if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "Hy4 has no snapshot-ready checkpoint"); return 1; }
+        return hy4_payload_save(&s->hy4_graph, s->checkpoint.v, (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
     if (ds4_session_is_axk2(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "A.X-K2 has no snapshot-ready checkpoint"); return 1; }
@@ -57210,6 +57262,10 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
         s->inkling2_graph.failed = true; s->inkling2_graph.position = 0;
     }
+    if (ds4_session_is_hy4(s)) {
+        s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
+        s->hy4_graph.failed = true; s->hy4_graph.position = 0;
+    }
     if (ds4_session_is_axk2(s)) {
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
         s->axk2_graph.failed = true; s->axk2_graph.position = 0;
@@ -57319,7 +57375,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_axk2(s) || ds4_session_is_gemma4(s) || ds4_session_is_inkling2(s)) {
+        ds4_session_is_axk2(s) || ds4_session_is_hy4(s) || ds4_session_is_gemma4(s) || ds4_session_is_inkling2(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
@@ -57337,6 +57393,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             ? minimax_payload_restore(&s->minimax_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_inkling2(s)
             ? inkling2_payload_restore(&s->inkling2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_hy4(s)
+            ? hy4_payload_restore(&s->hy4_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_axk2(s)
             ? axk2_payload_restore(&s->axk2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_naive(s)
@@ -59070,6 +59128,7 @@ struct ds4_batch_ctx {
     ds4_ling31_batch_runtime *ling31; /* shared scratch, bank-owned state and latent rows */
     ds4_beam_batch_runtime *beam; /* shared scratch, bank-owned KV rows */
     ds4_minimax_batch_runtime *minimax; /* shared scratch, bank-owned index keys and K/V pages */
+    ds4_hy4_batch_runtime *hy4;
     ds4_axk2_batch_runtime *axk2; /* shared scratch, bank-owned latent and index-key rows */
     ds4_gemma4_batch_runtime *gemma4; /* shared scratch, bank-owned KV of both layouts */
     ds4_inkling2_batch_runtime *inkling2; /* shared scratch, bank-owned blocks, rings and histories */
@@ -59845,6 +59904,7 @@ static int ling3vl_cont_bank_restore_payload(
 #include "ds4_beam_bank_payload.inc"
 #include "ds4_minimax_bank_payload.inc"
 #include "ds4_axk2_bank_payload.inc"
+#include "ds4_hy4_bank_payload.inc"
 #include "ds4_gemma4_bank_payload.inc"
 #include "ds4_inkling2_bank_payload.inc"
 #define GLM53_BATCH_API
@@ -60000,6 +60060,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->beam) return beam_bank_payload_bytes(ctx, bank);
     if (ctx->minimax) return minimax_bank_payload_bytes(ctx, bank);
     if (ctx->inkling2) return inkling2_bank_payload_bytes(ctx, bank);
+    if (ctx->hy4) return hy4_bank_payload_bytes(ctx, bank);
     if (ctx->axk2) return axk2_bank_payload_bytes(ctx, bank);
     if (ctx->gemma4) return gemma4_bank_payload_bytes(ctx, bank);
     if (ctx->glm53) { return glm53_bank_payload_bytes(ctx, bank); }
@@ -60073,6 +60134,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return minimax_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->inkling2)
         return inkling2_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->hy4)
+        return hy4_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->axk2)
         return axk2_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->gemma4)
@@ -60190,6 +60253,8 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return minimax_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->inkling2)
         return inkling2_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->hy4)
+        return hy4_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->axk2)
         return axk2_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->gemma4)
@@ -61190,6 +61255,10 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
         return e->backend == DS4_BACKEND_CUDA
             ? inkling2_memory((uint32_t)ctx, inkling2_prefill_cap((uint32_t)ctx)).total_bytes : 0;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        return e->backend == DS4_BACKEND_CUDA
+            ? hy4_memory((uint32_t)ctx, hy4_prefill_cap((uint32_t)ctx)).total_bytes : 0;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         return e->backend == DS4_BACKEND_CUDA
             ? axk2_memory((uint32_t)ctx, axk2_prefill_cap((uint32_t)ctx)).total_bytes : 0;
@@ -62042,7 +62111,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl ||
-        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->axk2 ||
+        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->hy4 || ctx->axk2 ||
         ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
         return DS4_RECLAIM_UNSUPPORTED;
     }
@@ -62940,19 +63009,22 @@ static int minimax_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_se
 
 /* Banks after graph 0 add only their latent and index-key rows; the fit
  * drops banks until they and the serving headroom fit free memory. */
-static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
+static int mla_bank_ctx_create(ds4_engine *e, int ctx_size, int max_seq,
         axk2_fit_mode mode, ds4_batch_ctx **out, char *err, size_t errlen) {
 #define ABC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const bool hy4 = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4;
+    const char *name = hy4 ? "Hy4" : "A.X-K2";
     const uint32_t ctx = (uint32_t)ctx_size;
-    uint32_t cap = axk2_prefill_cap(ctx);
-    uint64_t base = axk2_memory(ctx, cap).total_bytes;
+    uint32_t cap = hy4 ? hy4_prefill_cap(ctx) : axk2_prefill_cap(ctx);
+    ds4_context_memory mem = hy4 ? hy4_memory(ctx, cap) : axk2_memory(ctx, cap);
+    uint64_t base = mem.total_bytes;
     if (ctx_size <= 0 || !base) {
-        ABC_ERR("batch_ctx_create: A.X-K2 needs a valid context");
+        ABC_ERR("batch_ctx_create: %s needs a valid context", name);
         return 1;
     }
     uint32_t chosen = (uint32_t)max_seq;
     if (chosen > AXK2_BANK_MAX && mode == AXK2_STRICT_BANKS) {
-        ABC_ERR("batch_ctx_create: A.X-K2 supports at most %d banks", AXK2_BANK_MAX);
+        ABC_ERR("batch_ctx_create: %s supports at most %d banks", name, AXK2_BANK_MAX);
         return 1;
     }
     if (chosen > AXK2_BANK_MAX) { chosen = AXK2_BANK_MAX; }
@@ -62962,21 +63034,28 @@ static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
         free_b = free_b > outstanding ? free_b - outstanding : 0;
         const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
         // Fewer rows before fewer banks: the chunk halves until one bank fits.
-        const uint32_t fitted = axk2_fit_cap(ctx, cap, headroom, free_b);
+        uint32_t fitted = cap;
+        if (hy4) {
+            while (fitted > 1 && hy4_memory(ctx, fitted).total_bytes + headroom > free_b) fitted /= 2;
+        } else {
+            fitted = axk2_fit_cap(ctx, cap, headroom, free_b);
+        }
         if (fitted != cap) {
-            fprintf(stderr, "ds4: A.X-K2 prefill chunk %u instead of %u fits a %u-token bank in %.2f GiB\n", fitted,
+            fprintf(stderr, "ds4: %s prefill chunk %u instead of %u fits a %u-token bank in %.2f GiB\n", name, fitted,
                     cap, ctx, (double)free_b / 1073741824.0);
             cap = fitted;
-            base = axk2_memory(ctx, cap).total_bytes;
+            mem = hy4 ? hy4_memory(ctx, cap) : axk2_memory(ctx, cap);
+            base = mem.total_bytes;
         }
-        while (chosen && base + (uint64_t)(chosen - 1u) * axk2_bank_bytes(ctx) + headroom > free_b) { chosen--; }
+        const uint64_t extra = hy4 ? mem.raw_bytes + mem.compressed_bytes : axk2_bank_bytes(ctx);
+        while (chosen && base + (uint64_t)(chosen - 1u) * extra + headroom > free_b) { chosen--; }
         if (!chosen || (mode == AXK2_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
-            ABC_ERR("batch_ctx_create: A.X-K2 banks and headroom exceed free memory"
-                    " (ctx=%d max_seq=%d free=%.2f GiB)", ctx_size, max_seq, (double)free_b / 1073741824.0);
+            ABC_ERR("batch_ctx_create: %s banks and headroom exceed free memory"
+                    " (ctx=%d max_seq=%d free=%.2f GiB)", name, ctx_size, max_seq, (double)free_b / 1073741824.0);
             return 1;
         }
-        fprintf(stderr, "ds4: A.X-K2 banks=%u (%.2f GiB spare)\n", chosen,
-                (double)(free_b - (base + (uint64_t)(chosen - 1u) * axk2_bank_bytes(ctx) + headroom)) /
+        fprintf(stderr, "ds4: %s banks=%u (%.2f GiB spare)\n", name, chosen,
+                (double)(free_b - (base + (uint64_t)(chosen - 1u) * extra + headroom)) /
                     1073741824.0);
     }
     ds4_batch_ctx *bc = xcalloc(1, sizeof(*bc));
@@ -62987,18 +63066,20 @@ static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
     bc->seq_cap = ctx;
     bc->max_seq = chosen;
     for (;;) {
-        bc->axk2 = axk2_batch_create(e, ctx, bc->max_seq, cap);
-        if (bc->axk2) { break; }
+        if (hy4) bc->hy4 = hy4_batch_create(ctx, bc->max_seq, cap);
+        else bc->axk2 = axk2_batch_create(e, ctx, bc->max_seq, cap);
+        if (bc->hy4 || bc->axk2) break;
         if (mode == AXK2_STRICT_BANKS || bc->max_seq <= 1u) {
-            ABC_ERR("batch_ctx_create: A.X-K2 bank allocation failed (ctx=%d max_seq=%u)", ctx_size, bc->max_seq);
+            ABC_ERR("batch_ctx_create: %s bank allocation failed (ctx=%d max_seq=%u)", name, ctx_size, bc->max_seq);
             free(bc);
             return 1;
         }
         bc->max_seq--;
     }
     if ((uint64_t)bc->max_seq * bc->seq_cap > SIZE_MAX / sizeof(*bc->bank_hist)) {
-        ABC_ERR("batch_ctx_create: A.X-K2 bank history size overflow");
+        ABC_ERR("batch_ctx_create: %s bank history size overflow", name);
         axk2_batch_free(bc->axk2);
+        hy4_batch_free(bc->hy4);
         free(bc);
         return 1;
     }
@@ -63008,7 +63089,7 @@ static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
     bc->bank_gen = xmalloc(bc->max_seq * sizeof(*bc->bank_gen));
     for (uint32_t b = 0; b < bc->max_seq; b++) { bc->bank_gen[b] = 1u; }
     bc->bank_last_use = xcalloc(bc->max_seq, sizeof(*bc->bank_last_use));
-    // Any prefix of a bank is exact: partial reuse needs no checkpoint slots.
+    // Each bank reports whether its stored rows cover a requested prefix.
     bc->supports_partial_reuse = true;
     ds4_metric_set(&ds4_metrics_get()->banks_total, bc->max_seq);
     *out = bc;
@@ -63481,8 +63562,8 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
         return inkling2_batch_ctx_create_impl(e, ctx_size, max_seq, fit ? INKLING2_FIT_BANKS : INKLING2_STRICT_BANKS,
             out, err, errlen);
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
-        return axk2_batch_ctx_create_impl(e, ctx_size, max_seq, fit ? AXK2_FIT_BANKS : AXK2_STRICT_BANKS, out,
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        return mla_bank_ctx_create(e, ctx_size, max_seq, fit ? AXK2_FIT_BANKS : AXK2_STRICT_BANKS, out,
             err, errlen);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GEMMA4) {
@@ -64157,10 +64238,11 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         return;
     }
     if (ctx->step37 || ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam ||
-        ctx->minimax || ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
+        ctx->minimax || ctx->hy4 || ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
         ling31_batch_free(ctx->ling31);
         beam_batch_free(ctx->beam);
         minimax_batch_free(ctx->minimax);
+        hy4_batch_free(ctx->hy4);
         axk2_batch_free(ctx->axk2);
         gemma4_batch_free(ctx->gemma4);
         inkling2_batch_free(ctx->inkling2);
@@ -64732,7 +64814,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         const uint32_t L = (uint32_t)prompts[i].len;
         if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
              ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-             ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) &&
+             ctx->hy4 || ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) &&
             L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
@@ -64747,7 +64829,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
         ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-        ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
+        ctx->hy4 || ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -66180,6 +66262,7 @@ static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->beam) return ctx->beam->prefill_cap;
     if (ctx->inkling2) return ctx->inkling2->prefill_cap;
     if (ctx->minimax) return ctx->minimax->prefill_cap;
+    if (ctx->hy4) return ctx->hy4->prefill_cap;
     if (ctx->axk2) return ctx->axk2->prefill_cap;
     if (ctx->gemma4) return ctx->gemma4->prefill_cap;
     if (ctx->naive) return ctx->naive->prefill_cap;
@@ -66212,6 +66295,7 @@ static bool family_banked_logits_valid(
     if (ctx->beam) return ctx->beam->bank_logits_valid[bank] != 0u;
     if (ctx->inkling2) return ctx->inkling2->bank_logits_valid[bank] != 0u;
     if (ctx->minimax) return ctx->minimax->bank_logits_valid[bank] != 0u;
+    if (ctx->hy4) return ctx->hy4->bank_logits_valid[bank] != 0u;
     if (ctx->axk2) return ctx->axk2->bank_logits_valid[bank] != 0u;
     if (ctx->gemma4) return ctx->gemma4->bank_logits_valid[bank] != 0u;
     if (ctx->naive) return ctx->naive->bank_logits_valid[bank] != 0u;
@@ -66239,6 +66323,8 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
         return ctx->inkling2->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->minimax)
         return ctx->minimax->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->hy4)
+        return ctx->hy4->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->axk2)
         return ctx->axk2->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->gemma4)
@@ -66260,6 +66346,7 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->beam) { beam_bank_reset(ctx->beam, bank); return; }
     if (ctx->inkling2) { inkling2_bank_reset(ctx->inkling2, bank); return; }
     if (ctx->minimax) { minimax_bank_reset(ctx->minimax, bank); return; }
+    if (ctx->hy4) { hy4_bank_reset(ctx->hy4, bank); return; }
     if (ctx->axk2) { axk2_bank_reset(ctx->axk2, bank); return; }
     if (ctx->gemma4) { gemma4_bank_reset(ctx->gemma4, bank); return; }
     if (ctx->naive) { naive_bank_reset(ctx->naive, bank); return; }
@@ -66285,6 +66372,7 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
  * only where its sliding ring still holds the window. */
 static bool prefix_bank_fork(ds4_batch_ctx *ctx, uint32_t src, uint32_t dst, uint32_t pos) {
     if (ctx->minimax) { return minimax_bank_fork(ctx->minimax, src, dst, pos); }
+    if (ctx->hy4) { return hy4_bank_transfer(ctx->hy4, src, dst, pos, false); }
     if (ctx->axk2) { return axk2_bank_fork(ctx->axk2, src, dst, pos); }
     if (ctx->gemma4) { return gemma4_bank_fork(ctx->gemma4, src, dst, pos); }
     return exaone_bank_fork(ctx->exaone, src, dst, pos);
@@ -66300,6 +66388,7 @@ static bool family_banked_copy(
     if (ctx->beam) { return beam_bank_copy(ctx->beam, src, dst, tokens); }
     if (ctx->inkling2) { return inkling2_bank_copy(ctx->inkling2, src, dst, tokens); }
     if (ctx->minimax) { return minimax_bank_copy(ctx->minimax, src, dst, tokens); }
+    if (ctx->hy4) { return hy4_bank_transfer(ctx->hy4, src, dst, tokens, true); }
     if (ctx->axk2) { return axk2_bank_copy(ctx->axk2, src, dst, tokens); }
     if (ctx->gemma4) { return gemma4_bank_copy(ctx->gemma4, src, dst, tokens); }
     if (ctx->naive) { return naive_bank_copy(ctx->naive, src, dst, tokens); }
@@ -66357,6 +66446,13 @@ static bool family_banked_prefill(
     if (ctx->minimax) {
         return minimax_bank_prefill(ctx->minimax, ctx->e, bank, tokens, rows, pos,
                                     final ? MINIMAX_FINAL_ROWS : MINIMAX_MORE_ROWS);
+    }
+    if (ctx->hy4) {
+        if (bank >= ctx->max_seq || pos > ctx->seq_cap || rows > ctx->seq_cap-pos) return false;
+        int *prefix=ctx->bank_hist+(size_t)bank*ctx->seq_cap;
+        const bool ok=hy4_bank_forward(ctx->hy4,ctx->e,bank,prefix,tokens,rows,pos,final);
+        if (ok) memmove(prefix+pos,tokens,(size_t)rows*sizeof(int));
+        return ok;
     }
     if (ctx->axk2) {
         return axk2_bank_prefill(ctx->axk2, ctx->e, bank, tokens, rows, pos, final ? AXK2_FINAL_ROWS : AXK2_MORE_ROWS);
@@ -66430,6 +66526,16 @@ static bool family_banked_decode(
     }
     if (ctx->minimax) {
         return minimax_bank_decode(ctx->minimax, ctx->e, banks, tokens, positions, rows);
+    }
+    if (ctx->hy4) {
+        for (uint32_t i=0;i<rows;i++) {
+            const uint32_t b=banks[i], pos=positions[i];
+            if (b>=ctx->max_seq || pos>=ctx->seq_cap) return false;
+            int *prefix=ctx->bank_hist+(size_t)b*ctx->seq_cap;
+            if (!hy4_bank_forward(ctx->hy4,ctx->e,b,prefix,&tokens[i],1,pos,true)) return false;
+            prefix[pos]=tokens[i];
+        }
+        return true;
     }
     if (ctx->axk2) {
         return axk2_bank_decode(ctx->axk2, ctx->e, banks, tokens, positions, rows);
@@ -66593,6 +66699,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
                             void (*on_done)(void *, void *, const int *, int, int),
                             void *ud, char *err, size_t errlen) {
     ds4_step37_batch_runtime *rt = ctx->step37;
+    ds4_hy4_batch_runtime *hr=ctx->hy4;
     ds4_naive_batch_runtime *nr = ctx->naive;
     ds4_iquest_batch_runtime *ir = ctx->iquest;
     ds4_glm53_batch_runtime *gr = ctx->glm53;
@@ -66602,23 +66709,24 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     ds4_ling31_batch_runtime *lr = NULL;
 #endif
     ds4_family_cont_bank *cb = &banks[bank];
-    const int current_excluded = (ir || gr || lr) && cb->sample_exclude
+    const int current_excluded = (ir || gr || lr || hr) && cb->sample_exclude
         ? cb->sample_exclude(ud, cb->user) : -1;
-    if ((!gr && !ir && !lr && !nr && (!rt || !rt->spec)) || (nr && !nr->graph[bank].draft.ws) ||
+    if ((!hr && !gr && !ir && !lr && !nr && (!rt || !rt->spec)) || (nr && !nr->graph[bank].draft.ws) ||
+        (hr && !ctx->e->mtp_ready) ||
         (gr && (!gr->graph[bank].mtp_ready || gr->failed[bank])) ||
         (ir && !ir->graph[bank].mtp_enabled) || (lr && !lr->graph[bank].mtp_drafts) ||
-        !cb->step_accept || (!gr && !ir && !lr && cb->sample_exclude) || current_excluded >= 0 ||
+        !cb->step_accept || (!hr && !gr && !ir && !lr && cb->sample_exclude) || current_excluded >= 0 ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
     /* A sampling bank verifies with its own sampler and stream (sample-and-
      * match); an uncut prefix's last draw is the next token. */
     ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
-        .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
+        .logits = (hr ? hr->bank_logits : gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
                    : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
                        .len = (int)pos, .cap = (int)ctx->seq_cap},
         .spec = {.verify = cb->temperature > 0.0f ? cont_spec_verify : NULL, .ud = cb}};
-    if (gr) {
+    if (hr) { s.hy4_graph=hr->graph[bank]; } else if (gr) {
         s.glm53_graph_ready = true; s.glm53_graph = gr->graph[bank];
     } else if (ir) {
         s.iquest_graph_ready = true; s.iquest_graph = ir->graph[bank];
@@ -66632,12 +66740,12 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     const int first_override = cb->sample_override
         ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE;
     uint32_t budget = cb->max_new - cb->generated_len + 1;
-    const unsigned capacity = gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : lr ? L31_MTP_ROWS
+    const unsigned capacity = hr ? HY4_DRAFT_BLOCK : gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : lr ? L31_MTP_ROWS
         : nr ? N05_DF_BLOCK : S37_VERIFY;
     if (budget > capacity) { budget = capacity; }
     if (cont_spec_forced(first_override, cb->temperature)) { budget = 1; }
     int tokens[IQ_DRAFT_SLOTS + 1], target[IQ_DRAFT_SLOTS + 1];
-    int n = gr
+    int n = hr ? ds4_session_hy4_trial(&s,cb->current,(int)budget,tokens,target,(int)capacity,err,errlen) : gr
         ? ds4_session_glm53_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
         : ir
         ? ds4_session_iquest_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
@@ -66682,7 +66790,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
      * decode does: the server keys the bank by every generated token but the
      * last, so landing that row would make the next turn miss. */
     const int rows = finished ? emitted - 1 : emitted;
-    const int rc = gr ? ds4_session_glm53_commit(&s, rows, err, errlen)
+    const int rc = hr ? ds4_session_hy4_commit(&s,rows,err,errlen) : gr ? ds4_session_glm53_commit(&s, rows, err, errlen)
                       : ir ? ds4_session_iquest_commit(&s, rows, err, errlen)
 #ifndef __APPLE__
                       : lr ? ds4_session_ling31_commit(&s, rows, err, errlen)
@@ -66691,7 +66799,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
                       : ds4_session_step37_commit(&s, rows, err, errlen);
     if (rc) { goto fail; }
     if (rows < emitted) { ds4_metric_add(&ds4_metrics_get()->spec_hits, 1u); }
-    if (gr) {
+    if (hr) { hr->graph[bank]=s.hy4_graph; hr->bank_logits_valid[bank]=1; } else if (gr) {
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 1u;
     } else if (ir) {
         ir->graph[bank] = s.iquest_graph; ir->bank_logits_valid[bank] = 1;
@@ -66739,7 +66847,7 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     if (finished) { family_cont_publish_generated(ctx, banks, bank, finish, on_done, ud); }
     return 1;
 fail:
-    if (gr) {
+    if (hr) { hr->graph[bank]=s.hy4_graph; hr->graph[bank].failed=true; hr->bank_logits_valid[bank]=0; } else if (gr) {
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 0u; gr->failed[bank] = 1u;
     } else if (ir) {
         ir->graph[bank] = s.iquest_graph; ir->bank_logits_valid[bank] = 0;
@@ -66770,7 +66878,7 @@ static int family_banked_engine_continuous_generate(
               ctx->qwen != NULL || ctx->step37 != NULL ||
               ctx->ling3vl != NULL || ctx->mimo2 != NULL || ctx->naive != NULL ||
               ctx->iquest != NULL || ctx->ling31 != NULL || ctx->beam != NULL || ctx->minimax != NULL ||
-              ctx->axk2 != NULL || ctx->gemma4 != NULL || ctx->inkling2 != NULL ||
+              ctx->hy4 != NULL || ctx->axk2 != NULL || ctx->gemma4 != NULL || ctx->inkling2 != NULL ||
               ctx->glm53 != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
@@ -67064,7 +67172,7 @@ static int family_banked_engine_continuous_generate(
                     }
                 } else if (source_prefix &&
                            requested_cached < source_frontier &&
-                           (ctx->minimax || ctx->axk2 || ctx->exaone || ctx->gemma4)) {
+                           (ctx->minimax || ctx->hy4 || ctx->axk2 || ctx->exaone || ctx->gemma4)) {
                     /* MiniMax, A.X-K2 and K2-Horizon caches are position-
                      * indexed: any prefix of the source is exact. Gemma-4's
                      * sliding ring forks only where it still holds the
@@ -67073,7 +67181,7 @@ static int family_banked_engine_continuous_generate(
                      * the next logits. */
                     const uint32_t pos = requested_cached < (uint32_t)req.n
                         ? requested_cached : (uint32_t)req.n - 1u;
-                    if (!pos || (ctx->gemma4 &&
+                    if (!pos || (ctx->hy4 && !hy4_bank_keeps(ctx->hy4, (uint32_t)src, pos)) || (ctx->gemma4 &&
                                  !gemma4_bank_keeps(ctx->gemma4, (uint32_t)src, pos))) {
                         ctx->fork_rejects++;
                     } else if (!prefix_bank_fork(ctx, (uint32_t)src, b, pos)) {
@@ -67551,7 +67659,7 @@ static int family_banked_engine_continuous_generate(
                 ok = false;
                 break;
             }
-            if (ctx->step37 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
+            if (ctx->step37 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53 || ctx->hy4) {
                 const int spec = family_cont_spec(ctx, bank, b, on_token, on_done, ud, err, errlen);
                 if (spec < 0) { ok = false; break; }
                 if (spec > 0) { continue; }
@@ -67779,7 +67887,7 @@ static int family_engine_batched_generate_ctx(
     };
     const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
                     ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax ||
-                    ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53)
+                    ctx->hy4 || ctx->axk2 || ctx->gemma4 || ctx->inkling2 || ctx->glm53)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -67841,7 +67949,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         return 1;
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl ||
-        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->axk2 ||
+        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->beam || ctx->minimax || ctx->hy4 || ctx->axk2 ||
         ctx->gemma4 || ctx->inkling2 || ctx->glm53) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
@@ -73839,6 +73947,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     e->audio_model.fd = -1;
 #endif
     e->backend = opt->backend;
+    if (opt->hy4) { e->hy4 = *opt->hy4; }
     e->quality = opt->quality;
     e->distributed = opt->distributed;
     e->power_percent = opt->power_percent > 0 ? opt->power_percent : 100;
@@ -73983,6 +74092,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          (e->directional_steering_file && e->directional_steering_file[0]) ||
          e->directional_steering_attn_scale != 0.0f || e->directional_steering_ffn_scale != 0.0f)) {
         fprintf(stderr, "ds4: Beam requires one full CUDA model without DSpark sidecars\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 &&
+        (!e->hy4.rows || e->backend != DS4_BACKEND_CUDA || load_slice ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE)) {
+        fprintf(stderr, "ds4: Hy4 requires the Rust host, CUDA and a complete local release\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -74155,6 +74272,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_HY4 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MINIMAX_VQ &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING2_VQ) ||
             e->backend != DS4_BACKEND_CUDA ||
@@ -74196,6 +74314,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+            e->vision_image_token = 120120;
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
             /* The release's vision part: staged per request like V4.1's
              * tower, so no aux CUDA map (vision_ready stays false). */
@@ -74237,9 +74357,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             e->vision_end_token = 200030;
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
             e->vision_image_token = 200054;
-        } else if (!v41_sidecar) {
+        } else if (!v41_sidecar && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_HY4) {
             e->vision_ready = true;
-        } else {
+        } else if (v41_sidecar) {
             e->vision_image_token = (int)g_ds4_v41.image_token_id;
         }
         fprintf(stderr, "ds4: vision encoder loaded: %s\n",
@@ -74279,7 +74399,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GEMMA4 &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_BEAM_VQ) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_BEAM_VQ && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_HY4) ||
             (dspark_path && dspark_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_NAIVE)) {
             fprintf(stderr,
                     "ds4: this model family does not accept the requested "
@@ -74302,6 +74422,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
                 e->mtp_draft_tokens = INKLING_DRAFT_LAYERS;
             }
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+            hy4_draft_bind(&e->hy4_draft, &e->mtp_model);
+            if (e->mtp_draft_tokens >= HY4_DRAFT_BLOCK) { e->mtp_draft_tokens = HY4_DRAFT_BLOCK - 1; }
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
             step37_bind_draft(&e->step37_mtp, &e->mtp_model);
             if (e->mtp_draft_tokens > STEP37_DRAFT_LAYERS) {
@@ -74983,6 +75106,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ ||
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 ||
                                     DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ ||
                                     (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ && ling31_embedding_ssd(mm))) &&
                         t == e->weights.token_embd) {
@@ -75026,6 +75150,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 ||
                     DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
@@ -75166,6 +75291,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             ds4_engine_close(e);
             *out = NULL;
             return 1;
+        }
+        // Each DFly2 draft token reads the head; the verify keeps the BF16 one.
+        // Built from the resident head, after the startup cache owns its range.
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 && e->backend == DS4_BACKEND_CUDA && e->mtp_ready &&
+            e->mtp_draft_tokens > 0) {
+            e->hy4_draft.head = ds4_gpu_hy4_draft_head(e->model.map, e->model.size, e->weights.output->abs_offset);
+            fprintf(stderr, "ds4: Hy4 DFly2 draft head %s\n",
+                    e->hy4_draft.head ? "Q8_0 copy (0.37 GiB)" : "BF16 (shared with the target)");
         }
 #endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
@@ -75421,7 +75554,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         const char *enabled = getenv("DS4_INKLING2_BATCH");
         return e && e->backend == DS4_BACKEND_CUDA && !inkling2_drafting(e) && enabled && strcmp(enabled, "1") == 0;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
         return e && e->backend == DS4_BACKEND_CUDA;
     }
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
@@ -75506,6 +75639,10 @@ void ds4_engine_close(ds4_engine *e) {
     e->mtp_weights.gemma4_mtp = NULL;
     if (e->mtp_ready) model_close(&e->mtp_model);
     if (e->dspark_ready) model_close(&e->dspark_model);
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gpu_tensor_free(e->hy4_draft.head);
+    e->hy4_draft.head = NULL;
+#endif
 #ifndef DS4_NO_GPU
     mimo2_media_free(&e->mimo2_media);
     glm53_stream_report(&e->glm53_stream);
@@ -75918,9 +76055,8 @@ static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     return fits;
 }
 
-static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
-                             ds4_session_graph_fit_quote *q) {
-    const uint64_t need = axk2_memory(ctx, cap).total_bytes;
+static bool session_cuda_fit_bytes(const ds4_engine *e, uint64_t need,
+                                   ds4_session_graph_fit_quote *q) {
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     uint64_t available = 0, total = 0;
@@ -75938,6 +76074,11 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
         q->deficit_bytes = fits ? 0 : ask - available;
     }
     return fits;
+}
+
+static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
+                             ds4_session_graph_fit_quote *q) {
+    return session_cuda_fit_bytes(e, axk2_memory(ctx, cap).total_bytes, q);
 }
 
 // The serial graph's chunk, halved like a bank's until it fits beside the
@@ -76171,6 +76312,24 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         s->gemma4_graph_ready = true;
         const uint64_t after = session_tensors_census_live();
         s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
+    if (ds4_session_is_hy4(s)) {
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const uint64_t bytes = hy4_memory(ctx, s->prefill_cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, bytes, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = session_cuda_fit_bytes(e, bytes, NULL) && hy4_graph_alloc(&s->hy4_graph, ctx, s->prefill_cap, NULL);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            hy4_graph_free(&s->hy4_graph);
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : bytes;
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
         return 0;
     }
@@ -76730,6 +76889,10 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
         return inkling2_session_fit(e, (uint32_t)ctx_size, inkling2_prefill_cap((uint32_t)ctx_size), q);
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
+        const uint32_t ctx = (uint32_t)ctx_size;
+        return session_cuda_fit_bytes(e, hy4_memory(ctx, hy4_prefill_cap(ctx)).total_bytes, q);
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
         const uint32_t ctx = (uint32_t)ctx_size;
         return axk2_session_fit(e, ctx, axk2_session_cap(e, ctx, axk2_prefill_cap(ctx)), q);
@@ -76822,15 +76985,16 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
 #ifdef DS4_NO_GPU
         return 1;
 #else
-        if ((uint32_t)ctx_size > AXK2_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
+        const bool hy4 = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4;
+        if ((uint32_t)ctx_size > (uint32_t)(hy4 ? HY4_CONTEXT : AXK2_CONTEXT) || e->backend != DS4_BACKEND_CUDA ||
             !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE) { return 1; }
         ds4_session *s = xcalloc(1, sizeof(*s));
         s->engine = e; s->ctx_size = ctx_size; s->generation = 1;
-        s->prefill_cap = axk2_prefill_cap((uint32_t)ctx_size);
+        s->prefill_cap = hy4 ? hy4_prefill_cap((uint32_t)ctx_size) : axk2_prefill_cap((uint32_t)ctx_size);
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
         if (ds4_session_lazy_graph_enabled()) { s->graph_pending = true; }
         else if (ds4_session_alloc_graph(s) != 0) { free(s->logits); free(s); return 1; }
@@ -77355,6 +77519,8 @@ void ds4_session_free(ds4_session *s) {
         } else if (ds4_session_is_inkling2(s)) {
             inkling2_graph_free(&s->inkling2_graph); s->inkling2_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_hy4(s)) {
+            hy4_graph_free(&s->hy4_graph);
         } else if (ds4_session_is_axk2(s)) {
             axk2_graph_free(&s->axk2_graph); s->axk2_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -77465,7 +77631,7 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
         !ds4_session_is_inkling(s) && !ds4_session_is_step37(s) &&
         !ds4_session_is_ling3vl(s) && !ds4_session_is_mimo2(s) && !ds4_session_is_naive(s) && !ds4_session_is_iquest(s) &&
         !ds4_session_is_ling31(s) && !ds4_session_is_beam(s) && !ds4_session_is_minimax(s) &&
-        !ds4_session_is_inkling2(s) && !ds4_session_is_axk2(s)) {
+        !ds4_session_is_inkling2(s) && !ds4_session_is_hy4(s) && !ds4_session_is_axk2(s)) {
         s->graph.power_percent = (uint32_t)power_percent;
     }
 #endif
@@ -77500,7 +77666,7 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -77539,7 +77705,7 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -77645,7 +77811,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
         ds4_session_is_ling31(s) || ds4_session_is_beam(s) || ds4_session_is_minimax(s) ||
-        ds4_session_is_inkling2(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
+        ds4_session_is_inkling2(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) || ds4_session_is_gemma4(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -78372,6 +78538,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_minimax_session.inc"
 #include "ds4_inkling2_session.inc"
 #include "ds4_axk2_session.inc"
+#include "ds4_hy4_session.inc"
 #include "ds4_beam_draft.inc"
 #include "ds4_minimax_draft.inc"
 #include "ds4_naive_mtp.inc"
@@ -78615,6 +78782,13 @@ int ds4_session_glm53_commit(ds4_session *s, int keep, char *err, size_t len) {
  * raw hidden rows; commit shortens KV without re-running accepted tokens. */
 #ifdef DS4_NO_GPU
 #include "ds4_naive_mtp.inc"
+int ds4_session_hy4_sync_media(ds4_session *s, const int32_t *tokens, int32_t n,
+                              const ds4_hy4_span *spans, uint32_t count, uint64_t tag,
+                              char *err, size_t len) {
+    (void)s; (void)tokens; (void)n; (void)spans; (void)count; (void)tag;
+    payload_set_err(err, len, "Hy4 media requires CUDA");
+    return 1;
+}
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                              int *tokens, int *target, int cap, char *err, size_t errlen) {
     (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
@@ -78625,6 +78799,8 @@ int ds4_session_dots3_commit(ds4_session *s, int keep, char *err, size_t errlen)
     payload_set_err(err, errlen, "dots3 MTP requires CUDA"); return 1;
 }
 #endif
+
+#include "ds4_hy4_draft.inc"
 
 int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
                               int *tokens, int *target, int cap,
@@ -79026,6 +79202,7 @@ int ds4_session_sync_keep(ds4_session *s, const int *tokens, int n_tokens) {
     if (ds4_session_is_mimo2(s)) {
         return s->mimo2_graph_ready ? (int)mimo2_sync_keep(s, &s->mimo2_graph, &prompt) : 0;
     }
+    if (ds4_session_is_hy4(s)) { return s->hy4_graph.media_count ? 0 : (int)hy4_sync_keep(s, &prompt); }
     if (ds4_session_is_axk2(s)) { return s->axk2_graph_ready ? (int)axk2_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_minimax(s)) { return s->minimax_graph_ready ? (int)minimax_sync_keep(s, &prompt) : 0; }
     if (ds4_session_is_inkling2(s)) { return s->inkling2_graph_ready ? (int)inkling2_sync_keep(s, &prompt) : 0; }
@@ -79058,6 +79235,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     if (ds4_session_is_beam(s)) { return beam_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_minimax(s)) { return minimax_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_inkling2(s)) { return inkling2_session_sync(s, prompt, err, errlen); }
+    if (ds4_session_is_hy4(s)) { return hy4_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_axk2(s)) { return axk2_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_naive(s)) { return naive_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_mimo2(s)) { return mimo2_session_sync(s, prompt, err, errlen); }
@@ -79960,6 +80138,10 @@ static bool session_logits_unready(const ds4_session *s) {
         return !s->checkpoint_valid || !s->inkling2_graph_ready || s->inkling2_graph.failed ||
             s->inkling2_graph.position != (uint32_t)s->checkpoint.len;
     }
+    if (ds4_session_is_hy4(s)) {
+        return !s->checkpoint_valid || !s->hy4_graph.ready || s->hy4_graph.failed ||
+            s->hy4_graph.position != (uint32_t)s->checkpoint.len;
+    }
     if (ds4_session_is_axk2(s)) {
         return !s->checkpoint_valid || !s->axk2_graph_ready || s->axk2_graph.failed ||
             s->axk2_graph.position != (uint32_t)s->checkpoint.len;
@@ -80131,6 +80313,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
     if (ds4_session_is_beam(s)) { return beam_session_eval(s, token, err, errlen); }
     if (ds4_session_is_minimax(s)) { return minimax_session_eval(s, token, err, errlen); }
     if (ds4_session_is_inkling2(s)) { return inkling2_session_eval(s, token, err, errlen); }
+    if (ds4_session_is_hy4(s)) { return hy4_session_eval(s, token, err, errlen); }
     if (ds4_session_is_axk2(s)) { return axk2_session_eval(s, token, err, errlen); }
     if (ds4_session_is_naive(s)) { return naive_session_eval(s, token, err, errlen); }
     if (ds4_session_is_mimo2(s)) { return mimo2_session_eval(s, token, err, errlen); }
@@ -80905,7 +81088,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
         ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
-        ds4_session_is_beam(s) || ds4_session_is_minimax(s) || ds4_session_is_axk2(s) ||
+        ds4_session_is_beam(s) || ds4_session_is_minimax(s) || ds4_session_is_hy4(s) || ds4_session_is_axk2(s) ||
         ds4_session_is_inkling2(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
@@ -82172,6 +82355,8 @@ void ds4_session_invalidate(ds4_session *s) {
         (void)minimax_graph_reset(&s->minimax_graph);
     } else if (ds4_session_is_inkling2(s) && s->inkling2_graph_ready) {
         (void)inkling2_graph_reset(&s->inkling2_graph);
+    } else if (ds4_session_is_hy4(s) && s->hy4_graph.ready) {
+        hy4_reset(&s->hy4_graph);
     } else if (ds4_session_is_axk2(s) && s->axk2_graph_ready) {
         (void)axk2_graph_reset(&s->axk2_graph);
     } else if (ds4_session_is_gemma4(s) && s->gemma4_graph) {
@@ -82251,6 +82436,9 @@ void ds4_session_rewind(ds4_session *s, int pos) {
         // The convolution histories hold only the frontier: rebuild.
         s->checkpoint_valid = false;
         if (s->inkling2_graph_ready) { (void)inkling2_graph_reset(&s->inkling2_graph); }
+    } else if (ds4_session_is_hy4(s) && pos != old_pos) {
+        s->checkpoint_valid = false;
+        if (s->hy4_graph.ready) hy4_reset(&s->hy4_graph);
     } else if (ds4_session_is_axk2(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->axk2_graph_ready) { (void)axk2_graph_reset(&s->axk2_graph); }
@@ -82437,7 +82625,7 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 #ifndef DS4_NO_GPU
 #include "ds4_ds41_forward.inc"
 #include "ds4_ds41_vision.inc"   /* vision unit: the DeepSeek-ViT + aligner host forward, after v41_alloc */
-#include "ds4_minimax_vision.inc" /* MiniMax's tower, on V4.1's staging and primitives */
+#include "ds4_minimax_vision.inc"
 #include "ds4_inkling2_vision.inc" /* Inkling-2's tower, on MiniMax's and V4.1's */
 /* Decode sampling (unit H): the pick fork, the device readback arms and the
  * host penalty route (the engine's core_v41_sample.c + core_decode_penalty.c).
@@ -82479,3 +82667,4 @@ int ds4_test_v41_sample_pick(const int32_t *slot, const int32_t *batch,
 }
 #endif /* DS4_TEST_HOOKS */
 #endif /* DS4_NO_GPU */
+#include "ds4_hy4_vision.inc"

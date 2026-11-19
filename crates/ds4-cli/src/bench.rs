@@ -263,7 +263,7 @@ fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     // Qwen4Exp and MiMo carry embedded MTP heads, so bench can speculate
     // without an external draft file. Other families still need that file.
     // Naive's fixed seven-row DSpark block can verify one proposal too.
-    let min_draft = if family == ModelFamily::NaiveN05 {
+    let min_draft = if matches!(family, ModelFamily::NaiveN05 | ModelFamily::Hy4) {
         1
     } else {
         2
@@ -605,8 +605,7 @@ fn run_sweep<W: Write>(
     out.flush().map_err(|e| e.to_string())?;
 
     let eos = model.token_eos();
-    let sidecar = model.mtp().or_else(|| model.dspark()).map(|s| s.path());
-    let use_mtp = use_mtp_spec(model.family(), sidecar, args.mtp_draft);
+    let use_mtp = use_mtp_spec(model.family(), model.drafter_path(), args.mtp_draft);
     let replay = uses_prefix_replay(args, model.family());
     let mut previous = 0;
     let mut frontier = args.ctx_start;

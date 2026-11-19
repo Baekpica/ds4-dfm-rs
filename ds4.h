@@ -268,6 +268,7 @@ typedef struct {
        itself and trims its own heap after open. */
     bool host_policy;
     const char *audio_path;    /* MiMo VQ audio part; NULL derives it */
+    const struct ds4_host_hy4 *hy4; /* borrowed; copy the provider on open */
     ds4_distributed_options distributed;
 } ds4_engine_options;
 
@@ -1451,6 +1452,11 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
                                int *tokens, int *target, int cap,
                                char *err, size_t errlen);
 int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* The Hy4 sidecar proposes up to five tokens after the initiating token. */
+int ds4_session_hy4_trial(ds4_session *s, int first, int max_tokens,
+                          int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_hy4_commit(ds4_session *s, int keep, char *err, size_t errlen);
+
 /* Step uses the same trial/commit contract with at most four rows.
  * Operational failures also invalidate the native generation. */
 int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
@@ -1528,6 +1534,12 @@ int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
 int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned frames,
                                    float *out, unsigned cap, unsigned *rows,
                                    char *err, size_t errlen);
+struct ds4_hy4_span;
+int ds4_session_hy4_encode_vision(ds4_session *s, const float *pixels, uint32_t gh, uint32_t gw,
+                                  float *rows, char *err, size_t len);
+int ds4_session_hy4_sync_media(ds4_session *s, const int32_t *tokens, int32_t n,
+                               const struct ds4_hy4_span *spans, uint32_t count, uint64_t tag,
+                               char *err, size_t len);
 /* MiniMax image/video input: the vision part's rows of one visual (patches
  * [grid_t * grid_h * grid_w][1176] in the processor's order -> out
  * [grid_t * grid_h * grid_w / 4][6144]), and a prompt sync whose pad runs

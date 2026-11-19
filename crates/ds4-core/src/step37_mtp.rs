@@ -1,22 +1,37 @@
-const TRIAL_CAP: usize = 4;
+type Trial = unsafe extern "C" fn(
+    *mut ds4_sys::ds4_bridge_session,
+    i32,
+    i32,
+    *mut i32,
+    *mut i32,
+    i32,
+    *mut std::ffi::c_char,
+    usize,
+) -> i32;
+type Commit = unsafe extern "C" fn(
+    *mut ds4_sys::ds4_bridge_session,
+    i32,
+    *mut std::ffi::c_char,
+    usize,
+) -> i32;
 
-pub(super) unsafe extern "C" fn accept_banked(
+pub(super) unsafe extern "C" fn accept_banked<const CAP: usize>(
     tokens: *const i32,
     target: *const i32,
     n: i32,
     eos: i32,
 ) -> i32 {
-    if tokens.is_null() || target.is_null() || n <= 0 || n as usize > TRIAL_CAP {
+    if tokens.is_null() || target.is_null() || n <= 0 || n as usize > CAP {
         return 0;
     }
     // SAFETY: The synchronous native trial lends n entries for this call.
     let tokens = unsafe { std::slice::from_raw_parts(tokens, n as usize) };
     let target = unsafe { std::slice::from_raw_parts(target, n as usize) };
-    accepted_prefix(tokens, target, eos).unwrap_or(0) as i32
+    accepted_prefix::<CAP>(tokens, target, eos).unwrap_or(0) as i32
 }
 
 impl crate::Session<'_> {
-    pub(super) fn eval_step37_argmax(
+    pub(super) fn eval_block_argmax<const CAP: usize>(
         &mut self,
         first: i32,
         max_tokens: i32,
@@ -26,19 +41,30 @@ impl crate::Session<'_> {
         if max_tokens <= 0 {
             return Ok(Vec::new());
         }
-        let mut tokens = [0; TRIAL_CAP];
-        let mut target = [0; TRIAL_CAP];
+        let mut tokens = [0; CAP];
+        let mut target = [0; CAP];
         let mut err = [0u8; 512];
         // SAFETY: Category 8 FFI. The exclusive session and bounded output
         // buffers remain live for the call; native retains no host pointers.
+        let (trial_fn, commit_fn) = if self.host.family == crate::ModelFamily::Hy4 {
+            (
+                ds4_sys::ds4_bridge_hy4_trial as Trial,
+                ds4_sys::ds4_bridge_hy4_commit as Commit,
+            )
+        } else {
+            (
+                ds4_sys::ds4_bridge_step37_trial as Trial,
+                ds4_sys::ds4_bridge_step37_commit as Commit,
+            )
+        };
         let n = unsafe {
-            ds4_sys::ds4_bridge_step37_trial(
+            trial_fn(
                 self.raw.as_ptr(),
                 first,
                 max_tokens,
                 tokens.as_mut_ptr(),
                 target.as_mut_ptr(),
-                TRIAL_CAP as i32,
+                CAP as i32,
                 err.as_mut_ptr().cast(),
                 err.len(),
             )
@@ -52,26 +78,26 @@ impl crate::Session<'_> {
             self.step_failed();
             return Err(crate::fail(n, &err));
         }
-        if n as usize > TRIAL_CAP || n > max_tokens || tokens[0] != first {
+        if n as usize > CAP || n > max_tokens || tokens[0] != first {
             self.invalidate();
             return Err(crate::Error {
                 code: 1,
-                message: "invalid Step trial result".into(),
+                message: "invalid block-drafter trial result".into(),
             });
         }
         let n = n as usize;
-        let Some(keep) = accepted_prefix(&tokens[..n], &target[..n], eos) else {
+        let Some(keep) = accepted_prefix::<CAP>(&tokens[..n], &target[..n], eos) else {
             self.invalidate();
             return Err(crate::Error {
                 code: 1,
-                message: "invalid Step trial shape".into(),
+                message: "invalid block-drafter trial shape".into(),
             });
         };
         let keep = limit(&tokens[..keep]).clamp(1, keep);
         // SAFETY: Category 8 FFI. keep is within the pending trial; native
         // commits device state and returns before Rust updates its timeline.
         let rc = unsafe {
-            ds4_sys::ds4_bridge_step37_commit(
+            commit_fn(
                 self.raw.as_ptr(),
                 keep as i32,
                 err.as_mut_ptr().cast(),
@@ -89,8 +115,8 @@ impl crate::Session<'_> {
     }
 }
 
-fn accepted_prefix(tokens: &[i32], target: &[i32], eos: i32) -> Option<usize> {
-    if tokens.is_empty() || tokens.len() > TRIAL_CAP || tokens.len() != target.len() {
+fn accepted_prefix<const CAP: usize>(tokens: &[i32], target: &[i32], eos: i32) -> Option<usize> {
+    if tokens.is_empty() || tokens.len() > CAP || tokens.len() != target.len() {
         return None;
     }
     let mut keep = 1;
@@ -111,19 +137,19 @@ mod tests {
         // SAFETY: Both arrays have the advertised four live entries.
         unsafe {
             assert_eq!(
-                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 4, 99),
+                super::accept_banked::<4>(tokens.as_ptr(), target.as_ptr(), 4, 99),
                 3
             );
             assert_eq!(
-                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 4, 11),
+                super::accept_banked::<4>(tokens.as_ptr(), target.as_ptr(), 4, 11),
                 2
             );
             assert_eq!(
-                super::accept_banked(std::ptr::null(), target.as_ptr(), 4, 99),
+                super::accept_banked::<4>(std::ptr::null(), target.as_ptr(), 4, 99),
                 0
             );
             assert_eq!(
-                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 5, 99),
+                super::accept_banked::<4>(tokens.as_ptr(), target.as_ptr(), 5, 99),
                 0
             );
         }
@@ -131,29 +157,44 @@ mod tests {
 
     #[test]
     fn acceptance_stops_at_first_miss() {
-        assert_eq!(accepted_prefix(&[10, 11, 12], &[11, 12, 13], 99), Some(3));
-        assert_eq!(accepted_prefix(&[10, 11, 12], &[13, 12, 13], 99), Some(1));
         assert_eq!(
-            accepted_prefix(&[10, 11, 12, 13], &[11, 99, 13, 14], 99),
+            accepted_prefix::<4>(&[10, 11, 12], &[11, 12, 13], 99),
+            Some(3)
+        );
+        assert_eq!(
+            accepted_prefix::<4>(&[10, 11, 12], &[13, 12, 13], 99),
+            Some(1)
+        );
+        assert_eq!(
+            accepted_prefix::<4>(&[10, 11, 12, 13], &[11, 99, 13, 14], 99),
             Some(2)
         );
     }
 
     #[test]
     fn acceptance_includes_first_stop() {
-        assert_eq!(accepted_prefix(&[99, 11, 12], &[11, 12, 13], 99), Some(1));
-        assert_eq!(accepted_prefix(&[10, 99, 12], &[99, 12, 13], 99), Some(2));
-        assert_eq!(accepted_prefix(&[10, 11, 99], &[11, 99, 13], 99), Some(3));
-        assert_eq!(accepted_prefix(&[10, 11], &[99, 12], 99), Some(1));
+        assert_eq!(
+            accepted_prefix::<4>(&[99, 11, 12], &[11, 12, 13], 99),
+            Some(1)
+        );
+        assert_eq!(
+            accepted_prefix::<4>(&[10, 99, 12], &[99, 12, 13], 99),
+            Some(2)
+        );
+        assert_eq!(
+            accepted_prefix::<4>(&[10, 11, 99], &[11, 99, 13], 99),
+            Some(3)
+        );
+        assert_eq!(accepted_prefix::<4>(&[10, 11], &[99, 12], 99), Some(1));
     }
 
     #[test]
     fn acceptance_checks_trial_shape() {
-        assert_eq!(accepted_prefix(&[10], &[11], 99), Some(1));
-        assert_eq!(accepted_prefix(&[10; 4], &[10; 4], 99), Some(4));
-        assert_eq!(accepted_prefix(&[], &[], 99), None);
-        assert_eq!(accepted_prefix(&[10; 5], &[10; 5], 99), None);
-        assert_eq!(accepted_prefix(&[10], &[], 99), None);
-        assert_eq!(accepted_prefix(&[10], &[11, 12], 99), None);
+        assert_eq!(accepted_prefix::<4>(&[10], &[11], 99), Some(1));
+        assert_eq!(accepted_prefix::<4>(&[10; 4], &[10; 4], 99), Some(4));
+        assert_eq!(accepted_prefix::<4>(&[], &[], 99), None);
+        assert_eq!(accepted_prefix::<4>(&[10; 5], &[10; 5], 99), None);
+        assert_eq!(accepted_prefix::<4>(&[10], &[], 99), None);
+        assert_eq!(accepted_prefix::<4>(&[10], &[11, 12], 99), None);
     }
 }

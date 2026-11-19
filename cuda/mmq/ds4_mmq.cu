@@ -215,6 +215,20 @@ static bool moe_worklist_pipe_enabled() {
     return !(env && env[0] == '0');
 }
 
+/* Hy4's routed experts (512 x 1536 x 1536 Q4_K/Q5_K) hold ~64 rows each in
+ * a 2,048-row chunk, so their columns sat in 128-wide tiles on the
+ * unpipelined K loop. The 64-wide worklist pipelines every tile; a wider
+ * expert reads each weight tile once per 64 columns. DS4_HY4_PIPE64=0
+ * keeps the 128-wide tile. */
+static bool hy4_pipe64(ggml_type type, int M, int K, int n_experts) {
+    enum { HY4_FF = 1536, HY4_EXPERTS = 512 };
+    const char *env = getenv("DS4_HY4_PIPE64");
+    return (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) &&
+           M == HY4_FF && K == HY4_FF && n_experts == HY4_EXPERTS &&
+           !(env && env[0] == '0') && moe_worklist_pipe_enabled() &&
+           moe_worklist_tail64_enabled();
+}
+
 // Blanket output zeroing on the dense/MoE-down/pair GEMM entries.  Added by
 // 82b2622 as belt-and-suspenders while root-causing the cont BOS spam; the
 // actual roots were fixed in the same commit (stream-K fixup write_back goes
@@ -1113,7 +1127,7 @@ __global__ static void ds4_moe_build_tile_worklist(
 // software-pipelined K loop (ds4_mmq_pipe.cuh) unless the caller passed
 // pipe = 0 (DS4_MMQ_PIPE=0); every other type and the 128-wide tile keep
 // the upstream loop.  pipe is block-uniform.
-template <ggml_type type, int width, bool need_check>
+template <ggml_type type, int width, bool need_check, int max_x>
 static __device__ __forceinline__ void ds4_moe_worklist_tile(
         const int pipe,
         const char * __restrict__ x, const int offset_x,
@@ -1123,7 +1137,9 @@ static __device__ __forceinline__ void ds4_moe_worklist_tile(
         const int tile_x_max_i, const int tile_y_max_j,
         const int blocks_per_ne00) {
 #if defined(TURING_MMA_AVAILABLE)
-    if constexpr (ds4_mmq_pipe_supported(type) && width <= DS4_MMQ_PIPE_MAX_X) {
+    // K-quants compile the pipelined tile only into the 64-wide kernel.
+    if constexpr (ds4_mmq_pipe_supported(type) && width <= DS4_MMQ_PIPE_MAX_X &&
+                  (!ds4_mmq_pipe_kquant(type) || max_x <= DS4_MMQ_PIPE_MAX_X)) {
         if (pipe) {
             ds4_mul_mat_q_process_tile_pipe<type, width, need_check>(
                 x, offset_x, y, ids_dst, dst,
@@ -1208,31 +1224,31 @@ __global__ static void ds4_moe_worklist_mmq_kernel(
         const int tile_y_max_j = col_diff - col_offset - 1;
 
         if (width_code == DS4_MOE_WORKLIST_WIDTH_8) {
-            ds4_moe_worklist_tile<type, 8, need_check>(
+            ds4_moe_worklist_tile<type, 8, need_check, max_x>(
                 pipe, x, offset_x, y + offset_y, ids_dst_shared,
                 dst + it * mmq_y,
                 stride_row_x, ncols_y, stride_col_dst,
                 tile_x_max_i, tile_y_max_j, blocks_per_ne00);
         } else if (width_code == DS4_MOE_WORKLIST_WIDTH_16) {
-            ds4_moe_worklist_tile<type, 16, need_check>(
+            ds4_moe_worklist_tile<type, 16, need_check, max_x>(
                 pipe, x, offset_x, y + offset_y, ids_dst_shared,
                 dst + it * mmq_y,
                 stride_row_x, ncols_y, stride_col_dst,
                 tile_x_max_i, tile_y_max_j, blocks_per_ne00);
         } else if (width_code == DS4_MOE_WORKLIST_WIDTH_32) {
-            ds4_moe_worklist_tile<type, 32, need_check>(
+            ds4_moe_worklist_tile<type, 32, need_check, max_x>(
                 pipe, x, offset_x, y + offset_y, ids_dst_shared,
                 dst + it * mmq_y,
                 stride_row_x, ncols_y, stride_col_dst,
                 tile_x_max_i, tile_y_max_j, blocks_per_ne00);
         } else if (width_code == DS4_MOE_WORKLIST_WIDTH_64) {
-            ds4_moe_worklist_tile<type, DS4_MOE_WORKLIST_TAIL_X, need_check>(
+            ds4_moe_worklist_tile<type, DS4_MOE_WORKLIST_TAIL_X, need_check, max_x>(
                 pipe, x, offset_x, y + offset_y, ids_dst_shared,
                 dst + it * mmq_y,
                 stride_row_x, ncols_y, stride_col_dst,
                 tile_x_max_i, tile_y_max_j, blocks_per_ne00);
         } else {
-            ds4_moe_worklist_tile<type, mmq_x, need_check>(
+            ds4_moe_worklist_tile<type, mmq_x, need_check, max_x>(
                 pipe, x, offset_x, y + offset_y, ids_dst_shared,
                 dst + it * mmq_y,
                 stride_row_x, ncols_y, stride_col_dst,
@@ -1544,7 +1560,8 @@ static size_t ds4_mmq_moe_worklist_nbytes_shared(
         int mmq_x, int mmq_y, int cc, int warp_size, int nwarps) {
     size_t nbytes = mmq_get_nbytes_shared<type>(
         mmq_x, mmq_y, cc, warp_size, nwarps);
-    if (ds4_mmq_pipe_supported(type)) {
+    if (ds4_mmq_pipe_supported(type) &&
+        (!ds4_mmq_pipe_kquant(type) || mmq_x <= DS4_MMQ_PIPE_MAX_X)) {
         const size_t pipe_bytes = ds4_mmq_pipe_nbytes_shared(
             type, DS4_MMQ_PIPE_MAX_X, mmq_y);
         if (pipe_bytes > nbytes) nbytes = pipe_bytes;
@@ -1736,7 +1753,8 @@ int ds4_mmq_moe_worklist_launch(
     }
     const dim3 block_dims((unsigned)warp_size, (unsigned)nwarps, 1u);
     const int blocks_per_ne00 = K / ggml_blck_size(type);
-    const int pipe = moe_worklist_pipe_enabled() ? 1 : 0;
+    const int pipe = moe_worklist_pipe_enabled() &&
+        (!ds4_mmq_pipe_kquant(type) || max_x <= DS4_MMQ_PIPE_MAX_X) ? 1 : 0;
     if (M % mmq_y == 0) {
         ds4_moe_worklist_mmq_kernel<type, false, max_x>
             <<<nsm, block_dims, nbytes_shared, stream>>>(
@@ -2304,7 +2322,11 @@ int ds4_mmq_moe_impl(
 
     if (up_f32) {
         const dim3 grid((unsigned)ne_get_rows, (K + 511) / 512);
-        if (activation == SwiGLUOutput::NaiveBF16) {
+        if (activation == SwiGLUOutput::Hy4Clamp) {
+            hy4_swiglu_q8<<<grid, 128, 0, stream>>>(
+                X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
+                K, (int)ne_get_rows);
+        } else if (activation == SwiGLUOutput::NaiveBF16) {
             mimo2_swiglu_q8<SwiGLUOutput::NaiveBF16><<<grid, 128, 0, stream>>>(
                 X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
                 K, (int)ne_get_rows);
@@ -2369,6 +2391,14 @@ int ds4_mmq_moe_impl(
             }
             if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
                 if (worklist_rc == -1 && policy == MoePolicy::GlmIq2) {
+                    worklist_rc = ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                        tag, *ctx, W, (const int *)src1_q8_1.get(),
+                        ids_dst.get(), expert_bounds.get(), out_f32,
+                        M, K, ne_get_rows, n_experts, s01, s02, stream);
+                }
+            }
+            if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
+                if (hy4_pipe64(type, M, K, n_experts)) {
                     worklist_rc = ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
                         tag, *ctx, W, (const int *)src1_q8_1.get(),
                         ids_dst.get(), expert_bounds.get(), out_f32,
@@ -3352,6 +3382,13 @@ int ds4_mmq_moe_pair_impl(
             auto launch = [&](const void *W, float *out) {
                 if constexpr (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
                     if (policy == MoePolicy::GlmIq2) {
+                        return ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                            tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
+                            M, K, ne_get_rows, n_experts, s01, s02, stream);
+                    }
+                }
+                if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
+                    if (hy4_pipe64(type, M, K, n_experts)) {
                         return ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
                             tag, *ctx, W, (const int *)src1_q8_1, ids_dst, expert_bounds, out,
                             M, K, ne_get_rows, n_experts, s01, s02, stream);
@@ -5694,6 +5731,21 @@ extern "C" int ds4_mmq_naive_down(
         "Naive fused BF16 SwiGLU down", weights, gate, ids, out, OUTPUT, WIDTH,
         rows, EXPERTS, 1, stream, nullptr, 0, false, rows / USED, 0, up,
         SwiGLUOutput::NaiveBF16);
+}
+
+/* Hy4 routed down: rows = tokens x 16 assignments, one expert each; the
+ * clamped SwiGLU of the gate/up pair is quantized straight into the Q5_K
+ * operand. bound = tokens caps every expert bucket. */
+extern "C" int ds4_mmq_hy4_down(
+        const void *weights, const float *gate, const float *up,
+        const int32_t *ids, float *out, int rows, int bound, cudaStream_t stream) {
+    enum { WIDTH = 1536, EXPERTS = 512 };
+    if (!up || rows <= 0 || bound <= 0) { return -1; }
+    // hy4::moe_sum zeroes non-finite rows at read: no output scrub.
+    return ds4_mmq_moe_impl<GGML_TYPE_Q5_K>(
+        "Hy4 fused SwiGLU down", weights, gate, ids, out, WIDTH, WIDTH,
+        rows, EXPERTS, 1, stream, nullptr, 0, false, bound, 0, up,
+        SwiGLUOutput::Hy4Clamp);
 }
 
 extern "C" int ds4_mmq_iq2_xs_moe(

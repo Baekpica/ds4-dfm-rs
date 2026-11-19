@@ -3792,6 +3792,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     match shape.family {
         ModelFamily::Inkling => crate::inkling::main_layouts(),
         ModelFamily::Step37 => crate::Step37Plan::layouts(),
+        ModelFamily::Hy4 => crate::hy4::layouts(),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::layouts(),
         ModelFamily::Mimo2 => crate::Mimo2Plan::layouts(),
         ModelFamily::IQuestQ1 => crate::iquest::layouts(),

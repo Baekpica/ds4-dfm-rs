@@ -35,11 +35,25 @@ __device__ __forceinline__ uint32_t l31_fa_pe_swz(uint32_t row, uint32_t chunk) 
 }
 
 __device__ __forceinline__ uint32_t l31_fa_pack2(const float *x) { return glmvq_fa_pack(x[0], x[1]); }
+// A BF16 q_abs pair is already the A fragment's register.
+__device__ __forceinline__ uint32_t l31_fa_pack2(const __nv_bfloat16 *x) { return *(const uint32_t *)x; }
 
-template <bool FP8>
-__global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
-        float *out, float *partial, float *stats, const float *q, const float *q_abs,
-        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, uint32_t pos0,
+struct l31_fa_dense {
+    static constexpr uint32_t heads = GLMVQ_FA_HEADS, query_dim = L31_FA_KEY;
+    static constexpr bool contiguous = true, has_sinks = false;
+    uint32_t pos0;
+    __device__ uint32_t count(uint32_t position) const { return position + 1; }
+    __device__ uint32_t at(uint32_t, uint32_t, uint32_t slot) const { return slot; }
+};
+
+// The row selector supplies physical KV slots. The MMA and softmax stay shared
+// between dense Ling history and Hy4's sliding or IndexPool-selected rows.
+// OUT = __nv_bfloat16 stores the rounded rows a BF16 consumer converts anyway;
+// QA = __nv_bfloat16 reads q_abs rounded by its producer, as the tile would.
+template <bool FP8, class Keys, typename OUT, typename QA>
+__device__ __forceinline__ void l31_fa_tile(
+        OUT *out, float *partial, float *stats, const float *q, const QA *q_abs,
+        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, Keys keys,
         uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
     glmvq_pdl_open();
@@ -52,24 +66,26 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
     uint32_t *kidx = (uint32_t *)(qpe + L31_FA_QPE);
     int8_t *kexp = (int8_t *)(kidx + 2 * GLMVQ_FA_KEYS);
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
-    const uint32_t g = lane >> 2, q4 = lane & 3u, group = warp & 3u, half = warp >> 2;
+    constexpr uint32_t head_count = Keys::heads, groups = head_count / 16;
+    constexpr uint32_t warps = groups * 2, threads = warps * 32;
+    const uint32_t g = lane >> 2, q4 = lane & 3u, group = warp % groups, half = warp / groups;
     const uint32_t row = blockIdx.x, split = blockIdx.y;
-    const uint32_t position = pos0 + row, slots = position + 1;
+    const uint32_t position = keys.pos0 + row, slots = keys.count(position);
     const uint32_t total = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
     const uint32_t first = split * tiles_per_split;
     const uint32_t last = min(total, first + tiles_per_split);
     const uint32_t head0 = group * 16;
 
-    // q_pe of all 64 heads as BF16 rows for the rope A fragments.
-    for (uint32_t i = tid; i < GLMVQ_FA_HEADS * (L31_FA_ROPE / 8); i += GLMVQ_FA_THREADS) {
+    // q_pe of all heads as BF16 rows for the rope A fragments.
+    for (uint32_t i = tid; i < head_count * (L31_FA_ROPE / 8); i += threads) {
         const uint32_t head = i / (L31_FA_ROPE / 8), chunk = i % (L31_FA_ROPE / 8);
-        const float *src = q + ((uint64_t)row * GLMVQ_FA_HEADS + head) * L31_FA_KEY + L31_FA_NOPE + chunk * 8;
+        const float *src = q + ((uint64_t)row * head_count + head) * Keys::query_dim + (Keys::query_dim - L31_FA_ROPE) + chunk * 8;
         const uint4 v = make_uint4(l31_fa_pack2(src), l31_fa_pack2(src + 2), l31_fa_pack2(src + 4), l31_fa_pack2(src + 6));
         *(uint4 *)(qpe + l31_fa_pe_swz(head, chunk)) = v;
     }
     // q_abs fragments for this warp's 16 heads and latent half, in registers.
     uint32_t qa[16][4];
-    const float *qrow = q_abs + ((uint64_t)row * GLMVQ_FA_HEADS + head0) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF;
+    const QA *qrow = q_abs + ((uint64_t)row * head_count + head0) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF;
     #pragma unroll
     for (uint32_t k = 0; k < 16; k++) {
         const uint32_t col = k * 16 + 2 * q4;
@@ -79,18 +95,23 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         qa[k][3] = l31_fa_pack2(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col + 8);
     }
 
-    // Warp w copies keys 4w..4w+3: BF16 latent rows as two 512-byte warp
+    // Each warp copies contiguous keys: BF16 latent rows as two 512-byte warp
     // copies (an FP8 row as one, unswizzled into its stage), rope rows by
     // lanes 0-7 (eight 16-byte chunks each).
     auto issue = [&](uint32_t tile, uint32_t buf) {
         uint8_t *dst = FP8 ? stages + buf * L31_FA8_STAGE : tiles + buf * GLMVQ_FA_TILE;
         uint8_t *pe = pe_tiles + buf * L31_FA_PE_TILE;
         #pragma unroll
-        for (uint32_t i = 0; i < GLMVQ_FA_KEYS / GLMVQ_FA_WARPS; i++) {
-            const uint32_t key_slot = warp * (GLMVQ_FA_KEYS / GLMVQ_FA_WARPS) + i;
+        for (uint32_t i = 0; i < GLMVQ_FA_KEYS / warps; i++) {
+            const uint32_t key_slot = warp * (GLMVQ_FA_KEYS / warps) + i;
             const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
-            const uint32_t key = slot < slots ? slot : GLMVQ_FA_NONE;
-            if (!lane) { kidx[buf * GLMVQ_FA_KEYS + key_slot] = key; }
+            const uint32_t key = slot < slots ? keys.at(row, position, slot) : GLMVQ_FA_NONE;
+            if (!lane) {
+                kidx[buf * GLMVQ_FA_KEYS + key_slot] = key;
+                if constexpr (FP8 && !Keys::contiguous) {
+                    kexp[buf * GLMVQ_FA_KEYS + key_slot] = key == GLMVQ_FA_NONE ? 0 : exps[key];
+                }
+            }
             const uint32_t bytes = key == GLMVQ_FA_NONE ? 0 : 16;
             const uint64_t at = key == GLMVQ_FA_NONE ? 0 : key;
             if (FP8) {
@@ -109,13 +130,20 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         }
         // The tile's row exponents. Masked rows are zero-filled and every
         // stored exponent is finite (the cache starts zeroed), so they stay 0.
-        if (FP8 && tid < GLMVQ_FA_KEYS / 16) {
+        if (FP8 && Keys::contiguous && tid < GLMVQ_FA_KEYS / 16) {
             glmvq_fa_copy(kexp + buf * GLMVQ_FA_KEYS + tid * 16, exps + (uint64_t)tile * GLMVQ_FA_KEYS + tid * 16, 16);
         }
     };
 
     float o[32][4] = {};
     float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.0f, 0.0f};
+    if constexpr (Keys::has_sinks) {
+        if (!split) {
+            m[0] = keys.sinks[head0 + g] * 1.4426950408889634f;
+            m[1] = keys.sinks[head0 + g + 8] * 1.4426950408889634f;
+            l[0] = l[1] = 1.0f;
+        }
+    }
     const float log2_scale = scale * 1.4426950408889634f;
     if (first < last) { issue(first, 0); }
     asm volatile("cp.async.commit_group;" ::: "memory");
@@ -132,8 +160,8 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
             // tile; every warp finished the previous tile at the barrier above.
             const uint8_t *stage = stages + buf * L31_FA8_STAGE;
             #pragma unroll
-            for (uint32_t i = 0; i < GLMVQ_FA_KEYS * GLMVQ_FA_LATENT / 16 / GLMVQ_FA_THREADS; i++) {
-                const uint32_t id = i * GLMVQ_FA_THREADS + tid, key = id / 32, c = id % 32;
+            for (uint32_t i = 0; i < GLMVQ_FA_KEYS * GLMVQ_FA_LATENT / 16 / threads; i++) {
+                const uint32_t id = i * threads + tid, key = id / 32, c = id % 32;
                 uint4 lo, hi;
                 l31_latent_bf16x16(*(const uint4 *)(stage + key * GLMVQ_FA_LATENT + c * 16),
                     l31_pow2(kexp[buf * GLMVQ_FA_KEYS + key]), &lo, &hi);
@@ -180,7 +208,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
                 }
             }
         }
-        float *mine = exchange + (group + 4 * half) * 16 * GLMVQ_FA_KEYS;
+        float *mine = exchange + (group + groups * half) * 16 * GLMVQ_FA_KEYS;
         #pragma unroll
         for (uint32_t j = 0; j < 4; j++) {
             *(float2 *)(mine + glmvq_fa_slot(g, 4 * j + q4)) = make_float2(s[j][0], s[j][1]);
@@ -189,7 +217,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         // The two half warps of a head group meet on their own barrier; two
         // partials add commutatively, so both hold the same scores.
         asm volatile("bar.sync %0, %1;" :: "r"(1 + group), "r"(64) : "memory");
-        const float *other = exchange + (group + 4 * (half ^ 1u)) * 16 * GLMVQ_FA_KEYS;
+        const float *other = exchange + (group + groups * (half ^ 1u)) * 16 * GLMVQ_FA_KEYS;
         #pragma unroll
         for (uint32_t j = 0; j < 4; j++) {
             const float2 a = *(const float2 *)(other + glmvq_fa_slot(g, 4 * j + q4));
@@ -260,7 +288,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
 
     const uint32_t heads[2] = {head0 + g, head0 + g + 8};
     if (partial) {
-        const uint64_t base = ((uint64_t)row * gridDim.y + split) * GLMVQ_FA_HEADS;
+        const uint64_t base = ((uint64_t)row * gridDim.y + split) * head_count;
         #pragma unroll
         for (uint32_t h = 0; h < 2; h++) {
             float *dst = partial + (base + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
@@ -273,10 +301,25 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
     #pragma unroll
     for (uint32_t h = 0; h < 2; h++) {
         const float inv = l[h] > 0.0f ? 1.0f / l[h] : 0.0f;
-        float *dst = out + ((uint64_t)row * GLMVQ_FA_HEADS + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
+        OUT *dst = out + ((uint64_t)row * head_count + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
         #pragma unroll
-        for (uint32_t t = 0; t < 32; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h] * inv, o[t][2 * h + 1] * inv); }
+        for (uint32_t t = 0; t < 32; t++) {
+            if constexpr (std::is_same_v<OUT, float>) {
+                *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
+            } else {
+                *(__nv_bfloat162 *)(dst + t * 8) = __floats2bfloat162_rn(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
+            }
+        }
     }
+}
+
+template <bool FP8>
+__global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
+        float *out, float *partial, float *stats, const float *q, const float *q_abs,
+        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, uint32_t pos0,
+        uint32_t tiles_per_split, float scale) {
+    l31_fa_tile<FP8>(out, partial, stats, q, q_abs, latent, exps, k_pe,
+        l31_fa_dense{pos0}, tiles_per_split, scale);
 }
 
 // glmvq_fa_combine with F32 latent rows for Ling's value projection.

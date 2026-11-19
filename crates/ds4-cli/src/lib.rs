@@ -458,8 +458,8 @@ fn use_glm_spec(family: ds4_core::ModelFamily, draft: i32) -> bool {
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
-fn use_naive_spec(dspark: Option<&str>, draft: i32) -> bool {
-    dspark.is_some() && draft >= 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+fn use_single_draft(sidecar: Option<&str>, draft: i32) -> bool {
+    sidecar.is_some() && draft >= 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
 /// The run's sampler for draft verification; temperature 0 keeps argmax.
@@ -648,8 +648,10 @@ fn run_chat_turn(
     let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
         || use_iquest_spec(model.family(), args.mtp_draft)
         || use_glm_spec(model.family(), args.mtp_draft)
-        || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
+        || (matches!(
+            model.family(),
+            ds4_core::ModelFamily::NaiveN05 | ds4_core::ModelFamily::Hy4
+        ) && use_single_draft(model.drafter_path(), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0i32;
     let mut raw = Vec::new();
@@ -986,8 +988,10 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
         || use_iquest_spec(model.family(), args.mtp_draft)
         || use_glm_spec(model.family(), args.mtp_draft)
-        || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(model.dspark().map(|d| d.path()), args.mtp_draft));
+        || (matches!(
+            model.family(),
+            ds4_core::ModelFamily::NaiveN05 | ds4_core::ModelFamily::Hy4
+        ) && use_single_draft(model.drafter_path(), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0;
 
@@ -1477,7 +1481,7 @@ C-compatible flags (same names as `ds4 --help`):
   --dump-tokens --dump-logits FILE --dump-logprobs FILE --logprobs-top-k N
   -h, --help              Show this help
 
---mtp attaches DeepSeek, Inkling or Step predictors; --dspark takes DeepSeek or Naive.
+--mtp attaches a family-specific predictor, including Hy4 DFly2. --dspark takes DeepSeek or Naive.
 IQuest-Q1 uses embedded MTP: --cuda --mtp-draft 2..7 --temp 0, with no --mtp file.
 GLM-5.3 uses embedded MTP: --cuda --mtp-draft 2..3 --temp 0, with no --mtp file.
 --dump-logprobs mirrors the C CLI proof loop (chat-template encode via
@@ -2448,9 +2452,9 @@ mod tests {
         assert!(controls
             .iter()
             .any(|o| matches!(o, ModelOpenOption::MtpMargin(m) if *m == 0.0)));
-        assert!(use_naive_spec(parsed.dspark.as_deref(), 1));
-        assert!(use_naive_spec(parsed.dspark.as_deref(), 6));
-        assert!(!use_naive_spec(None, 6));
+        assert!(use_single_draft(parsed.dspark.as_deref(), 1));
+        assert!(use_single_draft(parsed.dspark.as_deref(), 6));
+        assert!(!use_single_draft(None, 6));
     }
 
     #[test]

@@ -34198,7 +34198,7 @@ enum ds4_routed_out {
     DS4_ROUTED_OUT_GUARDED = 1,
 };
 
-enum class RoutedAct { Mimo, Naive };
+enum class RoutedAct { Mimo, Naive, Hy4 };
 
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
@@ -34428,6 +34428,13 @@ static int routed_matmul_tensor_impl(
         }
         break;
     case 13u:
+        if (up) {
+            rc = activation == RoutedAct::Hy4 && !use_vec && max_rows_per_expert
+                ? ds4_mmq_hy4_down(weights, xp, (const float *)up->ptr, idp, op,
+                                   (int)NT, (int)max_rows_per_expert, stream)
+                : -1;
+            break;
+        }
         rc = use_vec
             ? vec_rows(ds4_mmq_q5_K_moe_vec)
             : use_bucket_bound
@@ -34601,6 +34608,23 @@ extern "C" int ds4_gpu_naive_down(
     return routed_matmul_tensor_impl(out, gate, ids, map, size, offset, bytes,
         IQ2_XS, WIDTH, OUTPUT, EXPERTS, tokens * USED, 1, tokens,
         DS4_ROUTED_OUT_GUARDED, up, RoutedAct::Naive);
+}
+
+/* Hy4 prefill and verify: the clamped SwiGLU of the gate/up pair goes
+ * straight into the Q5_K down's Q8 operand. -1 refuses before any GPU
+ * work (one-row decode, kill switch); 0 is a hard failure. */
+extern "C" int ds4_gpu_hy4_down(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t type, uint32_t tokens) {
+    enum { WIDTH = 1536, EXPERTS = 512, USED = 16, Q5_K = 13 };
+    const char *env = getenv("DS4_HY4_SWIGLU_Q8");
+    if (type != Q5_K || tokens * USED <= DS4_ROUTED_VEC_MAX_ROWS ||
+        (env && strcmp(env, "0") == 0)) { return -1; }
+    return routed_matmul_tensor_impl(out, gate, ids, map, size, offset, bytes,
+        type, WIDTH, WIDTH, EXPERTS, tokens * USED, 1, tokens,
+        DS4_ROUTED_OUT_SANITIZE, up, RoutedAct::Hy4);
 }
 
 extern "C" int ds4_gpu_routed_gate_up_tensor(
@@ -49732,3 +49756,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_minimax_gpu.cuh"
 #include "ds4_axk2_gpu.cuh"
 #include "ds4_inkling2_gpu.cuh"
+#include "ds4_hy4_gpu.cuh"

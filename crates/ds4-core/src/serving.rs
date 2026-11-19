@@ -672,6 +672,7 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
+        | ModelFamily::Hy4
         | ModelFamily::Inkling2Vq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
@@ -732,6 +733,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        ModelFamily::Hy4 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::hy4::CONTEXT),
+            qualified_ctx: Some(8192),
+            qualified_banks: Some(2),
+            qualified_prompt: Some(1439),
+            media_serial: true,
+        },
         // Short two-bank HTTP gates qualify partial reuse and disk restore
         // (docs/benchmarks/glm53-vq-serving-reuse-2026-10-19).
         ModelFamily::Glm53Vq => ServingCaps {
@@ -1382,7 +1403,7 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     if matches!(
         caps.family,
-        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::Hy4
     ) {
         if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
             issues.push(error("mtp_draft", failure.message));
@@ -1718,6 +1739,7 @@ impl ServingCaps {
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
             Variant::Inkling2SmallVq => "inkling2_vq",
+            Variant::Hy4FlashMxq => "hy_v4_flash",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1919,6 +1941,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
             Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
+            Some(ModelFamily::Hy4) => Some("DS4_HY4_PREFILL_CHUNK"),
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
@@ -2807,6 +2830,9 @@ fn measured_limits(
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
+        Variant::Hy4FlashMxq => {
+            "8K with two text banks and Q8_0 DFly2 at depth 2 passed HTTP reuse, serial image/video and tool turns. The 4K checklist covers snapshot, disk and fork. The source context is 1M"
+        }
         Variant::DeepSeek41Flash => {
             "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are qualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
         }
@@ -3086,6 +3112,19 @@ mod tests {
         assert!(p.env_overrides().iter().any(|(key, value)| {
             key == controls["native_prefill_env"].as_str().unwrap() && value == "1280"
         }));
+
+        let hy4 = plan(
+            ServingRequest {
+                native_chunk: Some(256),
+                ..ServingRequest::default()
+            },
+            ModelFamily::Hy4,
+            Variant::Hy4FlashMxq,
+        );
+        assert!(hy4
+            .env_overrides()
+            .iter()
+            .any(|(key, value)| key == "DS4_HY4_PREFILL_CHUNK" && value == "256"));
 
         let req = ServingRequest {
             ctx: 2048,
@@ -4630,6 +4669,20 @@ mod tests {
                 .env_overrides()
                 .iter()
                 .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
+        }
+    }
+
+    #[test]
+    fn hy4_plan_checks_the_five_draft_slots() {
+        for depth in [5, 6] {
+            let req = ServingRequest {
+                mtp_mode: MtpMode::On,
+                mtp_path: Some("dfly2-q8_0.gguf".into()),
+                mtp_draft: Some(depth),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Hy4, Variant::Hy4FlashMxq);
+            assert_eq!(p.issues.iter().any(|i| i.code == "mtp_draft"), depth > 5);
         }
     }
 

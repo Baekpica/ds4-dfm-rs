@@ -236,6 +236,12 @@ int main(void) {
     if (ds4_bridge_mimo2_commit(NULL, 1, err, sizeof(err)) == 0) {
         fail("MiMo commit NULL session");
     }
+    if (ds4_bridge_hy4_trial(NULL, 1, 3, NULL, NULL, 3, err, sizeof(err)) != -1 ||
+        ds4_bridge_hy4_commit(NULL, 1, err, sizeof(err)) == 0 ||
+        ds4_bridge_hy4_encode_vision(NULL, NULL, 1, 1, NULL, err, sizeof(err)) == 0 ||
+        ds4_bridge_hy4_sync_media(NULL, NULL, 0, NULL, 0, 0, err, sizeof(err)) == 0) {
+        fail("Hy4 NULL session");
+    }
     if (ds4_bridge_session_sync_keep(NULL, NULL, 0) != -1) {
         fail("sync keep NULL session");
     }

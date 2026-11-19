@@ -12,6 +12,7 @@
 //! normalized string. A character with no vocabulary entry contributes its
 //! UTF-8 bytes as `<0xNN>` symbols, which may then merge like any other
 //! symbol.
+use super::merge_by;
 use super::{GgufFile, TokError, Vocab};
 
 /// tokenizer.ggml.tokens and .merges lengths of the pinned revision.
@@ -131,98 +132,6 @@ fn symbols(vocab: &Vocab, text: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     out
-}
-
-/// A heap entry: merge rank, left index, right index, and the stamp of each
-/// end at the time the pair was ranked.
-type PairEntry = (i32, u32, u32, u32, u32);
-
-/// The symbol list as links over the original indices. A symbol keeps its
-/// index when it absorbs its right neighbour, so the pair on either side of
-/// it is a different pair under the same two indices; its stamp tells them
-/// apart.
-struct Chain {
-    next: Vec<u32>,
-    prev: Vec<u32>,
-    live: Vec<bool>,
-    stamp: Vec<u32>,
-}
-
-impl Chain {
-    /// Whether the entry still names two adjacent live symbols with the
-    /// bytes it was ranked on.
-    fn holds(&self, &(_, i, j, si, sj): &PairEntry) -> bool {
-        let (a, b) = (i as usize, j as usize);
-        b < self.live.len()
-            && self.live[a]
-            && self.live[b]
-            && self.next[a] == j
-            && self.stamp[a] == si
-            && self.stamp[b] == sj
-    }
-}
-
-/// BPE over the symbol list, as tokenizers' `Word::merge_all` runs it:
-/// merge the adjacent pair with the lowest rank, leftmost on a tie, and rank
-/// the two pairs the merge creates at once, until no pair has a rule. A
-/// min-heap of `PairEntry` replaces a rescan per merge, which was quadratic:
-/// 34.5 s of a 35.0 s TTFT at 61,871 prompt tokens (GB10, 2026-11-05).
-fn merge_by(sym: &mut Vec<Vec<u8>>, rank_of: impl Fn(&[u8], &[u8]) -> i32) {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-
-    let n = sym.len();
-    if n < 2 {
-        return;
-    }
-    let n32 = n as u32;
-    let mut chain = Chain {
-        next: (1..=n32).collect(),
-        prev: (0..n32).map(|i| i.wrapping_sub(1)).collect(),
-        live: vec![true; n],
-        stamp: vec![0; n],
-    };
-    let entry = |sym: &[Vec<u8>], chain: &Chain, i: u32, j: u32| {
-        let rank = rank_of(&sym[i as usize], &sym[j as usize]);
-        let stamps = (chain.stamp[i as usize], chain.stamp[j as usize]);
-        (rank >= 0).then_some(Reverse((rank, i, j, stamps.0, stamps.1)))
-    };
-    let mut heap: BinaryHeap<Reverse<PairEntry>> = (0..n32 - 1)
-        .filter_map(|i| entry(sym, &chain, i, i + 1))
-        .collect();
-
-    while let Some(Reverse(top)) = heap.pop() {
-        if !chain.holds(&top) {
-            continue;
-        }
-        let (_, i, j, _, _) = top;
-        let (a, b) = (i as usize, j as usize);
-        let right = std::mem::take(&mut sym[b]);
-        sym[a].extend_from_slice(&right);
-        chain.stamp[a] = chain.stamp[a].wrapping_add(1);
-        chain.live[b] = false;
-
-        // The merged symbol pairs with both neighbours.
-        let after = chain.next[b];
-        chain.next[a] = after;
-        if after < n32 {
-            chain.prev[after as usize] = i;
-            heap.extend(entry(sym, &chain, i, after));
-        }
-        let before = chain.prev[a];
-        if before < n32 {
-            heap.extend(entry(sym, &chain, before, i));
-        }
-    }
-
-    // Index 0 only ever absorbs, so the live chain starts there.
-    let mut out = Vec::with_capacity(n);
-    let mut i = 0usize;
-    while i < n {
-        out.push(std::mem::take(&mut sym[i]));
-        i = chain.next[i] as usize;
-    }
-    *sym = out;
 }
 
 pub(super) fn encode(v: &Vocab, text: &[u8], out: &mut Vec<i32>) {

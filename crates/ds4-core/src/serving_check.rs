@@ -51,7 +51,7 @@ use crate::{
 };
 
 mod gemma4_mtp;
-pub use gemma4_mtp::{gemma4_mtp_gate, MtpBlock, MtpReport};
+pub use gemma4_mtp::{gemma4_mtp_gate, MtpBlock, MtpReport, TargetReplay};
 use gemma4_mtp::{MTP_BLOCK_MIN, MTP_TEMPERATURE};
 
 /// Tokens decoded past each frontier.
@@ -78,6 +78,8 @@ enum Item {
     /// The drafter's losslessness: drafting may change acceptance and
     /// speed, never the target's stream.
     Mtp,
+    /// Sample each verified row independently and compare the committed state.
+    MtpTargetRows,
 }
 
 impl Item {
@@ -109,6 +111,15 @@ impl Item {
             Self::BankDisk => ("banks", "disk"),
             Self::BankWidth => ("banks", "width"),
             Self::Mtp => ("mtp", "lossless"),
+            Self::MtpTargetRows => ("mtp", "target rows"),
+        }
+    }
+
+    fn mtp(family: ModelFamily) -> Self {
+        if family == ModelFamily::Hy4 {
+            Self::MtpTargetRows
+        } else {
+            Self::Mtp
         }
     }
 
@@ -140,7 +151,7 @@ impl Item {
             Self::BankPartial => bank(partial),
             Self::BankDisk => bank(caps.disk),
             Self::BankWidth => caps.bank_support,
-            Self::Mtp => caps.mtp_support,
+            Self::Mtp | Self::MtpTargetRows => caps.mtp_support,
         }
     }
 
@@ -241,7 +252,7 @@ fn unchecked(c: &ServingCaps, mtp_bound: bool) -> Vec<(&'static str, &'static st
     if !mtp_bound {
         rows.push((
             "mtp",
-            "lossless",
+            Item::mtp(c.family).label().1,
             format!("{:?} {} {:?}", c.mtp, support(c.mtp_support), c.spec_lane),
         ));
     }
@@ -946,13 +957,22 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
     // The MTP row runs only when the drafter is bound: a model served
     // without its sidecar keeps the unchecked placeholder, and a bound one
     // must prove the stream, not just the declaration.
-    if model.family() == ModelFamily::Gemma4Vq && model.mtp().is_some() {
+    if matches!(model.family(), ModelFamily::Gemma4Vq | ModelFamily::Hy4)
+        && model.drafter_path().is_some()
+    {
         list.mtp_bound = true;
-        let measured = match gemma4_mtp_gate(model, prompt, ctx, DECODE_TOKENS) {
+        let measured = match gemma4_mtp::sidecar_gate(model, prompt, ctx, DECODE_TOKENS) {
             Ok(report) => {
+                let streams = match &report.verify_rows {
+                    Some(r) => format!(
+                        "exact target replay: {} greedy + {} sampled, one-row stream equal: greedy={} sampled={}",
+                        r.greedy_rows, r.sampled_rows, r.greedy_stream_equal, r.sampled_stream_equal
+                    ),
+                    None => "streams equal".to_owned(),
+                };
                 let detail = match &report.block {
                     Some(block) => format!(
-                        "streams equal, {} tokens, max accepted {}, prefix {}, snapshot, stop {}, temp {:.1} (max_abs {:.3e})",
+                        "{streams}, {} tokens, max accepted {}, prefix {}, snapshot, stop {}, temp {:.1} (max_abs {:.3e})",
                         report.ids.len(),
                         report.max_accepted(),
                         if report.prefix_reuse == Some(true) {
@@ -965,7 +985,7 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
                         block.max_abs
                     ),
                     None => format!(
-                        "streams equal, {} tokens, max accepted {}; no block of {} in {}",
+                        "{streams}, {} tokens, max accepted {}; no block of {} in {}",
                         report.ids.len(),
                         report.max_accepted(),
                         MTP_BLOCK_MIN,
@@ -976,7 +996,7 @@ pub fn serving_check(model: &Model, prompt: &[i32], ctx: i32) -> Result<Checklis
             }
             Err(e) => Measured::Wrong(e.message),
         };
-        list.rows.push((Item::Mtp, measured));
+        list.rows.push((Item::mtp(model.family()), measured));
     }
     Ok(list)
 }
@@ -1169,6 +1189,7 @@ mod tests {
             Variant::Axk2Vq,
             Variant::Mimo26FlashVq,
             Variant::Inkling2SmallVq,
+            Variant::Hy4FlashMxq,
         ];
         // Gemma-4 VQ has no forward in this tree yet and declares no serving
         // lane; it joins this sweep when the engine lands.
@@ -1198,7 +1219,8 @@ mod tests {
                 | Variant::Axk2Vq
                 | Variant::Mimo26FlashVq
                 | Variant::Gemma4A4bVq
-                | Variant::Inkling2SmallVq => {}
+                | Variant::Inkling2SmallVq
+                | Variant::Hy4FlashMxq => {}
             }
         }
         all
@@ -1258,6 +1280,10 @@ mod tests {
         let bound = unchecked(&caps, true);
         assert!(!bound.iter().any(|(c, _, _)| *c == "mtp"));
         assert_eq!(bound.len(), 3);
+        let hy4 = caps_from_shape(shape_for_variant(Variant::Hy4FlashMxq));
+        assert!(unchecked(&hy4, false)
+            .iter()
+            .any(|(c, n, _)| *c == "mtp" && *n == "target rows"));
     }
 
     #[test]

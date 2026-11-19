@@ -48,6 +48,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Qwen derivatives](ds4-dfm-model-families.md#qwen-derivatives) | Uncensored, Swift, Darwin and ThinkingCap artifact-specific evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
 | [Qwen benchmark reference](qwen38-benchmark-reference.md) | Consolidated source limits, protocols, campaign numbers, candidate adoption and optimization target |
+| [Hy4-flash MXQ](hy4-flash-mxq.md) | Weight placement, sparse and sliding caches, DFly2 and visual inputs on CUDA |
 | [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Q2 + vision; recorded serial 2K qualification |
 | [GLM Uncensored](glm53-uncensored.md) | Mixed recipe, SSD/bank contracts and current verification boundaries |
 | [GLM VQ](glm53-vq.md) | GVQ1 format concept, GB10 execution paths, numerical contract and optimization log |

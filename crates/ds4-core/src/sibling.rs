@@ -113,6 +113,9 @@ pub fn probe_mtp_sidecar(
             message: error.to_string(),
         });
     }
+    if shape.family == ModelFamily::Hy4 {
+        return crate::hy4::sidecar::draft(std::path::Path::new(path));
+    }
     if shape.family == ModelFamily::BeamVq {
         return crate::beam_vq::dflash2::inspect(std::path::Path::new(path))
             .map_err(|message| Error { code: 1, message });
@@ -244,13 +247,20 @@ pub fn probe_vision_sidecar(
     }
     let takes_encoder = matches!(
         shape.family,
-        ModelFamily::Glm53 | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2
+        ModelFamily::Glm53
+            | ModelFamily::Step37
+            | ModelFamily::Ling3Vl
+            | ModelFamily::Mimo2
+            | ModelFamily::Hy4
     );
     if !takes_encoder || backend != crate::Backend::Cuda || distributed.is_some() {
         return Err(Error {
             code: 1,
             message: "--vision requires one full GLM-5.3, Step, Ling or MiMo CUDA model".into(),
         });
+    }
+    if shape.family == ModelFamily::Hy4 {
+        return crate::hy4::sidecar::vision(std::path::Path::new(path));
     }
     if shape.variant == crate::Variant::Mimo26FlashVq {
         return Err(Error {

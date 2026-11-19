@@ -157,6 +157,7 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.defer_boot_prewarm = opt->defer_boot_prewarm != 0;
     eopt.host_policy = true; /* ds4-core Model::open owns process policy */
     eopt.audio_path = opt->audio_path;
+    eopt.hy4 = opt->hy4;
     eopt.power_percent = opt->power_percent;
     eopt.warm_weights = opt->warm_weights != 0;
     eopt.quality = opt->quality != 0;
@@ -606,6 +607,26 @@ int ds4_bridge_ling31_commit(ds4_bridge_session *s, int32_t keep, char *err, siz
     return ds4_session_ling31_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_hy4_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_hy4_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_hy4_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_hy4_commit(s->session, keep, err, errlen);
+}
+
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen)
@@ -822,6 +843,25 @@ int ds4_bridge_minimax_encode_vision(ds4_bridge_session *s, const float *patches
     return ds4_session_minimax_encode_vision(s->session, patches, grid_t, grid_h, grid_w, out, err, errlen);
 }
 
+int ds4_bridge_hy4_encode_vision(ds4_bridge_session *s, const float *pixels, uint32_t gh, uint32_t gw,
+                                 float *rows, char *err, size_t len)
+{
+    if (!s || !s->session) {
+        set_err(err, len, "session is NULL");
+        return 1;
+    }
+    return ds4_session_hy4_encode_vision(s->session, pixels, gh, gw, rows, err, len);
+}
+int ds4_bridge_hy4_sync_media(ds4_bridge_session *s, const int32_t *tokens, int32_t n,
+                              const ds4_hy4_span *spans, uint32_t count, uint64_t tag,
+                              char *err, size_t len)
+{
+    if (!s || !s->session) {
+        set_err(err, len, "session is NULL");
+        return 1;
+    }
+    return ds4_session_hy4_sync_media(s->session, tokens, n, spans, count, tag, err, len);
+}
 int ds4_bridge_minimax_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
                                   const uint32_t *starts, const uint32_t *counts,
                                   const float *const *rows, uint32_t nspans, uint64_t tag,
