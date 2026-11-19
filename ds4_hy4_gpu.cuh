@@ -656,6 +656,85 @@ __global__ void __launch_bounds__(256) head_q8(float *out, const int8_t *q, cons
 } // namespace hy4
 /* Builds the DFly2 draft head from the BF16 output head at load; NULL keeps
  * the BF16 head (DS4_HY4_DRAFT_HEAD_Q8=0 or a failed allocation). */
+namespace hy4 {
+/* MQ-Q5-Q8 router logits: BF16 weights (the values MQ-Q5 widened to F32) and
+ * F32 rows in the F32 GEMV's order, four lane-strided FMAs per 4-value vector
+ * and the warp tree, so a row equals the F32 router's bit for bit. */
+template <unsigned N>
+__global__ void __launch_bounds__(256) router_rows(float *out, const bf16 *w, const float *x, unsigned in,
+                                                   unsigned outs) {
+    const unsigned lane = threadIdx.x & 31u, row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (row >= outs) {
+        return;
+    }
+    const uint2 *wr = (const uint2 *)(w + (uint64_t)row * in);
+    float sum[N] = {};
+    for (unsigned i = lane; i < in / 4; i += 32u) {
+        const uint2 packed = wr[i];
+        const float2 lo = __bfloat1622float2(*(const __nv_bfloat162 *)&packed.x);
+        const float2 hi = __bfloat1622float2(*(const __nv_bfloat162 *)&packed.y);
+        #pragma unroll
+        for (unsigned t = 0; t < N; t++) {
+            const float4 b = ((const float4 *)(x + (uint64_t)t * in))[i];
+            sum[t] = fmaf(lo.x, b.x, sum[t]);
+            sum[t] = fmaf(lo.y, b.y, sum[t]);
+            sum[t] = fmaf(hi.x, b.z, sum[t]);
+            sum[t] = fmaf(hi.y, b.w, sum[t]);
+        }
+    }
+    #pragma unroll
+    for (unsigned t = 0; t < N; t++) {
+        for (int off = 16; off > 0; off >>= 1) {
+            sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], off);
+        }
+        if (!lane) {
+            out[(uint64_t)t * outs + row] = sum[t];
+        }
+    }
+}
+__global__ void widen_bf16(float *out, const bf16 *in, uint64_t n) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        out[i] = __bfloat162float(in[i]);
+    }
+}
+} // namespace hy4
+/* Router logits of a BF16 router. One to four rows use the F32 GEMV's
+ * arithmetic; prefill widens the weights back to the F32 matrix MQ-Q5 stores
+ * and runs its SGEMM, so both match the F32 router. */
+extern "C" int ds4_gpu_hy4_router(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset,
+                                  const ds4_gpu_tensor *x, uint32_t n) {
+    enum { IN = 3072, OUTS = 512 };
+    const uint64_t values = (uint64_t)IN * OUTS;
+    if (!out || !x || !n || offset > size || values * 2 > size - offset ||
+        out->bytes < (uint64_t)n * OUTS * sizeof(float) || x->bytes < (uint64_t)n * IN * sizeof(float) ||
+        ((uintptr_t)x->ptr & 15u)) {
+        return 0;
+    }
+    const auto *w = (const hy4::bf16 *)cuda_resolve_weight_ptr(map, offset, values * 2, 0, "Hy4 BF16 router");
+    if (!w || ((uintptr_t)w & 7u)) {
+        return 0;
+    }
+    float *o = (float *)out->ptr;
+    const float *xp = (const float *)x->ptr;
+    const cudaStream_t st = ds4_current_stream();
+    switch (n) {
+    case 1: hy4::router_rows<1><<<OUTS / 8, 256, 0, st>>>(o, w, xp, IN, OUTS); return cuda_ok(cudaGetLastError(), "Hy4 router");
+    case 2: hy4::router_rows<2><<<OUTS / 8, 256, 0, st>>>(o, w, xp, IN, OUTS); return cuda_ok(cudaGetLastError(), "Hy4 router");
+    case 3: hy4::router_rows<3><<<OUTS / 8, 256, 0, st>>>(o, w, xp, IN, OUTS); return cuda_ok(cudaGetLastError(), "Hy4 router");
+    case 4: hy4::router_rows<4><<<OUTS / 8, 256, 0, st>>>(o, w, xp, IN, OUTS); return cuda_ok(cudaGetLastError(), "Hy4 router");
+    default: break;
+    }
+    auto *wide = (float *)cuda_tmp_alloc(values * sizeof(float), "Hy4 router F32");
+    if (!wide || !g_cublas_ready) {
+        return 0;
+    }
+    hy4::widen_bf16<<<(unsigned)((values + 255) / 256), 256, 0, st>>>(wide, w, values);
+    const float alpha = 1.f, beta = 0.f;
+    return cublas_ok(cublasSgemm(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, OUTS, (int)n, IN, &alpha, wide, IN, xp, IN, &beta,
+                                 o, OUTS),
+                     "Hy4 router");
+}
 extern "C" ds4_gpu_tensor *ds4_gpu_hy4_draft_head(const void *map, uint64_t size, uint64_t offset) {
     using namespace hy4;
     const char *env = getenv("DS4_HY4_DRAFT_HEAD_Q8");
@@ -687,15 +766,91 @@ extern "C" int ds4_gpu_hy4_draft_logits(ds4_gpu_tensor *logits, const ds4_gpu_te
         (float *)logits->ptr, q, (const __half *)(q + (uint64_t)HEAD_ROWS * HEAD_COLS), (const float *)x->ptr);
     return cuda_ok(cudaGetLastError(), "Hy4 draft logits");
 }
+namespace hy4 {
+/* Decode and verify rows of a Q8_0 per-head projection (MQ-Q5-Q8's k_b and
+ * v_b). A CTA stages 64 consecutive weight rows of one head with 4-byte loads
+ * (Q8_0 blocks are 34 bytes) and each warp dots eight of them with every row's
+ * BF16 input; weights round to BF16 like the prefill GEMM's widened copy. */
+enum { HEAD_Q8_ROWS = 64, HEAD_Q8_MAX_N = 4, Q8_0_TYPE = 8 };
+template <unsigned N>
+__global__ void __launch_bounds__(256) head_q8(void *out, const uint8_t *w, const bf16 *x, unsigned h, unsigned in,
+                                               unsigned stride, unsigned width, bool bf16_out) {
+    extern __shared__ uint32_t stage[];
+    const unsigned head = blockIdx.x, row0 = blockIdx.y * HEAD_Q8_ROWS, blocks = in / 32, rowbytes = blocks * 34;
+    const unsigned rows = min((unsigned)HEAD_Q8_ROWS, width - row0);
+    const uint32_t *src = (const uint32_t *)(w + ((uint64_t)head * width + row0) * rowbytes);
+    for (unsigned i = threadIdx.x; i < rows * rowbytes / 4; i += blockDim.x) {
+        stage[i] = __ldg(src + i);
+    }
+    __syncthreads();
+    const uint8_t *s = (const uint8_t *)stage;
+    const unsigned lane = threadIdx.x & 31u;
+    for (unsigned j = threadIdx.x >> 5; j < rows; j += blockDim.x / 32) {
+        const uint8_t *r = s + j * rowbytes;
+        float sum[N] = {};
+        for (unsigned b = 0; b < blocks; b++) {
+            const float wv = bf(__half2float(*(const __half *)(r + b * 34)) * (float)(int8_t)r[b * 34 + 2 + lane]);
+            #pragma unroll
+            for (unsigned t = 0; t < N; t++) {
+                sum[t] = fmaf(wv, __bfloat162float(x[((uint64_t)t * h + head) * stride + b * 32 + lane]), sum[t]);
+            }
+        }
+        #pragma unroll
+        for (unsigned t = 0; t < N; t++) {
+            for (int off = 16; off > 0; off >>= 1) {
+                sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], off);
+            }
+            const uint64_t at = ((uint64_t)t * h + head) * width + row0 + j;
+            if (!lane && bf16_out) {
+                ((bf16 *)out)[at] = __float2bfloat16(sum[t]);
+            } else if (!lane) {
+                ((float *)out)[at] = sum[t];
+            }
+        }
+    }
+}
+// Prefill: the BF16 weights the batched GEMM reads, from Q8_0 blocks.
+__global__ void head_q8_widen(bf16 *out, const uint8_t *w, uint64_t values) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < values) {
+        const uint8_t *block = w + i / 32 * 34;
+        out[i] = __float2bfloat16(__half2float(*(const __half *)block) * (float)(int8_t)block[2 + i % 32]);
+    }
+}
+} // namespace hy4
 extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x,
                                    const void *map, uint64_t size, uint64_t offset, uint32_t n, uint32_t h,
                                    uint32_t in, uint32_t stride, uint32_t width, ds4_hy4_head_input input,
-                                   ds4_hy4_head_output output) {
-    const uint64_t bytes = (uint64_t)h * in * width * 2;
+                                   ds4_hy4_head_output output, uint32_t type) {
+    const bool q8 = type == hy4::Q8_0_TYPE;
+    const uint64_t values = (uint64_t)h * in * width, bytes = q8 ? values / 32 * 34 : values * 2;
     const void *weight = ds4_gpu_hy4_weight(map, size, offset, bytes);
-    if (!weight || !g_cublas_ready ||
+    if (!weight || !g_cublas_ready || (q8 && in % 32) ||
         (input == DS4_HY4_HEAD_F32 && !ds4_gpu_f32_to_bf16(pack, x, (uint64_t)n * h * stride))) {
         return 0;
+    }
+    const cudaStream_t st = ds4_current_stream();
+    if (q8 && n <= hy4::HEAD_Q8_MAX_N) {
+        const dim3 grid(h, (width + hy4::HEAD_Q8_ROWS - 1) / hy4::HEAD_Q8_ROWS);
+        const size_t smem = (size_t)hy4::HEAD_Q8_ROWS * (in / 32) * 34;
+        const auto *codes = (const uint8_t *)weight;
+        const auto *xb = (const hy4::bf16 *)pack->ptr;
+        const bool bf16_out = output == DS4_HY4_HEAD_OUT_BF16;
+        switch (n) {
+        case 1: hy4::head_q8<1><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        case 2: hy4::head_q8<2><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        case 3: hy4::head_q8<3><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        default: hy4::head_q8<4><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        }
+        return cuda_ok(cudaGetLastError(), "Hy4 Q8_0 head projection");
+    }
+    if (q8) {
+        auto *wide = (hy4::bf16 *)cuda_tmp_alloc(values * 2, "Hy4 Q8_0 head weights");
+        if (!wide) {
+            return 0;
+        }
+        hy4::head_q8_widen<<<(unsigned)((values + 255) / 256), 256, 0, st>>>(wide, (const uint8_t *)weight, values);
+        weight = wide;
     }
     const float alpha = 1.f, beta = 0.f;
     if (cublasSetStream(g_cublas, ds4_current_stream()) != CUBLAS_STATUS_SUCCESS) {
@@ -708,6 +863,52 @@ extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, co
         output == DS4_HY4_HEAD_OUT_BF16 ? CUDA_R_16BF : CUDA_R_32F, h * width, width, h, CUBLAS_COMPUTE_32F,
         CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     return status == CUBLAS_STATUS_SUCCESS;
+}
+/* Prefill rows of MQ-Q5-Q8's Q8_0 dense matrices as the BF16 GEMMs MQ-Q5
+ * ran, on codes widened per call. Below 2,048 outputs (q_a, kv_a, the shared
+ * gate/up, routed_down) or above 4,096 inputs MMQ, not D2R, took them, at
+ * ~1.6x the cuBLAS time with an activation quantize per GEMM; D2R shapes stay.
+ * -1 refuses: DS4_HY4_Q8_WIDE=0 keeps MMQ, =all widens D2R shapes too. */
+extern "C" int ds4_gpu_hy4_q8_wide(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset, uint32_t in,
+                                   uint32_t outs, const ds4_gpu_tensor *x, ds4_hy4_rows input, uint32_t n) {
+    static const char *env = getenv("DS4_HY4_Q8_WIDE");
+    static const bool off = env && strcmp(env, "0") == 0, all = env && strcmp(env, "all") == 0;
+    // Shapes the D2R kernel takes (M >= 2048, K <= 4096) stay on it.
+    const bool d2r = outs >= 2048 && outs % 128 == 0 && in % 128 == 0 && in <= 4096;
+    const uint64_t values = (uint64_t)in * outs, bytes = values / 32 * 34;
+    if (off || (d2r && !all) || in % 32 || !g_cublas_ready) {
+        return -1;
+    }
+    if (!out || !x || offset > size || bytes > size - offset || out->bytes < (uint64_t)n * outs * sizeof(float)) {
+        return 0;
+    }
+    // cuda_tmp_alloc hands every caller the same scratch: one block holds the
+    // widened weights and, behind them, a BF16 copy of F32 input rows.
+    const uint64_t wide_bytes = (values * 2 + 255) / 256 * 256;
+    const uint64_t rows_bytes = input == DS4_HY4_ROWS_F32 ? (uint64_t)n * in * 2 : 0;
+    const auto *codes = (const uint8_t *)cuda_resolve_weight_ptr(map, offset, bytes, 0, "Hy4 Q8_0 dense");
+    auto *wide = (hy4::bf16 *)cuda_tmp_alloc(wide_bytes + rows_bytes, "Hy4 Q8_0 dense");
+    if (!codes || !wide) {
+        return 0;
+    }
+    const cudaStream_t st = ds4_current_stream();
+    hy4::head_q8_widen<<<(unsigned)((values + 255) / 256), 256, 0, st>>>(wide, codes, values);
+    const hy4::bf16 *xb = (const hy4::bf16 *)x->ptr;
+    if (input == DS4_HY4_ROWS_F32) {
+        auto *rows = (hy4::bf16 *)((uint8_t *)wide + wide_bytes);
+        f32_to_bf16_kernel<<<(unsigned)(((uint64_t)n * in + 255) / 256), 256, 0, st>>>(rows, (const float *)x->ptr,
+                                                                                       (uint64_t)n * in);
+        xb = rows;
+    }
+    if (cublasSetStream(g_cublas, st) != CUBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    cuda_cublas_ws_prep(st);
+    const float alpha = 1.f, beta = 0.f;
+    return cublas_ok(cublasGemmEx(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, outs, n, in, &alpha, wide, CUDA_R_16BF, in, xb,
+                                  CUDA_R_16BF, in, &beta, out->ptr, CUDA_R_32F, outs, CUBLAS_COMPUTE_32F,
+                                  CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                     "Hy4 Q8_0 dense");
 }
 extern "C" int ds4_gpu_hy4_store(ds4_hy4_cache *c, const ds4_gpu_tensor *raw, const float *norm,
                                  uint32_t pos, uint32_t n) {

@@ -1,13 +1,16 @@
-// Group selection, learned sinks, causal DFly tail, the three rotary axes and
-// verify-width BF16 rows against one-row decode.
+// Group selection, learned sinks, causal DFly tail, the three rotary axes,
+// verify-width BF16 rows against one-row decode and MQ-Q5-Q8's re-typed
+// router and per-head projections.
 #include "../ds4_gpu.h"
 #include "../ds4_hy4.h"
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 static void check(bool ok, const char *why) {
@@ -209,12 +212,152 @@ static void verify_rows() {
     }
 }
 
+// MQ-Q5-Q8's BF16 router equals the F32 router bit for bit: one row on the
+// F32 GEMV, prefill rows on its SGEMM, verify rows on one-row arithmetic.
+static void bf16_router() {
+    constexpr unsigned in = 3072, outs = 512;
+    const size_t values = (size_t)in * outs;
+    std::vector<uint8_t> map(values * 6);
+    auto *wb = reinterpret_cast<__nv_bfloat16 *>(map.data());
+    auto *wf = reinterpret_cast<float *>(map.data() + values * 2);
+    for (size_t i = 0; i < values; i++) {
+        wb[i] = __float2bfloat16(float(int(i * 2654435761u % 4001) - 2000) / 8192.f);
+        wf[i] = __bfloat162float(wb[i]);
+    }
+    check(ds4_gpu_set_model_map(map.data(), map.size()), "router map");
+    for (unsigned n : {1u, 3u, 9u}) {
+        std::vector<float> x((size_t)n * in), got((size_t)n * outs), ref((size_t)n * outs);
+        for (size_t i = 0; i < x.size(); i++) {
+            x[i] = float(int(i * 40503u % 1999) - 999) / 777.f;
+        }
+        auto *xt = tensor(x.size() * 4), *a = tensor(got.size() * 4), *b = tensor(ref.size() * 4);
+        upload(xt, x);
+        check(ds4_gpu_hy4_router(a, map.data(), map.size(), 0, xt, n) &&
+                  ds4_gpu_tensor_read(a, 0, got.data(), got.size() * 4),
+              "BF16 router");
+        for (unsigned r = 0; r < n; r++) {
+            auto *row = ds4_gpu_tensor_view(xt, (uint64_t)r * in * 4, in * 4);
+            const bool one = n != 9;
+            check(row &&
+                      (one ? ds4_gpu_ling3vl_matmul_f32(b, map.data(), map.size(), values * 2, in, outs, row, 1)
+                           : r || ds4_gpu_matmul_f32_tensor(b, map.data(), map.size(), values * 2, in, outs, xt, n)) &&
+                      ds4_gpu_tensor_read(b, 0, ref.data() + (one ? (size_t)r * outs : 0), (one ? outs : n * outs) * 4),
+                  "F32 router reference");
+            ds4_gpu_tensor_free(row);
+        }
+        check(std::equal(got.begin(), got.end(), ref.begin()), "BF16 router = F32 router");
+        for (auto *t : {xt, a, b}) {
+            ds4_gpu_tensor_free(t);
+        }
+    }
+}
+
+// MQ-Q5-Q8's Q8_0 k_b/v_b: staged decode rows and the widened prefill GEMM
+// both match a host dot over BF16-rounded weights.
+static void q8_heads() {
+    constexpr unsigned h = 4, in = 192, width = 512, stride = 256;
+    const size_t blocks = (size_t)h * width * in / 32;
+    std::vector<uint8_t> codes(blocks * 34);
+    std::vector<float> w(blocks * 32);
+    for (size_t b = 0; b < blocks; b++) {
+        const __half d = __float2half(float(1 + b % 13) / 512.f);
+        memcpy(codes.data() + b * 34, &d, 2);
+        for (unsigned k = 0; k < 32; k++) {
+            const int8_t q = int8_t(int((b * 31 + k * 7) % 255) - 127);
+            codes[b * 34 + 2 + k] = uint8_t(q);
+            w[b * 32 + k] = __bfloat162float(__float2bfloat16(__half2float(d) * q));
+        }
+    }
+    check(ds4_gpu_set_model_map(codes.data(), codes.size()), "Q8_0 head map");
+    for (unsigned n : {3u, 16u}) {
+        std::vector<__nv_bfloat16> x((size_t)n * h * stride);
+        for (size_t i = 0; i < x.size(); i++) {
+            x[i] = __float2bfloat16(float(int(i * 2246822519u % 1001) - 500) / 256.f);
+        }
+        auto *pack = tensor(x.size() * 2), *out = tensor((size_t)n * h * width * 4);
+        upload(pack, x);
+        check(ds4_gpu_hy4_head_mm(out, pack, pack, codes.data(), codes.size(), 0, n, h, in, stride, width,
+                                  DS4_HY4_HEAD_PACKED, DS4_HY4_HEAD_OUT_F32, 8),
+              "Q8_0 head projection");
+        std::vector<float> got((size_t)n * h * width);
+        check(ds4_gpu_tensor_read(out, 0, got.data(), got.size() * 4), "read Q8_0 heads");
+        for (unsigned r = 0; r < n; r++) {
+            for (unsigned head = 0; head < h; head++) {
+                for (unsigned j = 0; j < width; j++) {
+                    double ref = 0, mag = 0;
+                    for (unsigned k = 0; k < in; k++) {
+                        const double v = w[((size_t)head * width + j) * in + k] *
+                                         __bfloat162float(x[((size_t)r * h + head) * stride + k]);
+                        ref += v;
+                        mag += std::fabs(v);
+                    }
+                    check(std::fabs(got[((size_t)r * h + head) * width + j] - ref) <= 1e-5 * mag + 1e-6,
+                          "Q8_0 head projection = host dot");
+                }
+            }
+        }
+        ds4_gpu_tensor_free(pack);
+        ds4_gpu_tensor_free(out);
+    }
+}
+
+// Prefill rows of MQ-Q5-Q8's Q8_0 dense matrices on widened BF16 weights,
+// from F32 and from BF16 input rows, match a host dot.
+static void q8_wide() {
+    constexpr unsigned in = 512, outs = 96, n = 64;
+    const size_t blocks = (size_t)in * outs / 32;
+    std::vector<uint8_t> codes(blocks * 34);
+    std::vector<float> w(blocks * 32);
+    for (size_t b = 0; b < blocks; b++) {
+        const __half d = __float2half(float(1 + b % 11) / 256.f);
+        memcpy(codes.data() + b * 34, &d, 2);
+        for (unsigned k = 0; k < 32; k++) {
+            const int8_t q = int8_t(int((b * 17 + k * 29) % 255) - 127);
+            codes[b * 34 + 2 + k] = uint8_t(q);
+            w[b * 32 + k] = __bfloat162float(__float2bfloat16(__half2float(d) * q));
+        }
+    }
+    check(ds4_gpu_set_model_map(codes.data(), codes.size()), "Q8_0 dense map");
+    std::vector<float> x((size_t)n * in);
+    std::vector<__nv_bfloat16> xb(x.size());
+    for (size_t i = 0; i < x.size(); i++) {
+        xb[i] = __float2bfloat16(float(int(i * 2654435761u % 2001) - 1000) / 512.f);
+        x[i] = __bfloat162float(xb[i]);
+    }
+    auto *xf = tensor(x.size() * 4), *xh = tensor(xb.size() * 2), *out = tensor((size_t)n * outs * 4);
+    upload(xf, x);
+    upload(xh, xb);
+    for (ds4_hy4_rows input : {DS4_HY4_ROWS_F32, DS4_HY4_ROWS_BF16}) {
+        check(ds4_gpu_hy4_q8_wide(out, codes.data(), codes.size(), 0, in, outs, input == DS4_HY4_ROWS_F32 ? xf : xh,
+                                  input, n) == 1,
+              "widened Q8_0 dense");
+        std::vector<float> got((size_t)n * outs);
+        check(ds4_gpu_tensor_read(out, 0, got.data(), got.size() * 4), "read widened Q8_0 dense");
+        for (unsigned r = 0; r < n; r++) {
+            for (unsigned j = 0; j < outs; j++) {
+                double ref = 0, mag = 0;
+                for (unsigned k = 0; k < in; k++) {
+                    ref += (double)w[(size_t)j * in + k] * x[(size_t)r * in + k];
+                    mag += std::fabs((double)w[(size_t)j * in + k] * x[(size_t)r * in + k]);
+                }
+                check(std::fabs(got[(size_t)r * outs + j] - ref) <= 1e-5 * mag + 1e-6, "widened Q8_0 dense = host dot");
+            }
+        }
+    }
+    for (auto *t : {xf, xh, out}) {
+        ds4_gpu_tensor_free(t);
+    }
+}
+
 int main() {
     // The rows check maps a host weight buffer; copy it like a resident model.
     setenv("DS4_CUDA_COPY_MODEL", "1", 1);
     check(ds4_gpu_init(), "CUDA initialization");
     index_top();
     verify_rows();
+    bf16_router();
+    q8_heads();
+    q8_wide();
     for (unsigned rows : {16u, 4u}) {
         attention(false, 64, 536, false, rows);
         for (bool fp8 : {false, true}) {

@@ -3,15 +3,23 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::Recipe;
 use crate::tensors::align_up;
 use crate::{GgufError, GgufFile, Identified, IdentifyError, TensorError, TensorInventory};
 
 const MANIFEST: &str = "release.json";
-const FIRST: &str = "Hy4-flash-MQ-Q5-SSD-ENGRAM-FP8-00001-of-00004.gguf";
 const EMBEDDING: &str = "embed-tokens-bf16.gguf";
-// Public release 94cdace56aaa0afc463311e31a2bbc3e613dcce2. Pins the part
-// filenames, their digests, placement and the original model revision.
-const RELEASE_SHA: &str = "25058aa6c69896898c0f157d255df9663ad849e6e936970c767e5c4140cd2e4e";
+// Each recipe's manifest pins the part filenames, their digests, placement
+// and the original model revision. MQ-Q5: public release 94cdace5.
+const RELEASE_SHA: [(Recipe, &str); 2] = [
+    (
+        Recipe::Mq5,
+        "25058aa6c69896898c0f157d255df9663ad849e6e936970c767e5c4140cd2e4e",
+    ),
+    (Recipe::Mq5Q8, Q8_RELEASE_SHA),
+];
+// MQ-Q5-Q8: derived from 94cdace5 by `reproduction/derive_q8.py`.
+const Q8_RELEASE_SHA: &str = "889d2a6a8622a230e294dfc568caf5f80a7c557d0a8e38644432ee6f9abcbfbd";
 const ENGRAM_SHA: &str = "fa3c6e9917a66e6ebb71cf03200605790551e130d23b524e7d83612f2ab50f6e";
 
 type Result<T> = std::result::Result<T, TensorError>;
@@ -77,10 +85,17 @@ pub(crate) fn is_release(root: &Path) -> bool {
         .is_some_and(|v| v["format"] == "hy4-mxq-release")
 }
 
+fn first(recipe: Recipe) -> String {
+    format!("Hy4-flash-{}-00001-of-00004.gguf", recipe.name())
+}
+
 pub(crate) fn root(path: &Path) -> Result<&Path> {
     if path.is_dir() {
         Ok(path)
-    } else if path.file_name().is_some_and(|n| n == FIRST) {
+    } else if Recipe::ALL.iter().any(|&r| {
+        path.file_name()
+            .is_some_and(|n| n.to_str() == Some(first(r).as_str()))
+    }) {
         Ok(path.parent().unwrap_or(Path::new(".")))
     } else {
         Err(fail(
@@ -89,17 +104,32 @@ pub(crate) fn root(path: &Path) -> Result<&Path> {
     }
 }
 
-fn manifest(root: &Path) -> Result<Release> {
-    let release: Release = serde_json::from_slice(&pinned(&root.join(MANIFEST), RELEASE_SHA)?)
-        .map_err(|e| fail(e.to_string()))?;
+fn manifest(root: &Path) -> Result<(Release, Recipe)> {
+    let path = root.join(MANIFEST);
+    let bytes = small_file(&path)?;
+    let digest = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let recipe = RELEASE_SHA
+        .iter()
+        .find(|(_, sha)| *sha == digest)
+        .map(|&(r, _)| r)
+        .ok_or_else(|| fail(format!("manifest digest {}", path.display())))?;
+    let release: Release = serde_json::from_slice(&bytes).map_err(|e| fail(e.to_string()))?;
     if release.format != "hy4-mxq-release" {
         return Err(fail("release format"));
     }
-    Ok(release)
+    Ok((release, recipe))
+}
+
+/// The trunk recipe a release directory (or its first shard) holds.
+pub(crate) fn recipe(path: &Path) -> Result<Recipe> {
+    Ok(manifest(root(path)?)?.1)
 }
 
 pub(crate) fn trunk_bytes(path: &Path) -> Result<u64> {
-    let release = manifest(root(path)?)?;
+    let (release, _) = manifest(root(path)?)?;
     Ok(release.parts.trunk.files.iter().map(|f| f.bytes).sum())
 }
 
@@ -107,6 +137,7 @@ pub(crate) fn trunk_bytes(path: &Path) -> Result<u64> {
 pub fn snapshot_inputs(path: &Path) -> Result<Vec<PathBuf>> {
     let root = root(path)?;
     let mut files: Vec<_> = manifest(root)?
+        .0
         .parts
         .engram
         .files
@@ -127,8 +158,8 @@ pub fn snapshot_inputs(path: &Path) -> Result<Vec<PathBuf>> {
 
 pub(crate) fn metadata(path: &Path) -> Result<GgufFile> {
     let root = root(path)?;
-    manifest(root)?;
-    let g = GgufFile::open(&root.join(FIRST))?;
+    let (_, recipe) = manifest(root)?;
+    let g = GgufFile::open(&root.join(first(recipe)))?;
     super::validate(&g).map_err(|e| fail(e.token()))?;
     Ok(g)
 }
@@ -153,7 +184,7 @@ fn check_size(root: &Path, file: &PartFile) -> Result<PathBuf> {
 
 pub(crate) fn inventory(path: &Path) -> Result<TensorInventory> {
     let root = root(path)?;
-    let release = manifest(root)?;
+    let (release, recipe) = manifest(root)?;
     table_manifest(root)?;
     for f in release
         .parts
@@ -165,10 +196,10 @@ pub(crate) fn inventory(path: &Path) -> Result<TensorInventory> {
     {
         check_size(root, f)?;
     }
-    let first = root.join(FIRST);
-    let g = GgufFile::open(&first)?;
+    let shard = root.join(first(recipe));
+    let g = GgufFile::open(&shard)?;
     super::validate(&g).map_err(|e| fail(e.token()))?;
-    let mut inv = TensorInventory::from_file(&first, &g)?;
+    let mut inv = TensorInventory::from_file(&shard, &g)?;
     if inv.tensors.len() != 1386 || inv.shards.len() != 4 {
         return Err(fail("trunk tensor or shard count"));
     }

@@ -131,6 +131,25 @@ static bool hy4_mm(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
     }
     return ling3vl_matmul_tensor(out, m, w, w->dim[0], w->dim[1], x, n);
 }
+// MQ-Q5-Q8's Q8_0 dense matrices (not the attention projections) run prefill
+// rows that would fall off the D2R kernel on widened BF16 weights.
+enum { HY4_WIDE_ROWS = 64 };
+static int hy4_wide(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w, const ds4_gpu_tensor *x,
+                    ds4_hy4_rows input, uint32_t n) {
+    if (w->type != DS4_TENSOR_Q8_0 || n < HY4_WIDE_ROWS) {
+        return -1;
+    }
+    return ds4_gpu_hy4_q8_wide(out, m->map, m->size, w->abs_offset, (uint32_t)w->dim[0], (uint32_t)w->dim[1], x,
+                               input, n);
+}
+static bool hy4_mm_dense(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w, const ds4_gpu_tensor *x,
+                         uint32_t n) {
+    const int wide = hy4_wide(out, m, w, x, DS4_HY4_ROWS_F32, n);
+    if (wide >= 0) {
+        return wide != 0;
+    }
+    return hy4_mm(out, m, w, x, n);
+}
 static const float *hy4_weight(const ds4_model *m, const ds4_tensor *w) {
     return ds4_gpu_hy4_weight(m->map, m->size, w->abs_offset, w->bytes);
 }
@@ -169,6 +188,10 @@ static bool hy4_branch_in(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor
            hy4_hc_pre(g, m, fn, scale, base, norm, n);
 }
 static bool hy4_mm_norm(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor *w, uint32_t n) {
+    const int wide = n > 1 ? hy4_wide(out, m, w, g->norm_bf16, DS4_HY4_ROWS_BF16, n) : -1;
+    if (wide >= 0) {
+        return wide != 0;
+    }
     if (n == 1 || w->type != DS4_TENSOR_BF16) {
         return hy4_mm(out, m, w, g->norm, n);
     }
@@ -216,7 +239,7 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
         !ds4_gpu_hy4_store(c, g->kv, hy4_weight(m, l->attn_kv_a_norm), pos, n) ||
         (sparse && !draft_groups && !hy4_run_index(g, m, l, c, n, pos)) ||
         !ds4_gpu_hy4_head_mm(g->absorbed, g->packed, g->q, m->map, m->size, l->attn_k_b->abs_offset, n, h, 192,
-                             256, 512, DS4_HY4_HEAD_F32, q_abs)) {
+                             256, 512, DS4_HY4_HEAD_F32, q_abs, l->attn_k_b->type)) {
         return false;
     }
     // Prefill attention leaves the v_b operand packed as BF16.
@@ -225,7 +248,8 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
                                                hy4_weight(m, l->attn_sinks), pos, n, h, draft_groups != NULL);
     return attended >= 0 &&
            ds4_gpu_hy4_head_mm(g->q, g->packed, g->attended, m->map, m->size, l->attn_v_b->abs_offset, n, h,
-                               512, 512, 256, (ds4_hy4_head_input)attended, DS4_HY4_HEAD_OUT_F32) &&
+                               512, 512, 256, (ds4_hy4_head_input)attended, DS4_HY4_HEAD_OUT_F32,
+                               l->attn_v_b->type) &&
            hy4_mm(g->attn_gate, m, l->attn_gate, g->norm, n) &&
            ds4_gpu_hy4_gate(g->q, g->attn_gate, n, h * 256) &&
            hy4_mm(g->branch, m, l->attn_output, g->q, n) &&
@@ -235,7 +259,7 @@ static bool hy4_dense(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
                       const ds4_tensor *up, const ds4_tensor *down, uint32_t n) {
     return hy4_mm_norm(g, m, g->ff_gate, gate, n) && hy4_mm_norm(g, m, g->ff_up, up, n) &&
            ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, n * (uint32_t)gate->dim[1], INFINITY) &&
-           hy4_mm(out, m, down, g->ff_mid, n);
+           hy4_mm_dense(out, m, down, g->ff_mid, n);
 }
 /* Prefill and verify quantize the clamped SwiGLU straight into the down's
  * Q8 operand; one-row decode keeps the F32 mid (DS4_HY4_SWIGLU_Q8=0: always). */
@@ -269,18 +293,25 @@ static bool hy4_routed(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *g
            hy4_routed_down(g, m, down, n) &&
            ds4_gpu_hy4_moe_sum(g->latent, g->ff_gate, g->weights, n, DS4_HY4_ROWS_F32);
 }
+// A BF16 router (MQ-Q5-Q8) keeps the F32 router's arithmetic.
+static bool hy4_router(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *w, uint32_t n) {
+    if (w->type != DS4_TENSOR_BF16) {
+        return hy4_mm(g->router, m, w, g->norm, n);
+    }
+    return ds4_gpu_hy4_router(g->router, m->map, m->size, w->abs_offset, g->norm, n) != 0;
+}
 static bool hy4_ffn(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t n) {
     if (!l->ffn_gate_exps) {
         return hy4_dense(g, m, g->branch, l->ffn_gate, l->ffn_up, l->ffn_down, n) &&
                hy4_norm(g->branch, m, l->ffn_output_norm, g->branch, n);
     }
     const ds4_tensor *gate = l->ffn_gate_exps, *up = l->ffn_up_exps, *down = l->ffn_down_exps;
-    return hy4_mm(g->router, m, l->ffn_gate_inp, g->norm, n) &&
+    return hy4_router(g, m, l->ffn_gate_inp, n) &&
            ds4_gpu_sigmoid_topk_router_tensor(g->experts, g->weights, g->router, m->map, m->size,
                                               l->ffn_exp_probs_b->abs_offset, 1, 512, 16, n, 3.998f) &&
            hy4_mm_norm(g, m, g->latent, l->ffn_routed_down, n) &&
            hy4_routed(g, m, gate, up, down, n) &&
-           hy4_mm(g->branch, m, l->ffn_routed_up, g->latent, n) &&
+           hy4_mm_dense(g->branch, m, l->ffn_routed_up, g->latent, n) &&
            hy4_dense(g, m, g->shared, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, n) &&
            ds4_gpu_exaone_add_tensor(g->branch, g->shared, (uint64_t)n * 3072) &&
            hy4_norm(g->branch, m, l->ffn_output_norm, g->branch, n);
@@ -288,7 +319,7 @@ static bool hy4_ffn(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weight
 static bool hy4_memory_branch(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
                               uint32_t n) {
     return ds4_gpu_hy4_unpack(g->latent, g->records, hy4_weight(m, l->engram_lookup_norm), il / 10, n) &&
-           hy4_mm(g->ff_gate, m, l->engram_wkv, g->latent, n) &&
+           hy4_mm_dense(g->ff_gate, m, l->engram_wkv, g->latent, n) &&
            ds4_gpu_hy4_engram(g->streams, g->ff_gate, g->ids, hy4_weight(m, l->engram_kv_bias),
                               hy4_weight(m, l->engram_k), hy4_weight(m, l->engram_q),
                               hy4_weight(m, l->engram_pre_gamma), hy4_weight(m, l->engram_hc_scale), n);

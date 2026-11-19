@@ -10,7 +10,9 @@ pub(crate) mod sidecar;
 pub(crate) use layout::layouts;
 pub(crate) use release::root as release_root;
 pub use release::snapshot_inputs;
-pub(crate) use release::{chat_assets, identify, inventory, is_release, metadata, trunk_bytes};
+pub(crate) use release::{
+    chat_assets, identify, inventory, is_release, metadata, recipe, trunk_bytes,
+};
 
 use crate::{GgufFile, ValidateError};
 
@@ -24,12 +26,37 @@ pub(crate) const CONTEXT: u32 = 1_048_576;
 /// plus one F16 scale per 32 of the 120,832 x 3,072 weights.
 pub(crate) const DRAFT_HEAD_BYTES: u64 = 120_832 * 3_072 + 120_832 * (3_072 / 32) * 2;
 const ARCH: &[u8] = b"hy_v4_flash";
-const RECIPE: &[u8] = b"MQ-Q5-SSD-ENGRAM-FP8";
 const SOURCE: &[u8] = b"d88c9dfd96ba4f2e6b92adba0b8e8f1c8696f959";
+
+/// Published trunk recipes. MQ-Q5-Q8 is MQ-Q5 with its BF16 dense
+/// projections at Q8_0 and the router at BF16 (`reproduction/derive_q8.py`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Recipe {
+    Mq5,
+    Mq5Q8,
+}
+
+impl Recipe {
+    const ALL: [Recipe; 2] = [Recipe::Mq5, Recipe::Mq5Q8];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Recipe::Mq5 => "MQ-Q5-SSD-ENGRAM-FP8",
+            Recipe::Mq5Q8 => "MQ-Q5-Q8-SSD-ENGRAM-FP8",
+        }
+    }
+
+    /// Drafting reads a runtime Q8_0 copy of a BF16 output head.
+    pub(crate) fn bf16_head(self) -> bool {
+        self == Recipe::Mq5
+    }
+}
 
 pub(crate) fn validate(g: &GgufFile) -> Result<(), ValidateError> {
     if g.get_string("general.architecture") != Some(ARCH)
-        || g.get_string("general.quantization") != Some(RECIPE)
+        || !Recipe::ALL
+            .iter()
+            .any(|r| g.get_string("general.quantization") == Some(r.name().as_bytes()))
         || g.get_string("general.source.revision") != Some(SOURCE)
         || g.get_string("hy4_mxq.part") != Some(b"trunk")
         || g.get_bool("hy4_mxq.engram.resident") != Some(false)
