@@ -42,16 +42,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if at + 1 >= ids.len() || at + 1 <= consumed {
                 return Err("invalid teacher frontier".into());
             }
-            let mut verify_rows = 0;
+            let (mut verify_rows, mut accepted) = (0, 0);
             if at == consumed && consumed != 0 && drafter.is_some() {
                 verify_rows = (ids.len() - at).min(3);
+                // The trial's own prefix (teacher token plus matching drafts)
+                // measures draft acceptance on fixed text; only the teacher
+                // token is committed.
                 let kept = session.eval_speculative(
                     ids[at],
                     verify_rows as i32,
                     model.token_eos(),
                     Sampler::GREEDY,
                     &mut 0,
-                    &mut |_| 1,
+                    &mut |prefix| {
+                        accepted = prefix.len();
+                        1
+                    },
                 )?;
                 if kept != [ids[at]] {
                     return Err("verify did not commit the teacher token".into());
@@ -80,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let next = usize::try_from(ids[at + 1])?;
             let nll = lse - f64::from(*logits.get(next).ok_or("next token out of range")?);
             let row = json!({"case":case["case"],"position":at,"token":ids[at+1],"nll":nll,"top1":top1,
-                "verify_rows":verify_rows,"teacher_nll":reference["nll"],"teacher_top1":reference["top1"]});
+                "verify_rows":verify_rows,"accepted":accepted,"teacher_nll":reference["nll"],"teacher_top1":reference["top1"]});
             serde_json::to_writer(&mut writer, &row)?;
             writeln!(writer)?;
         }
