@@ -13,4 +13,4 @@ Prefill 816.44531 (790.98 to 827.93) tok/s
 Decode 16.64000 (13.19 to 22.51) tok/s
 Accepted/emitted non-EOS tokens per verify call 1.84838
 Host guard reserve/trip 2 GiB, minimum available 9.20 GiB, maximum PSI full avg10 0.00%, exit 0
-Command DS4_HY4_PREFILL_CHUNK=2048 ./ds4-bench --cuda -m "$model" --mtp "$model/dfly2-q8_0.gguf" --mtp-draft 2 --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv "$csv"
+Command DS4_HY4_PREFILL_CHUNK=2048 ./ds4-bench --cuda -m "$model" --mtp "$model/dfly2-q8_0.gguf" --mtp-draft 2 --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir "$dump" --csv "$csv"

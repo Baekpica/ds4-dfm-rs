@@ -500,6 +500,15 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   codewords took ds41's prefill experts 30.1 -> 16.8 ms per 2,048-row
   layer; KL to the original stayed at 0.277 and the pairwise KL (0.020)
   beside the chunk-size switch (0.015).
+- **Prefetch in storage order, not read order.** A routed FP16 GEMM read
+  32 bytes of each of 128 Q5_K rows (1 KB apart) per stage: L2 hit 62 %.
+  `cp.async.bulk.prefetch.L2` of each 176-byte super-block two blocks ahead
+  made it 26 % faster; the next work item's contiguous tile, one piece per
+  stage, another 4-8 %
+  ([playbook 2.6](docs/prefill-decode-optimization-playbook.md#26-kernel-tuning-last)).
+- **A rotated prefetch register waits at the move.** `w = w1; w1 = wn` at a
+  stage's end stalls on the load into `wn` issued at its start; index the
+  sets by the unrolled stage number instead (-11 %).
 - **A value change moves greedy text, and with it MTP decode.** After
   FP8 prefill experts, 5 sweep frontiers decoded 34.1 -> 32.0 tok/s with
   equal round times: other continuations, other draft acceptance. 32

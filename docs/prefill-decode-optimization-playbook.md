@@ -228,6 +228,19 @@ If the profile shows idle, no kernel work matters until it is gone.
   although the raw device scales with depth: deeper queues made the
   head-of-line rows the gather waits on arrive later.  Fix ordering
   (consumption order, targeted wake-ups) before adding concurrency.
+- **When the consumer needs the whole set, never drain the queue.**  Hy4's
+  first Engram layer waits for 32K random 98-byte records per 2,048-token
+  chunk.  Submitting 512 reads and waiting for all of them before the next
+  512 took 112 ms per table; one io_uring round with a bounce slot per
+  record kept 512 in flight: 100 ms.
+- **Probe the device on the production access pattern.**  A random-read
+  probe reached 690K IOPS, so the ~330K of the reader looked like host
+  overhead, but four rings on four threads were slower (104 ms).  Re-reading
+  the same 16.5 GB table at once took 45 ms, and reading it after the other
+  three took 100 ms again: the DRAM-less SSD caches its FTL map in host
+  memory, and four tables' maps do not fit, so each read costs two flash
+  reads.  Repeat a probe with the rotation the workload uses before
+  attributing a gap to the host.
 
 ### 2.2 Fallback paths: the biggest single wins
 
@@ -261,6 +274,14 @@ predicates before touching any kernel.
   doubled the rows per expert (+20 %).  It also changed the greedy IDs (56
   of 64), which is why it was rejected once and adopted only with the
   revised gate (section 5.3).
+- **The router decides which tile runs.**  Hy4 (512 experts, top-16)
+  routes ~64 rows per expert in a 2,048-row chunk.  Its Q4_K/Q5_K columns
+  landed in 128-wide worklist tiles, which ran the unpipelined K loop.  The
+  pipelined loop existed only for the IQ types K2 used.  Extending its
+  register fetch/expand split to the K-quants, and selecting the 64-wide
+  worklist for the Hy4 expert shape: cold 32K +5.1 %, 2K append +4.2 %,
+  bit-identical.  Histogram the expert buckets of one real chunk and check
+  which tile width carries most columns.
 - **Tiers that exist but are never entered.**  Qwen's dense Q8 projections
   missed the aligned D2R tier because the weight owner's repack rule
   admitted only `dims[0] % 1024 == 0` (K=2560 qkv/z/q).  Admitting the
@@ -285,6 +306,13 @@ waste and usually bit-identical to remove.
 - Hyper-connection rows converted to BF16 once by the norm instead of per
   consuming GEMM (+3.3 %), later the norm storing only BF16 rows plus one
   scale per lane, with F32 recomputed from the hyper input where needed.
+  Hy4 repeated both halves of this: five BF16 conversions of each layer's
+  norm rows, and a tiled attention kernel writing F32 rows that the next
+  BF16 GEMM converted at 1.68 ms per layer.  One BF16 copy per norm, and
+  the attention epilogue storing rounded BF16 into the GEMM's operand
+  (an output-type template on the shared tile, whose float instantiation
+  is unchanged): +5.5 %, byte-identical.  List every `f32_to_bf16` in a
+  layer's trace and name the producer each one could fold into.
 - The Qwen HC mix is one F32 tensor consumed by qkv+z or q+index; emitting
   its Q8 once through the existing norm-q8 registry retired the per-GEMM
   quantize (bit-identical, +0.8 % / +0.9 %).  The D2R preq entry had to
@@ -317,7 +345,13 @@ bytes / 240 GB/s within 10 %.
 - **Fused epilogues on elementwise chains** (safe class): `moe_sum` +
   shared-expert sigmoid gate + residual add in one kernel (two round trips
   per layer, +1 %); residual + next norm in one kernel; SwiGLU producing the
-  quantized down input directly where the layout allows.
+  quantized down input directly where the layout allows.  Hy4's clamped
+  SwiGLU writes the Q5_K down's DS4 operand with `quantize_mmq_q8_1`'s lane
+  mapping and rounding.  It skips the F32 mid and its read-back, and a
+  read-time guard in `moe_sum` retires the down's scrub.  Result: +4.5 % on
+  the 32K append, byte-identical.  Copy the producer's BF16 boundaries and
+  clamps into the fused kernel, and keep the same `--use_fast_math` flags in
+  both translation units.
 - **Keep F32 intermediates out of memory.**  The hyper-connection mix used
   to write [rows x 10240] F32 logits from a cuBLAS GEMM and re-read them in
   a mix kernel (~3 GB per sub-layer); forming the mix-up logits on the
@@ -325,6 +359,19 @@ bytes / 240 GB/s within 10 %.
   epilogue cut it to ~1.7 GB (+7 %).  The 1.6 GB per-bank QSA score scratch
   went the same way: a fused attention kernel with an online softmax never
   writes scores (104 + 64 -> 67 ms per layer).
+- **Two GEMMs that meet in one elementwise op share a tile.**  Hy4's routed
+  gate and up each wrote 201 MB of F32 per 2,048-row layer for a SwiGLU
+  pass to read back.  Alternating 16-row blocks of gate and up in one
+  128-row weight tile puts each output's gate and up in the same lane, so
+  the epilogue applies the clamped SwiGLU and writes the down's FP16 operand
+  (a lane shuffle builds its element order).  Gate + up + SwiGLU ran 28 %
+  faster on real weights; prefill +7.7 %, byte-identical.  Look for a GEMM
+  whose only consumer combines it with a sibling GEMM over the same rows.
+- **Round where the consumer rounds.**  Hy4's expert sum rounded each F32
+  down row to BF16 as it read it.  Rounding in the down's epilogue instead
+  stores the same values in half the bytes: +2.5 %, byte-identical.  A
+  consumer's first `bf()` on a loaded value marks a producer that can store
+  BF16.
 - **Recurrent state in registers.**  The GDN recurrence did two loads and a
   store per state element per token; keeping 32 rows per thread in registers
   for the whole chunk halved the kernel (33 -> 17 ms), with `fmaf` written
@@ -370,6 +417,37 @@ Only after the graph is clean.  The signals that led to each tuning round:
   longer fits the 100 KB SM).
 - **Fragment loads.**  `ldmatrix` / `ldmatrix.trans` for the HMMA attention
   fragments plus a BF16 next-tile register prefetch: +2.4 %.
+- **Small expert tiles want dequantized FP16 weights.**  After the pipelined
+  tile above, Hy4's routed MMQ still streamed its experts at under half the
+  DRAM rate: its per-k32 scale epilogue does a 64-row tile's MMAs twice
+  over.  A warp-specialized routed GEMM (`cuda/hy4_moe.cuh`, the
+  `glmvq_q4p` design over 128 x 64 tiles of one expert, rows gathered and
+  scattered through the routing map) took gate + up 14.2 -> 11.0 ms and the
+  down 9.6 -> 7.5 ms on real weights, prefill +5.7 % at the 32K append.
+  Its activations stay FP16 instead of Q8_1: against an F64 reference the
+  gate error is 8e-4 instead of 1.2e-2, the down 8e-4 instead of 2.1e-2.
+  The first version was slower than MMQ; the next four bullets are why.
+- **A register rotation waits for the load it moves.**  `w = w1; w1 = wn`
+  at the end of a stage stalls on `wn`, issued at the start of that stage,
+  so a "two stages ahead" prefetch is one stage ahead.  Indexing four sets
+  by the unrolled stage number removes the moves: -11 % on that kernel,
+  where the rotation version had measured no gain over one stage ahead.
+- **Sector-sized reads across rows are a random stream.**  Each stage read
+  32 bytes from each of 128 Q5_K rows 1 KB apart: L2 hit rate 62 %, and the
+  consumers spent 29 % of samples on the full barrier.  A
+  `cp.async.bulk.prefetch.L2` of each row's whole 176-byte super-block two
+  blocks ahead, and of the next work item's first two blocks, gave -26 %.
+  The next step was coarser still: a work item's 128-row tile is one
+  contiguous range per matrix, so prefetching the next item's tile as one
+  sequential piece per stage (1/24 of it, two lanes) replaced the 128
+  per-row requests and took the fused gate/up tile another 4-8 % (down
+  2 %), bit-identical.  Prefetch in the order the bytes are stored, not in
+  the order the stage reads them.
+- **Narrow tiles halve the MMA work per dequantized weight.**  At 64 routed
+  columns per tile, eight producer warps with one fragment item each beat
+  four by 7 % once the stream was prefetched.  Without the prefetch they
+  lost 2 %: more producers do not shorten a DRAM wait.  A fourth ring stage
+  (96 KB of shared memory) gave another -4 %.
 - **Occupancy over reuse for small per-thread state.**  GQA decode attention
   sharing one KV row across six query heads spilled registers and lost
   25 %; the same idea over two heads gained 25 %.  Check the register count
@@ -385,6 +463,7 @@ Only after the graph is clean.  The signals that led to each tuning round:
 | QSA reduce over 6-head groups; generic Q8 MMVQ with 8 warps; IQ1_M 4-row tile | no stable gain or slower | occupancy and register pressure; measure before assuming reuse wins |
 | balanced halves for prompts between one and two opening chunks | -4 % vs the split, -8 % vs one chunk | a chunk under ~2K rows runs the MoE tiles at low occupancy; below that size the I/O overlap is worth less than the efficiency lost |
 | batched IQ1_M MMVQ across tokens (K2 Prefill 1) | isolated parity passed, first token changed at the frontier | an isolated-kernel parity test is not a graph gate; the frontier logits and greedy IDs are |
+| Hy4 attention projections on MMQ instead of D2R, after D2R ran attn_gate at 58 TOPS against MMQ's 74 on attn_output | prefill -2.3 to -2.9 % | per-kernel TOPS across different shapes does not rank two tiers; time the same projection on both |
 
 ---
 
@@ -410,6 +489,14 @@ Prefill kernels are the wrong kernels here and vice versa; dispatch on width.
 - Tiny GEMVs deserve their own kernels: a warp per output row with 16-byte
   BF16x8 loads replaced a naive per-thread kernel on the hyper-connection
   path (1,067 launches per step, -8 %).
+- A per-row fusion that wins at prefill can lose at one row.  Hy4's
+  residual, hyper-connection mix (12,288 x 8), combine and RMSNorm read each
+  row's 48 KB of streams three times (4.0 ms per layer at 2,048 rows).  One
+  CTA per row doing all four in registers gained 3.4 % on the 32K append
+  (4.2 % cold), but the same kernel on a decode row lost 3 %: a single CTA
+  streams the 393 KB of mix weights slower than the split launches spread
+  over the GPU.  From 16 rows up only, decode is unchanged.  Time decode in
+  every prefill A/B.
 
 ### 3.2 Row stability is a contract, not an optimization
 
@@ -600,6 +687,13 @@ without saying so.
   clean tree.
 - A compile that runs during a timed run perturbs it; run traces (which are
   compared by kernel time) during builds, timed A/Bs never.
+- `make cuda-spark` is `make -B`: every object rebuilds (~15 minutes on
+  GB10, the MMQ TU alone 4-5).  It also writes `.ds4-cuda-config.mk`, so
+  after the first one `make ds4 ds4-server ds4-bench ds4-bench-perf` rebuilds
+  only what changed (27 s for a relink).
+- `make cuda-spark` rebuilds three tracked test generators
+  (`crates/ds4-core/tests/fixtures/*/gen_*_ref`).  Check them out again
+  before staging; `git status` after a build is not a clean source diff.
 
 ---
 
