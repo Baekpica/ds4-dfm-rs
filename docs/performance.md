@@ -53,11 +53,11 @@ reported here.
 
 ## Hy4-flash MXQ
 
-Tencent Hy4-flash MXQ on one DGX Spark processed **1,181.66 prefill and 19.54 decode tok/s**. One process reused its KV across 32 frontiers from 2K to 64K, with 2,048 new tokens and 128 greedy outputs at each frontier. The engine used 2,048-row chunks, direct SSD reads for Engram, FP8 sparse latent KV and the Q8_0 DFly2 at draft depth two. Prefill ranged from 1,121.24 to 1,212.86 tok/s. Decode ranged from 15.07 to 26.59, averaging 1.86 output tokens per verification. [Raw CSV](../speed-bench/gb10_spark_hy4_mxq_e1f1f736.csv) · [Binary and artifact receipt](../speed-bench/gb10_spark_hy4_mxq_e1f1f736.meta.txt).
+Tencent Hy4-flash MXQ on one DGX Spark processed **1,187.23 prefill and 19.49 decode tok/s**. One process reused its KV across 32 frontiers from 2K to 64K, with 2,048 new tokens and 128 greedy outputs at each frontier. The engine used 2,048-row chunks, direct SSD reads for Engram, FP8 sparse latent KV and the Q8_0 DFly2 at draft depth two. Prefill ranged from 1,145.96 to 1,216.15 tok/s. Decode ranged from 15.29 to 24.19, averaging 1.78 output tokens per verification. [Raw CSV](../speed-bench/gb10_spark_hy4_mxq_322c6ac1.csv) · [Binary and artifact receipt](../speed-bench/gb10_spark_hy4_mxq_322c6ac1.meta.txt).
 
-![Hy4-flash MXQ incremental prefill and DFly2 decode](../speed-bench/gb10_spark_hy4_mxq_e1f1f736_ts.svg)
+![Hy4-flash MXQ incremental prefill and DFly2 decode](../speed-bench/gb10_spark_hy4_mxq_322c6ac1_ts.svg)
 
-The published [Qwen3.8 Flash Next Base FP8-PLE measurements](qwen38-ple-fp8.md) used the same novel, frontiers and generation length. Hy4 reached **89.3%** of Qwen's 1,323.1 prefill tok/s and **67.6%** of its 28.93 decode tok/s. The Qwen reference takes the median of three run means and used its 2 GiB PLE cache, an 8,192-token chunk cap and embedded MTP. Hy4's single run used SSD Engram and the separate DFly2. A Hy4 decode token reads 13.45 GB of weights, which bounds plain decode at 17.8 tok/s on this host. [Hy4 optimization and quality measurements](hy4-optimization-2026-11-19.md).
+The published [Qwen3.8 Flash Next Base FP8-PLE measurements](qwen38-ple-fp8.md) used the same novel, frontiers and generation length. Hy4 reached **89.7%** of Qwen's 1,323.1 prefill tok/s and **67.4%** of its 28.93 decode tok/s. The Qwen reference takes the median of three run means and used its 2 GiB PLE cache, an 8,192-token chunk cap and embedded MTP. Hy4's single run used SSD Engram and the separate DFly2. A Hy4 decode token reads 13.45 GB of weights, which bounds plain decode at 17.8 tok/s on this host. [Hy4 optimization and quality measurements](hy4-optimization-2026-11-19.md).
 
 ## Solar
 

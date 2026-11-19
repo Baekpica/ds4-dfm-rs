@@ -503,6 +503,12 @@ Prefill kernels are the wrong kernels here and vice versa; dispatch on width.
   for every row, in the one-row kernel's order, ran 233-258 GB/s in a
   model-free harness (eight rotating weight copies): 14.5 -> 13.6 ms per
   verify step, and each verify row now equals its decode row (3.2).
+- MMQ loses at a few rows per expert too.  Three Hy4 verify rows put one
+  to three rows on each routed expert, and MMQ's per-k32 scale work
+  dominated: 38.9 ms per depth-2 step.  The prefill's FP16 tile, with
+  producer warps dequantizing each weight once, streamed the same union
+  in 30.5 ms.  One decode row ran even on it, so the vec kernels keep
+  width 1.
 
 ### 3.2 Row stability is a contract, not an optimization
 
