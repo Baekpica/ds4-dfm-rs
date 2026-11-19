@@ -768,43 +768,71 @@ extern "C" int ds4_gpu_hy4_draft_logits(ds4_gpu_tensor *logits, const ds4_gpu_te
 }
 namespace hy4 {
 /* Decode and verify rows of a Q8_0 per-head projection (MQ-Q5-Q8's k_b and
- * v_b). A CTA stages 64 consecutive weight rows of one head with 4-byte loads
- * (Q8_0 blocks are 34 bytes) and each warp dots eight of them with every row's
- * BF16 input; weights round to BF16 like the prefill GEMM's widened copy. */
-enum { HEAD_Q8_ROWS = 64, HEAD_Q8_MAX_N = 4, Q8_0_TYPE = 8 };
+ * v_b). A CTA stages 64 consecutive weight rows of one head, with 16-byte
+ * copies where the span allows (Q8_0 blocks are 34 bytes), and each warp dots
+ * eight of them with every row's BF16 input, loading each input block once for
+ * all eight. Weights round to BF16 like the prefill GEMM's widened copy. */
+enum { HEAD_Q8_ROWS = 64, HEAD_Q8_WARPS = 8, HEAD_Q8_MAX_N = 4, Q8_0_TYPE = 8 };
 template <unsigned N>
-__global__ void __launch_bounds__(256) head_q8(void *out, const uint8_t *w, const bf16 *x, unsigned h, unsigned in,
-                                               unsigned stride, unsigned width, bool bf16_out) {
-    extern __shared__ uint32_t stage[];
+__global__ void __launch_bounds__(HEAD_Q8_WARPS * 32) head_q8(void *out, const uint8_t *w, const bf16 *x, unsigned h,
+                                                              unsigned in, unsigned stride, unsigned width,
+                                                              bool bf16_out) {
+    constexpr unsigned R = HEAD_Q8_ROWS / HEAD_Q8_WARPS;
+    extern __shared__ uint4 stage[];
     const unsigned head = blockIdx.x, row0 = blockIdx.y * HEAD_Q8_ROWS, blocks = in / 32, rowbytes = blocks * 34;
-    const unsigned rows = min((unsigned)HEAD_Q8_ROWS, width - row0);
-    const uint32_t *src = (const uint32_t *)(w + ((uint64_t)head * width + row0) * rowbytes);
-    for (unsigned i = threadIdx.x; i < rows * rowbytes / 4; i += blockDim.x) {
-        stage[i] = __ldg(src + i);
+    const unsigned rows = min((unsigned)HEAD_Q8_ROWS, width - row0), bytes = rows * rowbytes;
+    const uint8_t *src = w + ((uint64_t)head * width + row0) * rowbytes;
+
+    // Hy4's 64-row spans are in x 17/16 bytes: 16-byte copies. 4 bytes otherwise.
+    if (((uintptr_t)src & 15u) == 0 && bytes % 16u == 0) {
+        for (unsigned i = threadIdx.x; i < bytes / 16; i += blockDim.x) {
+            stage[i] = __ldg((const uint4 *)src + i);
+        }
+    } else {
+        for (unsigned i = threadIdx.x; i < bytes / 4; i += blockDim.x) {
+            ((uint32_t *)stage)[i] = __ldg((const uint32_t *)src + i);
+        }
     }
     __syncthreads();
+
+    // Row warp + 8k of the CTA, accumulated over blocks in order as one row at a time.
     const uint8_t *s = (const uint8_t *)stage;
-    const unsigned lane = threadIdx.x & 31u;
-    for (unsigned j = threadIdx.x >> 5; j < rows; j += blockDim.x / 32) {
-        const uint8_t *r = s + j * rowbytes;
-        float sum[N] = {};
-        for (unsigned b = 0; b < blocks; b++) {
-            const float wv = bf(__half2float(*(const __half *)(r + b * 34)) * (float)(int8_t)r[b * 34 + 2 + lane]);
-            #pragma unroll
-            for (unsigned t = 0; t < N; t++) {
-                sum[t] = fmaf(wv, __bfloat162float(x[((uint64_t)t * h + head) * stride + b * 32 + lane]), sum[t]);
-            }
-        }
+    const unsigned warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
+    float sum[R][N] = {};
+    for (unsigned b = 0; b < blocks; b++) {
+        float xv[N];
         #pragma unroll
         for (unsigned t = 0; t < N; t++) {
+            xv[t] = __bfloat162float(x[((uint64_t)t * h + head) * stride + b * 32 + lane]);
+        }
+        #pragma unroll
+        for (unsigned k = 0; k < R; k++) {
+            const uint8_t *r = s + (warp + k * HEAD_Q8_WARPS) * rowbytes + b * 34;
+            const float wv = bf(__half2float(*(const __half *)r) * (float)(int8_t)r[2 + lane]);
+            #pragma unroll
+            for (unsigned t = 0; t < N; t++) {
+                sum[k][t] = fmaf(wv, xv[t], sum[k][t]);
+            }
+        }
+    }
+
+    #pragma unroll
+    for (unsigned k = 0; k < R; k++) {
+        const unsigned j = warp + k * HEAD_Q8_WARPS;
+        #pragma unroll
+        for (unsigned t = 0; t < N; t++) {
+            float v = sum[k][t];
             for (int off = 16; off > 0; off >>= 1) {
-                sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], off);
+                v += __shfl_xor_sync(0xffffffffu, v, off);
+            }
+            if (lane || j >= rows) {
+                continue;
             }
             const uint64_t at = ((uint64_t)t * h + head) * width + row0 + j;
-            if (!lane && bf16_out) {
-                ((bf16 *)out)[at] = __float2bfloat16(sum[t]);
-            } else if (!lane) {
-                ((float *)out)[at] = sum[t];
+            if (bf16_out) {
+                ((bf16 *)out)[at] = __float2bfloat16(v);
+            } else {
+                ((float *)out)[at] = v;
             }
         }
     }
@@ -836,11 +864,12 @@ extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, co
         const auto *codes = (const uint8_t *)weight;
         const auto *xb = (const hy4::bf16 *)pack->ptr;
         const bool bf16_out = output == DS4_HY4_HEAD_OUT_BF16;
+        const unsigned threads = hy4::HEAD_Q8_WARPS * 32;
         switch (n) {
-        case 1: hy4::head_q8<1><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
-        case 2: hy4::head_q8<2><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
-        case 3: hy4::head_q8<3><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
-        default: hy4::head_q8<4><<<grid, 256, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        case 1: hy4::head_q8<1><<<grid, threads, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        case 2: hy4::head_q8<2><<<grid, threads, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        case 3: hy4::head_q8<3><<<grid, threads, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
+        default: hy4::head_q8<4><<<grid, threads, smem, st>>>(out->ptr, codes, xb, h, in, stride, width, bf16_out); break;
         }
         return cuda_ok(cudaGetLastError(), "Hy4 Q8_0 head projection");
     }
