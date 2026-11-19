@@ -497,6 +497,12 @@ Prefill kernels are the wrong kernels here and vice versa; dispatch on width.
   streams the 393 KB of mix weights slower than the split launches spread
   over the GPU.  From 16 rows up only, decode is unchanged.  Time decode in
   every prefill A/B.
+- cuBLAS is not a GEMV at verify widths.  Hy4's BF16 projections of 2-4
+  verify rows ran cuBLAS' sm80 wmma GEMM (16x16 tiles, one warp per CTA)
+  at 217-235 GB/s.  A warp per output row that loads each weight vector once
+  for every row, in the one-row kernel's order, ran 233-258 GB/s in a
+  model-free harness (eight rotating weight copies): 14.5 -> 13.6 ms per
+  verify step, and each verify row now equals its decode row (3.2).
 
 ### 3.2 Row stability is a contract, not an optimization
 
@@ -550,6 +556,10 @@ the per-launch overhead trips it after 12 cycles.
   range per CTA, so decode and verify rows split their 512 window or 2,048
   selected keys over the SMs and a combine merges the splits: plain decode
   +11 %, a DFly2 verify step 113.3 -> 106.1 ms at equal acceptance.
+- **Give draft rows the same tile.**  The drafter's rows kept the scalar
+  kernel a round longer (2.3 ms of a 17.6 ms propose for ~1.3 MB of keys
+  per layer).  Their key list, the committed row's selection plus their own
+  draft keys, is a second key policy for the same tile: -1.8 ms per step.
 
 ### 3.5 The rest of the step
 
@@ -564,6 +574,15 @@ the per-launch overhead trips it after 12 cycles.
   stale.
 - The LM head (248K rows) is 2.7 ms per call at bandwidth; the only lever
   there is the artifact (aligned Q8) and not calling it twice.
+- A drafter that ranks each draft token over the full vocabulary pays the
+  head per draft.  Hy4's DFly2 read the 742 MB BF16 head three times per
+  depth-3 step, 9.3 of its 17.6 ms.  Drafts only pick candidates, so a Q8_0
+  copy (+0.37 GiB, priced in the plan) serves them while the verify keeps
+  BF16: -4.4 ms per step, target tokens and acceptance unchanged.
+- Stage SSD reads at decode as at prefill.  Hy4 read all four Engram tables
+  before a verify step's first kernel, the GPU idle meanwhile; reading each
+  before its layer hid them behind the earlier layers: -2.1 ms per depth-3
+  step, plain decode +0.8 %, tokens identical.
 
 ---
 
@@ -647,7 +666,12 @@ old text comes back with the switch off and the fixture is bit-identical,
 it is the shape (5.1); if the fixture shows the tier tolerance, it is 5.3
 and needs the band; if neither, it is a bug.  Do not compare texts across
 sessions or artifacts, and never quote tok/s from a run whose text differs
-without saying so.
+without saying so.  Hy4's BF16 verify-row kernel moved the 37th greedy
+token of a 32K continuation; the new text accepted 3.20 instead of 2.37
+tokens per depth-3 verify (+29 % tok/s) while its verify steps ran 5 ms
+longer.  Neither number measured the kernel: time it at equal text (an 8K
+pair, a model-free harness) and compare later changes with switches that
+cannot move the target tokens.
 
 ### 5.5 Fixtures: make them look like production
 
@@ -695,6 +719,14 @@ without saying so.
 - `nsys` traces of the first chunk include the bench's warm-up; identify
   chunks by the kernel that runs once per layer (the GDN recurrence, 36
   launches per chunk) rather than by time.
+- Count graph executions, copies and memsets as busy.  Under the default
+  `--cuda-graph-trace=graph` a graph launch is one row of
+  `CUPTI_ACTIVITY_KIND_GRAPH_TRACE`, not kernels: a Hy4 verify step looked
+  29 % idle from the kernel table and was 11 % idle with them.
+- Build derived weight copies after the startup cache owns their ranges.
+  A draft-head copy made at drafter bind resolved the head's range first;
+  the eager cache then refused the overlapping unit ("RANGE-PUBLISH
+  REFUSED ... same-tier overlap") and the engine did not open.
 - `ncu` with the resident owner is a documented OOM on this host.
 - After `git checkout` of a file, `make` rebuilds its object even if the
   bytes are unchanged; a 13-minute MMQ compile can be the price of a

@@ -1,0 +1,21 @@
+change,arm,run,build,ctx_tokens,draft_depth,env,gen_tokens,gen_tps,gen_tps_ss,verifies,tokens_per_verify,ms_per_verify
+bf16_rows,cublas,a,BF16 rows build,32768,3,DS4_HY4_BF16_ROWS=0,64,19.77,20.61,27,2.370,119.9
+bf16_rows,rows,a,BF16 rows build,32768,3,,64,25.52,27.34,20,3.200,125.4
+bf16_rows,cublas,b,BF16 rows build,32768,3,DS4_HY4_BF16_ROWS=0,64,19.71,20.61,27,2.370,120.3
+bf16_rows,rows,b,BF16 rows build,32768,3,,64,25.57,27.18,20,3.200,125.1
+bf16_rows,cublas,a,BF16 rows build,8192,2,DS4_HY4_BF16_ROWS=0,64,19.23,20.01,31,2.065,107.4
+bf16_rows,rows,a,BF16 rows build,8192,2,,64,19.34,20.05,31,2.065,106.7
+engram_reads,bulk,a,staged reads and draft tile build,32768,3,DS4_HY4_ENGRAM_LAYER_READS=0,64,26.29,27.93,20,3.200,121.7
+engram_reads,staged,a,staged reads and draft tile build,32768,3,,64,26.48,28.13,20,3.200,120.8
+engram_reads,bulk,b,staged reads and draft tile build,32768,3,DS4_HY4_ENGRAM_LAYER_READS=0,64,26.14,27.83,20,3.200,122.4
+engram_reads,staged,b,staged reads and draft tile build,32768,3,,64,26.88,28.62,20,3.200,119.0
+draft_attention,scalar,a,staged reads and draft tile build,32768,3,DS4_HY4_FLASH_DRAFT=0,64,26.34,27.98,20,3.200,121.5
+draft_attention,tiled,a,staged reads and draft tile build,32768,3,,64,26.48,28.13,20,3.200,120.8
+draft_attention,scalar,b,staged reads and draft tile build,32768,3,DS4_HY4_FLASH_DRAFT=0,64,26.26,27.86,20,3.200,121.9
+draft_attention,tiled,b,staged reads and draft tile build,32768,3,,64,26.88,28.62,20,3.200,119.0
+engram_reads_plain,bulk,a,staged reads and draft tile build,32768,0,DS4_HY4_ENGRAM_LAYER_READS=0,64,15.39,15.59,,,
+engram_reads_plain,staged,a,staged reads and draft tile build,32768,0,,64,15.52,15.74,,,
+draft_head,bf16,a,final build,32768,3,DS4_HY4_DRAFT_HEAD_Q8=0,64,26.88,28.57,20,3.200,119.0
+draft_head,q8_0,a,final build,32768,3,,64,27.88,29.69,20,3.200,114.8
+draft_head,bf16,b,final build,32768,3,DS4_HY4_DRAFT_HEAD_Q8=0,64,26.82,28.52,20,3.200,119.3
+draft_head,q8_0,b,final build,32768,3,,64,27.89,29.69,20,3.200,114.7

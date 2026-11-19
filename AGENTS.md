@@ -506,6 +506,15 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   made it 26 % faster; the next work item's contiguous tile, one piece per
   stage, another 4-8 %
   ([playbook 2.6](docs/prefill-decode-optimization-playbook.md#26-kernel-tuning-last)).
+- **cuBLAS is not a GEMV at verify widths.** Hy4's BF16 projections of
+  2-4 rows ran cuBLAS' sm80 wmma GEMM (16x16 tiles, one warp per CTA) at
+  217-235 GB/s; a warp per output row loading each weight once for all
+  rows, in the one-row order, ran 233-258 and made verify rows equal
+  decode rows.
+- **Count CUDA graph executions as busy.** nsys' default graph trace puts
+  a graph launch in `CUPTI_ACTIVITY_KIND_GRAPH_TRACE`, not the kernel
+  table: a Hy4 verify step looked 29% idle from kernels, 11% with graphs,
+  copies and memsets.
 - **A rotated prefetch register waits at the move.** `w = w1; w1 = wn` at a
   stage's end stalls on the load into `wn` issued at its start; index the
   sets by the unrolled stage number instead (-11 %).

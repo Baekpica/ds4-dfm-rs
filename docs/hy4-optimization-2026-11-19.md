@@ -91,7 +91,7 @@ The 32K append is now ~1.77 s per 2,048 rows: routed experts 34 %, MLA attention
 
 A plain token reads 13.45 GB of weights: 10.43 GB of dense tensors and the head (attn_output and attn_gate in Q8_0 alone are 3.90 GB) and 3.02 GB of its 16 routed experts. At 240 GB/s that bounds plain decode at 17.8 tok/s. At the 32K frontier a token took 72.8 ms: the Q8_0 and BF16 projections ran near that rate, but the scalar decode attention took 8.5 ms for ~33 MB of cache, one CTA per head walking keys one warp at a time.
 
-Decode and verify rows now take the prefill MLA tile, with each row's 512 window or 2,048 selected keys split over the SMs and a combine that writes the v_b operand. The k_b projection writes their q_abs as BF16, as it does for prefill. Draft rows keep the scalar kernel.
+Decode and verify rows now take the prefill MLA tile, with each row's 512 window or 2,048 selected keys split over the SMs and a combine that writes the v_b operand. The k_b projection writes their q_abs as BF16, as it does for prefill. Draft rows moved to the same tile in the verify-step round below.
 
 | Mode at 32K, 64 tokens, two fresh processes | Scalar attention | Tiled, split keys |
 |---|---:|---:|
@@ -101,6 +101,23 @@ Decode and verify rows now take the prefill MLA tile, with each row's 512 window
 The first DFly2 pair emitted 1.829 tokens per verify in both runs, at 113.3 and 106.1 ms per verify. Over the 1,664 teacher-forced positions (1,560 of them decode steps) NLL moved -0.0311 against the scalar build (95 % document bootstrap -0.0702 to +0.0002) with 92.1 % top-1 agreement, to 2.95417 against the teacher's 2.97612. `DS4_HY4_FLASH_DECODE=0` restores the scalar kernel for target rows.
 
 A DFly2 verify step at 32K left the GPU idle for ~11 % of its wall time. About a dozen `cudaMallocAsync` calls per step took 0.3-0.7 ms in driver ioctls, because the default pool releases its pages at every synchronization. Keeping 64 MB of freed pool pages measured +0.6 % plain and +0.2 % DFly2 over two pairs each, so that global setting was not adopted. Plain decode now sits at ~87 % of its 17.8 tok/s weight-stream bound. A verify step reads the dense weights once and the three rows' expert union (its routed MMQ moved ~7.3 GB, 2.4 tokens' worth), ~17.8 GB before the drafter, so at 1.83 tokens per verify even a bandwidth-bound DFly2 step would stay under ~25 tok/s.
+
+### Verify and draft steps
+
+At 32K and draft depth three a DFly2 step took ~120 ms. Traces counted the four rows' routed MMQ at 48.2 ms, the aligned Q8_0 projections at 19.5 ms (~227 GB/s), the BF16 projections at 17.3 ms on cuBLAS (15.8 ms after the change below) and the drafter at 17.6 ms, 9.3 ms of it in three passes over the 742 MB BF16 output head. Counting kernels alone, the step looked 29 % idle; counting graph executions, copies and memsets, it was 11 % idle.
+
+| Change | Class | ms per verify, 32K, depth 3, 64 tokens, two pairs |
+|---|---|---:|
+| BF16 projections of 2–4 rows on a warp-per-row kernel that loads each weight once for every row, in the one-row order, instead of cuBLAS (sm80 wmma, 16×16 tiles, one warp per CTA) | value change: a verify row equals its decode row | below |
+| Engram tables read before their layers at decode, as at prefill | bit-identical | 122.05 -> 119.90 |
+| Draft rows on the tiled MLA kernel: the committed row's selection plus their own draft keys | draft-only | 121.70 -> 119.90 |
+| Draft tokens ranked through a Q8_0 copy of the output head (+0.37 GiB); the verify keeps BF16 | draft-only | 119.15 -> 114.75 |
+
+With four rows and eight rotating weight copies, a model-free harness streamed each BF16 projection shape at 233–258 GB/s against cuBLAS' 217–235, 14.51 -> 13.57 ms per verify step. At 8K and depth two, with equal text, a verify took 107.4 -> 106.7 ms. At 32K the kernel moved the 37th greedy token, and the new continuation accepted 3.20 instead of 2.37 tokens per verify. The other rows therefore compare switches that keep the target tokens: `DS4_HY4_ENGRAM_LAYER_READS=0`, `DS4_HY4_FLASH_DRAFT=0` and `DS4_HY4_DRAFT_HEAD_Q8=0`; `DS4_HY4_BF16_ROWS=0` restores cuBLAS. The staged reads also took plain decode from 15.39 to 15.52 tok/s. [A/B receipts](benchmarks/hy4-flash-mxq-2026-11-19/decode-round2.csv).
+
+Over the 1,664 teacher-forced positions the DFly2 verify rows of the final build averaged **2.98602 NLL** against the teacher's 2.97612 (+0.00990, 95 % document bootstrap −0.02767 to +0.04847), with 89.12 % top-1 agreement. Against the release build's verify rows the change was +0.02347 (−0.01467 to +0.05892) with 91.83 % agreement, inside the band of the accepted tiled-attention switches (−0.0311 and +0.0526 at 91–92 %).
+
+Depth two stays the release setting. Over nine frontiers from 2K to 64K with 128 tokens each, depths two, three and four decoded 19.54, 18.12 and 17.91 tok/s at 1.85, 1.92 and 2.06 tokens per verify; one 32K continuation that accepted 3.20 tokens at depth three was the exception. [Depth screen](benchmarks/hy4-flash-mxq-2026-11-19/draft-depth-round2.csv). The 2K–64K sweep rose from 17.40 to 19.54 tok/s: 1.83 -> 1.86 tokens per verify and ~9 % shorter steps.
 
 ## Teacher-forced quality
 
@@ -132,7 +149,7 @@ The depth-two Q8_0 DFly2 trial kept the supplied reference token. Its verified t
 
 ## Released configuration
 
-The released binary's 2K–64K sweep averaged **1,186.46 prefill and 17.40 decode tok/s** (89.7 % and 60.2 % of the Qwen3.8 reference). It used 2,048-row chunks, Q8_0 DFly2 depth two and 128 generated tokens at each of 32 frontiers, with 1.83 tokens per verification. The 64K frontier measured 1,163.33 / 15.41 tok/s. [Curve and Qwen comparison](performance.md#hy4-flash-mxq) · [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_022f4be9.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_022f4be9.meta.txt).
+The released binary's 2K–64K sweep averaged **1,181.66 prefill and 19.54 decode tok/s** (89.3 % and 67.6 % of the Qwen3.8 reference). It used 2,048-row chunks, Q8_0 DFly2 depth two and 128 generated tokens at each of 32 frontiers, with 1.86 tokens per verification. The 64K frontier measured 1,154.04 / 17.25 tok/s. [Curve and Qwen comparison](performance.md#hy4-flash-mxq) · [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_e1f1f736.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_e1f1f736.meta.txt). Before the verify and draft step round the same sweep averaged 1,186.46 / 17.40 tok/s (1.83 tokens per verification). [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_022f4be9.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_022f4be9.meta.txt).
 
 The sweep before this round's prefill and decode work averaged 816.45 / 16.64 tok/s. [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_af33f376.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_af33f376.meta.txt).
 
