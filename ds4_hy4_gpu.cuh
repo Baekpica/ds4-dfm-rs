@@ -380,6 +380,54 @@ __global__ void index_merge(int *ids, float *best, const float *tile, unsigned f
     }
 }
 
+// The selector keeps the current incomplete group after 511 completed groups.
+template <unsigned HEADS> struct FlashKeys {
+    static constexpr unsigned heads = HEADS, query_dim = 256;
+    static constexpr bool contiguous = false, has_sinks = true;
+    unsigned pos0, cap;
+    const int *groups;
+    const float *sinks;
+    __device__ unsigned count(unsigned at) const {
+        if constexpr (HEADS == 64) {
+            return min(at + 1, 512u);
+        }
+        return at < 2048 ? at + 1 : 511 * 4 + at % 4 + 1;
+    }
+    __device__ unsigned at(unsigned row, unsigned position, unsigned slot) const {
+        if constexpr (HEADS == 64) {
+            return (position + 1 - count(position) + slot) % cap;
+        }
+        if (position < 2048) {
+            return slot;
+        }
+        const unsigned group = slot < 511 * 4 ? groups[row * 512 + slot / 4] : position / 4;
+        return group * 4 + slot % 4;
+    }
+};
+template <unsigned HEADS, bool FP8>
+__global__ void __launch_bounds__(HEADS * 4, 1)
+    flash(float *out, const float *qa, const float *q, const void *latent, const int8_t *exps,
+          const bf16 *rope, FlashKeys<HEADS> keys) {
+    l31_fa_tile<FP8>(out, nullptr, nullptr, q, qa, latent, exps, rope, keys, UINT32_MAX, 0.0625f);
+}
+template <unsigned HEADS, bool FP8>
+static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *q,
+                         const ds4_hy4_cache *c, const ds4_gpu_tensor *ids, const float *sinks,
+                         unsigned pos, unsigned rows) {
+    constexpr unsigned bytes = FP8 ? L31_FA8_SMEM : L31_FA_SMEM;
+    static const cudaError_t setup =
+        cudaFuncSetAttribute(flash<HEADS, FP8>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+    if (setup != cudaSuccess) {
+        return false;
+    }
+    const auto *exps = FP8 ? (const int8_t *)c->latent->ptr + (size_t)c->cap * 512 : nullptr;
+    FlashKeys<HEADS> keys{pos, c->cap, ids ? (const int *)ids->ptr : nullptr, sinks};
+    flash<HEADS, FP8><<<rows, HEADS * 4, bytes, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
+        (const bf16 *)c->rope->ptr, keys);
+    return true;
+}
+
 template <bool FP8, bool DRAFT>
 __global__ void attend(float *out, const float *q_abs, const float *q, const void *latent, const bf16 *rope,
                        const int *groups, const float *sinks, unsigned cap, unsigned pos, unsigned heads) {
@@ -483,6 +531,16 @@ extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *
                                      uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
     if (!sinks) {
         return 0;
+    }
+    const char *flash = getenv("DS4_HY4_FLASH");
+    if (!draft && rows >= 16 && !(flash && strcmp(flash, "0") == 0)) {
+        const bool launched = heads == 64
+                                  ? hy4::launch_flash<64, false>(out, a, q, c, ids, sinks, pos, rows)
+                              : c->fp8 ? hy4::launch_flash<32, true>(out, a, q, c, ids, sinks, pos, rows)
+                                       : hy4::launch_flash<32, false>(out, a, q, c, ids, sinks, pos, rows);
+        if (launched) {
+            return cuda_ok(cudaGetLastError(), "Hy4 flash MLA");
+        }
     }
     auto kernel = draft ? (c->fp8 ? hy4::attend<true, true> : hy4::attend<false, true>)
                         : (c->fp8 ? hy4::attend<true, false> : hy4::attend<false, false>);
