@@ -201,26 +201,20 @@ __global__ void __launch_bounds__(HY4M_THREADS, 1) hy4m_gemm(const uint8_t *weig
                     }
                 }
             };
-            // Whole super-blocks of this lane's rows into L2 two blocks ahead:
-            // the stages read 32-byte pieces of rows 1 KB apart.
-            // The next item's first two blocks follow during this item's last.
-            auto prefetch_rows = [&](const uint4 &item, uint32_t block) {
-                if ((pl & 3) || block >= blocks || !item.w) { return; }
-                #pragma unroll
-                for (uint32_t i = 0; i < ITEMS; i++) {
-                    const uint32_t f = pl + PRODUCERS * i, mt = f >> 5, g = (f >> 2) & 7;
-                    const uint8_t *row = tile_row(item, mt, g) + block * BYTES;
-                    #pragma unroll
-                    for (uint32_t r = 0; r < 2; r++) {
-                        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
-                            "l"(row + r * 8 * row_bytes), "r"(BYTES) : "memory");
-                    }
-                }
+            // The stages read 32-byte pieces of rows 1 KB apart. An item's
+            // tile is contiguous per matrix, so the next item's streams into
+            // L2 as one sequential piece per stage (two lanes each issue
+            // half): GLU 4-8 % faster than per-row super-block prefetches.
+            auto prefetch_tile = [&](const uint4 &item, uint32_t kt) {
+                if (pl >= 2 || !item.w) { return; }
+                constexpr uint32_t REGIONS = OUT == HY4M_GLU ? 2 : 1;
+                const uint32_t per = steps / REGIONS, r = kt / per, i = kt % per;
+                const uint32_t piece = (uint32_t)((uint64_t)(HY4M_BM / REGIONS) * row_bytes / per) / 2;
+                const uint8_t *base = tile_row(item, r, 0) + (uint64_t)i * 2 * piece + pl * piece;
+                asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" :: "l"(base), "r"(piece) : "memory");
             };
-            auto prefetch = [&](uint32_t block) { prefetch_rows(cur, block); };
             if (it == blockIdx.x) {
-                prefetch(0);
-                prefetch(1);
+                for (uint32_t kt = 0; kt < steps; kt++) { prefetch_tile(cur, kt); }
             }
             // Raw bytes two stages ahead in four sets indexed by the (constant)
             // stage, so no rotation move waits on a load just issued; one
@@ -232,13 +226,12 @@ __global__ void __launch_bounds__(HY4M_THREADS, 1) hy4m_gemm(const uint8_t *weig
             raw(1, w[1]);
             header(0, h, q);
             for (uint32_t kb = 0; kb < blocks; kb++) {
-                prefetch(kb + 2);
-                if (kb + 2 >= blocks) { prefetch_rows(nxt, kb + 2 - blocks); }
                 if (kb + 1 < blocks) { header(kb + 1, hn, qn); }
                 #pragma unroll
                 for (uint32_t p = 0; p < 4; p++, ring++) {
                     const uint32_t kt = 4 * kb + p, s = ring % STAGES, use = ring / STAGES;
                     if (kt + 2 < steps) { raw(kt + 2, w[(p + 2) & 3]); }
+                    prefetch_tile(nxt, kt);
                     if (kt == 3) { rows_of(nxt, rows_cur); }
                     if (use) { hy4m_wait(empty + s, (use - 1) & 1); }
                     #pragma unroll

@@ -223,7 +223,41 @@ impl Engram {
                 }
             }
         }
-        self.reads.sort_unstable_by_key(|r| (r.layer, r.page));
+        self.reads
+            .sort_unstable_by_key(|r| (r.layer, r.page, r.within));
+        if let Some(ring) = &mut self.ring {
+            // One request per distinct record, all in one round: the ring
+            // keeps ERING_CAP reads in flight through bounce slots. Draining
+            // each 512-read batch took ~112 ms per 2,048-token table, one
+            // round ~100 ms. The rest is the DRAM-less SSD's mapping misses:
+            // the same table read again right away takes ~45 ms.
+            let records = self
+                .reads
+                .chunk_by(|a, b| (a.layer, a.page, a.within) == (b.layer, b.page, b.within));
+            let requests = ring.reqs_mut();
+            requests.clear();
+            for group in records.clone() {
+                let r = &group[0];
+                requests.push(Req {
+                    fd: self.layers[r.layer].file.as_raw_fd(),
+                    direct: true,
+                    len: RECORD as u32,
+                    off: r.page * PAGE as u64 + r.within as u64,
+                    dst: dst[r.dest..r.dest + RECORD].as_mut_ptr(),
+                });
+            }
+            if !ring.submit() || !ring.wait() {
+                return Err(error("Engram page read failed"));
+            }
+            // Repeated n-grams read their record once.
+            for group in records {
+                let (first, rest) = group.split_first().unwrap();
+                for r in rest {
+                    dst.copy_within(first.dest..first.dest + RECORD, r.dest);
+                }
+            }
+            return Ok(());
+        }
         let mut groups = self
             .reads
             .chunk_by(|a, b| a.layer == b.layer && a.page == b.page);
@@ -236,29 +270,11 @@ impl Engram {
             }
             self.pages
                 .resize_with(self.pages.len().max(batch.len()), || Page([0; PAGE]));
-            if let Some(ring) = &mut self.ring {
-                let requests = ring.reqs_mut();
-                requests.clear();
-                for (group, page) in batch.iter().zip(&mut self.pages) {
-                    requests.push(Req {
-                        fd: self.layers[group[0].layer].file.as_raw_fd(),
-                        // Destination is already aligned. No bounce copy.
-                        direct: false,
-                        len: PAGE as u32,
-                        off: group[0].page * PAGE as u64,
-                        dst: page.0.as_mut_ptr(),
-                    });
-                }
-                if !ring.submit() || !ring.wait() {
-                    return Err(error("Engram page read failed"));
-                }
-            } else {
-                for (group, page) in batch.iter().zip(&mut self.pages) {
-                    self.layers[group[0].layer]
-                        .file
-                        .read_exact_at(&mut page.0, group[0].page * PAGE as u64)
-                        .map_err(|e| error(format!("Engram page read: {e}")))?;
-                }
+            for (group, page) in batch.iter().zip(&mut self.pages) {
+                self.layers[group[0].layer]
+                    .file
+                    .read_exact_at(&mut page.0, group[0].page * PAGE as u64)
+                    .map_err(|e| error(format!("Engram page read: {e}")))?;
             }
             for (group, page) in batch.iter().zip(&self.pages) {
                 for r in *group {
