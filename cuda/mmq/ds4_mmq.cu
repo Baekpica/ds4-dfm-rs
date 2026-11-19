@@ -2322,7 +2322,11 @@ int ds4_mmq_moe_impl(
 
     if (up_f32) {
         const dim3 grid((unsigned)ne_get_rows, (K + 511) / 512);
-        if (activation == SwiGLUOutput::NaiveBF16) {
+        if (activation == SwiGLUOutput::Hy4Clamp) {
+            hy4_swiglu_q8<<<grid, 128, 0, stream>>>(
+                X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
+                K, (int)ne_get_rows);
+        } else if (activation == SwiGLUOutput::NaiveBF16) {
             mimo2_swiglu_q8<SwiGLUOutput::NaiveBF16><<<grid, 128, 0, stream>>>(
                 X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
                 K, (int)ne_get_rows);
@@ -5727,6 +5731,21 @@ extern "C" int ds4_mmq_naive_down(
         "Naive fused BF16 SwiGLU down", weights, gate, ids, out, OUTPUT, WIDTH,
         rows, EXPERTS, 1, stream, nullptr, 0, false, rows / USED, 0, up,
         SwiGLUOutput::NaiveBF16);
+}
+
+/* Hy4 routed down: rows = tokens x 16 assignments, one expert each; the
+ * clamped SwiGLU of the gate/up pair is quantized straight into the Q5_K
+ * operand. bound = tokens caps every expert bucket. */
+extern "C" int ds4_mmq_hy4_down(
+        const void *weights, const float *gate, const float *up,
+        const int32_t *ids, float *out, int rows, int bound, cudaStream_t stream) {
+    enum { WIDTH = 1536, EXPERTS = 512 };
+    if (!up || rows <= 0 || bound <= 0) { return -1; }
+    // hy4::moe_sum zeroes non-finite rows at read: no output scrub.
+    return ds4_mmq_moe_impl<GGML_TYPE_Q5_K>(
+        "Hy4 fused SwiGLU down", weights, gate, ids, out, WIDTH, WIDTH,
+        rows, EXPERTS, 1, stream, nullptr, 0, false, bound, 0, up,
+        SwiGLUOutput::Hy4Clamp);
 }
 
 extern "C" int ds4_mmq_iq2_xs_moe(

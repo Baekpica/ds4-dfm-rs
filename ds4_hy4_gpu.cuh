@@ -137,9 +137,11 @@ __global__ void moe_sum(float *out, const float *down, const float *weights) {
     if (d >= 1536) {
         return;
     }
+    // Non-finite expert rows read as zero, so the down MMQ skips its scrub.
     float v = 0;
     for (unsigned e = 0; e < 16; e++) {
-        v += bf(down[(r * 16 + e) * 1536 + d]) * weights[r * 16 + e];
+        const float x = down[(r * 16 + e) * 1536 + d];
+        v += bf(isfinite(x) ? x : 0.f) * weights[r * 16 + e];
     }
     out[r * 1536 + d] = bf(v);
 }

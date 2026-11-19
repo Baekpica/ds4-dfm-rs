@@ -28,6 +28,9 @@ int ds4_gpu_hy4_unpack(ds4_gpu_tensor *out, const ds4_gpu_tensor *records, const
 int ds4_gpu_hy4_engram(ds4_gpu_tensor *streams, const ds4_gpu_tensor *kv, const ds4_gpu_tensor *ids,
                        const float *bias, const float *wk, const float *wq, const float *gamma,
                        const float *scales, uint32_t rows);
+int ds4_gpu_hy4_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
+                     const ds4_gpu_tensor *ids, const void *map, uint64_t size, uint64_t offset,
+                     uint64_t bytes, uint32_t type, uint32_t tokens);
 int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
                        uint32_t count, float limit);
 int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down, const ds4_gpu_tensor *weights,

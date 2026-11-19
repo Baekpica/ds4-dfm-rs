@@ -183,6 +183,19 @@ static bool hy4_dense(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
            ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, n * (uint32_t)gate->dim[1], INFINITY) &&
            hy4_mm(out, m, down, g->ff_mid, n);
 }
+/* Prefill and verify quantize the clamped SwiGLU straight into the down's
+ * Q8 operand; one-row decode keeps the F32 mid (DS4_HY4_SWIGLU_Q8=0: always). */
+static bool hy4_routed_down(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *down, uint32_t n) {
+    const int fused = ds4_gpu_hy4_down(g->ff_gate, g->ff_gate, g->ff_up, g->experts, m->map, m->size,
+                                       down->abs_offset, down->bytes, down->type, n);
+    if (fused >= 0) {
+        return fused != 0;
+    }
+    return ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, n * 16 * 1536, 10.f) &&
+           ds4_gpu_routed_matmul_guarded_tensor(g->ff_gate, g->ff_mid, g->experts, m->map, m->size,
+                                                down->abs_offset, down->bytes, down->type, 1536, 1536, 512,
+                                                n * 16, 1, n);
+}
 static bool hy4_ffn(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t n) {
     if (!l->ffn_gate_exps) {
         return hy4_dense(g, m, g->branch, l->ffn_gate, l->ffn_up, l->ffn_down, n) &&
@@ -196,11 +209,7 @@ static bool hy4_ffn(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weight
            ds4_gpu_routed_gate_up_tensor(g->ff_gate, g->ff_up, g->latent, g->experts, m->map, m->size,
                                          gate->abs_offset, gate->bytes, up->abs_offset, up->bytes,
                                          gate->type, 1536, 1536, 512, n, 16) &&
-           ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, n * 16 * 1536, 10.f) &&
-           ds4_gpu_routed_matmul_guarded_tensor(g->ff_gate, g->ff_mid, g->experts, m->map, m->size,
-                                                down->abs_offset, down->bytes, down->type, 1536, 1536, 512,
-                                                n * 16, 1, n) &&
-           ds4_gpu_hy4_moe_sum(g->latent, g->ff_gate, g->weights, n) &&
+           hy4_routed_down(g, m, down, n) && ds4_gpu_hy4_moe_sum(g->latent, g->ff_gate, g->weights, n) &&
            hy4_mm(g->branch, m, l->ffn_routed_up, g->latent, n) &&
            hy4_dense(g, m, g->shared, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, n) &&
            ds4_gpu_exaone_add_tensor(g->branch, g->shared, (uint64_t)n * 3072) &&
