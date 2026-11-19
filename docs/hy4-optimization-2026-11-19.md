@@ -10,6 +10,16 @@ With 512-row chunks and 32 greedy output tokens, 4K incremental prefill improved
 
 The fast path rounds absorbed queries and softmax weights to BF16 for MMA, accumulates in FP32, and shares the scalar cache. On two deterministic random head geometries its relative RMS output difference was 0.00248 (32 heads) and 0.00247 (64 heads). The reference remains available with `DS4_HY4_FLASH=0`.
 
+## IndexPool on long prefills
+
+The scalar index scorer occupied 12.1% of the cold 32K prefill and 20.0% of the next 2,048-token append. The tiled kernel evaluates the 16 index heads with BF16 matrix instructions and FP32 accumulation, preserves Hy4's group visibility, and merges each 1,024-group tile into its best 511. Decode and small appends use the scalar scorer. On an isolated 2,048-row append at 32K the two implementations selected the same 1,046,527 out of 1,046,528 group memberships. Excluding the first timing, their per-layer medians were 58.42 and 5.50 ms. Nsight Compute captured only the isolated kernel.
+
+Fresh processes with 2,048-row chunks recorded 741.18 and 843.98 tok/s on the cold 32K prompt, then 586.11 and 725.73 tok/s on the next append. Eight plain output tokens ran at 12.89/13.93 tok/s with the scalar scorer and 12.88/13.79 with the tiled one. These are one pair of runs. [Scalar index](benchmarks/hy4-flash-mxq-2026-11-19/index-off-short.csv) · [Tiled index](benchmarks/hy4-flash-mxq-2026-11-19/index-short.csv).
+
+At 512-row chunks, the tiled scorer changed mean NLL by +0.0180, +0.0236 and −0.0336 across 32 teacher-forced positions each at 8K, 32K and 64K. Top-1 agreement with the scalar scorer was 27/32, 32/32 and 31/32. The comparison used the same FP8 cache, mixed trunk and novel. Set `DS4_HY4_INDEX_MMA=0` to use the scalar score accumulation for all widths.
+
+The first combined run used the Q8_0 DFly2 at depth two, 2,048-row chunks and 128 greedy output tokens per frontier, with 32 incremental frontiers from 2K to 64K. The arithmetic means were 730.16 prefill and 15.75 decode tok/s. Prefill ranged from 717.09 to 744.22. Decode varied from 12.36 to 21.30 with draft acceptance. [Individual frontiers](benchmarks/hy4-flash-mxq-2026-11-19/sweep-spec.csv).
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.

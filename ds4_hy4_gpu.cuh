@@ -354,6 +354,11 @@ __global__ void index_scores(float *tile, const float *q, const float *weights, 
         tile[row * 1024 + j] = score;
     }
 }
+__global__ void __launch_bounds__(GLMVQ_IDX_THREADS) index_mma(float *tile, const float *q,
+        const float *w, const bf16 *groups, unsigned count, unsigned rows, unsigned pos, unsigned first) {
+    glmvq_index_tile<bf16, true>(tile, q, w, groups + (uint64_t)first * 128, count, rows, pos, first);
+}
+
 __global__ void index_merge(int *ids, float *best, const float *tile, unsigned first) {
     using Sort = cub::BlockRadixSort<float, 128, 12, int>;
     __shared__ typename Sort::TempStorage scratch;
@@ -517,10 +522,24 @@ extern "C" int ds4_gpu_hy4_pool(ds4_hy4_cache *c, const ds4_gpu_tensor *v, const
 extern "C" int ds4_gpu_hy4_index(ds4_gpu_tensor *ids, ds4_gpu_tensor *tile, ds4_gpu_tensor *best,
                                  const ds4_gpu_tensor *q, const ds4_gpu_tensor *w, const ds4_hy4_cache *c,
                                  uint32_t pos, uint32_t rows) {
-    for (uint32_t first = 0; first < (pos + rows - 1) / 4; first += 1024) {
-        hy4::index_scores<<<dim3(128, rows), 256, 0, ds4_current_stream()>>>(
-            (float *)tile->ptr, (const float *)q->ptr, (const float *)w->ptr,
-            (const hy4::bf16 *)c->groups->ptr, pos, first);
+    constexpr unsigned smem = (GLMVQ_IDX_ROWS * 16 + GLMVQ_IDX_POOLS) * GLMVQ_IDX_PITCH *
+                              sizeof(hy4::bf16) + GLMVQ_IDX_ROWS * 16 * sizeof(float);
+    static const bool supported = cudaFuncSetAttribute(hy4::index_mma, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                       smem) == cudaSuccess;
+    const char *env = getenv("DS4_HY4_INDEX_MMA");
+    const bool mma = supported && rows >= 16 && !(env && strcmp(env, "0") == 0);
+    const uint32_t groups = (pos + rows - 1) / 4;
+    for (uint32_t first = 0; first < groups; first += 1024) {
+        if (mma) {
+            const dim3 grid(1024 / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);
+            hy4::index_mma<<<grid, GLMVQ_IDX_THREADS, smem, ds4_current_stream()>>>(
+                (float *)tile->ptr, (const float *)q->ptr, (const float *)w->ptr,
+                (const hy4::bf16 *)c->groups->ptr, std::min(1024u, groups - first), rows, pos, first);
+        } else {
+            hy4::index_scores<<<dim3(128, rows), 256, 0, ds4_current_stream()>>>(
+                (float *)tile->ptr, (const float *)q->ptr, (const float *)w->ptr,
+                (const hy4::bf16 *)c->groups->ptr, pos, first);
+        }
         hy4::index_merge<<<rows, 128, 0, ds4_current_stream()>>>((int *)ids->ptr, (float *)best->ptr,
                                                                  (const float *)tile->ptr, first);
     }

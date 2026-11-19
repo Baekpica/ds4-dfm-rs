@@ -119,8 +119,40 @@ static void attention(bool fp8, unsigned heads, unsigned pos, bool draft) {
         ds4_gpu_tensor_free(t);
     }
 }
+static void index_top() {
+    constexpr unsigned n = 19, pos = 4087, count = (pos + n - 1) / 4;
+    auto *q = tensor(n * 16 * 128 * 4), *w = tensor(n * 16 * 4), *tile = tensor(n * 1024 * 4);
+    auto *ids = tensor(n * 512 * 4), *best = tensor(n * 512 * 4);
+    ds4_hy4_cache cache = {};
+    cache.groups = tensor(count * 128 * 2);
+    std::vector<__nv_bfloat16> keys(count * 128);
+    std::vector<float> queries(n * 16 * 128), weights(n * 16, 1.f);
+    for (unsigned j = 0; j < count; ++j) {
+        keys[j * 128] = __float2bfloat16(j / 128);
+        keys[j * 128 + 1] = __float2bfloat16(j % 128);
+    }
+    for (unsigned i = 0; i < n; ++i) {
+        queries[i * 16 * 128] = 128;
+        queries[i * 16 * 128 + 128 + 1] = 1;
+        queries[(i * 16 + 2) * 128] = -1;
+    }
+    upload(q, queries);
+    upload(w, weights);
+    upload(cache.groups, keys);
+    check(ds4_gpu_hy4_index(ids, tile, best, q, w, &cache, pos, n), "pooled index");
+    std::vector<int> selected(n * 512);
+    check(ds4_gpu_tensor_read(ids, 0, selected.data(), selected.size() * 4), "read index");
+    for (unsigned i = 0; i < n; ++i) {
+        for (unsigned j = 0; j < 511; ++j) {
+            check(selected[i * 512 + j] == int((pos + i) / 4 - j - 1), "top 511 complete groups");
+        }
+    }
+    for (auto *t : {q, w, tile, ids, best, cache.groups}) { ds4_gpu_tensor_free(t); }
+}
+
 int main() {
     check(ds4_gpu_init(), "CUDA initialization");
+    index_top();
     attention(false, 64, 536, false);
     for (bool fp8 : {false, true}) {
         attention(fp8, 32, 2039, false);
