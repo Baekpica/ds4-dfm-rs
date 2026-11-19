@@ -40,7 +40,7 @@ documented whole-model results are omitted.
 | Model / artifact | Prefill | Decode | Workload / evidence |
 |---|---:|---:|---|
 | Qwen3.8 Flash Next Q5, FP8 PLE | 1,323.1 | 28.93 | [2K–64K sweep, MTP 2](docs/performance.md#qwen) |
-| Tencent Hy4-flash MXQ | 1,187.23 | 19.49 | [2K–64K incremental, Q8_0 DFly2 depth 2](docs/performance.md#hy4-flash-mxq) |
+| Tencent Hy4-flash MXQ | 1,171.74 | 20.50 | [2K–64K incremental, MQ-Q5-Q8, Q8_0 DFly2 depth 2](docs/performance.md#hy4-flash-mxq) |
 | Qwen3.8 Uncensored Q5, FP8 PLE | 1,310.8 | 28.96 | [2K–64K sweep, MTP 2](docs/performance.md#qwen-uncensored) |
 | Solar Open2 250B MXQ-v1 | 1,095.61 | 17.43 | [8K + 64, plain](docs/performance.md#solar) |
 | Motif-3 MQ87-88 | 627.19 | 15.06 | [8K + 64, historical C](docs/performance.md#motif) |
@@ -178,7 +178,7 @@ and the [mixed-quant collection](https://huggingface.co/collections/Baekpica/ds4
 | Motif-3 | `motif3` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | Latent KV, SWA rings and persistent banks |
 | dots3-note Preview | `dots3note` / `dots3-note` | [Baekpica mixed quant](https://huggingface.co/Baekpica/dots3-note-prev-Mixed-Quant-GGUF) | [Serial default; opt-in banks and MTP](docs/ds4-dfm-model-families.md#dots3-serving) |
 | Qwen3.8 Flash Next | `qwen4exp` | [Baekpica Q5 + SSD-PLE](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [BF16/FP8 PLE, embedded MTP, banks and images](docs/ds4-dfm-model-families.md#qwen-release-scope) |
-| Tencent Hy4-flash | `hy_v4_flash` | [Baekpica Q5 + SSD Engram](https://huggingface.co/Baekpica/Hy4-flash-Mixed-Quant-GGUF) | [CUDA, SSD embeddings and Engram, visual inputs and DFly2](docs/hy4-flash-mxq.md) |
+| Tencent Hy4-flash | `hy_v4_flash` | [Baekpica Q5 and Q5-Q8 + SSD Engram](https://huggingface.co/Baekpica/Hy4-flash-Mixed-Quant-GGUF) | [CUDA, SSD embeddings and Engram, visual inputs and DFly2](docs/hy4-flash-mxq.md) |
 | Qwen3.8 Flash Next Uncensored | `qwen4exp` | [Baekpica Q5 + SSD-PLE](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF) | [Separate Base/Uncensored gates](docs/qwen38-ple-fp8.md) |
 | Swift1.5-Qwen3.8 Flash Next | `qwen4exp` | [Baekpica Q5 + FP8 SSD-PLE](https://huggingface.co/Baekpica/Swift1.5-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | [Qwen runtime; bounded serving, throughput unmeasured](docs/ds4-dfm-model-families.md#qwen-derivatives) |
 | Darwin-180B-RSI | `qwen4exp` | [Baekpica Q5 + FP8 SSD-PLE](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF) | [Rust hosts: 8K two-bank CUDA, MTP, images and disk restore; throughput unmeasured](docs/ds4-dfm-model-families.md#darwin-180b-rsi) |

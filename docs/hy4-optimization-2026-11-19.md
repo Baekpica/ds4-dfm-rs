@@ -122,6 +122,53 @@ Over the 1,664 teacher-forced positions the DFly2 verify rows of the final build
 
 Depth two stays the release setting. Over nine frontiers from 2K to 64K with 128 tokens each, depths two, three and four decoded 19.54, 18.12 and 17.91 tok/s at 1.85, 1.92 and 2.06 tokens per verify; one 32K continuation that accepted 3.20 tokens at depth three was the exception. With the FP16 verify experts, depths two and three decoded 19.24 and 19.07 tok/s at 1.76 and 1.90 tokens per verify; their steps were ~3 and ~6 ms shorter, and the nine continuations changed with the arithmetic. [Depth screen](benchmarks/hy4-flash-mxq-2026-11-19/draft-depth-round2.csv). Over the 2K–64K sweep the round took the mean verify step from 106.7 to 92.5 ms (97.9 before the FP16 verify experts). Decode rose from 17.40 to 19.54 tok/s before them and measured 19.49 after: their continuations accepted 1.78 instead of 1.86 tokens per verify. On fixed teacher text the FP16 experts kept acceptance, 1.9179 against 1.9218 accepted tokens per trial (paired −0.0039, 95 % document bootstrap −0.0196 to +0.0104), so the sweep's acceptance change belongs to its new continuations.
 
+## MQ-Q5-Q8: dense projections at Q8_0
+
+A plain token read 13.45 GB, 4.85 GB of it in BF16 dense projections, the BF16 head and F32 routers. [`MQ-Q5-Q8-SSD-ENGRAM-FP8`](https://huggingface.co/Baekpica/Hy4-flash-Mixed-Quant-GGUF/tree/9a32b58fc7cc32d3e0488ddb916efd05cdf33cd3/MQ-Q5-Q8-SSD-ENGRAM-FP8) derives from the release: those projections and the head become Q8_0 (release quantizer), and the routers, BF16 values widened to F32, return to BF16 exactly. The trunk shrinks by 2.12 GiB and a token reads 11.17 GB, bounding plain decode at 21.5 tok/s.
+
+| Tensors | Count | MQ-Q5 GB | MQ-Q5-Q8 GB |
+|---|---:|---:|---:|
+| Output head | 1 | 0.742 | 0.394 |
+| `attn_k_b`, `attn_v_b` | 84 | 1.057 | 0.562 |
+| Shared expert gate, up, down | 123 | 1.161 | 0.618 |
+| `ffn_routed_down`, `ffn_routed_up` | 82 | 0.774 | 0.412 |
+| `attn_q_a`, `attn_kv_a_mqa` | 84 | 0.413 | 0.219 |
+| Leading dense FFN, `engram_kv` | 7 | 0.444 | 0.235 |
+| Routers, F32 → BF16 | 41 | 0.258 | 0.129 |
+
+- The BF16 router keeps the F32 router's arithmetic: one to four rows in the F32 GEMV's order, prefill rows through the same SGEMM on widened weights. Routing is bit-identical (`test_hy4_cuda`).
+- Q8_0 `k_b`/`v_b`: decode and verify rows stage 64 weight rows per CTA; prefill widens them for the batched GEMM.
+- Drafts read the Q8_0 head directly; the 0.37 GiB copy is not built.
+- The aligned-copy predicate admits 254 of the new matrices: 4.13 → 5.76 GiB, priced by the plan.
+- MQ-Q5 is unchanged: both teacher-forced gates at every position, and three sweep frontiers' logits and DFly2 tokens, match the release build exactly.
+
+New Q8_0 matrices below 2,048 outputs (`q_a`, `kv_a`, shared gate/up, `routed_down`) missed the D2R kernel and ran MMQ, ~1.6x the cuBLAS time with an activation quantize per GEMM. Prefill rows of those shapes now widen the codes to BF16 per call and keep MQ-Q5's cuBLAS GEMMs; D2R shapes stay on D2R. `DS4_HY4_Q8_WIDE=0` restores MMQ, `=all` widens D2R shapes too.
+
+| 32K, 16 plain tokens, fresh processes | Cold 32K prefill | 2K append | Plain decode |
+|---|---:|---:|---:|
+| MQ-Q5 | 1,224.44 / 1,223.33 | 1,176.10 / 1,186.05 | 14.87 / 14.97 |
+| MQ-Q5-Q8, MMQ | 1,181.23 / 1,187.65 | 1,144.23 / 1,153.89 | 16.77 / 16.97 |
+| MQ-Q5-Q8, every shape widened | 1,201.79 / 1,203.67 | 1,166.14 / 1,166.23 | 17.04 / 16.96 |
+| MQ-Q5-Q8, released | 1,212.27 / 1,210.71 | 1,173.95 / 1,169.28 | 17.05 / 16.91 |
+
+An earlier widening build measured 1,458 tok/s cold and NLL 9.98: its weight and input scratch aliased (`cuda_tmp_alloc` returns one buffer to every caller). [A/B receipts](benchmarks/hy4-flash-mxq-2026-11-19/q8-dense.csv).
+
+| 1,664 teacher-forced positions | NLL | Against MQ-Q5 (95 % document bootstrap) | Top-1 with MQ-Q5 |
+|---|---:|---:|---:|
+| Plain | 2.96341 | +0.00924 (−0.03446 to +0.05450) | 90.69 % |
+| DFly2 verify rows, depth 2 | 2.96763 | −0.01872 (−0.06005 to +0.02266) | 91.05 % |
+
+On fixed text the drafts kept their acceptance: 1.9159 against 1.9179 accepted tokens per depth-two trial. Around the 8K, 32K and 64K frontiers of the novel, 32 consecutive targets each moved NLL by −0.057, +0.046 and +0.002 with 27, 31 and 31 top-1 agreements, inside the FP8/BF16 cache band below. [Documents](benchmarks/hy4-flash-mxq-2026-11-19/q8-teacher-documents.csv) · [Long frontiers](benchmarks/hy4-flash-mxq-2026-11-19/q8-long-frontiers.csv).
+
+Over the 2K–64K sweep at depth two the verify step fell from 92.5 to 88.2 ms at equal acceptance (1.775 against 1.778 tokens), and decode rose from 19.49 to 20.50 tok/s; a repeat measured 20.66. Prefill measured 1,171.74 and 1,174.32 against 1,187.23. [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_q8_f54892fd.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_q8_f54892fd.meta.txt).
+
+### What the saved bytes buy
+
+- **Depth stays two.** On fixed text a third draft added 0.229 accepted tokens per trial (+12.0 %, 95 % +0.148 to +0.314) while the step grew from 88.2 to 99.5 ms (+12.8 %). The depth-three sweep decoded 20.59 tok/s; its continuations repeated more (2K: 57 % repeated 8-grams, 3.20 tokens per verify).
+- **Aligned copies only speed prefill.** At 32K they took cold prefill from 1,158.13 / 1,163.53 to 1,208.80 / 1,176.69 tok/s; plain decode measured 17.61 / 17.30 tok/s with them and 17.84 / 17.80 without, DFly2 steps 86.4 / 87.4 and 87.8 / 87.4 ms.
+- **Banks.** At the 4 GB floor without aligned copies the plan fits three 256K banks (two for MQ-Q5) and eight 128K banks (six); with them, three 128K banks (two). One 1M history leaves 2.67 GB more than MQ-Q5.
+- **Open levers.** Decode reads the aligned copies yet ran even without them, and prefill widens the raw codes of the narrow shapes, so their 0.70 GiB of copies buy nothing measured. A GEMM that dequantizes Q8_0 in producer warps would remove the widening traffic behind the 1.3 % prefill gap.
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.

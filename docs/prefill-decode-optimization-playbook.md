@@ -249,6 +249,13 @@ a generic kernel, and the fallback is usually 2-10x slower than the tier it
 missed.  Read the engine's "engaged path" log lines and grep the dispatch
 predicates before touching any kernel.
 
+- **Re-typing a matrix re-routes it.**  Hy4's MQ-Q5-Q8 stores its BF16 dense
+  projections as Q8_0.  Those with fewer than 2,048 outputs (q_a, kv_a, the
+  shared gate/up, routed_down) missed the D2R kernel and fell onto MMQ,
+  ~1.6x the cuBLAS time with an activation quantize per GEMM: prefill -3 %.
+  Widening their codes to BF16 per call and keeping the old GEMM left -1 %;
+  shapes D2R admits stay on it (+0.5-0.7 % over widening them too).
+
 - **Rectangular schedules over ragged work.**  MoE prefill routes ~5-20 rows
   per expert; a `[expert, max-bucket]` grid launches mostly empty tiles.  A
   compact worklist (one persistent kernel, grid = SM count, tiles of
@@ -609,6 +616,12 @@ the per-launch overhead trips it after 12 cycles.
 - Bounded caches for SSD sidecars are sized from the overlap policy (one
   in-flight chunk per stream), not from free memory; oversizing hides
   eviction bugs instead of fixing them.
+- Store an exact value at its exact type.  Hy4's routers were BF16 values
+  widened to F32 (0.26 GB read per token); stored as BF16 they read half,
+  and the kernels widen them back so routing stays bit-identical.
+- Derived copies follow shape predicates, not names: re-typing 254 Hy4
+  matrices to Q8_0 brought 1.63 GiB of aligned repacks with them.  Price
+  what the repack predicate admits, then check the repack log.
 
 ---
 
@@ -679,6 +692,12 @@ longer.  Neither number measured the kernel: time it at equal text (an 8K
 pair, a model-free harness) and compare later changes with switches that
 cannot move the target tokens.
 
+A speedup that the changed kernels cannot account for is a correctness bug
+until the gate says otherwise.  A widened-weight path took Hy4's 32K append
+from 1,182 to 1,411 tok/s, while the GEMMs it replaced had cost ~97 ms of a
+1.72 s chunk.  Teacher-forced NLL read 9.98 against 2.98 (top-1 2.9 %):
+a second scratch allocation aliased the first.  Fixed, the path cost 1 %.
+
 ### 5.5 Fixtures: make them look like production
 
 - The Qwen MoE fixture routed 1,200 rows over 8 experts (150 rows each:
@@ -722,6 +741,8 @@ cannot move the target tokens.
   long".  Use `/tmp`.
 - Never grep a worker log for "failed" as a completion signal (engine
   lines contain "failed 0"); wait on a marker you print yourself.
+- `cuda_tmp_alloc` returns the same shared scratch to every caller.  Two
+  calls in one operation alias; carve one allocation into regions.
 - `nsys` traces of the first chunk include the bench's warm-up; identify
   chunks by the kernel that runs once per layer (the GDN recurrence, 36
   launches per chunk) rather than by time.
