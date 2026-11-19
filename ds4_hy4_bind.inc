@@ -15,6 +15,8 @@ typedef struct {
     ds4_layer_weights layer[HY4_TAPS];
     const ds4_tensor *enorm, *hnorm, *fusion, *gate, *hidden_norm, *embed_norm, *correct_gate, *correct_up,
         *correct_down, *norm;
+    // Q8_0 copy of the target's BF16 output head for draft tokens; NULL: BF16.
+    ds4_gpu_tensor *head;
 } ds4_hy4_draft;
 static void hy4_draft_bind(ds4_hy4_draft *d, const ds4_model *m) {
     for (uint32_t i = 0; i < HY4_TAPS; i++) {

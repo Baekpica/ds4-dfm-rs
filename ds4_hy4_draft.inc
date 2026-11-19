@@ -46,7 +46,8 @@ static bool hy4_propose(ds4_hy4_graph *g, const ds4_engine *e, int first, uint32
              ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, 3072, INFINITY) &&
              hy4_mm(g->branch, m, d->correct_down, g->ff_mid, 1) &&
              ds4_gpu_hy4_add(g->branch, row, g->branch, NULL, 3072) &&
-             hy4_mm(g->logits, &e->model, e->weights.output, g->branch, 1) &&
+             (d->head ? ds4_gpu_hy4_draft_logits(g->logits, d->head, g->branch)
+                      : hy4_mm(g->logits, &e->model, e->weights.output, g->branch, 1)) &&
              ds4_gpu_argmax_tensor(g->ids, g->logits, 120832) &&
              ds4_gpu_tensor_read(g->ids, 0, &previous, sizeof(int)) && previous >= 0 && previous < 120832;
         ds4_gpu_tensor_free(row);

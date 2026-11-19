@@ -75292,6 +75292,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             *out = NULL;
             return 1;
         }
+        // Each DFly2 draft token reads the head; the verify keeps the BF16 one.
+        // Built from the resident head, after the startup cache owns its range.
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 && e->backend == DS4_BACKEND_CUDA && e->mtp_ready &&
+            e->mtp_draft_tokens > 0) {
+            e->hy4_draft.head = ds4_gpu_hy4_draft_head(e->model.map, e->model.size, e->weights.output->abs_offset);
+            fprintf(stderr, "ds4: Hy4 DFly2 draft head %s\n",
+                    e->hy4_draft.head ? "Q8_0 copy (0.37 GiB)" : "BF16 (shared with the target)");
+        }
 #endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
                 ds4_backend_name(e->backend));
@@ -75631,6 +75639,10 @@ void ds4_engine_close(ds4_engine *e) {
     e->mtp_weights.gemma4_mtp = NULL;
     if (e->mtp_ready) model_close(&e->mtp_model);
     if (e->dspark_ready) model_close(&e->dspark_model);
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gpu_tensor_free(e->hy4_draft.head);
+    e->hy4_draft.head = NULL;
+#endif
 #ifndef DS4_NO_GPU
     mimo2_media_free(&e->mimo2_media);
     glm53_stream_report(&e->glm53_stream);

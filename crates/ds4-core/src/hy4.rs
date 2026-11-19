@@ -20,6 +20,9 @@ pub(crate) const PREFILL_MAX: u32 = 8192;
 pub(crate) const PREFILL: u32 = 2048;
 pub(crate) const PREFILL_MIN: u32 = 512;
 pub(crate) const CONTEXT: u32 = 1_048_576;
+/// DFly2 drafts against a Q8_0 copy of the BF16 output head: int8 quants
+/// plus one F16 scale per 32 of the 120,832 x 3,072 weights.
+pub(crate) const DRAFT_HEAD_BYTES: u64 = 120_832 * 3_072 + 120_832 * (3_072 / 32) * 2;
 const ARCH: &[u8] = b"hy_v4_flash";
 const RECIPE: &[u8] = b"MQ-Q5-SSD-ENGRAM-FP8";
 const SOURCE: &[u8] = b"d88c9dfd96ba4f2e6b92adba0b8e8f1c8696f959";

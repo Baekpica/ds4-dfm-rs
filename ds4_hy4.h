@@ -14,8 +14,13 @@ typedef struct {
     int fp8;
 } ds4_hy4_cache;
 
-/* Element type of the routed down rows that the expert sum reads. */
+/* Element type of a row buffer: the routed down rows the expert sum reads,
+ * or a BF16 projection's input rows. */
 typedef enum { DS4_HY4_ROWS_F32 = 1, DS4_HY4_ROWS_BF16 } ds4_hy4_rows;
+ds4_gpu_tensor *ds4_gpu_hy4_draft_head(const void *map, uint64_t size, uint64_t offset);
+int ds4_gpu_hy4_draft_logits(ds4_gpu_tensor *logits, const ds4_gpu_tensor *head, const ds4_gpu_tensor *x);
+int ds4_gpu_hy4_rows_bf16(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset, uint32_t in,
+                          uint32_t outs, const ds4_gpu_tensor *x, ds4_hy4_rows input, uint32_t n);
 
 /* Routed gate, up and down expert tensors: [512][1536][1536] Q4_K or Q5_K. */
 typedef struct {

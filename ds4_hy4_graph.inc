@@ -114,8 +114,21 @@ static bool hy4_graph_alloc(ds4_hy4_graph *g, uint32_t ctx, uint32_t cap, ds4_hy
     return true;
 }
 
+// Verify widths of a BF16 projection; -1 leaves other calls to the caller.
+static int hy4_rows(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w, const ds4_gpu_tensor *x,
+                    ds4_hy4_rows input, uint32_t n) {
+    if (w->type != DS4_TENSOR_BF16) {
+        return -1;
+    }
+    return ds4_gpu_hy4_rows_bf16(out, m->map, m->size, w->abs_offset, (uint32_t)w->dim[0], (uint32_t)w->dim[1],
+                                 x, input, n);
+}
 static bool hy4_mm(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w, const ds4_gpu_tensor *x,
                    uint32_t n) {
+    const int rows = hy4_rows(out, m, w, x, DS4_HY4_ROWS_F32, n);
+    if (rows >= 0) {
+        return rows != 0;
+    }
     return ling3vl_matmul_tensor(out, m, w, w->dim[0], w->dim[1], x, n);
 }
 static const float *hy4_weight(const ds4_model *m, const ds4_tensor *w) {
@@ -158,6 +171,10 @@ static bool hy4_branch_in(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor
 static bool hy4_mm_norm(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor *w, uint32_t n) {
     if (n == 1 || w->type != DS4_TENSOR_BF16) {
         return hy4_mm(out, m, w, g->norm, n);
+    }
+    const int rows = hy4_rows(out, m, w, g->norm_bf16, DS4_HY4_ROWS_BF16, n);
+    if (rows >= 0) {
+        return rows != 0;
     }
     return ds4_gpu_matmul_bf16_input_tensor(out, m->map, m->size, w->abs_offset, w->dim[0], w->dim[1],
                                             g->norm_bf16, n) != 0;
@@ -383,7 +400,8 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
     const ds4_weights *w = &e->weights;
     const char *layer_reads = getenv("DS4_HY4_ENGRAM_LAYER_READS");
     // The preceding unfinished chunk can hide one bulk read of all four tables.
-    const bool staged = n >= 128 && !g->prefill_queued && (!layer_reads || strcmp(layer_reads, "0") != 0);
+    // A decode or verify step starts idle: layer 0 hides the first table.
+    const bool staged = !g->prefill_queued && (!layer_reads || strcmp(layer_reads, "0") != 0);
     const uint8_t *emb = m->map + w->token_embd->abs_offset;
     if (!staged && !hy4_read_engram(g, e, prev, np, tokens, n, 0, 4)) {
         return false;

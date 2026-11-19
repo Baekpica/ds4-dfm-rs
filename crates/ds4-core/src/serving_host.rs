@@ -1083,6 +1083,14 @@ pub fn attach_host_quote(
         }
     }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
+    // A Hy4 drafter brings the Q8_0 draft head the engine builds at load.
+    if caps.family == ModelFamily::Hy4
+        && mtp_path.is_some()
+        && req.backend == Backend::Cuda
+        && std::env::var("DS4_HY4_DRAFT_HEAD_Q8").map_or(true, |v| v != "0")
+    {
+        mtp_bytes += crate::hy4::DRAFT_HEAD_BYTES;
+    }
     // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
     if let (ModelFamily::Ling31Vq, MtpMode::On, Some(path)) =
         (caps.family, req.mtp_mode, model_path)

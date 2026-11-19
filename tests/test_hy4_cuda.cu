@@ -1,4 +1,5 @@
-// Group selection, learned sinks, causal DFly tail and the three rotary axes.
+// Group selection, learned sinks, causal DFly tail, the three rotary axes and
+// verify-width BF16 rows against one-row decode.
 #include "../ds4_gpu.h"
 #include "../ds4_hy4.h"
 #include <cuda_bf16.h>
@@ -23,15 +24,15 @@ static ds4_gpu_tensor *tensor(size_t n) {
 template <class T> static void upload(ds4_gpu_tensor *t, const std::vector<T> &v) {
     check(ds4_gpu_tensor_write(t, 0, v.data(), v.size() * sizeof(T)), "upload");
 }
-static void attention(bool fp8, unsigned heads, unsigned pos, bool draft) {
-    constexpr unsigned rows = 16;
+// Prefill rows take one CTA each; fewer than 16 rows split their keys.
+static void attention(bool fp8, unsigned heads, unsigned pos, bool draft, unsigned rows) {
     const unsigned cap = heads == 64 ? std::min(pos + rows, 511 + rows) : pos + rows;
     ds4_hy4_cache cache = {};
     cache.cap = cap;
     cache.fp8 = fp8;
     cache.latent = tensor(cap * (fp8 ? 513 : 1024));
     cache.rope = tensor(cap * 128);
-    auto *out = tensor(rows * heads * 512 * 4), *a = tensor(rows * heads * 512 * 4),
+    auto *out = tensor(rows * heads * 512 * 4), *pack = tensor(rows * heads * 512 * 2), *a = tensor(rows * heads * 512 * 4),
          *q = tensor(rows * heads * 256 * 4), *ids = tensor(rows * 512 * 4);
     std::vector<float> sinks(heads), qa(rows * heads * 512), qr(rows * heads * 256);
     for (unsigned h = 0; h < heads; h++) {
@@ -45,7 +46,15 @@ static void attention(bool fp8, unsigned heads, unsigned pos, bool draft) {
     check(cudaMalloc(&sink, heads * 4) == cudaSuccess &&
               cudaMemcpy(sink, sinks.data(), heads * 4, cudaMemcpyHostToDevice) == cudaSuccess,
           "sink");
-    upload(a, qa);
+    // The tiled kernel reads q_abs as BF16, the scalar one as F32.
+    const bool tiled = ds4_gpu_hy4_flash(rows, draft);
+    if (tiled) {
+        std::vector<__nv_bfloat16> half(qa.size());
+        std::transform(qa.begin(), qa.end(), half.begin(), [](float v) { return __float2bfloat16(v); });
+        upload(a, half);
+    } else {
+        upload(a, qa);
+    }
     upload(q, qr);
     std::vector<__nv_bfloat16> rot(cap * 64), bf(cap * 512);
     std::vector<unsigned char> bytes(cap * 513);
@@ -74,9 +83,18 @@ static void attention(bool fp8, unsigned heads, unsigned pos, bool draft) {
         }
     }
     upload(ids, indices);
-    check(ds4_gpu_hy4_attention(out, a, q, &cache, ids, sink, pos, rows, heads, draft), "MLA");
+    const int kind = ds4_gpu_hy4_attention(out, pack, a, q, &cache, ids, sink, pos, rows, heads, draft);
+    check(kind == (tiled ? DS4_HY4_HEAD_PACKED : DS4_HY4_HEAD_F32), "MLA");
     std::vector<float> result(rows * heads * 512);
-    check(ds4_gpu_tensor_read(out, 0, result.data(), result.size() * 4), "read");
+    if (kind == DS4_HY4_HEAD_PACKED) {
+        std::vector<__nv_bfloat16> half(result.size());
+        check(ds4_gpu_tensor_read(pack, 0, half.data(), half.size() * 2), "read");
+        std::transform(half.begin(), half.end(), result.begin(), [](__nv_bfloat16 v) { return __bfloat162float(v); });
+    } else {
+        check(ds4_gpu_tensor_read(out, 0, result.data(), result.size() * 4), "read");
+    }
+    // BF16 softmax weights and rows: ~2^-8 relative.
+    const double slack = kind == DS4_HY4_HEAD_PACKED ? 0.008 : 0.0;
     for (unsigned r = 0; r < rows; r++) {
         const unsigned frontier = draft ? pos - 1 : pos + r;
         std::vector<unsigned> tokens;
@@ -109,13 +127,13 @@ static void attention(bool fp8, unsigned heads, unsigned pos, bool draft) {
                 den += w;
             }
             for (unsigned k = 0; k < 512; k++) {
-                check(std::fabs(result[(r * heads + h) * 512 + k] - num / den) < 0.003,
+                check(std::fabs(result[(r * heads + h) * 512 + k] - num / den) < 0.003 + slack * num / den,
                       "causal MLA, learned sink and rotary cache");
             }
         }
     }
     cudaFree(sink);
-    for (auto *t : {out, a, q, ids, cache.latent, cache.rope}) {
+    for (auto *t : {out, pack, a, q, ids, cache.latent, cache.rope}) {
         ds4_gpu_tensor_free(t);
     }
 }
@@ -150,13 +168,59 @@ static void index_top() {
     for (auto *t : {q, w, tile, ids, best, cache.groups}) { ds4_gpu_tensor_free(t); }
 }
 
+// Two to four verify rows of a BF16 projection equal their one-row decode
+// results bit for bit, from F32 or BF16 input rows.
+static void verify_rows() {
+    constexpr unsigned in = 3072, outs = 1536;
+    std::vector<__nv_bfloat16> w((size_t)in * outs);
+    for (size_t i = 0; i < w.size(); i++) {
+        w[i] = __float2bfloat16(float(int(i * 2654435761u % 2001) - 1000) / 1024.f);
+    }
+    check(ds4_gpu_set_model_map(w.data(), w.size() * 2), "weight map");
+    for (unsigned n = 2; n <= 4; n++) {
+        std::vector<float> x((size_t)n * in);
+        std::vector<__nv_bfloat16> xb(x.size());
+        for (size_t i = 0; i < x.size(); i++) {
+            x[i] = __bfloat162float(__float2bfloat16(float(int(i * 40503u % 997) - 498) / 256.f));
+            xb[i] = __float2bfloat16(x[i]);
+        }
+        auto *xf = tensor(x.size() * 4), *xh = tensor(xb.size() * 2), *got = tensor(n * outs * 4),
+             *one = tensor(outs * 4);
+        upload(xf, x);
+        upload(xh, xb);
+        for (ds4_hy4_rows input : {DS4_HY4_ROWS_F32, DS4_HY4_ROWS_BF16}) {
+            check(ds4_gpu_hy4_rows_bf16(got, w.data(), w.size() * 2, 0, in, outs,
+                                        input == DS4_HY4_ROWS_F32 ? xf : xh, input, n) == 1,
+                  "verify rows");
+            std::vector<float> rows(n * outs), ref(outs);
+            check(ds4_gpu_tensor_read(got, 0, rows.data(), rows.size() * 4), "read rows");
+            for (unsigned t = 0; t < n; t++) {
+                auto *xt = ds4_gpu_tensor_view(xf, (uint64_t)t * in * 4, in * 4);
+                check(xt && ds4_gpu_matmul_bf16_stable_rows_tensor(one, w.data(), w.size() * 2, 0, in, outs, xt, 1) &&
+                          ds4_gpu_tensor_read(one, 0, ref.data(), outs * 4),
+                      "one-row reference");
+                ds4_gpu_tensor_free(xt);
+                check(std::equal(ref.begin(), ref.end(), rows.begin() + (size_t)t * outs), "verify row = decode row");
+            }
+        }
+        for (auto *t : {xf, xh, got, one}) {
+            ds4_gpu_tensor_free(t);
+        }
+    }
+}
+
 int main() {
+    // The rows check maps a host weight buffer; copy it like a resident model.
+    setenv("DS4_CUDA_COPY_MODEL", "1", 1);
     check(ds4_gpu_init(), "CUDA initialization");
     index_top();
-    attention(false, 64, 536, false);
-    for (bool fp8 : {false, true}) {
-        attention(fp8, 32, 2039, false);
-        attention(fp8, 32, 2053, true);
+    verify_rows();
+    for (unsigned rows : {16u, 4u}) {
+        attention(false, 64, 536, false, rows);
+        for (bool fp8 : {false, true}) {
+            attention(fp8, 32, 2039, false, rows);
+            attention(fp8, 32, 2053, true, rows);
+        }
     }
     auto *x = tensor(256 * 4), *p = tensor(3 * 4);
     std::vector<float> v(256);

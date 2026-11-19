@@ -521,6 +521,170 @@ extern "C" int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positio
                                                            stride, tail, theta);
     return cuda_ok(cudaGetLastError(), "Hy4 interleaved M-RoPE");
 }
+namespace hy4 {
+/* Verify rows (2-4) of a BF16 projection. A warp reads its weight row once
+ * for every row's dot, and each dot keeps decode's one-row order (lane-strided
+ * bf16x8 FMAs, then the warp reduction), so a verify row equals its decode row. */
+template <unsigned N>
+__global__ void __launch_bounds__(256) rows_bf16(float *out, const bf16 *w, const bf16 *x, unsigned in,
+                                                 unsigned outs) {
+    const unsigned lane = threadIdx.x & 31u, row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (row >= outs) {
+        return;
+    }
+    const uint4 *wr = (const uint4 *)(w + (uint64_t)row * in);
+    const unsigned vecs = in >> 3;
+    float sum[N] = {};
+    for (unsigned i = lane; i < vecs; i += 32u) {
+        const uint4 wv = wr[i];
+        #pragma unroll
+        for (unsigned t = 0; t < N; t++) {
+            sum[t] += bf16x8_dot(wv, ((const uint4 *)(x + (uint64_t)t * in))[i]);
+        }
+    }
+    #pragma unroll
+    for (unsigned t = 0; t < N; t++) {
+        for (int off = 16; off > 0; off >>= 1) {
+            sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], off);
+        }
+        if (!lane) {
+            out[(uint64_t)t * outs + row] = sum[t];
+        }
+    }
+}
+} // namespace hy4
+/* BF16 projections of 2-4 verify rows on the rows kernel instead of a cuBLAS
+ * GEMM (196 GB/s at three rows). -1 leaves other widths, shapes and
+ * DS4_HY4_BF16_ROWS=0 to the caller. */
+extern "C" int ds4_gpu_hy4_rows_bf16(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset,
+                                     uint32_t in, uint32_t outs, const ds4_gpu_tensor *x, ds4_hy4_rows input,
+                                     uint32_t n) {
+    static const char *env = getenv("DS4_HY4_BF16_ROWS");
+    static const bool off = env && strcmp(env, "0") == 0;
+    if (off || n < 2 || n > 4 || in % 8 || !out || !x) {
+        return -1;
+    }
+    const uint64_t bytes = (uint64_t)in * outs * sizeof(hy4::bf16);
+    if (offset > size || bytes > size - offset) {
+        return -1;
+    }
+    const auto *w = (const hy4::bf16 *)cuda_resolve_weight_ptr(map, offset, bytes, 0, "Hy4 BF16 rows");
+    if (!w || ((uintptr_t)w & 15u) || out->bytes < (uint64_t)n * outs * sizeof(float)) {
+        return -1;
+    }
+    const hy4::bf16 *xb = (const hy4::bf16 *)x->ptr;
+    if (input == DS4_HY4_ROWS_F32) {
+        auto *tmp = (hy4::bf16 *)cuda_tmp_alloc((uint64_t)n * in * sizeof(hy4::bf16), "Hy4 BF16 rows input");
+        if (!tmp) {
+            return 0;
+        }
+        f32_to_bf16_kernel<<<(n * in + 255u) / 256u, 256, 0, ds4_current_stream()>>>(tmp, (const float *)x->ptr,
+                                                                                    (uint64_t)n * in);
+        xb = tmp;
+    }
+    if ((uintptr_t)xb & 15u) {
+        return -1;
+    }
+    const unsigned blocks = (outs + 7u) / 8u;
+    float *o = (float *)out->ptr;
+    switch (n) {
+    case 2: hy4::rows_bf16<2><<<blocks, 256, 0, ds4_current_stream()>>>(o, w, xb, in, outs); break;
+    case 3: hy4::rows_bf16<3><<<blocks, 256, 0, ds4_current_stream()>>>(o, w, xb, in, outs); break;
+    default: hy4::rows_bf16<4><<<blocks, 256, 0, ds4_current_stream()>>>(o, w, xb, in, outs); break;
+    }
+    return cuda_ok(cudaGetLastError(), "Hy4 BF16 rows");
+}
+namespace hy4 {
+/* DFly2 draft head: the BF16 output head as Q8_0-style blocks of 32 values
+ * (int8 quants per row, one F16 scale d = amax / 127 per block, SoA so a
+ * lane's 16 quants are one aligned load). Drafting reads 394 MB per draft
+ * token instead of 742; the target's verify head stays BF16. */
+enum { HEAD_ROWS = 120832, HEAD_COLS = 3072, HEAD_BLOCKS = HEAD_COLS / 32 };
+__global__ void head_quant(int8_t *q, __half *d, const bf16 *w) {
+    const uint64_t block = (uint64_t)blockIdx.x * blockDim.x / 32 + threadIdx.x / 32;
+    const unsigned lane = threadIdx.x & 31u;
+    if (block >= (uint64_t)HEAD_ROWS * HEAD_BLOCKS) {
+        return;
+    }
+    const float v = __bfloat162float(w[block * 32 + lane]);
+    float amax = fabsf(v);
+    for (int off = 16; off > 0; off >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+    }
+    const __half scale = __float2half(amax / 127.0f);
+    const float inv = __half2float(scale) > 0.0f ? 1.0f / __half2float(scale) : 0.0f;
+    q[block * 32 + lane] = (int8_t)fmaxf(-127.0f, fminf(127.0f, rintf(v * inv)));
+    if (!lane) {
+        d[block] = scale;
+    }
+}
+/* One warp per vocabulary row; lane c takes 16-quant chunks c, c + 32, ... */
+__global__ void __launch_bounds__(256) head_q8(float *out, const int8_t *q, const __half *d, const float *x) {
+    const unsigned lane = threadIdx.x & 31u, row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (row >= HEAD_ROWS) {
+        return;
+    }
+    const int4 *qr = (const int4 *)(q + (uint64_t)row * HEAD_COLS);
+    const __half *dr = d + (uint64_t)row * HEAD_BLOCKS;
+    float sum = 0.0f;
+    #pragma unroll
+    for (unsigned k = 0; k < HEAD_COLS / 16 / 32; k++) {
+        const unsigned c = lane + 32u * k;
+        const int4 packed = __ldg(qr + c);
+        const int8_t *v = (const int8_t *)&packed;
+        const float4 *xs = (const float4 *)(x + c * 16);
+        float part = 0.0f;
+        #pragma unroll
+        for (unsigned j = 0; j < 4; j++) {
+            const float4 xv = xs[j];
+            part = fmaf((float)v[4 * j], xv.x, part);
+            part = fmaf((float)v[4 * j + 1], xv.y, part);
+            part = fmaf((float)v[4 * j + 2], xv.z, part);
+            part = fmaf((float)v[4 * j + 3], xv.w, part);
+        }
+        sum = fmaf(__half2float(dr[c / 2]), part, sum);
+    }
+    for (int off = 16; off > 0; off >>= 1) {
+        sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    }
+    if (!lane) {
+        out[row] = sum;
+    }
+}
+} // namespace hy4
+/* Builds the DFly2 draft head from the BF16 output head at load; NULL keeps
+ * the BF16 head (DS4_HY4_DRAFT_HEAD_Q8=0 or a failed allocation). */
+extern "C" ds4_gpu_tensor *ds4_gpu_hy4_draft_head(const void *map, uint64_t size, uint64_t offset) {
+    using namespace hy4;
+    const char *env = getenv("DS4_HY4_DRAFT_HEAD_Q8");
+    const uint64_t weights = (uint64_t)HEAD_ROWS * HEAD_COLS, blocks = (uint64_t)HEAD_ROWS * HEAD_BLOCKS;
+    if ((env && strcmp(env, "0") == 0) || offset > size || weights * sizeof(bf16) > size - offset) {
+        return NULL;
+    }
+    const auto *w = (const bf16 *)cuda_resolve_weight_ptr(map, offset, weights * sizeof(bf16), 0, "Hy4 draft head");
+    ds4_gpu_tensor *head = w ? ds4_gpu_tensor_alloc(weights + blocks * sizeof(__half)) : NULL;
+    if (!head) {
+        return NULL;
+    }
+    head_quant<<<(unsigned)(blocks / 8), 256, 0, ds4_current_stream()>>>(
+        (int8_t *)head->ptr, (__half *)((int8_t *)head->ptr + weights), w);
+    if (!cuda_ok(cudaGetLastError(), "Hy4 draft head")) {
+        ds4_gpu_tensor_free(head);
+        return NULL;
+    }
+    return head;
+}
+extern "C" int ds4_gpu_hy4_draft_logits(ds4_gpu_tensor *logits, const ds4_gpu_tensor *head,
+                                        const ds4_gpu_tensor *x) {
+    using namespace hy4;
+    if (!logits || !head || !x || logits->bytes < HEAD_ROWS * sizeof(float) || ((uintptr_t)x->ptr & 15u)) {
+        return 0;
+    }
+    const int8_t *q = (const int8_t *)head->ptr;
+    head_q8<<<HEAD_ROWS / 8, 256, 0, ds4_current_stream()>>>(
+        (float *)logits->ptr, q, (const __half *)(q + (uint64_t)HEAD_ROWS * HEAD_COLS), (const float *)x->ptr);
+    return cuda_ok(cudaGetLastError(), "Hy4 draft logits");
+}
 extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x,
                                    const void *map, uint64_t size, uint64_t offset, uint32_t n, uint32_t h,
                                    uint32_t in, uint32_t stride, uint32_t width, ds4_hy4_head_input input,
@@ -679,11 +843,36 @@ template <unsigned HEADS> struct FlashKeys {
         return group * 4 + slot % 4;
     }
 };
+/* DFly2 draft rows: each reads the last committed row's selection (one list
+ * of 511 groups and its tail group) and the draft keys from pos0 to its own
+ * position, as `attend` with DRAFT walks them. */
+struct DraftKeys {
+    static constexpr unsigned heads = 32, query_dim = 256;
+    static constexpr bool contiguous = false, has_sinks = true;
+    unsigned pos0, cap;
+    const int *groups;
+    const float *sinks;
+    __device__ unsigned history() const {
+        const unsigned base = pos0 - 1;
+        return base < 2048 ? pos0 : 511 * 4 + base % 4 + 1;
+    }
+    __device__ unsigned count(unsigned at) const { return history() + at - pos0 + 1; }
+    __device__ unsigned at(unsigned, unsigned, unsigned slot) const {
+        const unsigned base = pos0 - 1, keep = history();
+        if (slot >= keep) {
+            return pos0 + slot - keep;
+        }
+        if (base < 2048) {
+            return slot;
+        }
+        return (slot < 511 * 4 ? groups[slot / 4] : base / 4) * 4 + slot % 4;
+    }
+};
 // `partial` set: this CTA covers key tiles [y * per, y * per + per) of its row.
-template <unsigned HEADS, bool FP8>
-__global__ void __launch_bounds__(HEADS * 4, 1)
+template <class Keys, bool FP8>
+__global__ void __launch_bounds__(Keys::heads * 4, 1)
     flash(bf16 *out, float *partial, float *stats, const bf16 *qa, const float *q, const void *latent,
-          const int8_t *exps, const bf16 *rope, FlashKeys<HEADS> keys, unsigned per) {
+          const int8_t *exps, const bf16 *rope, Keys keys, unsigned per) {
     l31_fa_tile<FP8>(out, partial, stats, q, qa, latent, exps, rope, keys, per, 0.0625f);
 }
 // One row's key splits merged (l31_fa_combine with HEADS heads and BF16 rows).
@@ -711,18 +900,18 @@ __global__ void combine(bf16 *out, const float *partial, const float *stats, uns
  * over the SMs (Ling-3.1's scheme), and `combine` writes the BF16 rows: one
  * row of 512 window or 2,048 selected keys is too little work for one CTA. */
 enum { FLASH_ROWS = 16, FLASH_SPLITS = 48 };
-template <unsigned HEADS, bool FP8>
+// keys_max bounds every row's key count (a draft row adds its draft keys).
+template <class Keys, bool FP8>
 static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *q,
-                         const ds4_hy4_cache *c, const ds4_gpu_tensor *ids, const float *sinks,
-                         unsigned pos, unsigned rows) {
-    constexpr unsigned bytes = FP8 ? L31_FA8_SMEM : L31_FA_SMEM, keys_max = HEADS == 64 ? 512 : 2048;
+                         const ds4_hy4_cache *c, Keys keys, unsigned rows, unsigned keys_max) {
+    constexpr unsigned HEADS = Keys::heads, bytes = FP8 ? L31_FA8_SMEM : L31_FA_SMEM;
     static const cudaError_t setup =
-        cudaFuncSetAttribute(flash<HEADS, FP8>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+        cudaFuncSetAttribute(flash<Keys, FP8>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     if (setup != cudaSuccess) {
         return false;
     }
+    const unsigned pos = keys.pos0;
     const auto *exps = FP8 ? (const int8_t *)c->latent->ptr + (size_t)c->cap * 512 : nullptr;
-    FlashKeys<HEADS> keys{pos, c->cap, ids ? (const int *)ids->ptr : nullptr, sinks};
     unsigned splits = 1, per = UINT32_MAX;
     float *partial = nullptr, *stats = nullptr;
     if (rows < FLASH_ROWS) {
@@ -741,7 +930,7 @@ static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4
             per = UINT32_MAX;
         }
     }
-    flash<HEADS, FP8><<<dim3(rows, splits), HEADS * 4, bytes, ds4_current_stream()>>>(
+    flash<Keys, FP8><<<dim3(rows, splits), HEADS * 4, bytes, ds4_current_stream()>>>(
         (bf16 *)out->ptr, partial, stats, (const bf16 *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
         (const bf16 *)c->rope->ptr, keys, per);
     if (partial) {
@@ -864,15 +1053,17 @@ extern "C" int ds4_gpu_hy4_index(ds4_gpu_tensor *ids, ds4_gpu_tensor *tile, ds4_
     return cuda_ok(cudaGetLastError(), "Hy4 top complete groups");
 }
 extern "C" int ds4_gpu_hy4_flash(uint32_t rows, int draft) {
-    static const char *flash = getenv("DS4_HY4_FLASH"), *decode = getenv("DS4_HY4_FLASH_DECODE");
-    static const bool off = flash && strcmp(flash, "0") == 0, decode_off = decode && strcmp(decode, "0") == 0;
-    return !draft && !off && (rows >= hy4::FLASH_ROWS || !decode_off);
+    static const char *flash = getenv("DS4_HY4_FLASH"), *decode = getenv("DS4_HY4_FLASH_DECODE"),
+                      *drafts = getenv("DS4_HY4_FLASH_DRAFT");
+    static const bool off = flash && strcmp(flash, "0") == 0, decode_off = decode && strcmp(decode, "0") == 0,
+                      draft_off = drafts && strcmp(drafts, "0") == 0;
+    return !(draft && draft_off) && !off && (rows >= hy4::FLASH_ROWS || !decode_off);
 }
-/* Target rows (ds4_gpu_hy4_flash) go through the tiled kernel, reading BF16
- * q_abs, straight into `pack` as the v_b projection's BF16 operand
- * (DS4_HY4_HEAD_PACKED); draft rows, and decode rows under
- * DS4_HY4_FLASH_DECODE=0, read F32 q_abs and write F32 `out`
- * (DS4_HY4_HEAD_F32). Returns -1 on failure. */
+/* Target and draft rows (ds4_gpu_hy4_flash) go through the tiled kernel,
+ * reading BF16 q_abs, straight into `pack` as the v_b projection's BF16
+ * operand (DS4_HY4_HEAD_PACKED); draft rows under DS4_HY4_FLASH_DRAFT=0, and
+ * decode rows under DS4_HY4_FLASH_DECODE=0, read F32 q_abs and write F32
+ * `out` (DS4_HY4_HEAD_F32). Returns -1 on failure. */
 extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *a,
                                      const ds4_gpu_tensor *q, const ds4_hy4_cache *c, const ds4_gpu_tensor *ids,
                                      const float *sinks, uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
@@ -880,10 +1071,17 @@ extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, 
         return -1;
     }
     if (ds4_gpu_hy4_flash(rows, draft)) {
-        const bool launched = heads == 64
-                                  ? hy4::launch_flash<64, false>(pack, a, q, c, ids, sinks, pos, rows)
-                              : c->fp8 ? hy4::launch_flash<32, true>(pack, a, q, c, ids, sinks, pos, rows)
-                                       : hy4::launch_flash<32, false>(pack, a, q, c, ids, sinks, pos, rows);
+        const int *groups = ids ? (const int *)ids->ptr : nullptr;
+        const hy4::FlashKeys<64> window{pos, c->cap, groups, sinks};
+        const hy4::FlashKeys<32> sparse{pos, c->cap, groups, sinks};
+        const hy4::DraftKeys drafted{pos, c->cap, groups, sinks};
+        // DFly2 taps only sparse layers.
+        const bool launched =
+            draft ? heads == 32 && (c->fp8 ? hy4::launch_flash<hy4::DraftKeys, true>(pack, a, q, c, drafted, rows, 2048 + rows)
+                                           : hy4::launch_flash<hy4::DraftKeys, false>(pack, a, q, c, drafted, rows, 2048 + rows))
+            : heads == 64 ? hy4::launch_flash<hy4::FlashKeys<64>, false>(pack, a, q, c, window, rows, 512)
+            : c->fp8      ? hy4::launch_flash<hy4::FlashKeys<32>, true>(pack, a, q, c, sparse, rows, 2048)
+                          : hy4::launch_flash<hy4::FlashKeys<32>, false>(pack, a, q, c, sparse, rows, 2048);
         // q_abs is BF16 here, so the F32 kernels cannot stand in.
         return launched && cuda_ok(cudaGetLastError(), "Hy4 flash MLA") ? DS4_HY4_HEAD_PACKED : -1;
     }
