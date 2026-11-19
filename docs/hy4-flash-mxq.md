@@ -12,7 +12,7 @@ The CUDA family loads the `MQ-Q5-SSD-ENGRAM-FP8` release directory or its first 
 | SigLIP2 vision encoder and projector | 0.87 GiB | Host mapping, weights staged per layer during visual requests |
 | DFly2 Q8_0 / BF16 | 0.95 / 1.58 GiB | One optional `--mtp` file |
 
-Each Engram lookup hashes the current token and its two preceding tokens through Tencent's vocabulary map. Each layer reads 16 records of 96 E4M3 values and a BF16 scale. A 4 KiB page holds 41 records. On Linux the reader coalesces duplicate pages across a prefill chunk and submits aligned reads through io_uring. A prefill that starts with an idle graph reads each table at its layer, overlapping the later reads with GPU work. Consecutive chunks can cover a bulk read of all four tables. Token history crosses chunk and turn boundaries.
+Each Engram lookup hashes the current token and its two preceding tokens through Tencent's vocabulary map. Each layer reads 16 records of 96 E4M3 values and a BF16 scale. A 4 KiB page holds 41 records. On Linux the reader reads each distinct record of a prefill chunk once, through one io_uring round that keeps 512 aligned reads in flight. A prefill that starts with an idle graph reads each table at its layer, overlapping the later reads with GPU work. Consecutive chunks can cover a bulk read of all four tables. Token history crosses chunk and turn boundaries.
 
 ## Serving
 
@@ -32,9 +32,13 @@ The shipped Jinja template controls thinking and grouped tool calls. The server 
 
 ## DGX Spark serving checks
 
+The release binary served one native-context history with Q8_0 DFly2 at depth two, disk KV and 2,048-row chunks. A 1,048,542-token HTTP request returned the exact reference string planted around token 252,065. Its cold prefill averaged 799.7 tok/s (1,312 s) and its eight output tokens 20.4 tok/s. A restarted server then read 2,048 of 3,467 prompt tokens from disk KV and answered in 1.7 s. On GB10 this plan needs `DS4_CUDA_NO_Q8_ALIGNED=1`: beside the 4.13 GiB of aligned Q8 projection copies the history left ~3 GiB free and memory pressure stalled requests. Without them it opens at the default 4 GB floor and keeps ~6 GiB free; the throughput records use the aligned copies at 64K context.
+
 At 8,192 context with two text banks, a client received English and Korean answers, distinguished red and blue stills and identified a red two-frame MP4. A streamed weather tool call contained the function name and Seoul argument. The client returned a tool result and received an answer using its temperature value. An identical 1,414-token request reused 1,413 tokens. Its continuation reused 1,415.
 
-At 4,096 context, the 718-token checklist exercised common-prefix rewind, re-rendered continuation, session and bank disk restores, snapshots, a fork and two simultaneous banks. The Q8_0 DFly2 accepted three-token blocks at draft depth two. Replaying the same verified target rows reproduced 16 greedy draws and eight seeded draws with their RNG handoff. The one-row greedy stream matched. The one-row seeded stream diverged on the sixth token in the original fixture. At that frontier both RNG states agreed and the logits differed by up to 0.9204. Use the [quality report](hy4-optimization-2026-11-19.md) for comparisons across arithmetic paths.
+On the release binary, `ds4 --serving-check` with a 2,904-token prompt passed all 11 items at 4,096 context: prefix, rewind and continuation reuse, session disk and snapshot restores, warm, forked, partial and disk-restored banks, two banks at once, and the DFly2 target rows. The prompt must exceed one 2,048-row chunk. A 718-token prompt splits at 359, off the prefill grid, and the bank items, which compare greedy streams, then measure two chunkings (6 of 16 tokens agreed).
+
+At 4,096 context, the earlier 718-token checklist with 512-row chunks exercised common-prefix rewind, re-rendered continuation, session and bank disk restores, snapshots, a fork and two simultaneous banks. The Q8_0 DFly2 accepted three-token blocks at draft depth two. Replaying the same verified target rows reproduced 16 greedy draws and eight seeded draws with their RNG handoff. The one-row greedy stream matched. The one-row seeded stream diverged on the sixth token in the original fixture. At that frontier both RNG states agreed and the logits differed by up to 0.9204. Use the [quality report](hy4-optimization-2026-11-19.md) for comparisons across arithmetic paths.
 
 ## Reproducing the checks
 

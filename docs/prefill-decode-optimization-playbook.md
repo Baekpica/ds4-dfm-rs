@@ -674,6 +674,16 @@ without saying so.
   check the PID's `ps` line before acting on it.
 - The engine's instance lock refuses a second `ds4` process: stop the
   production worker before any `ds4-bench` run against the same owner.
+- Re-run `ds4 --serving-check` after moving a default chunk, with a prompt
+  longer than one chunk.  Hy4's 718-token prompt passed at 512 rows; at
+  2,048 its split fell off the prefill grid and the four bank items, which
+  compare greedy streams, reported WRONG (6/16) for two chunkings, not for
+  reuse.  A 2,904-token prompt passed 11/11.
+- Quote a long-context plan after the model opens, not only with
+  `--check-config`.  Hy4's 1M quote passed before loading, but the load
+  left 1.4-2.2 GiB less free than the priced weights and the opened plan
+  refused the history; admitting it at a 2 GB floor left ~3 GiB free and
+  PSI stalls.
 - tmux starts commands from the server's environment; per-run engine
   switches ride in the command string (`EXTRA_ENV`), and a switch that
   silently did not reach the worker re-measures the baseline.
