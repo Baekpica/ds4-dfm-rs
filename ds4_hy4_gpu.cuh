@@ -429,36 +429,49 @@ extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4
             return -1;
         }
     }
-    static const bool ready = cudaFuncSetAttribute(hy4m_gemm<HY4M_Q5>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                   HY4M_SMEM) == cudaSuccess &&
-                              cudaFuncSetAttribute(hy4m_gemm<HY4M_Q4>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                                   HY4M_SMEM) == cudaSuccess;
+    using kernel = void (*)(const uint8_t *, const uint8_t *, const __half *, const uint32_t *, const float *, void *,
+                            const uint32_t *, const uint4 *, const uint32_t *, uint32_t, uint32_t);
+    static const kernel kernels[2][2] = {{hy4m_gemm<HY4M_Q4, HY4M_F32>, hy4m_gemm<HY4M_Q4, HY4M_GLU>},
+                                         {hy4m_gemm<HY4M_Q5, HY4M_F32>, hy4m_gemm<HY4M_Q5, HY4M_GLU>}};
+    static const bool ready = [] {
+        for (const auto &type : kernels) {
+            for (const kernel k : type) {
+                if (cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, HY4M_SMEM) != cudaSuccess) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }();
     int sms = 0;
     if (!ready || cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess) {
         return 0;
     }
+    // GLU items cover 64 outputs of gate and up each: twice the down's tiles.
+    const char *glu_env = getenv("DS4_HY4_GLU_FUSED");
+    const hy4m_out mode = glu_env && strcmp(glu_env, "0") == 0 ? HY4M_F32 : HY4M_GLU;
     const uint32_t rows = tokens * USED, cap = DIM / HY4M_BM * (rows / HY4M_BN + EXPERTS);
     const uint64_t xh_bytes = ((uint64_t)tokens * DIM * sizeof(__half) + 255) / 256 * 256;
-    const uint64_t words = (uint64_t)tokens + 3u * EXPERTS + 2 + 6u * rows;
-    uint8_t *base = (uint8_t *)cuda_tmp_alloc(xh_bytes + words * 4 + (uint64_t)cap * sizeof(uint4), "Hy4 FP16 experts");
+    const uint64_t words = (uint64_t)tokens + 3u * EXPERTS + 3 + 5u * rows;
+    uint8_t *base = (uint8_t *)cuda_tmp_alloc(xh_bytes + words * 4 + 3ull * cap * sizeof(uint4), "Hy4 FP16 experts");
     if (!base || mid->bytes < (uint64_t)rows * DIM * sizeof(__half) || gate->bytes < (uint64_t)rows * DIM * 4 ||
         up->bytes < (uint64_t)rows * DIM * 4) {
         return 0;
     }
     __half *xh = (__half *)base;
-    uint4 *items = (uint4 *)(base + xh_bytes);
-    uint32_t *wp = (uint32_t *)(items + cap);
+    uint4 *items = (uint4 *)(base + xh_bytes), *glu_items = items + cap;
+    uint32_t *wp = (uint32_t *)(glu_items + 2 * cap);
     float *xscale = (float *)wp;
     uint32_t *count = wp + tokens, *bounds = count + EXPERTS, *cursor = bounds + EXPERTS + 1;
-    uint32_t *n_items = cursor + EXPERTS, *sorted = n_items + 1, *src = sorted + rows;
-    float *scale = (float *)(src + rows), *mid_scale = scale + rows;
-    uint32_t *mid_src = (uint32_t *)(mid_scale + rows);
+    uint32_t *n_items = cursor + EXPERTS, *n_glu = n_items + 1, *sorted = n_glu + 1, *src = sorted + rows;
+    float *scale = (float *)(src + rows);
+    uint32_t *mid_src = (uint32_t *)(scale + rows);
     float *mid_row_scale = (float *)(mid_src + rows);
     const cudaStream_t st = ds4_current_stream();
     const int32_t *route = (const int32_t *)ids->ptr;
     float *g = (float *)gate->ptr, *u = (float *)up->ptr;
     __half *mh = (__half *)mid->ptr;
-    if (cudaMemsetAsync(count, 0, EXPERTS * 4, st) != cudaSuccess || cudaMemsetAsync(n_items, 0, 4, st) != cudaSuccess) {
+    if (cudaMemsetAsync(count, 0, EXPERTS * 4, st) != cudaSuccess || cudaMemsetAsync(n_items, 0, 8, st) != cudaSuccess) {
         return 0;
     }
     hy4m_count<<<(rows + 255) / 256, 256, 0, st>>>(count, route, rows);
@@ -467,20 +480,22 @@ extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4
     hy4m_items<<<EXPERTS, 128, 0, st>>>(items, n_items, bounds, DIM / HY4M_BM);
     glmvq_q4p_prep<float><<<tokens, GLMVQ_Q4P_PREP, 0, st>>>((const float *)x->ptr, xh, xscale, DIM);
     hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(src, scale, sorted, xscale, rows, USED);
-    auto gemm = [&](uint32_t i, const __half *in, const uint32_t *in_src, const float *in_scale, float *out) {
-        if (w->type[i] == Q5_K) {
-            hy4m_gemm<HY4M_Q5><<<sms, HY4M_THREADS, HY4M_SMEM, st>>>(weight[i], in, in_src, in_scale, out, sorted,
-                                                                   items, n_items, DIM, DIM);
-        } else {
-            hy4m_gemm<HY4M_Q4><<<sms, HY4M_THREADS, HY4M_SMEM, st>>>(weight[i], in, in_src, in_scale, out, sorted,
-                                                                   items, n_items, DIM, DIM);
-        }
+    auto gemm = [&](uint32_t i, hy4m_out out_mode, const __half *in, const uint32_t *in_src, const float *in_scale,
+                    void *out, const uint4 *list, const uint32_t *n) {
+        kernels[w->type[i] == Q5_K][out_mode]<<<sms, HY4M_THREADS, HY4M_SMEM, st>>>(
+            weight[i], weight[1], in, in_src, in_scale, out, sorted, list, n, DIM, DIM);
     };
-    gemm(0, xh, src, scale, g);
-    gemm(1, xh, src, scale, u);
-    hy4m_swiglu_prep<<<rows, GLMVQ_Q4P_PREP, 0, st>>>(g, u, mh, mid_scale, DIM);
-    hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(mid_src, mid_row_scale, sorted, mid_scale, rows, 1);
-    gemm(2, mh, mid_src, mid_row_scale, g);
+    if (mode == HY4M_GLU) {
+        hy4m_items<<<EXPERTS, 128, 0, st>>>(glu_items, n_glu, bounds, DIM / (HY4M_BM / 2));
+        gemm(0, HY4M_GLU, xh, src, scale, mh, glu_items, n_glu);
+        hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(mid_src, mid_row_scale, sorted, nullptr, rows, 1);
+    } else {
+        gemm(0, HY4M_F32, xh, src, scale, g, items, n_items);
+        gemm(1, HY4M_F32, xh, src, scale, u, items, n_items);
+        hy4m_swiglu_prep<<<rows, GLMVQ_Q4P_PREP, 0, st>>>(g, u, mh, DIM);
+        hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(mid_src, mid_row_scale, sorted, nullptr, rows, 1);
+    }
+    gemm(2, HY4M_F32, mh, mid_src, mid_row_scale, g, items, n_items);
     return cuda_ok(cudaGetLastError(), "Hy4 FP16 experts");
 }
 extern "C" int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,

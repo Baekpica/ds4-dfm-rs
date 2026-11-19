@@ -2318,7 +2318,7 @@ ds4.o ds4_cpu.o: $(INKLING2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_inkling2.h ds4_inkling2_gpu.cuh cuda/inkling2_attn.cuh cuda/inkling2_res.cuh cuda/inkling2_draft.cuh \
 	cuda/inkling2_vit_attn.cuh cuda/beam_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
 ds4.o ds4_cpu.o: ds4_hy4.h ds4_hy4_bind.inc ds4_hy4_vision.inc ds4_hy4_graph.inc ds4_hy4_payload.inc ds4_hy4_session.inc ds4_hy4_draft.inc ds4_hy4_batch.inc ds4_hy4_bank_payload.inc
-ds4_cuda.o ds4_cuda_range_test.o: ds4_hy4.h ds4_hy4_gpu.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_hy4.h ds4_hy4_gpu.cuh cuda/hy4_moe.cuh
 
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
