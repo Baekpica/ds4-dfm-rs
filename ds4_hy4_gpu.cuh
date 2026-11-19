@@ -389,7 +389,9 @@ extern "C" int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
 extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *mid,
                                    const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids, const void *map,
                                    uint64_t size, const ds4_hy4_experts *w, uint32_t tokens) {
-    enum { DIM = 1536, EXPERTS = 512, USED = 16, MIN_TOKENS = 64, Q4_K = 12, Q5_K = 13 };
+    // From two rows: three verify rows streamed their expert union 22 % faster
+    // than MMQ; one decode row runs even, so it keeps the vec kernels.
+    enum { DIM = 1536, EXPERTS = 512, USED = 16, MIN_TOKENS = 2, Q4_K = 12, Q5_K = 13 };
     const char *env = getenv("DS4_HY4_FP16_MOE");
     if (tokens < MIN_TOKENS || (env && strcmp(env, "0") == 0) || w->type[0] != w->type[1]) {
         return -1;

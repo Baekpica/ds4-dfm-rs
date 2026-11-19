@@ -250,9 +250,9 @@ static bool hy4_routed_down(ds4_hy4_graph *g, const ds4_model *m, const ds4_tens
                                                 down->abs_offset, down->bytes, down->type, 1536, 1536, 512,
                                                 n * 16, 1, n);
 }
-/* Prefill runs the experts on FP16 tensor cores; decode and verify widths
- * (and DS4_HY4_FP16_MOE=0) take MMQ. The down rows land in ff_gate and their
- * weighted sum in latent. */
+/* Prefill and verify rows run the experts on FP16 tensor cores; one decode
+ * row (and DS4_HY4_FP16_MOE=0) takes MMQ. The down rows land in ff_gate and
+ * their weighted sum in latent. */
 static bool hy4_routed(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *gate, const ds4_tensor *up,
                        const ds4_tensor *down, uint32_t n) {
     const ds4_hy4_experts w = {{gate->abs_offset, up->abs_offset, down->abs_offset},
