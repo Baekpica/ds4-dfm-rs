@@ -240,7 +240,7 @@ __global__ void swiglu(float *out, const float *gate, const float *up, uint32_t 
         out[i] = bf(bf(g * sigmoid(g)) * u);
     }
 }
-__global__ void moe_sum(float *out, const float *down, const float *weights) {
+template <typename T> __global__ void moe_sum(float *out, const T *down, const float *weights) {
     const uint32_t r = blockIdx.y, d = blockIdx.x * blockDim.x + threadIdx.x;
     if (d >= 1536) {
         return;
@@ -248,7 +248,7 @@ __global__ void moe_sum(float *out, const float *down, const float *weights) {
     // Non-finite expert rows read as zero, so the down MMQ skips its scrub.
     float v = 0;
     for (unsigned e = 0; e < 16; e++) {
-        const float x = down[(r * 16 + e) * 1536 + d];
+        const float x = (float)down[(r * 16 + e) * 1536 + d];
         v += bf(isfinite(x) ? x : 0.f) * weights[r * 16 + e];
     }
     out[r * 1536 + d] = bf(v);
@@ -382,9 +382,10 @@ extern "C" int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
     return cuda_ok(cudaGetLastError(), "Hy4 SwiGLU");
 }
 /* Prefill experts on FP16 tensor cores (cuda/hy4_moe.cuh): gate and up over
- * the token rows into `gate`/`up`, the clamped SwiGLU as FP16 into `mid`, the
- * down into `gate`. A tensor whose scales leave the folded FP16 range keeps
- * MMQ. -1 refuses before any GPU work (decode widths, DS4_HY4_FP16_MOE=0). */
+ * the token rows, the clamped SwiGLU as FP16 into `mid`, the down into `gate`
+ * as BF16 rows (DS4_HY4_DOWN_BF16=0: F32), the type returned. A tensor whose
+ * scales leave the folded FP16 range keeps MMQ. -1 refuses before any GPU
+ * work (decode widths, DS4_HY4_FP16_MOE=0). */
 extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *mid,
                                    const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids, const void *map,
                                    uint64_t size, const ds4_hy4_experts *w, uint32_t tokens) {
@@ -431,8 +432,9 @@ extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4
     }
     using kernel = void (*)(const uint8_t *, const uint8_t *, const __half *, const uint32_t *, const float *, void *,
                             const uint32_t *, const uint4 *, const uint32_t *, uint32_t, uint32_t);
-    static const kernel kernels[2][2] = {{hy4m_gemm<HY4M_Q4, HY4M_F32>, hy4m_gemm<HY4M_Q4, HY4M_GLU>},
-                                         {hy4m_gemm<HY4M_Q5, HY4M_F32>, hy4m_gemm<HY4M_Q5, HY4M_GLU>}};
+    static const kernel kernels[2][3] = {
+        {hy4m_gemm<HY4M_Q4, HY4M_F32>, hy4m_gemm<HY4M_Q4, HY4M_BF16>, hy4m_gemm<HY4M_Q4, HY4M_GLU>},
+        {hy4m_gemm<HY4M_Q5, HY4M_F32>, hy4m_gemm<HY4M_Q5, HY4M_BF16>, hy4m_gemm<HY4M_Q5, HY4M_GLU>}};
     static const bool ready = [] {
         for (const auto &type : kernels) {
             for (const kernel k : type) {
@@ -448,8 +450,9 @@ extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4
         return 0;
     }
     // GLU items cover 64 outputs of gate and up each: twice the down's tiles.
-    const char *glu_env = getenv("DS4_HY4_GLU_FUSED");
+    const char *glu_env = getenv("DS4_HY4_GLU_FUSED"), *bf16_env = getenv("DS4_HY4_DOWN_BF16");
     const hy4m_out mode = glu_env && strcmp(glu_env, "0") == 0 ? HY4M_F32 : HY4M_GLU;
+    const hy4m_out down = bf16_env && strcmp(bf16_env, "0") == 0 ? HY4M_F32 : HY4M_BF16;
     const uint32_t rows = tokens * USED, cap = DIM / HY4M_BM * (rows / HY4M_BN + EXPERTS);
     const uint64_t xh_bytes = ((uint64_t)tokens * DIM * sizeof(__half) + 255) / 256 * 256;
     const uint64_t words = (uint64_t)tokens + 3u * EXPERTS + 3 + 5u * rows;
@@ -495,13 +498,21 @@ extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4
         hy4m_swiglu_prep<<<rows, GLMVQ_Q4P_PREP, 0, st>>>(g, u, mh, DIM);
         hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(mid_src, mid_row_scale, sorted, nullptr, rows, 1);
     }
-    gemm(2, HY4M_F32, mh, mid_src, mid_row_scale, g, items, n_items);
-    return cuda_ok(cudaGetLastError(), "Hy4 FP16 experts");
+    gemm(2, down, mh, mid_src, mid_row_scale, g, items, n_items);
+    if (!cuda_ok(cudaGetLastError(), "Hy4 FP16 experts")) {
+        return 0;
+    }
+    return down == HY4M_BF16 ? DS4_HY4_ROWS_BF16 : DS4_HY4_ROWS_F32;
 }
 extern "C" int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
-                                   const ds4_gpu_tensor *weights, uint32_t n) {
-    hy4::moe_sum<<<dim3(6, n), 256, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)down->ptr,
-                                                               (const float *)weights->ptr);
+                                   const ds4_gpu_tensor *weights, uint32_t n, ds4_hy4_rows type) {
+    if (type == DS4_HY4_ROWS_BF16) {
+        hy4::moe_sum<<<dim3(6, n), 256, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const hy4::bf16 *)down->ptr, (const float *)weights->ptr);
+    } else {
+        hy4::moe_sum<<<dim3(6, n), 256, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)down->ptr,
+                                                                   (const float *)weights->ptr);
+    }
     return cuda_ok(cudaGetLastError(), "Hy4 expert sum");
 }
 extern "C" int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, uint32_t n, uint32_t h,

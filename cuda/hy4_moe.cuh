@@ -22,11 +22,11 @@
 enum { HY4M_BM = 128, HY4M_BN = 64, HY4M_BK = 64, HY4M_STAGES = 4, HY4M_NT = 4,
        HY4M_CONSUMERS = 256, HY4M_PRODUCERS = 256, HY4M_THREADS = HY4M_CONSUMERS + HY4M_PRODUCERS,
        HY4M_Q4 = 144, HY4M_Q5 = 176 };
-/* F32: out[r][M] F32. GLU: a tile's 128 weight rows alternate 16-row blocks
- * of gate and up over the same 64 outputs, and the epilogue writes the
- * clamped SwiGLU as the down's FP16 operand, so neither F32 result reaches
- * DRAM. */
-enum hy4m_out { HY4M_F32, HY4M_GLU };
+/* F32: out[r][M] F32. BF16: the same values rounded to BF16, the moe_sum's
+ * read boundary. GLU: a tile's 128 weight rows alternate 16-row blocks of
+ * gate and up over the same 64 outputs, and the epilogue writes the clamped
+ * SwiGLU as the down's FP16 operand, so neither F32 result reaches DRAM. */
+enum hy4m_out { HY4M_F32, HY4M_BF16, HY4M_GLU };
 static constexpr uint32_t HY4M_A = HY4M_BM * HY4M_BK * sizeof(__half);
 static constexpr uint32_t HY4M_B = HY4M_BN * HY4M_BK * sizeof(__half);
 static constexpr uint32_t HY4M_SMEM = HY4M_STAGES * (HY4M_A + HY4M_B) + 2 * HY4M_STAGES * sizeof(uint64_t);
@@ -354,6 +354,26 @@ __global__ void __launch_bounds__(HY4M_THREADS, 1) hy4m_gemm(const uint8_t *weig
                     if (dst_row[j][x] == UINT32_MAX) { continue; }
                     *(uint32_t *)(mid + (uint64_t)dst_row[j][x] * M + f + (f & 1)) =
                         first ? glmvq_q4p_h2(lo, other) : glmvq_q4p_h2(other, hi);
+                }
+            }
+        } else if constexpr (OUT == HY4M_BF16) {
+            // Lane ^ 4 holds g ^ 1 of the same column: even g write outputs
+            // g, g + 1, odd g outputs g + 7, g + 8, one 4-byte store each.
+            const bool even = !(g & 1);
+            __nv_bfloat16 *rows = (__nv_bfloat16 *)out;
+            #pragma unroll
+            for (uint32_t j = 0; j < NT; j++) {
+                #pragma unroll
+                for (uint32_t x = 0; x < 2; x++) {
+                    #pragma unroll
+                    for (uint32_t mt = 0; mt < 2; mt++) {
+                        const float lo = acc[mt][j][x] * dst_scale[j][x], hi = acc[mt][j][x + 2] * dst_scale[j][x];
+                        const float other = __shfl_xor_sync(0xffffffffu, even ? hi : lo, 4);
+                        if (dst_row[j][x] == UINT32_MAX) { continue; }
+                        const uint32_t f = item.y * HY4M_BM + wm * 32 + 16 * mt + (even ? g : g + 7);
+                        *(__nv_bfloat162 *)(rows + (uint64_t)dst_row[j][x] * M + f) =
+                            even ? __floats2bfloat162_rn(lo, other) : __floats2bfloat162_rn(other, hi);
+                    }
                 }
             }
         } else {

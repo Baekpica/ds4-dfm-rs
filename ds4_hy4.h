@@ -14,6 +14,9 @@ typedef struct {
     int fp8;
 } ds4_hy4_cache;
 
+/* Element type of the routed down rows that the expert sum reads. */
+typedef enum { DS4_HY4_ROWS_F32 = 1, DS4_HY4_ROWS_BF16 } ds4_hy4_rows;
+
 /* Routed gate, up and down expert tensors: [512][1536][1536] Q4_K or Q5_K. */
 typedef struct {
     uint64_t offset[3], bytes[3];
@@ -47,7 +50,7 @@ int ds4_gpu_hy4_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_
 int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
                        uint32_t count, float limit);
 int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down, const ds4_gpu_tensor *weights,
-                        uint32_t rows);
+                        uint32_t rows, ds4_hy4_rows type);
 int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t heads,
                      uint32_t stride, uint32_t tail, float theta);
 /* Whether a head projection's BF16 operand still has to be packed from F32. */
