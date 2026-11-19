@@ -440,6 +440,8 @@ pub struct ds4_host_hy4 {
             u32,
             *const i32,
             u32,
+            u32,
+            u32,
             *mut u8,
             usize,
         ) -> c_int,

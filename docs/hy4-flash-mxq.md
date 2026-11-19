@@ -12,7 +12,7 @@ The CUDA family loads the `MQ-Q5-SSD-ENGRAM-FP8` release directory or its first 
 | SigLIP2 vision encoder and projector | 0.87 GiB | Host mapping, weights staged per layer during visual requests |
 | DFly2 Q8_0 / BF16 | 0.95 / 1.58 GiB | One optional `--mtp` file |
 
-Each Engram lookup hashes the current token and its two preceding tokens through Tencent's vocabulary map. Each layer reads 16 records of 96 E4M3 values and a BF16 scale. A 4 KiB page holds 41 records. On Linux the reader coalesces duplicate pages across a prefill chunk and submits aligned reads through io_uring. Token history crosses chunk and turn boundaries.
+Each Engram lookup hashes the current token and its two preceding tokens through Tencent's vocabulary map. Each layer reads 16 records of 96 E4M3 values and a BF16 scale. A 4 KiB page holds 41 records. On Linux the reader coalesces duplicate pages across a prefill chunk and submits aligned reads through io_uring. A prefill that starts with an idle graph reads each table at its layer, overlapping the later reads with GPU work. Consecutive chunks can cover a bulk read of all four tables. Token history crosses chunk and turn boundaries.
 
 ## Serving
 

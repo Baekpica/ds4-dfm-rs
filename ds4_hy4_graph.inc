@@ -3,7 +3,7 @@
  * of the unpooled index. Engram history is the bank's accepted token prefix. */
 typedef struct {
     uint32_t context, cap, position, high, restored;
-    bool ready, failed, borrowed;
+    bool ready, failed, borrowed, prefill_queued;
     ds4_hy4_span media[4];
     uint32_t media_count;
     uint64_t media_tag;
@@ -47,6 +47,7 @@ static void hy4_reset(ds4_hy4_graph *g) {
     g->failed = g->failed && !ds4_gpu_synchronize();
     g->position = g->high = g->restored = g->trial_n = 0;
     g->verifying = false;
+    g->prefill_queued = false;
 }
 
 #ifndef __APPLE__
@@ -304,6 +305,12 @@ static bool hy4_capture_groups(ds4_hy4_graph *g, uint32_t il, uint32_t n, uint32
     }
     return true;
 }
+static bool hy4_read_engram(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, unsigned np,
+                            const int *tokens, uint32_t n, uint32_t first, uint32_t layers) {
+    const size_t stride = (size_t)n * HY4_ENGRAM_BYTES, bytes = layers * stride;
+    return e->hy4.rows(e->hy4.user, prev, np, tokens, n, first, layers, g->host_records, bytes) &&
+           ds4_gpu_tensor_write(g->records, first * stride, g->host_records, bytes);
+}
 static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, unsigned np,
                         const int *tokens, uint32_t n, uint32_t pos, bool head) {
     if (!g->ready || g->failed || !n || n > g->cap || pos != g->position || n > g->context - pos ||
@@ -312,9 +319,11 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
     }
     const ds4_model *m = &e->model;
     const ds4_weights *w = &e->weights;
-    const size_t bytes = (size_t)n * 4 * HY4_ENGRAM_BYTES;
+    const char *layer_reads = getenv("DS4_HY4_ENGRAM_LAYER_READS");
+    // The preceding unfinished chunk can hide one bulk read of all four tables.
+    const bool staged = n >= 128 && !g->prefill_queued && (!layer_reads || strcmp(layer_reads, "0") != 0);
     const uint8_t *emb = m->map + w->token_embd->abs_offset;
-    if (!e->hy4.rows(e->hy4.user, prev, np, tokens, n, g->host_records, bytes)) {
+    if (!staged && !hy4_read_engram(g, e, prev, np, tokens, n, 0, 4)) {
         return false;
     }
     for (uint32_t i = 0; i < n; i++) {
@@ -327,7 +336,6 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
         }
     }
     if (!ds4_gpu_tensor_write(g->embed, 0, g->host_embed, (uint64_t)n * 6144) ||
-        !ds4_gpu_tensor_write(g->records, 0, g->host_records, bytes) ||
         !ds4_gpu_tensor_write(g->ids, 0, tokens, n * sizeof(int)) ||
         !ds4_gpu_tensor_write(g->positions, 0, g->host_positions, n * 3 * sizeof(int32_t)) ||
         !ds4_gpu_hy4_embed(g->streams, g->embed, n)) {
@@ -335,6 +343,10 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
     }
     for (uint32_t il = 0; il < HY4_LAYERS; il++) {
         const ds4_layer_weights *l = &w->layer[il];
+        // Later SSD reads overlap kernels already queued by the preceding layers.
+        if (staged && hy4_engram(il) && !hy4_read_engram(g, e, prev, np, tokens, n, il / 10, 1)) {
+            return false;
+        }
         if ((hy4_engram(il) && !hy4_memory_branch(g, m, l, il, n)) ||
             !hy4_hc_pre(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, n) ||
             !hy4_attention(g, m, l, il, n, pos, NULL) || (head && !hy4_capture_groups(g, il, n, pos)) ||
@@ -348,6 +360,7 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
     if (head && !(g->verifying ? hy4_verify_head(g, m, w, n) : hy4_head_row(g, m, w, n - 1, 0))) {
         return false;
     }
+    g->prefill_queued = !head;
     g->position = pos + n;
     if (g->position > g->high) {
         g->high = g->position;

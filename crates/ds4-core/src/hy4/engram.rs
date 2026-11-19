@@ -20,7 +20,7 @@ const LAYERS: usize = 4;
 const PAD: i32 = 120002;
 const IMAGE: i32 = 120120;
 const VIDEO: i32 = 120124;
-pub(crate) const TOKEN_BYTES: usize = LAYERS * HEADS * RECORD;
+const LAYER_BYTES: usize = HEADS * RECORD;
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -177,10 +177,13 @@ impl Engram {
         &mut self,
         history: &[i32],
         tokens: &[i32],
+        layers: std::ops::Range<usize>,
         dst: &mut [u8],
     ) -> Result<(), TensorError> {
         if history.len() > 2
-            || tokens.len().checked_mul(TOKEN_BYTES) != Some(dst.len())
+            || layers.is_empty()
+            || layers.end > self.layers.len()
+            || tokens.len().checked_mul(layers.len() * LAYER_BYTES) != Some(dst.len())
             || tokens.len() > super::PREFILL_MAX as usize
             || history
                 .iter()
@@ -203,8 +206,9 @@ impl Engram {
         for (i, &token) in tokens.iter().enumerate() {
             let ids = [compress(token), previous[0], previous[1]];
             previous = [ids[0], ids[1]];
-            for (layer, l) in self.layers.iter().enumerate() {
-                let dest = (layer * tokens.len() + i) * HEADS * RECORD;
+            for layer in layers.clone() {
+                let l = &self.layers[layer];
+                let dest = ((layer - layers.start) * tokens.len() + i) * LAYER_BYTES;
                 if matches!(token, PAD | IMAGE | VIDEO) {
                     dst[dest..dest + HEADS * RECORD].fill(0);
                     continue;
@@ -283,6 +287,8 @@ pub(crate) unsafe extern "C" fn read_rows(
     n_previous: u32,
     tokens: *const i32,
     count: u32,
+    first_layer: u32,
+    n_layers: u32,
     dst: *mut u8,
     bytes: usize,
 ) -> i32 {
@@ -293,7 +299,10 @@ pub(crate) unsafe extern "C" fn read_rows(
         || count > super::PREFILL_MAX
         || n_previous > 2
         || (n_previous != 0 && previous.is_null())
-        || bytes != count as usize * TOKEN_BYTES
+        || n_layers == 0
+        || n_layers > LAYERS as u32
+        || first_layer > LAYERS as u32 - n_layers
+        || bytes != count as usize * n_layers as usize * LAYER_BYTES
     {
         return 0;
     }
@@ -307,7 +316,12 @@ pub(crate) unsafe extern "C" fn read_rows(
     };
     let ids = unsafe { std::slice::from_raw_parts(tokens, count as usize) };
     let rows = unsafe { std::slice::from_raw_parts_mut(dst, bytes) };
-    match reader.gather(prev, ids, rows) {
+    match reader.gather(
+        prev,
+        ids,
+        first_layer as usize..(first_layer + n_layers) as usize,
+        rows,
+    ) {
         Ok(()) => 1,
         Err(e) => {
             eprintln!("ds4: {e}");
@@ -343,14 +357,30 @@ mod tests {
         for width in [1, 2, 5, vectors.tokens.len()] {
             for (chunk, ids) in vectors.tokens.chunks(width).enumerate() {
                 let start = chunk * width;
-                let mut result = vec![0xff; ids.len() * TOKEN_BYTES];
+                let mut result = vec![0xff; ids.len() * LAYER_BYTES * LAYERS];
                 reader
                     .gather(
                         &vectors.tokens[start.saturating_sub(2)..start],
                         ids,
+                        0..LAYERS,
                         &mut result,
                     )
                     .unwrap();
+                let mut staged = vec![0; ids.len() * LAYER_BYTES];
+                for layer in 0..LAYERS {
+                    reader
+                        .gather(
+                            &vectors.tokens[start.saturating_sub(2)..start],
+                            ids,
+                            layer..layer + 1,
+                            &mut staged,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        staged,
+                        result[layer * staged.len()..(layer + 1) * staged.len()]
+                    );
+                }
                 for (r, rows) in vectors.rows[start..start + ids.len()].iter().enumerate() {
                     for (il, file) in files.iter().enumerate() {
                         for h in 0..HEADS {

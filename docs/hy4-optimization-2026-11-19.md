@@ -28,6 +28,20 @@ Four fresh 2K–8K runs used the same novel, 2,048-row chunks, 64 greedy outputs
 
 We also tested direct narrow BF16 dots throughout the model. They shortened a verify step from 118–120 to 110–112 ms, but needed more verify calls and lost generated tokens/s at three of four frontiers. The retained change batches only the output head. Splitting the three-row routed gate into individual MMVQs improved the isolated gate slightly and failed to produce a consistent generation gain.
 
+## Overlap Engram reads with prefill
+
+At 4K, the host spent 434 ms before the first GPU kernel in a 2,864 ms append. Four isolated 2,048-token batches of actual Engram records took 373–390 ms to read. With a fresh GPU frontier, the host now reads the four tables at layers 1, 11, 21 and 31 so the SSD works while earlier layers execute. An unfinished preceding chunk can cover a bulk read of all four tables. Short inputs keep the bulk path. The same aligned page buffer and GPU staging area serve both schedules. Set `DS4_HY4_ENGRAM_LAYER_READS=0` to force bulk reads.
+
+Seven fresh processes used 2,048-token chunks, a cold 32K prompt, a 2,048-token append and eight plain output tokens at each frontier. Reading each table at its layer raised append throughput, but slowed cold prefill in both original pairs. The final schedule recovered the cold rate. The first two rows below give the full range across their runs.
+
+| Schedule | Runs | Cold 32K tok/s | 2K append at 32K tok/s |
+|---|---:|---:|---:|
+| Bulk | 3 | 828.73–831.33 | 717.20–726.25 |
+| Per-layer throughout | 2 | 824.94–827.52 | 813.49–813.72 |
+| Final schedule | 2 | 832.49–833.45 | 816.80–817.00 |
+
+On the final binary, the 2K append improved 13.9% against its bulk control. The complete frontier logits and eight greedy IDs matched at both lengths across all seven runs. The eight-token append decode rates spanned 13.61–13.95 tok/s on the final schedule and 13.75–13.91 on bulk. [Raw comparisons with binary identifiers](benchmarks/hy4-flash-mxq-2026-11-19/engram-reads.csv).
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.
