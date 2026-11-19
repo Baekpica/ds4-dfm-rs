@@ -33,6 +33,7 @@ int ds4_gpu_hy4_hc(ds4_gpu_tensor *out, ds4_gpu_tensor *post, const ds4_gpu_tens
 int ds4_gpu_hy4_hc_step(ds4_gpu_tensor *streams, ds4_gpu_tensor *post, const ds4_gpu_tensor *branch,
                         const float *fn, const float *scale, const float *base, const float *norm_w,
                         ds4_gpu_tensor *norm, ds4_gpu_tensor *norm_bf16, uint32_t rows);
+int ds4_gpu_hy4_gate(ds4_gpu_tensor *q, const ds4_gpu_tensor *gate, uint32_t rows, uint32_t width);
 int ds4_gpu_hy4_residual(ds4_gpu_tensor *streams, const ds4_gpu_tensor *branch, const ds4_gpu_tensor *post,
                          uint32_t rows);
 int ds4_gpu_hy4_unpack(ds4_gpu_tensor *out, const ds4_gpu_tensor *records, const float *norm,

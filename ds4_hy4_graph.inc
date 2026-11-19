@@ -207,7 +207,7 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
            ds4_gpu_hy4_head_mm(g->q, g->packed, g->attended, m->map, m->size, l->attn_v_b->abs_offset, n, h,
                                512, 512, 256, (ds4_hy4_head_input)attended) &&
            hy4_mm(g->attn_gate, m, l->attn_gate, g->norm, n) &&
-           ds4_gpu_solar_sigmoid_gate_tensor(g->q, g->q, g->attn_gate, (uint64_t)n * h * 256) &&
+           ds4_gpu_hy4_gate(g->q, g->attn_gate, n, h * 256) &&
            hy4_mm(g->branch, m, l->attn_output, g->q, n) &&
            hy4_norm(g->branch, m, l->attn_output_norm, g->branch, n);
 }

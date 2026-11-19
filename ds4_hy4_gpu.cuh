@@ -151,6 +151,40 @@ __global__ void __launch_bounds__(256) hc_step(float *streams, float *post, cons
         }
     }
 }
+/* q * sigmoid(gate) in place (solar_sigmoid_gate's expression) and the
+ * attn_output GEMM's Q8_0 operand: 144-byte blocks of four F32 scales and
+ * 128 int8, block (k / 128) * rows + row, with quantize_mmq_q8_1<D4>'s lane
+ * mapping, shuffles and rounding. */
+__global__ void gate_q8(float *q, const float *gate, uint8_t *out, unsigned width, unsigned rows) {
+    const unsigned col = (blockIdx.y * blockDim.x + threadIdx.x) * 4;
+    if (col >= width) {
+        return;
+    }
+    const unsigned row = blockIdx.x;
+    float4 *qp = (float4 *)(q + (uint64_t)row * width + col);
+    const float4 x = *qp, g = *(const float4 *)(gate + (uint64_t)row * width + col);
+    const float4 v = make_float4(x.x / (1.0f + expf(-g.x)), x.y / (1.0f + expf(-g.y)), x.z / (1.0f + expf(-g.z)),
+                                 x.w / (1.0f + expf(-g.w)));
+    *qp = v;
+    float amax = fabsf(v.x);
+    amax = fmaxf(amax, fabsf(v.y));
+    amax = fmaxf(amax, fabsf(v.z));
+    amax = fmaxf(amax, fabsf(v.w));
+    for (int offset = 4; offset > 0; offset >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset, 32));
+    }
+    const float d_inv = 127.0f / amax;
+    char4 c;
+    c.x = roundf(v.x * d_inv);
+    c.y = roundf(v.y * d_inv);
+    c.z = roundf(v.z * d_inv);
+    c.w = roundf(v.w * d_inv);
+    uint8_t *block = out + ((uint64_t)(col / 128) * rows + row) * 144;
+    ((char4 *)(block + 16))[(col % 128) / 4] = c;
+    if (col % 32 == 0) {
+        ((float *)block)[(col % 128) / 32] = 1.0f / d_inv;
+    }
+}
 __global__ void residual(float *streams, const float *branch, const float *post) {
     const uint32_t row = blockIdx.y, c = blockIdx.x, i = row * 4 + c;
     for (unsigned d = threadIdx.x; d < 3072; d += blockDim.x) {
@@ -298,6 +332,23 @@ extern "C" int ds4_gpu_hy4_hc_step(ds4_gpu_tensor *streams, ds4_gpu_tensor *post
         (float *)streams->ptr, (float *)post->ptr, branch ? (const float *)branch->ptr : nullptr, fn, scale, base,
         norm_w, (float *)norm->ptr, norm_bf16 ? (hy4::bf16 *)norm_bf16->ptr : nullptr);
     return cuda_ok(cudaGetLastError(), "Hy4 residual and iHC");
+}
+/* Prefill gates the attention output and publishes its Q8 operand for the
+ * attn_output GEMM, which then skips its own quantize pass; decode rows (and
+ * DS4_CUDA_NO_NORM_Q8EMIT) take the plain gate. */
+extern "C" int ds4_gpu_hy4_gate(ds4_gpu_tensor *q, const ds4_gpu_tensor *gate, uint32_t rows, uint32_t width) {
+    size_t payload = 0;
+    char *q8 = cuda_norm_q8_prepare(rows, width, &payload);
+    if (!q8) {
+        return ds4_gpu_solar_sigmoid_gate_tensor(q, q, gate, (uint64_t)rows * width);
+    }
+    hy4::gate_q8<<<dim3(rows, (width + 511) / 512), 128, 0, ds4_current_stream()>>>(
+        (float *)q->ptr, (const float *)gate->ptr, (uint8_t *)q8, width, rows);
+    if (!cuda_ok(cudaGetLastError(), "Hy4 gate and Q8")) {
+        return 0;
+    }
+    cuda_norm_q8_publish(q->ptr, rows, width);
+    return 1;
 }
 extern "C" int ds4_gpu_hy4_residual(ds4_gpu_tensor *s, const ds4_gpu_tensor *b, const ds4_gpu_tensor *p,
                                     uint32_t n) {
