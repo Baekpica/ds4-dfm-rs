@@ -48,3 +48,10 @@ A separate FP8/BF16 latent-KV comparison used the same mixed weights, 512-row ti
 | 65,536 | 1.9755 | 1.9960 | 31/32 |
 
 These three regions represent one document. The BF16 reference changes the latent KV precision on the same mixed trunk.
+
+
+## Target width and end-to-end quality
+
+With tiled attention, tiled IndexPool and the batched output head, the plain target averaged **3.00223 NLL** against the BF16 teacher's **2.97612**, with 89.12% top-1 agreement. The paired difference was +0.02611 (95% document-bootstrap interval −0.00587 to +0.06053).
+
+The depth-two Q8_0 DFly2 trial kept the supplied reference token. Its verified target rows averaged **3.02228 NLL** across the same positions, with 88.88% top-1 agreement with the teacher. The paired difference from the teacher was +0.04616 (+0.00502 to +0.09124). Against the plain target, it was +0.02005 (−0.01280 to +0.05298), with 92.19% top-1 agreement. Of the 1,664 positions, 1,534 used a three-row trial, 26 used a two-row trial at the context boundary and 104 used prompt synchronization. Each of the 26 documents contributed 64 targets. [Document aggregates](benchmarks/hy4-flash-mxq-2026-11-19/teacher-documents.csv).
