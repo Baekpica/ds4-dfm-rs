@@ -316,9 +316,9 @@ pub fn fill_quote_facts(
     host: QuoteHost,
 ) {
     quote_native_rows(facts, req, caps, shape, host);
-    // GLM VQ banks retain their graph while images use a second one. Auto
+    // Text banks retain their graph while images use a second one. Auto
     // can serve both modalities on one serial graph if even one bank is too large.
-    if caps.family == ModelFamily::Glm53Vq
+    if matches!(caps.family, ModelFamily::Glm53Vq | ModelFamily::Hy4)
         && req.backend == Backend::Cuda
         && req.max_seqs == MaxSeqs::Auto
         && req.prefix_reuse != PrefixReuse::Partial
@@ -916,14 +916,11 @@ fn quote_native_rows(
             0
         }
     } else if caps.family == ModelFamily::Hy4 {
-        if host.vision || facts.vision_loaded {
-            let serial = if quote_batch_alloc(req, caps, facts) {
-                let (kv, scratch) = crate::hy4::serving_bytes(ctx, native);
-                kv + scratch
-            } else {
-                0
-            };
-            crate::hy4::media::workspace_bytes(ctx) + serial
+        // Media prep prices actual frame geometry before decoding. Banks and
+        // a lazy serial graph can coexist, so reserve that graph at startup.
+        if (host.vision || facts.vision_loaded) && quote_batch_alloc(req, caps, facts) {
+            let (kv, scratch) = crate::hy4::serving_bytes(ctx, native);
+            kv + scratch
         } else {
             0
         }
@@ -2131,7 +2128,8 @@ fn quote_bank_lane(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts)
 fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
     if req.backend != Backend::Cuda
         || caps.banks == BankLane::Serial
-        || (caps.family == ModelFamily::Glm53Vq && facts.cont_lane == Some(false))
+        || (matches!(caps.family, ModelFamily::Glm53Vq | ModelFamily::Hy4)
+            && facts.cont_lane == Some(false))
     {
         return false;
     }
@@ -5530,6 +5528,35 @@ mod tests {
             facts.media_reserve_bytes = Some(0);
             assert_eq!(resident_runtime(&facts), resident);
         }
+    }
+
+    #[test]
+    fn hy4_auto_reuses_one_graph_at_native_context() {
+        let _env = lock_test_env();
+        let family = ModelFamily::Hy4;
+        let variant = Variant::Hy4FlashMxq;
+        let caps = serving_caps(family, variant);
+        let mut req = ServingRequest {
+            ctx: 1_048_576,
+            mem_floor_gb: 4,
+            ..Default::default()
+        };
+        let host = QuoteHost {
+            weights_bytes: 103 * GIB,
+            mtp_bytes: 0,
+            available_bytes: 119 * GIB,
+            native_chunk: Some(512),
+            vision: true,
+        };
+        let shape = crate::shape::SHAPE_HY4;
+        let serial = fill_family(family, variant, shape, &req, host);
+        assert_eq!(serial.cont_lane, Some(false));
+        assert_eq!(serial.media_reserve_bytes, Some(0));
+        assert!(!resolve_plan(&req, Some(caps), &serial).has_errors());
+        req.max_seqs = MaxSeqs::Fixed(2);
+        let banks = fill_family(family, variant, shape, &req, host);
+        assert!(banks.media_reserve_bytes.unwrap() > 8 * GIB);
+        assert!(resolve_plan(&req, Some(caps), &banks).has_errors());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! The release's processor supplies row-major RGB patches and one learned newline per merged row.
+use crate::minimax_media::{Error, MediaBudget};
 use image::{imageops, ImageReader, RgbImage};
 use std::io::Cursor;
 
@@ -7,15 +8,29 @@ pub const VIDEO: i32 = 120124;
 pub const MAX_INPUTS: usize = 4;
 const VIDEO_ROWS: u32 = 60_000;
 
-// ds4_hy4_vision.inc stages one frame and one layer. RGB and the projected
-// language rows of every input stay live until the prompt consumes them.
-pub(crate) fn workspace_bytes(ctx: u64) -> u64 {
-    let rows = ctx.min(u64::from(VIDEO_ROWS) * MAX_INPUTS as u64);
-    let patches = (rows * 4).min(16_384);
+// One frame and layer on the device; RGB and projected rows survive across inputs.
+fn admit_visual(
+    budget: &mut MediaBudget,
+    width: u32,
+    height: u32,
+    frames: u32,
+    decode_bytes: u64,
+) -> Result<(), Error> {
+    let pixels = u64::from(width) * u64::from(height);
+    let patches = pixels / 256;
+    let rgb = pixels * 3 * u64::from(frames);
+    // The processor adds a row terminator. EXIF may rotate a still after probing.
+    let lines = if frames == 1 {
+        height.max(width)
+    } else {
+        height
+    } / 32;
+    let outputs = (pixels / 1024 + u64::from(lines)) * u64::from(frames) * 3072 * 4;
     let tower_row = (5 * 1152 + 4304) * 4 + (3 * 1152 + 4304) * 2;
     let scores = (patches * patches * 16 * 6).min(192 << 20);
     let stage = 4608 * 4608 * 2 + (8 << 20);
-    rows * (3072 * 4 + 32 * 32 * 3) + patches * (tower_row + 768 * 4) + scores + stage
+    let transient = patches * (tower_row + 768 * 4) + scores + stage;
+    budget.admit(rgb, outputs, transient, rgb + decode_bytes)
 }
 
 #[derive(Debug)]
@@ -78,12 +93,17 @@ fn video_size(w: u32, h: u32, frames: u32) -> Result<(u32, u32), String> {
 }
 
 pub fn still(data: &[u8]) -> Result<Visual, String> {
+    still_budget(data, &mut MediaBudget::new(u64::MAX)).map_err(|e| e.to_string())
+}
+
+pub fn still_budget(data: &[u8], budget: &mut MediaBudget) -> Result<Visual, Error> {
     let (w, h) = ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
         .into_dimensions()
         .map_err(|e| e.to_string())?;
     let (tw, th) = image_size(w, h)?;
+    admit_visual(budget, tw, th, 1, u64::from(w) * u64::from(h) * 12)?;
     let rgb = crate::vit_image::decode(data)?;
     let img = RgbImage::from_raw(rgb.width, rgb.height, rgb.data).ok_or("invalid Hy4 image")?;
     let (tw, th) = if img.dimensions() == (w, h) {
@@ -105,15 +125,19 @@ pub fn still(data: &[u8]) -> Result<Visual, String> {
     })
 }
 
-#[cfg(target_os = "linux")]
 pub fn video(data: &[u8]) -> Result<Visual, String> {
+    video_budget(data, &mut MediaBudget::new(u64::MAX)).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "linux")]
+pub fn video_budget(data: &[u8], budget: &mut MediaBudget) -> Result<Visual, Error> {
     use std::io::{Read, Seek, Write};
     use std::os::fd::FromRawFd;
     use std::process::{Command, Stdio};
     // A seekable descriptor reads both front- and end-indexed MP4s. Neither decoder opens a request path.
     let fd = unsafe { libc::memfd_create(c"ds4-hy4-video".as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+        return Err(std::io::Error::last_os_error().to_string().into());
     }
     let mut input = unsafe { std::fs::File::from_raw_fd(fd) };
     input
@@ -160,6 +184,13 @@ pub fn video(data: &[u8]) -> Result<Visual, String> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let (w, h) = video_size(dim("width"), dim("height"), frames)?;
+    admit_visual(
+        budget,
+        w,
+        h,
+        frames,
+        u64::from(dim("width")) * u64::from(dim("height")) * 12 + data.len() as u64,
+    )?;
     input.rewind().map_err(|e| e.to_string())?;
     let mut child = Command::new("ffmpeg")
         .args(args)
@@ -191,6 +222,8 @@ pub fn video(data: &[u8]) -> Result<Visual, String> {
         .map_err(|e| e.to_string())?;
     let bytes = w as usize * h as usize * frames as usize * 3;
     let mut rgb = Vec::new();
+    rgb.try_reserve_exact(bytes + 1)
+        .map_err(|_| Error::Capacity)?;
     let read = child
         .stdout
         .take()
@@ -215,7 +248,7 @@ pub fn video(data: &[u8]) -> Result<Visual, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn video(_: &[u8]) -> Result<Visual, String> {
+pub fn video_budget(_: &[u8], _: &mut MediaBudget) -> Result<Visual, Error> {
     Err("Hy4 MP4 decoding requires Linux".into())
 }
 
@@ -343,6 +376,26 @@ impl crate::Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_admission_counts_newlines_and_multiple_inputs() {
+        let mut measured = MediaBudget::new(u64::MAX);
+        admit_visual(&mut measured, 64, 32, 2, 0).unwrap();
+        let bytes = measured.reserve_bytes();
+        let rgb = 64 * 32 * 3 * 2;
+        let mut tight = MediaBudget::new(bytes + rgb);
+        admit_visual(&mut tight, 64, 32, 2, 0).unwrap();
+        assert!(matches!(
+            admit_visual(&mut tight, 64, 32, 2, 0),
+            Err(Error::Capacity)
+        ));
+        assert!(matches!(
+            admit_visual(&mut MediaBudget::new(bytes + rgb - 1), 64, 32, 2, 0),
+            Err(Error::Capacity)
+        ));
+        admit_visual(&mut measured, 64, 32, 2, 0).unwrap();
+        assert_eq!(measured.reserve_bytes() - bytes, 6 * 3072 * 4);
+    }
+
     #[test]
     fn processor_geometry_and_patch_order() {
         assert_eq!(image_size(33, 65).unwrap(), (64, 96));

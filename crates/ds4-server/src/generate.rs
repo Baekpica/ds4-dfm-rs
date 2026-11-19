@@ -2146,9 +2146,7 @@ impl From<ds4_core::minimax_media::Error> for PrepareError {
 impl PrepareError {
     fn generation(self) -> GenerateError {
         match self {
-            Self::Capacity => GenerateError::Unsupported(
-                "MiniMax media exceeds live memory capacity; retry later",
-            ),
+            Self::Capacity => GenerateError::Unsupported("media exceeds live memory capacity"),
             Self::Generate(error) => error,
         }
     }
@@ -2175,7 +2173,7 @@ fn prepare_media(
         });
     }
     if syntax_for_model_id(engine.model_id()) == ModelSyntax::Hy4 {
-        return prepare_hy4(parsed, tokens);
+        return prepare_hy4(parsed, tokens, None).map_err(PrepareError::generation);
     }
     if syntax_for_model_id(engine.model_id()) == ModelSyntax::Mimo2 {
         return prepare_mimo(engine, parsed, tokens);
@@ -2436,13 +2434,17 @@ fn expand_minimax(
     })
 }
 
-fn prepare_hy4(parsed: &ParsedRequest, tokens: Vec<i32>) -> Result<MediaPrompt, GenerateError> {
+fn prepare_hy4(
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+    budget: Option<&mut ds4_core::minimax_media::MediaBudget>,
+) -> Result<MediaPrompt, PrepareError> {
+    let mut unbounded = ds4_core::minimax_media::MediaBudget::new(u64::MAX);
+    let budget = budget.unwrap_or(&mut unbounded);
     use ds4_core::hy4_media::{self, IMAGE, VIDEO};
     let count = parsed.images.len() + parsed.videos.len();
     if count > hy4_media::MAX_INPUTS || !parsed.audios.is_empty() {
-        return Err(GenerateError::BadRequest(
-            "Hy4 accepts up to four images or videos",
-        ));
+        return Err(GenerateError::BadRequest("Hy4 accepts up to four images or videos").into());
     }
     let mut inputs = Vec::new();
     for message in &parsed.messages {
@@ -2468,14 +2470,19 @@ fn prepare_hy4(parsed: &ParsedRequest, tokens: Vec<i32>) -> Result<MediaPrompt, 
             || tokens[i - 1] != id - 2
             || tokens.get(i + 1) != Some(&(id - 1))
         {
-            return Err(GenerateError::BadRequest("invalid Hy4 visual markers"));
+            return Err(GenerateError::BadRequest("invalid Hy4 visual markers").into());
         }
         let visual = if video {
-            hy4_media::video(data)
+            hy4_media::video_budget(data, budget)
         } else {
-            hy4_media::still(data)
+            hy4_media::still_budget(data, budget)
         }
-        .map_err(|_| GenerateError::BadRequest("invalid Hy4 image or video"))?;
+        .map_err(|e| match e {
+            ds4_core::minimax_media::Error::Capacity => PrepareError::Capacity,
+            ds4_core::minimax_media::Error::Invalid(_) => {
+                GenerateError::BadRequest("invalid Hy4 image or video").into()
+            }
+        })?;
         let start = expanded.len();
         expanded.extend(std::iter::repeat_n(id, visual.tokens() as usize));
         vision.push(VisionPromptInput {
@@ -2487,7 +2494,7 @@ fn prepare_hy4(parsed: &ParsedRequest, tokens: Vec<i32>) -> Result<MediaPrompt, 
         });
     }
     if vision.len() != count || inputs.next().is_some() {
-        return Err(GenerateError::BadRequest("missing Hy4 visual marker"));
+        return Err(GenerateError::BadRequest("missing Hy4 visual marker").into());
     }
     Ok(MediaPrompt {
         tokens: expanded,
@@ -2710,6 +2717,9 @@ pub(crate) fn prepare_serial_prompt(
         && (!parsed.images.is_empty() || !parsed.videos.is_empty())
     {
         prepare_minimax(engine, &parsed, tokens, media_budget.as_mut())?
+    } else if syntax == ModelSyntax::Hy4 && (!parsed.images.is_empty() || !parsed.videos.is_empty())
+    {
+        prepare_hy4(&parsed, tokens, media_budget.as_mut())?
     } else {
         prepare_media(engine, &parsed, tokens)?
     };
