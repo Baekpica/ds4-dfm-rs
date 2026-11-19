@@ -26,10 +26,10 @@ static bool hy4_propose(ds4_hy4_graph *g, const ds4_engine *e, int first, uint32
     for (uint32_t i = 0; ok && i < HY4_TAPS; i++) {
         const ds4_layer_weights *l = &d->layer[i];
         ds4_gpu_tensor *index = ds4_gpu_tensor_view(g->seed, rb + i * 511 * 4, 511 * 4);
-        ok = index && hy4_norm(g->norm, m, l->attn_norm, g->input, n) &&
+        ok = index && hy4_pre_norm(g, m, l->attn_norm, n) &&
              hy4_attention(g, m, l, 25 + 4 * i, n, pos, index) &&
              ds4_gpu_hy4_add(g->input, g->input, g->branch, NULL, n * 3072) &&
-             hy4_norm(g->norm, m, l->ffn_norm, g->input, n) &&
+             hy4_pre_norm(g, m, l->ffn_norm, n) &&
              hy4_dense(g, m, g->branch, l->ffn_gate, l->ffn_up, l->ffn_down, n) &&
              ds4_gpu_hy4_add(g->input, g->input, g->branch, NULL, n * 3072);
         ds4_gpu_tensor_free(index);

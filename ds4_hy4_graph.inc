@@ -126,19 +126,32 @@ static bool hy4_norm(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *
     return ds4_gpu_motif3_rms_norm_round_bf16_rows_tensor(out, x, m->map, m->size, w->abs_offset,
                                                           (uint32_t)w->dim[0], n, 1e-5f);
 }
+// Multi-row norms keep a BF16 copy for their BF16 GEMMs; the values are
+// BF16-rounded already, so the copy is exact and the GEMMs are unchanged.
+static bool hy4_pre_norm(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *w, uint32_t n) {
+    return hy4_norm(g->norm, m, w, g->input, n) &&
+           (n == 1 || ds4_gpu_f32_to_bf16(g->norm_bf16, g->norm, (uint64_t)n * 3072));
+}
 static bool hy4_hc_pre(ds4_hy4_graph *g, const ds4_model *m, const ds4_tensor *fn, const ds4_tensor *scale,
                        const ds4_tensor *base, const ds4_tensor *norm, uint32_t n) {
     return hy4_mm(g->mix, m, fn, g->streams, n) &&
            ds4_gpu_hy4_hc(g->input, g->post, g->streams, g->mix, hy4_weight(m, scale), hy4_weight(m, base),
                           n) &&
-           hy4_norm(g->norm, m, norm, g->input, n);
+           hy4_pre_norm(g, m, norm, n);
+}
+static bool hy4_mm_norm(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor *w, uint32_t n) {
+    if (n == 1 || w->type != DS4_TENSOR_BF16) {
+        return hy4_mm(out, m, w, g->norm, n);
+    }
+    return ds4_gpu_matmul_bf16_input_tensor(out, m->map, m->size, w->abs_offset, w->dim[0], w->dim[1],
+                                            g->norm_bf16, n) != 0;
 }
 static bool hy4_run_index(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weights *l,
                           ds4_hy4_cache *c, uint32_t n, uint32_t pos) {
     if (!c->groups) {
         return true;
     }
-    if (!hy4_mm(g->index_key, m, l->indexer_attn_k, g->norm, n) ||
+    if (!hy4_mm_norm(g, m, g->index_key, l->indexer_attn_k, n) ||
         !hy4_norm(g->index_key, m, l->indexer_k_norm, g->index_key, n) ||
         !hy4_mm(g->index_v, m, l->indexer_compressor_kv, g->index_key, n) ||
         !hy4_mm(g->index_gate, m, l->indexer_compressor_gate, g->index_key, n) ||
@@ -160,18 +173,23 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
     const uint32_t h = sparse ? 32 : 64;
     const float theta = sparse ? 1e7f : 1e4f;
     ds4_hy4_cache *c = &g->layer[il];
-    return hy4_mm(g->qa, m, l->attn_q_a, g->norm, n) && hy4_norm(g->qa, m, l->attn_q_a_norm, g->qa, n) &&
-           hy4_mm(g->q, m, l->attn_q_b, g->qa, n) && hy4_mm(g->kv, m, l->attn_kv_a_mqa, g->norm, n) &&
-           ds4_gpu_hy4_rope(g->q, g->positions, n, h, 256, 192, theta) &&
-           ds4_gpu_hy4_rope(g->kv, g->positions, n, 1, 576, 512, theta) &&
-           ds4_gpu_hy4_store(c, g->kv, hy4_weight(m, l->attn_kv_a_norm), pos, n) &&
-           (!sparse || draft_groups || hy4_run_index(g, m, l, c, n, pos)) &&
-           ds4_gpu_hy4_head_mm(g->absorbed, g->packed, g->q, m->map, m->size, l->attn_k_b->abs_offset, n, h,
-                               192, 256, 512) &&
-           ds4_gpu_hy4_attention(g->attended, g->absorbed, g->q, c, draft_groups ? draft_groups : g->groups,
-                                 hy4_weight(m, l->attn_sinks), pos, n, h, draft_groups != NULL) &&
+    if (!hy4_mm_norm(g, m, g->qa, l->attn_q_a, n) || !hy4_norm(g->qa, m, l->attn_q_a_norm, g->qa, n) ||
+        !hy4_mm(g->q, m, l->attn_q_b, g->qa, n) || !hy4_mm_norm(g, m, g->kv, l->attn_kv_a_mqa, n) ||
+        !ds4_gpu_hy4_rope(g->q, g->positions, n, h, 256, 192, theta) ||
+        !ds4_gpu_hy4_rope(g->kv, g->positions, n, 1, 576, 512, theta) ||
+        !ds4_gpu_hy4_store(c, g->kv, hy4_weight(m, l->attn_kv_a_norm), pos, n) ||
+        (sparse && !draft_groups && !hy4_run_index(g, m, l, c, n, pos)) ||
+        !ds4_gpu_hy4_head_mm(g->absorbed, g->packed, g->q, m->map, m->size, l->attn_k_b->abs_offset, n, h, 192,
+                             256, 512, DS4_HY4_HEAD_F32)) {
+        return false;
+    }
+    // Prefill attention leaves the v_b operand packed as BF16.
+    const int attended = ds4_gpu_hy4_attention(g->attended, g->packed, g->absorbed, g->q, c,
+                                               draft_groups ? draft_groups : g->groups,
+                                               hy4_weight(m, l->attn_sinks), pos, n, h, draft_groups != NULL);
+    return attended >= 0 &&
            ds4_gpu_hy4_head_mm(g->q, g->packed, g->attended, m->map, m->size, l->attn_v_b->abs_offset, n, h,
-                               512, 512, 256) &&
+                               512, 512, 256, (ds4_hy4_head_input)attended) &&
            hy4_mm(g->attn_gate, m, l->attn_gate, g->norm, n) &&
            ds4_gpu_solar_sigmoid_gate_tensor(g->q, g->q, g->attn_gate, (uint64_t)n * h * 256) &&
            hy4_mm(g->branch, m, l->attn_output, g->q, n) &&
@@ -179,7 +197,7 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
 }
 static bool hy4_dense(ds4_hy4_graph *g, const ds4_model *m, ds4_gpu_tensor *out, const ds4_tensor *gate,
                       const ds4_tensor *up, const ds4_tensor *down, uint32_t n) {
-    return hy4_mm(g->ff_gate, m, gate, g->norm, n) && hy4_mm(g->ff_up, m, up, g->norm, n) &&
+    return hy4_mm_norm(g, m, g->ff_gate, gate, n) && hy4_mm_norm(g, m, g->ff_up, up, n) &&
            ds4_gpu_hy4_swiglu(g->ff_mid, g->ff_gate, g->ff_up, n * (uint32_t)gate->dim[1], INFINITY) &&
            hy4_mm(out, m, down, g->ff_mid, n);
 }
@@ -222,7 +240,7 @@ static bool hy4_ffn(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_weight
     return hy4_mm(g->router, m, l->ffn_gate_inp, g->norm, n) &&
            ds4_gpu_sigmoid_topk_router_tensor(g->experts, g->weights, g->router, m->map, m->size,
                                               l->ffn_exp_probs_b->abs_offset, 1, 512, 16, n, 3.998f) &&
-           hy4_mm(g->latent, m, l->ffn_routed_down, g->norm, n) &&
+           hy4_mm_norm(g, m, g->latent, l->ffn_routed_down, n) &&
            hy4_routed(g, m, gate, up, down, n) && ds4_gpu_hy4_moe_sum(g->latent, g->ff_gate, g->weights, n) &&
            hy4_mm(g->branch, m, l->ffn_routed_up, g->latent, n) &&
            hy4_dense(g, m, g->shared, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, n) &&

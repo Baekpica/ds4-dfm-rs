@@ -46,9 +46,10 @@ struct l31_fa_dense {
 
 // The row selector supplies physical KV slots. The MMA and softmax stay shared
 // between dense Ling history and Hy4's sliding or IndexPool-selected rows.
-template <bool FP8, class Keys>
+// OUT = __nv_bfloat16 stores the rounded rows a BF16 consumer converts anyway.
+template <bool FP8, class Keys, typename OUT>
 __device__ __forceinline__ void l31_fa_tile(
-        float *out, float *partial, float *stats, const float *q, const float *q_abs,
+        OUT *out, float *partial, float *stats, const float *q, const float *q_abs,
         const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, Keys keys,
         uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
@@ -297,9 +298,15 @@ __device__ __forceinline__ void l31_fa_tile(
     #pragma unroll
     for (uint32_t h = 0; h < 2; h++) {
         const float inv = l[h] > 0.0f ? 1.0f / l[h] : 0.0f;
-        float *dst = out + ((uint64_t)row * head_count + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
+        OUT *dst = out + ((uint64_t)row * head_count + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
         #pragma unroll
-        for (uint32_t t = 0; t < 32; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h] * inv, o[t][2 * h + 1] * inv); }
+        for (uint32_t t = 0; t < 32; t++) {
+            if constexpr (std::is_same_v<OUT, float>) {
+                *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
+            } else {
+                *(__nv_bfloat162 *)(dst + t * 8) = __floats2bfloat162_rn(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
+            }
+        }
     }
 }
 

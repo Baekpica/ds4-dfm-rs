@@ -155,7 +155,8 @@ pub(crate) fn serving_bytes(ctx: u64, rows: u32) -> (u64, u64) {
         + 1536
         + 3 * ff
         + hidden;
-    let device = 2 * hidden + 4 * 16 * 98 + 4 * 4 + float_cols * 4 + 64 * 512 * 2;
+    // BF16 embedding rows and the BF16 copy of the norm beside the F32 buffers.
+    let device = 2 * 2 * hidden + 4 * 16 * 98 + 4 * 4 + float_cols * 4 + 64 * 512 * 2;
     let host = 2 * hidden + 4 * 16 * 98 + 3 * 4 + 64 * 32;
     (kv, rows * (device + host) + 120832 * 4 + 512 * 4096)
 }

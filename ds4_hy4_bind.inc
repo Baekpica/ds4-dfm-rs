@@ -137,6 +137,7 @@ static void hy4_bind(ds4_weights *w, const ds4_model *m) {
     X(post, 4, float) \
     X(input, 3072, float) \
     X(norm, 3072, float) \
+    X(norm_bf16, 3072, uint16_t) \
     X(branch, 3072, float) \
     X(qa, 1024, float) \
     X(q, 64 * 256, float) \

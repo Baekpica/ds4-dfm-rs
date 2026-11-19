@@ -46,9 +46,11 @@ int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down, const d
                         uint32_t rows);
 int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, uint32_t rows, uint32_t heads,
                      uint32_t stride, uint32_t tail, float theta);
+/* Whether a head projection's BF16 operand still has to be packed from F32. */
+typedef enum { DS4_HY4_HEAD_F32, DS4_HY4_HEAD_PACKED } ds4_hy4_head_input;
 int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x, const void *map,
                         uint64_t size, uint64_t offset, uint32_t rows, uint32_t heads, uint32_t in,
-                        uint32_t stride, uint32_t width);
+                        uint32_t stride, uint32_t width, ds4_hy4_head_input input);
 int ds4_gpu_hy4_store(ds4_hy4_cache *cache, const ds4_gpu_tensor *raw, const float *norm, uint32_t pos,
                       uint32_t rows);
 int ds4_gpu_hy4_pool(ds4_hy4_cache *cache, const ds4_gpu_tensor *values, const ds4_gpu_tensor *gates,
@@ -57,9 +59,9 @@ int ds4_gpu_hy4_pool(ds4_hy4_cache *cache, const ds4_gpu_tensor *values, const d
 int ds4_gpu_hy4_index(ds4_gpu_tensor *selected, ds4_gpu_tensor *tiles, ds4_gpu_tensor *best,
                       const ds4_gpu_tensor *q, const ds4_gpu_tensor *w, const ds4_hy4_cache *cache,
                       uint32_t pos, uint32_t rows);
-int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *q,
-                          const ds4_hy4_cache *cache, const ds4_gpu_tensor *selected, const float *sinks,
-                          uint32_t pos, uint32_t rows, uint32_t heads, int draft);
+int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *q_abs,
+                          const ds4_gpu_tensor *q, const ds4_hy4_cache *cache, const ds4_gpu_tensor *selected,
+                          const float *sinks, uint32_t pos, uint32_t rows, uint32_t heads, int draft);
 
 #ifdef __cplusplus
 }

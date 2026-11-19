@@ -361,10 +361,11 @@ extern "C" int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positio
 }
 extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x,
                                    const void *map, uint64_t size, uint64_t offset, uint32_t n, uint32_t h,
-                                   uint32_t in, uint32_t stride, uint32_t width) {
+                                   uint32_t in, uint32_t stride, uint32_t width, ds4_hy4_head_input input) {
     const uint64_t bytes = (uint64_t)h * in * width * 2;
     const void *weight = ds4_gpu_hy4_weight(map, size, offset, bytes);
-    if (!weight || !g_cublas_ready || !ds4_gpu_f32_to_bf16(pack, x, (uint64_t)n * h * stride)) {
+    if (!weight || !g_cublas_ready ||
+        (input == DS4_HY4_HEAD_F32 && !ds4_gpu_f32_to_bf16(pack, x, (uint64_t)n * h * stride))) {
         return 0;
     }
     const float alpha = 1.f, beta = 0.f;
@@ -516,7 +517,7 @@ template <unsigned HEADS> struct FlashKeys {
 };
 template <unsigned HEADS, bool FP8>
 __global__ void __launch_bounds__(HEADS * 4, 1)
-    flash(float *out, const float *qa, const float *q, const void *latent, const int8_t *exps,
+    flash(bf16 *out, const float *qa, const float *q, const void *latent, const int8_t *exps,
           const bf16 *rope, FlashKeys<HEADS> keys) {
     l31_fa_tile<FP8>(out, nullptr, nullptr, q, qa, latent, exps, rope, keys, UINT32_MAX, 0.0625f);
 }
@@ -533,7 +534,7 @@ static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4
     const auto *exps = FP8 ? (const int8_t *)c->latent->ptr + (size_t)c->cap * 512 : nullptr;
     FlashKeys<HEADS> keys{pos, c->cap, ids ? (const int *)ids->ptr : nullptr, sinks};
     flash<HEADS, FP8><<<rows, HEADS * 4, bytes, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
+        (bf16 *)out->ptr, (const float *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
         (const bf16 *)c->rope->ptr, keys);
     return true;
 }
@@ -650,20 +651,23 @@ extern "C" int ds4_gpu_hy4_index(ds4_gpu_tensor *ids, ds4_gpu_tensor *tile, ds4_
     }
     return cuda_ok(cudaGetLastError(), "Hy4 top complete groups");
 }
-extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *q,
-                                     const ds4_hy4_cache *c, const ds4_gpu_tensor *ids, const float *sinks,
-                                     uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
+/* Prefill rows go through the tiled kernel straight into `pack` as the v_b
+ * projection's BF16 operand (DS4_HY4_HEAD_PACKED); decode and draft rows
+ * write F32 `out` (DS4_HY4_HEAD_F32). Returns -1 on failure. */
+extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *a,
+                                     const ds4_gpu_tensor *q, const ds4_hy4_cache *c, const ds4_gpu_tensor *ids,
+                                     const float *sinks, uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
     if (!sinks) {
-        return 0;
+        return -1;
     }
     const char *flash = getenv("DS4_HY4_FLASH");
     if (!draft && rows >= 16 && !(flash && strcmp(flash, "0") == 0)) {
         const bool launched = heads == 64
-                                  ? hy4::launch_flash<64, false>(out, a, q, c, ids, sinks, pos, rows)
-                              : c->fp8 ? hy4::launch_flash<32, true>(out, a, q, c, ids, sinks, pos, rows)
-                                       : hy4::launch_flash<32, false>(out, a, q, c, ids, sinks, pos, rows);
+                                  ? hy4::launch_flash<64, false>(pack, a, q, c, ids, sinks, pos, rows)
+                              : c->fp8 ? hy4::launch_flash<32, true>(pack, a, q, c, ids, sinks, pos, rows)
+                                       : hy4::launch_flash<32, false>(pack, a, q, c, ids, sinks, pos, rows);
         if (launched) {
-            return cuda_ok(cudaGetLastError(), "Hy4 flash MLA");
+            return cuda_ok(cudaGetLastError(), "Hy4 flash MLA") ? DS4_HY4_HEAD_PACKED : -1;
         }
     }
     auto kernel = draft ? (c->fp8 ? hy4::attend<true, true> : hy4::attend<false, true>)
@@ -671,7 +675,7 @@ extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *
     kernel<<<dim3(heads, rows), 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)a->ptr, (const float *)q->ptr, c->latent->ptr,
         (const hy4::bf16 *)c->rope->ptr, ids ? (const int *)ids->ptr : nullptr, sinks, c->cap, pos, heads);
-    return cuda_ok(cudaGetLastError(), "Hy4 absorbed MLA");
+    return cuda_ok(cudaGetLastError(), "Hy4 absorbed MLA") ? DS4_HY4_HEAD_F32 : -1;
 }
 
 // Vision uses a learned 128² grid with the source's fractional scale factor.
