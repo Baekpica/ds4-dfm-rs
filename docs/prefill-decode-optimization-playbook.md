@@ -543,6 +543,13 @@ the per-launch overhead trips it after 12 cycles.
 - **Share KV across GQA heads only as far as registers allow** (2.6).
 - **Run the decode-attention pair kernel per chunk**, not once over the
   whole context, when the context is split (K2 Decode 3).
+- **Reuse the prefill tile before writing a decode kernel.**  Hy4's scalar
+  decode attention gave each head its own CTA and walked keys one warp at a
+  time: 8.5 of a 72.8 ms token for ~33 MB of cache.  The prefill MLA tile
+  (all heads as the MMA's M, one 32-key tile per stage) already took a key
+  range per CTA, so decode and verify rows split their 512 window or 2,048
+  selected keys over the SMs and a combine merges the splits: plain decode
+  +11 %, a DFly2 verify step 113.3 -> 106.1 ms at equal acceptance.
 
 ### 3.5 The rest of the step
 

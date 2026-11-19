@@ -87,6 +87,19 @@ The 2K-64K DFly2 sweep after the BF16 down rows averaged 1,140.38 prefill (1,085
 
 The 32K append is now ~1.77 s per 2,048 rows: routed experts 34 %, MLA attention 15 %, the Q8_0 attention projections 15 % (q_b and attn_gate on D2R, attn_output on MMQ), the fused iHC step 7 % and the head projections 7 %. Every consumer of q rounds it to BF16 (rope, the k_b operand, the tiled kernel's rope fragments), so q_b's D2R epilogue could write BF16 and retire the 1.0 ms F32-to-BF16 pass of each 64-head layer.
 
+## Decode
+
+A plain token reads 13.45 GB of weights: 10.43 GB of dense tensors and the head (attn_output and attn_gate in Q8_0 alone are 3.90 GB) and 3.02 GB of its 16 routed experts. At 240 GB/s that bounds plain decode at 17.8 tok/s. At the 32K frontier a token took 72.8 ms: the Q8_0 and BF16 projections ran near that rate, but the scalar decode attention took 8.5 ms for ~33 MB of cache, one CTA per head walking keys one warp at a time.
+
+Decode and verify rows now take the prefill MLA tile, with each row's 512 window or 2,048 selected keys split over the SMs and a combine that writes the v_b operand. The k_b projection writes their q_abs as BF16, as it does for prefill. Draft rows keep the scalar kernel.
+
+| Mode at 32K, 64 tokens, two fresh processes | Scalar attention | Tiled, split keys |
+|---|---:|---:|
+| Plain decode | 13.80, 13.83 tok/s | 15.34, 15.42 tok/s |
+| DFly2 depth 2 | 16.14, 16.21 tok/s | 17.24, 17.20 tok/s |
+
+The first DFly2 pair emitted 1.829 tokens per verify in both runs, at 113.3 and 106.1 ms per verify. Over the 1,664 teacher-forced positions (1,560 of them decode steps) NLL moved -0.0311 against the scalar build (95 % document bootstrap -0.0702 to +0.0002) with 92.1 % top-1 agreement, to 2.95417 against the teacher's 2.97612. `DS4_HY4_FLASH_DECODE=0` restores the scalar kernel for target rows.
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.

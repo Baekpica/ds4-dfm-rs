@@ -679,17 +679,43 @@ template <unsigned HEADS> struct FlashKeys {
         return group * 4 + slot % 4;
     }
 };
+// `partial` set: this CTA covers key tiles [y * per, y * per + per) of its row.
 template <unsigned HEADS, bool FP8>
 __global__ void __launch_bounds__(HEADS * 4, 1)
-    flash(bf16 *out, const bf16 *qa, const float *q, const void *latent, const int8_t *exps,
-          const bf16 *rope, FlashKeys<HEADS> keys) {
-    l31_fa_tile<FP8>(out, nullptr, nullptr, q, qa, latent, exps, rope, keys, UINT32_MAX, 0.0625f);
+    flash(bf16 *out, float *partial, float *stats, const bf16 *qa, const float *q, const void *latent,
+          const int8_t *exps, const bf16 *rope, FlashKeys<HEADS> keys, unsigned per) {
+    l31_fa_tile<FP8>(out, partial, stats, q, qa, latent, exps, rope, keys, per, 0.0625f);
 }
+// One row's key splits merged (l31_fa_combine with HEADS heads and BF16 rows).
+template <unsigned HEADS>
+__global__ void combine(bf16 *out, const float *partial, const float *stats, unsigned splits) {
+    const unsigned row = blockIdx.x, head = blockIdx.y, col = threadIdx.x * 2;
+    float peak = -INFINITY;
+    for (unsigned s = 0; s < splits; s++) {
+        peak = fmaxf(peak, stats[(((uint64_t)row * splits + s) * HEADS + head) * 2]);
+    }
+    const float ref = peak == -INFINITY ? 0.0f : peak;
+    float sum = 0.0f, a = 0.0f, b = 0.0f;
+    for (unsigned s = 0; s < splits; s++) {
+        const uint64_t at = ((uint64_t)row * splits + s) * HEADS + head;
+        const float w = exp2f(stats[at * 2] - ref);
+        sum += w * stats[at * 2 + 1];
+        const float2 v = *(const float2 *)(partial + at * 512 + col);
+        a += w * v.x;
+        b += w * v.y;
+    }
+    const float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+    *(__nv_bfloat162 *)(out + ((uint64_t)row * HEADS + head) * 512 + col) = __floats2bfloat162_rn(a * inv, b * inv);
+}
+/* Prefill rows take one CTA each. Decode and verify rows split their keys
+ * over the SMs (Ling-3.1's scheme), and `combine` writes the BF16 rows: one
+ * row of 512 window or 2,048 selected keys is too little work for one CTA. */
+enum { FLASH_ROWS = 16, FLASH_SPLITS = 48 };
 template <unsigned HEADS, bool FP8>
 static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *q,
                          const ds4_hy4_cache *c, const ds4_gpu_tensor *ids, const float *sinks,
                          unsigned pos, unsigned rows) {
-    constexpr unsigned bytes = FP8 ? L31_FA8_SMEM : L31_FA_SMEM;
+    constexpr unsigned bytes = FP8 ? L31_FA8_SMEM : L31_FA_SMEM, keys_max = HEADS == 64 ? 512 : 2048;
     static const cudaError_t setup =
         cudaFuncSetAttribute(flash<HEADS, FP8>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     if (setup != cudaSuccess) {
@@ -697,9 +723,31 @@ static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4
     }
     const auto *exps = FP8 ? (const int8_t *)c->latent->ptr + (size_t)c->cap * 512 : nullptr;
     FlashKeys<HEADS> keys{pos, c->cap, ids ? (const int *)ids->ptr : nullptr, sinks};
-    flash<HEADS, FP8><<<rows, HEADS * 4, bytes, ds4_current_stream()>>>(
-        (bf16 *)out->ptr, (const bf16 *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
-        (const bf16 *)c->rope->ptr, keys);
+    unsigned splits = 1, per = UINT32_MAX;
+    float *partial = nullptr, *stats = nullptr;
+    if (rows < FLASH_ROWS) {
+        const unsigned tiles = (std::min(pos + rows, keys_max) + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
+        const unsigned want = std::max(1u, std::min(tiles, FLASH_SPLITS / rows));
+        per = (tiles + want - 1) / want;
+        splits = (tiles + per - 1) / per;
+        if (splits > 1) {
+            partial = (float *)cuda_tmp_alloc((uint64_t)rows * splits * HEADS * (512 + 2) * sizeof(float),
+                                              "Hy4 flash splits");
+            if (!partial) {
+                return false;
+            }
+            stats = partial + (uint64_t)rows * splits * HEADS * 512;
+        } else {
+            per = UINT32_MAX;
+        }
+    }
+    flash<HEADS, FP8><<<dim3(rows, splits), HEADS * 4, bytes, ds4_current_stream()>>>(
+        (bf16 *)out->ptr, partial, stats, (const bf16 *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
+        (const bf16 *)c->rope->ptr, keys, per);
+    if (partial) {
+        combine<HEADS><<<dim3(rows, HEADS), 256, 0, ds4_current_stream()>>>((bf16 *)out->ptr, partial, stats,
+                                                                         splits);
+    }
     return true;
 }
 
@@ -816,13 +864,15 @@ extern "C" int ds4_gpu_hy4_index(ds4_gpu_tensor *ids, ds4_gpu_tensor *tile, ds4_
     return cuda_ok(cudaGetLastError(), "Hy4 top complete groups");
 }
 extern "C" int ds4_gpu_hy4_flash(uint32_t rows, int draft) {
-    const char *flash = getenv("DS4_HY4_FLASH");
-    return !draft && rows >= 16 && !(flash && strcmp(flash, "0") == 0);
+    static const char *flash = getenv("DS4_HY4_FLASH"), *decode = getenv("DS4_HY4_FLASH_DECODE");
+    static const bool off = flash && strcmp(flash, "0") == 0, decode_off = decode && strcmp(decode, "0") == 0;
+    return !draft && !off && (rows >= hy4::FLASH_ROWS || !decode_off);
 }
-/* Prefill rows (ds4_gpu_hy4_flash) go through the tiled kernel, reading BF16
+/* Target rows (ds4_gpu_hy4_flash) go through the tiled kernel, reading BF16
  * q_abs, straight into `pack` as the v_b projection's BF16 operand
- * (DS4_HY4_HEAD_PACKED); decode and draft rows read F32 q_abs and write F32
- * `out` (DS4_HY4_HEAD_F32). Returns -1 on failure. */
+ * (DS4_HY4_HEAD_PACKED); draft rows, and decode rows under
+ * DS4_HY4_FLASH_DECODE=0, read F32 q_abs and write F32 `out`
+ * (DS4_HY4_HEAD_F32). Returns -1 on failure. */
 extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *a,
                                      const ds4_gpu_tensor *q, const ds4_hy4_cache *c, const ds4_gpu_tensor *ids,
                                      const float *sinks, uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
