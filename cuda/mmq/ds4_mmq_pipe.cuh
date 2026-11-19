@@ -27,7 +27,7 @@
 //
 // Only the block types the K2 recipe routes through the worklist have a
 // fetch/expand split (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS; all qk = 256, one block
-// per K iteration).  Tile widths above 64 keep the upstream loop: the
+// per K iteration), plus Hy4's Q4_K / Q5_K in the 64-wide worklist.  Tile widths above 64 keep the upstream loop: the
 // two-stage activation buffer of a 128-wide tile would push the block past
 // the 99 KB shared-memory limit.
 #pragma once
@@ -35,9 +35,16 @@
 static constexpr int DS4_MMQ_PIPE_MAX_X = 64;   // widest pipelined tile
 static constexpr int DS4_MMQ_PIPE_Y_STAGES = 2;
 
+static constexpr __host__ __device__ bool ds4_mmq_pipe_kquant(ggml_type type) {
+    return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K;
+}
+
+// Q4_K / Q5_K pipeline only in launches that ask for the 64-wide tile
+// (Hy4's 1536 x 1536 experts); other K-quant callers keep the upstream loop.
 static constexpr __host__ __device__ bool ds4_mmq_pipe_supported(ggml_type type) {
     return type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
-           type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS;
+           type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS ||
+           ds4_mmq_pipe_kquant(type);
 }
 
 // Shared bytes of one pipelined tile: ids, the two-stage activation buffer
@@ -114,6 +121,43 @@ struct ds4_pipe_raw<GGML_TYPE_IQ2_XS, mmq_y, nwarps, warp_size> {
     half d[nit];
 };
 
+// K-quants load in two passes, as upstream: one quant int per lane and row,
+// then two lanes per row for the 12 scale bytes and dm.
+template <int mmq_y, int nwarps, int warp_size>
+struct ds4_pipe_raw<GGML_TYPE_Q4_K, mmq_y, nwarps, warp_size> {
+    static constexpr int threads_per_row = MMQ_ITER_K / (4 * QR4_K);
+    static constexpr int nrows = warp_size / threads_per_row;
+    static constexpr int nit = mmq_y / (nwarps * nrows);
+    static constexpr int nit_dm = mmq_y / (nwarps * (warp_size / 2));
+    int   qs[nit];
+    int   sc[nit_dm][3];
+    half2 dm[nit_dm];
+};
+
+template <int mmq_y, int nwarps, int warp_size>
+struct ds4_pipe_raw<GGML_TYPE_Q5_K, mmq_y, nwarps, warp_size> {
+    static constexpr int threads_per_row = MMQ_ITER_K / (4 * QR5_K);
+    static constexpr int nrows = warp_size / threads_per_row;
+    static constexpr int nit = mmq_y / (nwarps * nrows);
+    static constexpr int nit_dm = mmq_y / (nwarps * (warp_size / 2));
+    int   qs[nit];
+    int   qh[nit];
+    int   sc[nit_dm][3];
+    half2 dm[nit_dm];
+};
+
+// Scale rows of the K-quant loaders: (i0 + warp row + lane/2) % mmq_y.
+template <int mmq_y, bool need_check>
+static __device__ __forceinline__ int ds4_pipe_dm_row(const int it, const int i_max) {
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int rows_per_warp = ggml_cuda_get_physical_warp_size() / 2;
+    int i = (it*nwarps*rows_per_warp + threadIdx.y*rows_per_warp + threadIdx.x/2) % mmq_y;
+    if (need_check) {
+        i = min(i, i_max);
+    }
+    return i;
+}
+
 // Global -> registers.  Row selection and clamping are the upstream
 // loader's; the block index kbx0 already includes the row-tile offset.
 template <ggml_type type, int mmq_y, bool need_check, typename raw_t>
@@ -150,12 +194,33 @@ static __device__ __forceinline__ void ds4_pipe_fetch(
             r.q2[it]    = get_int_b2(bxi->qs, 2*kqsx+0);
             r.aux32[it] = get_int_b2(bxi->qs, 2*kqsx+1);
             r.d[it]     = bxi->d;
+        } else if constexpr (type == GGML_TYPE_Q4_K) {
+            const block_q4_K * bxi = (const block_q4_K *) x + kbx0 + i*stride;
+            r.qs[it] = get_int_b4(bxi->qs, kqsx);
+        } else if constexpr (type == GGML_TYPE_Q5_K) {
+            const block_q5_K * bxi = (const block_q5_K *) x + kbx0 + i*stride;
+            r.qs[it] = get_int_b4(bxi->qs, kqsx);
+            r.qh[it] = get_int_b4(bxi->qh, kqsx % (QI5_K/4));
         } else {
             static_assert(type == GGML_TYPE_IQ2_XS, "unsupported pipelined type");
             const block_iq2_xs * bxi = (const block_iq2_xs *) x + kbx0 + i*stride;
             r.q2[it] = make_int2(get_int_b2(bxi->qs, 2*kqsx+0), get_int_b2(bxi->qs, 2*kqsx+1));
             r.ls[it] = bxi->scales[kqsx];
             r.d[it]  = bxi->d;
+        }
+    }
+
+    if constexpr (ds4_mmq_pipe_kquant(type)) {
+        using block_t = std::conditional_t<type == GGML_TYPE_Q4_K, block_q4_K, block_q5_K>;
+#pragma unroll
+        for (int it = 0; it < raw_t::nit_dm; ++it) {
+            const int i = ds4_pipe_dm_row<mmq_y, need_check>(it, i_max);
+            const block_t * bxi = (const block_t *) x + kbx0 + i*stride;
+            const int * scales = (const int *) bxi->scales;
+            r.sc[it][0] = scales[0];
+            r.sc[it][1] = scales[1];
+            r.sc[it][2] = scales[2];
+            r.dm[it]    = bxi->dm;
         }
     }
 }
@@ -255,6 +320,24 @@ static __device__ __forceinline__ void ds4_pipe_expand(
             const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
             const float d = r.d[it];
             x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + kqsx] = d * ls / 8; // (d * scale + d / 2) / 4
+        } else if constexpr (type == GGML_TYPE_Q4_K) {
+            int * x_qs = (int *) x_tile;
+            const int qs0 = r.qs[it];
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_1 + 16*(kqsx/8) + kqsx % 8 + 0] = (qs0 >> 0) & 0x0F0F0F0F;
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_1 + 16*(kqsx/8) + kqsx % 8 + 8] = (qs0 >> 4) & 0x0F0F0F0F;
+        } else if constexpr (type == GGML_TYPE_Q5_K) {
+            int * x_qs = (int *) x_tile;
+            const int ky = QR5_K*kqsx;
+            const int ql = r.qs[it];
+            const int ql0 = (ql >> 0) & 0x0F0F0F0F;
+            const int ql1 = (ql >> 4) & 0x0F0F0F0F;
+            const int qh = r.qh[it];
+            const int qh0 = ((qh >> (2 * (kqsx / (QI5_K/4)) + 0)) << 4) & 0x10101010;
+            const int qh1 = ((qh >> (2 * (kqsx / (QI5_K/4)) + 1)) << 4) & 0x10101010;
+            const int kq0 = ky - ky % (QI5_K/2) + kqsx % (QI5_K/4) + 0;
+            const int kq1 = ky - ky % (QI5_K/2) + kqsx % (QI5_K/4) + QI5_K/4;
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_1 + kq0] = ql0 | qh0;
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_1 + kq1] = ql1 | qh1;
         } else {
             static_assert(type == GGML_TYPE_IQ2_XS, "unsupported pipelined type");
             int   * x_qs = (int   *)  x_tile;
@@ -282,6 +365,27 @@ static __device__ __forceinline__ void ds4_pipe_expand(
             const float d = r.d[it];
             x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kqsx+0] = ((ls &  0x0F)*d + d/2)/4;
             x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kqsx+1] = ((ls >>    4)*d + d/2)/4;
+        }
+    }
+
+    if constexpr (ds4_mmq_pipe_kquant(type)) {
+        half2 * x_dm = (half2 *) ((int *) x_tile + 2*MMQ_TILE_NE_K);
+        const int ksc = threadIdx.x % 2;
+#pragma unroll
+        for (int it = 0; it < raw_t::nit_dm; ++it) {
+            const int i = ds4_pipe_dm_row<mmq_y, need_check>(it, i_max);
+            const int s0 = r.sc[it][0], s1 = r.sc[it][1], s2 = r.sc[it][2];
+            // unpack_scales_q45_K(scales, ksc) and (scales, ksc + 2) for
+            // ksc in {0, 1}, selected without a runtime register index.
+            const int sc32 = ksc ? (s2 & 0x0F0F0F0F) | ((s0 >> 2) & 0x30303030) : s0 & 0x3F3F3F3F;
+            const int m32 = ksc ? ((s2 >> 4) & 0x0F0F0F0F) | ((s1 >> 2) & 0x30303030) : s1 & 0x3F3F3F3F;
+            const uint8_t * sc8 = (const uint8_t *) &sc32;
+            const uint8_t *  m8 = (const uint8_t *)  &m32;
+            const half2 dm = r.dm[it] * make_half2(1.0f, -1.0f);
+#pragma unroll
+            for (int l = 0; l < int(sizeof(int)); ++l) {
+                x_dm[i*MMQ_MMA_TILE_X_K_Q8_1 + sizeof(int)*ksc + l] = dm*make_half2(sc8[l], m8[l]);
+            }
         }
     }
 }
