@@ -35,6 +35,8 @@ __device__ __forceinline__ uint32_t l31_fa_pe_swz(uint32_t row, uint32_t chunk) 
 }
 
 __device__ __forceinline__ uint32_t l31_fa_pack2(const float *x) { return glmvq_fa_pack(x[0], x[1]); }
+// A BF16 q_abs pair is already the A fragment's register.
+__device__ __forceinline__ uint32_t l31_fa_pack2(const __nv_bfloat16 *x) { return *(const uint32_t *)x; }
 
 struct l31_fa_dense {
     static constexpr uint32_t heads = GLMVQ_FA_HEADS, query_dim = L31_FA_KEY;
@@ -46,10 +48,11 @@ struct l31_fa_dense {
 
 // The row selector supplies physical KV slots. The MMA and softmax stay shared
 // between dense Ling history and Hy4's sliding or IndexPool-selected rows.
-// OUT = __nv_bfloat16 stores the rounded rows a BF16 consumer converts anyway.
-template <bool FP8, class Keys, typename OUT>
+// OUT = __nv_bfloat16 stores the rounded rows a BF16 consumer converts anyway;
+// QA = __nv_bfloat16 reads q_abs rounded by its producer, as the tile would.
+template <bool FP8, class Keys, typename OUT, typename QA>
 __device__ __forceinline__ void l31_fa_tile(
-        OUT *out, float *partial, float *stats, const float *q, const float *q_abs,
+        OUT *out, float *partial, float *stats, const float *q, const QA *q_abs,
         const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, Keys keys,
         uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
@@ -82,7 +85,7 @@ __device__ __forceinline__ void l31_fa_tile(
     }
     // q_abs fragments for this warp's 16 heads and latent half, in registers.
     uint32_t qa[16][4];
-    const float *qrow = q_abs + ((uint64_t)row * head_count + head0) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF;
+    const QA *qrow = q_abs + ((uint64_t)row * head_count + head0) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF;
     #pragma unroll
     for (uint32_t k = 0; k < 16; k++) {
         const uint32_t col = k * 16 + 2 * q4;

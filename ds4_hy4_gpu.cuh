@@ -523,7 +523,8 @@ extern "C" int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positio
 }
 extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x,
                                    const void *map, uint64_t size, uint64_t offset, uint32_t n, uint32_t h,
-                                   uint32_t in, uint32_t stride, uint32_t width, ds4_hy4_head_input input) {
+                                   uint32_t in, uint32_t stride, uint32_t width, ds4_hy4_head_input input,
+                                   ds4_hy4_head_output output) {
     const uint64_t bytes = (uint64_t)h * in * width * 2;
     const void *weight = ds4_gpu_hy4_weight(map, size, offset, bytes);
     if (!weight || !g_cublas_ready ||
@@ -537,8 +538,9 @@ extern "C" int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, co
     cuda_cublas_ws_prep(ds4_current_stream());
     const cublasStatus_t status = cublasGemmStridedBatchedEx(
         g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, width, n, in, &alpha, weight, CUDA_R_16BF, in,
-        (long long)in * width, pack->ptr, CUDA_R_16BF, h * stride, stride, &beta, out->ptr, CUDA_R_32F,
-        h * width, width, h, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        (long long)in * width, pack->ptr, CUDA_R_16BF, h * stride, stride, &beta, out->ptr,
+        output == DS4_HY4_HEAD_OUT_BF16 ? CUDA_R_16BF : CUDA_R_32F, h * width, width, h, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     return status == CUBLAS_STATUS_SUCCESS;
 }
 extern "C" int ds4_gpu_hy4_store(ds4_hy4_cache *c, const ds4_gpu_tensor *raw, const float *norm,
@@ -679,7 +681,7 @@ template <unsigned HEADS> struct FlashKeys {
 };
 template <unsigned HEADS, bool FP8>
 __global__ void __launch_bounds__(HEADS * 4, 1)
-    flash(bf16 *out, const float *qa, const float *q, const void *latent, const int8_t *exps,
+    flash(bf16 *out, const bf16 *qa, const float *q, const void *latent, const int8_t *exps,
           const bf16 *rope, FlashKeys<HEADS> keys) {
     l31_fa_tile<FP8>(out, nullptr, nullptr, q, qa, latent, exps, rope, keys, UINT32_MAX, 0.0625f);
 }
@@ -696,7 +698,7 @@ static bool launch_flash(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4
     const auto *exps = FP8 ? (const int8_t *)c->latent->ptr + (size_t)c->cap * 512 : nullptr;
     FlashKeys<HEADS> keys{pos, c->cap, ids ? (const int *)ids->ptr : nullptr, sinks};
     flash<HEADS, FP8><<<rows, HEADS * 4, bytes, ds4_current_stream()>>>(
-        (bf16 *)out->ptr, (const float *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
+        (bf16 *)out->ptr, (const bf16 *)a->ptr, (const float *)q->ptr, c->latent->ptr, exps,
         (const bf16 *)c->rope->ptr, keys);
     return true;
 }
@@ -813,24 +815,27 @@ extern "C" int ds4_gpu_hy4_index(ds4_gpu_tensor *ids, ds4_gpu_tensor *tile, ds4_
     }
     return cuda_ok(cudaGetLastError(), "Hy4 top complete groups");
 }
-/* Prefill rows go through the tiled kernel straight into `pack` as the v_b
- * projection's BF16 operand (DS4_HY4_HEAD_PACKED); decode and draft rows
- * write F32 `out` (DS4_HY4_HEAD_F32). Returns -1 on failure. */
+extern "C" int ds4_gpu_hy4_flash(uint32_t rows, int draft) {
+    const char *flash = getenv("DS4_HY4_FLASH");
+    return !draft && rows >= 16 && !(flash && strcmp(flash, "0") == 0);
+}
+/* Prefill rows (ds4_gpu_hy4_flash) go through the tiled kernel, reading BF16
+ * q_abs, straight into `pack` as the v_b projection's BF16 operand
+ * (DS4_HY4_HEAD_PACKED); decode and draft rows read F32 q_abs and write F32
+ * `out` (DS4_HY4_HEAD_F32). Returns -1 on failure. */
 extern "C" int ds4_gpu_hy4_attention(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *a,
                                      const ds4_gpu_tensor *q, const ds4_hy4_cache *c, const ds4_gpu_tensor *ids,
                                      const float *sinks, uint32_t pos, uint32_t rows, uint32_t heads, int draft) {
     if (!sinks) {
         return -1;
     }
-    const char *flash = getenv("DS4_HY4_FLASH");
-    if (!draft && rows >= 16 && !(flash && strcmp(flash, "0") == 0)) {
+    if (ds4_gpu_hy4_flash(rows, draft)) {
         const bool launched = heads == 64
                                   ? hy4::launch_flash<64, false>(pack, a, q, c, ids, sinks, pos, rows)
                               : c->fp8 ? hy4::launch_flash<32, true>(pack, a, q, c, ids, sinks, pos, rows)
                                        : hy4::launch_flash<32, false>(pack, a, q, c, ids, sinks, pos, rows);
-        if (launched) {
-            return cuda_ok(cudaGetLastError(), "Hy4 flash MLA") ? DS4_HY4_HEAD_PACKED : -1;
-        }
+        // q_abs is BF16 here, so the F32 kernels cannot stand in.
+        return launched && cuda_ok(cudaGetLastError(), "Hy4 flash MLA") ? DS4_HY4_HEAD_PACKED : -1;
     }
     auto kernel = draft ? (c->fp8 ? hy4::attend<true, true> : hy4::attend<false, true>)
                         : (c->fp8 ? hy4::attend<true, false> : hy4::attend<false, false>);

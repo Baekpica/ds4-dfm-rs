@@ -189,6 +189,9 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
     const uint32_t h = sparse ? 32 : 64;
     const float theta = sparse ? 1e7f : 1e4f;
     ds4_hy4_cache *c = &g->layer[il];
+    // The tiled kernel rounds q_abs to BF16 as it loads it.
+    const ds4_hy4_head_output q_abs = ds4_gpu_hy4_flash(n, draft_groups != NULL) ? DS4_HY4_HEAD_OUT_BF16
+                                                                                  : DS4_HY4_HEAD_OUT_F32;
     if (!hy4_mm_norm(g, m, g->qa, l->attn_q_a, n) || !hy4_norm(g->qa, m, l->attn_q_a_norm, g->qa, n) ||
         !hy4_mm(g->q, m, l->attn_q_b, g->qa, n) || !hy4_mm_norm(g, m, g->kv, l->attn_kv_a_mqa, n) ||
         !ds4_gpu_hy4_rope(g->q, g->positions, n, h, 256, 192, theta) ||
@@ -196,7 +199,7 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
         !ds4_gpu_hy4_store(c, g->kv, hy4_weight(m, l->attn_kv_a_norm), pos, n) ||
         (sparse && !draft_groups && !hy4_run_index(g, m, l, c, n, pos)) ||
         !ds4_gpu_hy4_head_mm(g->absorbed, g->packed, g->q, m->map, m->size, l->attn_k_b->abs_offset, n, h, 192,
-                             256, 512, DS4_HY4_HEAD_F32)) {
+                             256, 512, DS4_HY4_HEAD_F32, q_abs)) {
         return false;
     }
     // Prefill attention leaves the v_b operand packed as BF16.
@@ -205,7 +208,7 @@ static bool hy4_attention(ds4_hy4_graph *g, const ds4_model *m, const ds4_layer_
                                                hy4_weight(m, l->attn_sinks), pos, n, h, draft_groups != NULL);
     return attended >= 0 &&
            ds4_gpu_hy4_head_mm(g->q, g->packed, g->attended, m->map, m->size, l->attn_v_b->abs_offset, n, h,
-                               512, 512, 256, (ds4_hy4_head_input)attended) &&
+                               512, 512, 256, (ds4_hy4_head_input)attended, DS4_HY4_HEAD_OUT_F32) &&
            hy4_mm(g->attn_gate, m, l->attn_gate, g->norm, n) &&
            ds4_gpu_hy4_gate(g->q, g->attn_gate, n, h * 256) &&
            hy4_mm(g->branch, m, l->attn_output, g->q, n) &&
