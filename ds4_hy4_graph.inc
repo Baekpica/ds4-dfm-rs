@@ -262,6 +262,32 @@ static bool hy4_head_row(ds4_hy4_graph *g, const ds4_model *m, const ds4_weights
     ds4_gpu_tensor_free(hc);
     return ok;
 }
+static bool hy4_verify_head(ds4_hy4_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t n) {
+    const char *env = getenv("DS4_HY4_BATCH_HEAD");
+    const uint64_t bytes = (uint64_t)n * 120832 * sizeof(float);
+    if ((env && strcmp(env, "0") == 0) || ds4_gpu_tensor_bytes(g->ff_gate) < bytes) {
+        for (uint32_t r = 0; r < n; r++) {
+            if (!hy4_head_row(g, m, w, r, r + 1) ||
+                !ds4_gpu_tensor_read(g->logits, 0, g->verify_logits + (size_t)r * 120832, 120832 * 4)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (!hy4_mm(g->mix, m, w->output_hc_fn, g->streams, n) ||
+        !ds4_gpu_hy4_hc(g->input, NULL, g->streams, g->mix, hy4_weight(m, w->output_hc_scale),
+                        hy4_weight(m, w->output_hc_base), n) ||
+        !hy4_norm(g->norm, m, w->output_norm, g->input, n) ||
+        !hy4_mm(g->ff_gate, m, w->output, g->norm, n)) {
+        return false;
+    }
+    for (uint32_t r = 0; r < n; r++) {
+        if (!ds4_gpu_tensor_copy(g->seed, (r + 1) * HY4_SEED_BYTES, g->norm, (uint64_t)r * 3072 * 4, 3072 * 4)) {
+            return false;
+        }
+    }
+    return ds4_gpu_tensor_read(g->ff_gate, 0, g->verify_logits, bytes);
+}
 static bool hy4_capture_groups(ds4_hy4_graph *g, uint32_t il, uint32_t n, uint32_t pos) {
     if (il < 25 || (il - 25) % 4 || pos + n <= 2048) {
         return true;
@@ -319,16 +345,8 @@ static bool hy4_forward(ds4_hy4_graph *g, const ds4_engine *e, const int *prev, 
             return false;
         }
     }
-    if (head) {
-        for (uint32_t row = g->verifying ? 0 : n - 1; row < n; row++) {
-            if (!hy4_head_row(g, m, w, row, g->verifying ? row + 1 : 0)) {
-                return false;
-            }
-            if (g->verifying &&
-                !ds4_gpu_tensor_read(g->logits, 0, g->verify_logits + (size_t)row * 120832, 120832 * 4)) {
-                return false;
-            }
-        }
+    if (head && !(g->verifying ? hy4_verify_head(g, m, w, n) : hy4_head_row(g, m, w, n - 1, 0))) {
+        return false;
     }
     g->position = pos + n;
     if (g->position > g->high) {

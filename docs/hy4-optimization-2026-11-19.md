@@ -20,6 +20,14 @@ At 512-row chunks, the tiled scorer changed mean NLL by +0.0180, +0.0236 and −
 
 The first combined run used the Q8_0 DFly2 at depth two, 2,048-row chunks and 128 greedy output tokens per frontier, with 32 incremental frontiers from 2K to 64K. The arithmetic means were 730.16 prefill and 15.75 decode tok/s. Prefill ranged from 717.09 to 744.22. Decode varied from 12.36 to 21.30 with draft acceptance. [Individual frontiers](benchmarks/hy4-flash-mxq-2026-11-19/sweep-spec.csv).
 
+## Batch the DFly2 target output head
+
+A 4K DFly2 trace attributed 13.2% of decode wall time to one-row BF16 projections and 11.3% to small three-row cuBLAS kernels. Three calls to the 120,832 × 3,072 BF16 head took a median 12.72 ms in isolation. One three-row cuBLAS call took 3.15 ms. The target now computes its head over the verify block and reads all logits once. It borrows the existing expert buffer after the final layer and preserves each row's DFly2 seed. `DS4_HY4_BATCH_HEAD=0` selects the one-row path.
+
+Four fresh 2K–8K runs used the same novel, 2,048-row chunks, 64 greedy outputs and Q8_0 draft depth two. The per-run means were 17.16–17.38 tok/s with one-row heads and 17.97–18.03 with the batched head. All four frontiers improved in both comparisons. Prefill means spanned 717.05–719.60 and 717.16–721.96 tok/s. One-row heads took 35/28/30/32 verify calls from 2K to 8K. Batched heads took 35/28/31/33 in both runs. The target dot uses the same BF16 operands and FP32 output with a different reduction order. [One-row A](benchmarks/hy4-flash-mxq-2026-11-19/head-0-a.csv) · [One-row B](benchmarks/hy4-flash-mxq-2026-11-19/head-0-b.csv) · [Batched A](benchmarks/hy4-flash-mxq-2026-11-19/head-1-a.csv) · [Batched B](benchmarks/hy4-flash-mxq-2026-11-19/head-1-b.csv).
+
+We also tested direct narrow BF16 dots throughout the model. They shortened a verify step from 118–120 to 110–112 ms, but needed more verify calls and lost generated tokens/s at three of four frontiers. The retained change batches only the output head. Splitting the three-row routed gate into individual MMVQs improved the isolated gate slightly and failed to produce a consistent generation gain.
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.
