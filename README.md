@@ -40,7 +40,7 @@ documented whole-model results are omitted.
 | Model / artifact | Prefill | Decode | Workload / evidence |
 |---|---:|---:|---|
 | Qwen3.8 Flash Next Q5, FP8 PLE | 1,323.1 | 28.93 | [2K–64K sweep, MTP 2](docs/performance.md#qwen) |
-| Tencent Hy4-flash MXQ | 816.45 | 16.64 | [2K–64K incremental, Q8_0 DFly2 depth 2](docs/performance.md#hy4-flash-mxq) |
+| Tencent Hy4-flash MXQ | 1,186.46 | 17.40 | [2K–64K incremental, Q8_0 DFly2 depth 2](docs/performance.md#hy4-flash-mxq) |
 | Qwen3.8 Uncensored Q5, FP8 PLE | 1,310.8 | 28.96 | [2K–64K sweep, MTP 2](docs/performance.md#qwen-uncensored) |
 | Solar Open2 250B MXQ-v1 | 1,095.61 | 17.43 | [8K + 64, plain](docs/performance.md#solar) |
 | Motif-3 MQ87-88 | 627.19 | 15.06 | [8K + 64, historical C](docs/performance.md#motif) |

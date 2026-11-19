@@ -100,6 +100,8 @@ Decode and verify rows now take the prefill MLA tile, with each row's 512 window
 
 The first DFly2 pair emitted 1.829 tokens per verify in both runs, at 113.3 and 106.1 ms per verify. Over the 1,664 teacher-forced positions (1,560 of them decode steps) NLL moved -0.0311 against the scalar build (95 % document bootstrap -0.0702 to +0.0002) with 92.1 % top-1 agreement, to 2.95417 against the teacher's 2.97612. `DS4_HY4_FLASH_DECODE=0` restores the scalar kernel for target rows.
 
+A DFly2 verify step at 32K left the GPU idle for ~11 % of its wall time. About a dozen `cudaMallocAsync` calls per step took 0.3-0.7 ms in driver ioctls, because the default pool releases its pages at every synchronization. Keeping 64 MB of freed pool pages measured +0.6 % plain and +0.2 % DFly2 over two pairs each, so that global setting was not adopted. Plain decode now sits at ~87 % of its 17.8 tok/s weight-stream bound. A verify step reads the dense weights once and the three rows' expert union (its routed MMQ moved ~7.3 GB, 2.4 tokens' worth), ~17.8 GB before the drafter, so at 1.83 tokens per verify even a bandwidth-bound DFly2 step would stay under ~25 tok/s.
+
 ## Teacher-forced quality
 
 Each of 26 held-out documents contributed 64 next-token predictions. Lengths ranged from 512 to 4,096. Intervals resample whole documents with replacement (3,000 draws). Positive paired NLL means the model assigned less probability to the reference continuation.
@@ -130,7 +132,9 @@ The depth-two Q8_0 DFly2 trial kept the supplied reference token. Its verified t
 
 ## Released configuration
 
-One 2K–64K sweep after scheduling the SSD reads and batching the target head averaged 816.45 prefill and 16.64 decode tok/s. It used 2,048-row chunks, Q8_0 DFly2 depth two and 128 generated tokens at each of 32 frontiers. The 64K frontier measured 804.21 / 14.68 tok/s. [Curve and Qwen comparison](performance.md#hy4-flash-mxq) · [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_af33f376.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_af33f376.meta.txt).
+The released binary's 2K–64K sweep averaged **1,186.46 prefill and 17.40 decode tok/s** (89.7 % and 60.2 % of the Qwen3.8 reference). It used 2,048-row chunks, Q8_0 DFly2 depth two and 128 generated tokens at each of 32 frontiers, with 1.83 tokens per verification. The 64K frontier measured 1,163.33 / 15.41 tok/s. [Curve and Qwen comparison](performance.md#hy4-flash-mxq) · [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_022f4be9.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_022f4be9.meta.txt).
+
+The sweep before this round's prefill and decode work averaged 816.45 / 16.64 tok/s. [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_af33f376.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_af33f376.meta.txt).
 
 The shorter draft-depth comparison used four 2K–8K frontiers, 64 generated tokens each and a fresh process per depth. It records the arithmetic mean of per-frontier rates and the total emitted tokens divided by verification calls. Text and acceptance vary with width. [Per-frontier rates and acceptance](benchmarks/hy4-flash-mxq-2026-11-19/draft-depth.csv).
 
