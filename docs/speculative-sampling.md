@@ -74,9 +74,16 @@ New families implement step 1 in their trial and call the shared step 2.
 | Step-3.7, Inkling | serial (Step also banks) | MTP sidecar |
 | Naive N0.5 | serial, banks | DSpark sidecar |
 | Beam VQ | serial | DFlash2 |
+| Hy4-flash MXQ | serial, banks | DFly2 sidecar |
 | MiniMax VQ | serial | DSpark |
 | DeepSeek V4, Qwen4Exp | banks | MTP (bank lanes sampled before this change) |
 | DeepSeek V4.1 | serial | in-kernel sampling of its own engine |
+
+Hy4 checks the target distribution at the width that verified the drafts. The
+gate replays the same prefix at each possible cut, samples the resulting
+logits independently and checks the final RNG state. It reports agreement with
+one-row greedy and seeded decoding separately. Batched MoE arithmetic can
+change those streams. [Hy4 qualification](hy4-flash-mxq.md).
 
 The DeepSeek V4 and Qwen4Exp serial verifiers (CLI `--mtp` only) compare
 argmax rows; a sampling session there decodes one target token per step.

@@ -147,7 +147,7 @@ pub use serving::{
 };
 pub use serving_check::{
     checklist_ctx, gemma4_mtp_gate, serving_check, serving_check_v41, Checklist, MtpBlock,
-    MtpReport,
+    MtpReport, TargetReplay,
 };
 pub use serving_host::{
     attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
