@@ -69,3 +69,16 @@ These three regions represent one document. The BF16 reference changes the laten
 With tiled attention, tiled IndexPool and the batched output head, the plain target averaged **3.00223 NLL** against the BF16 teacher's **2.97612**, with 89.12% top-1 agreement. The paired difference was +0.02611 (95% document-bootstrap interval −0.00587 to +0.06053).
 
 The depth-two Q8_0 DFly2 trial kept the supplied reference token. Its verified target rows averaged **3.02228 NLL** across the same positions, with 88.88% top-1 agreement with the teacher. The paired difference from the teacher was +0.04616 (+0.00502 to +0.09124). Against the plain target, it was +0.02005 (−0.01280 to +0.05298), with 92.19% top-1 agreement. Of the 1,664 positions, 1,534 used a three-row trial, 26 used a two-row trial at the context boundary and 104 used prompt synchronization. Each of the 26 documents contributed 64 targets. [Document aggregates](benchmarks/hy4-flash-mxq-2026-11-19/teacher-documents.csv).
+
+## Released configuration
+
+One 2K–64K sweep after scheduling the SSD reads and batching the target head averaged 816.45 prefill and 16.64 decode tok/s. It used 2,048-row chunks, Q8_0 DFly2 depth two and 128 generated tokens at each of 32 frontiers. The 64K frontier measured 804.21 / 14.68 tok/s. [Curve and Qwen comparison](performance.md#hy4-flash-mxq) · [Raw sweep](../speed-bench/gb10_spark_hy4_mxq_af33f376.csv) · [Binary and artifact](../speed-bench/gb10_spark_hy4_mxq_af33f376.meta.txt).
+
+The shorter draft-depth comparison used four 2K–8K frontiers, 64 generated tokens each and a fresh process per depth. It records the arithmetic mean of per-frontier rates and the total emitted tokens divided by verification calls. Text and acceptance vary with width. [Per-frontier rates and acceptance](benchmarks/hy4-flash-mxq-2026-11-19/draft-depth.csv).
+
+| Draft proposals | Decode tok/s | Tokens per verification |
+|---:|---:|---:|
+| 1 | 16.72 | 1.62 |
+| 2 | 17.99 | 2.02 |
+| 3 | 17.64 | 2.17 |
+| 5 | 14.28 | 2.10 |
