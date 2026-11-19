@@ -1063,6 +1063,18 @@ pub fn attach_host_quote(
     {
         // Eleven 32-head and thirty 64-head layers; 34 bytes per Q8_0 block.
         weights_bytes += (11 * 32 + 30 * 64) * 256u64 * (1024 + 2 * 3072) / 32 * 34;
+        // MQ-Q5-Q8 adds the Q8_0 matrices the repack admits: 42 q_a, five
+        // 3072 x 1536 FFN projections in 41 layers, four engram_kv, the
+        // leading FFN's gate/up and the head (kv_a and k_b/v_b are not).
+        if model_path.and_then(|p| crate::hy4::recipe(p).ok()) == Some(crate::hy4::Recipe::Mq5Q8) {
+            weights_bytes += (42 * 3072 * 1024
+                + 41 * 5 * 3072 * 1536
+                + 4 * 1536 * 15360
+                + 2 * 3072 * 13824
+                + 3072 * 120832u64)
+                / 32
+                * 34;
+        }
     }
     // A Gemma-4 host-cold lane does not put the mapping on the device: the
     // map install promotes every non-cold tensor and leaves each cold record
@@ -1083,10 +1095,13 @@ pub fn attach_host_quote(
         }
     }
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
-    // A Hy4 drafter brings the Q8_0 draft head the engine builds at load.
+    // A Hy4 drafter brings the Q8_0 copy the engine builds of a BF16 head.
     if caps.family == ModelFamily::Hy4
         && mtp_path.is_some()
         && req.backend == Backend::Cuda
+        && model_path
+            .and_then(|p| crate::hy4::recipe(p).ok())
+            .is_none_or(|r| r.bf16_head())
         && std::env::var("DS4_HY4_DRAFT_HEAD_Q8").map_or(true, |v| v != "0")
     {
         mtp_bytes += crate::hy4::DRAFT_HEAD_BYTES;

@@ -75296,9 +75296,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         // Built from the resident head, after the startup cache owns its range.
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4 && e->backend == DS4_BACKEND_CUDA && e->mtp_ready &&
             e->mtp_draft_tokens > 0) {
-            e->hy4_draft.head = ds4_gpu_hy4_draft_head(e->model.map, e->model.size, e->weights.output->abs_offset);
+            const bool bf16 = e->weights.output->type == DS4_TENSOR_BF16;
+            if (bf16) {
+                e->hy4_draft.head = ds4_gpu_hy4_draft_head(e->model.map, e->model.size, e->weights.output->abs_offset);
+            }
             fprintf(stderr, "ds4: Hy4 DFly2 draft head %s\n",
-                    e->hy4_draft.head ? "Q8_0 copy (0.37 GiB)" : "BF16 (shared with the target)");
+                    e->hy4_draft.head ? "Q8_0 copy (0.37 GiB)"
+                    : bf16            ? "BF16 (shared with the target)"
+                                      : "Q8_0 (shared with the target)");
         }
 #endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",

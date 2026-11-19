@@ -1,0 +1,16 @@
+Hy4-flash mixed quant (MQ-Q5-Q8) on DGX Spark, 2026-11-19
+Inference source 0f63cfa462dee6de386b341e0eddf49d50409a1d
+ds4-bench SHA256 cafaccab769d806991f486acd6e4e327fb2ac615ce3c851ff94dda82ed83ae63
+CUDA build make CUDA_ARCH=sm_121 ds4-bench, CUDA 13.5.37 (sm_121a)
+Artifact Baekpica/Hy4-flash-Mixed-Quant-GGUF @ 9a32b58fc7cc32d3e0488ddb916efd05cdf33cd3, MQ-Q5-Q8-SSD-ENGRAM-FP8 (derived from 94cdace56aaa0afc463311e31a2bbc3e613dcce2 MQ-Q5-SSD-ENGRAM-FP8 by reproduction/derive_q8.py)
+Release manifest SHA256 889d2a6a8622a230e294dfc568caf5f80a7c557d0a8e38644432ee6f9abcbfbd
+Artifact checksum list SHA256 ac8546178801bdaba7e7b40d14b3b156ef3e45c69199759896e37d4e85328123, all 20 entries matched locally
+Corpus speed-bench/promessi_sposi.txt SHA256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+GB10, 48 SMs, 121.6 GiB unified, driver 620.70.06, 300-2200 MHz clock policy active, busy SM clocks 2177-2190 MHz in 22 samples at >=70% utilization
+One fresh Rust process. Context 65665, FP8 sparse KV, BF16 SWA, SSD Engram and BF16 embedding, 2048-row chunks.
+32 incremental frontiers, 2048 new tokens and 128 greedy tokens each, Q8_0 DFly2 depth 2. Rates are arithmetic means of per-frontier rates.
+Prefill 1170.10156 (1088.14 to 1197.96) tok/s
+Decode 20.97281 (17.09 to 28.61) tok/s
+Accepted/emitted non-EOS tokens per verify call 1.77470
+Host guard reserve/trip 2 GiB, minimum available 8.55 GiB, maximum PSI full avg10 0.00%, exit 0
+Command DS4_HY4_PREFILL_CHUNK=2048 ./ds4-bench --cuda -m "$model" --mtp "$model/dfly2-q8_0.gguf" --mtp-draft 2 --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir "$dump" --csv "$csv"

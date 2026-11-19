@@ -58,6 +58,9 @@ pub enum TypeClass {
     GlmVqNative(u32),
     /// Ling-3.1 v1 type or its v2 recipe's (the recipe pins which one).
     Ling31Native(u32, u32),
+    /// Hy4 MQ-Q5 type or its MQ-Q5-Q8 derivation's (the release manifest
+    /// pins which one).
+    Hy4Native(u32, u32),
     /// An F32 FP8 block scale, present exactly when its weight is FP8.
     Ling31Scale,
     GlmRouted,
@@ -94,6 +97,13 @@ impl TypeClass {
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
             TypeClass::GlmDense => "glm-dense".into(),
             TypeClass::GlmVqNative(t) => format!("glm-vq-native:{}|q4_K", tensor_type_name(t)),
+            TypeClass::Hy4Native(t, q8) => {
+                format!(
+                    "hy4-native:{}|{}",
+                    tensor_type_name(t),
+                    tensor_type_name(q8)
+                )
+            }
             TypeClass::Ling31Native(t, v2) => {
                 format!(
                     "ling31-native:{}|{}",
@@ -199,7 +209,7 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
     match class {
         TypeClass::Exact(t) | TypeClass::OptionalExact(t) => typ == t,
         TypeClass::GlmVqNative(t) => typ == t || typ == T_Q4_K,
-        TypeClass::Ling31Native(t, v2) => typ == t || typ == v2,
+        TypeClass::Ling31Native(t, v2) | TypeClass::Hy4Native(t, v2) => typ == t || typ == v2,
         TypeClass::Ling31Scale => typ == T_F32,
         TypeClass::Plain => typ == T_F16 || typ == T_F32,
         TypeClass::MotifProj => typ == T_F16 || typ == T_BF16,

@@ -6,13 +6,15 @@ use std::io::{BufWriter, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(3..=4).contains(&args.len()) {
-        return Err("usage: hy4_quality MODEL CASES.json OUTPUT.jsonl [DFLY2]".into());
+    if !(3..=5).contains(&args.len()) {
+        return Err("usage: hy4_quality MODEL CASES.json OUTPUT.jsonl [DFLY2 [DRAFTS]]".into());
     }
     let (path, reference, output) = (&args[0], &args[1], &args[2]);
     let drafter = args.get(3).map(String::as_str);
+    let drafts: usize = args.get(4).map_or(Ok(2), |d| d.parse())?;
     let cases: Value = serde_json::from_reader(std::fs::File::open(reference)?)?;
     let cases = cases.as_array().ok_or("expected an array of cases")?;
+    let depth = [ModelOpenOption::MtpDraftTokens(i32::try_from(drafts)?)];
     let model = Model::open_with_support_options(
         path,
         Backend::Cuda,
@@ -20,11 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         true,
         drafter,
         None,
-        if drafter.is_some() {
-            &[ModelOpenOption::MtpDraftTokens(2)]
-        } else {
-            &[]
-        },
+        if drafter.is_some() { &depth } else { &[] },
     )?;
     if model.family() != ModelFamily::Hy4 {
         return Err("Hy4 release required".into());
@@ -44,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let (mut verify_rows, mut accepted) = (0, 0);
             if at == consumed && consumed != 0 && drafter.is_some() {
-                verify_rows = (ids.len() - at).min(3);
+                verify_rows = (ids.len() - at).min(drafts + 1);
                 // The trial's own prefix (teacher token plus matching drafts)
                 // measures draft acceptance on fixed text; only the teacher
                 // token is committed.

@@ -62,9 +62,15 @@ int ds4_gpu_hy4_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions, uint32_
 typedef enum { DS4_HY4_HEAD_F32, DS4_HY4_HEAD_PACKED } ds4_hy4_head_input;
 /* A head projection's result type: BF16 when its consumer rounds it anyway. */
 typedef enum { DS4_HY4_HEAD_OUT_F32, DS4_HY4_HEAD_OUT_BF16 } ds4_hy4_head_output;
+/* type: the weight's GGUF type, BF16 or (MQ-Q5-Q8) Q8_0. */
 int ds4_gpu_hy4_head_mm(ds4_gpu_tensor *out, ds4_gpu_tensor *pack, const ds4_gpu_tensor *x, const void *map,
                         uint64_t size, uint64_t offset, uint32_t rows, uint32_t heads, uint32_t in,
-                        uint32_t stride, uint32_t width, ds4_hy4_head_input input, ds4_hy4_head_output output);
+                        uint32_t stride, uint32_t width, ds4_hy4_head_input input, ds4_hy4_head_output output,
+                        uint32_t type);
+int ds4_gpu_hy4_router(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset, const ds4_gpu_tensor *x,
+                       uint32_t n);
+int ds4_gpu_hy4_q8_wide(ds4_gpu_tensor *out, const void *map, uint64_t size, uint64_t offset, uint32_t in,
+                        uint32_t outs, const ds4_gpu_tensor *x, ds4_hy4_rows input, uint32_t n);
 /* Whether rows take the tiled MLA kernel, which reads q_abs as BF16. */
 int ds4_gpu_hy4_flash(uint32_t rows, int draft);
 int ds4_gpu_hy4_store(ds4_hy4_cache *cache, const ds4_gpu_tensor *raw, const float *norm, uint32_t pos,

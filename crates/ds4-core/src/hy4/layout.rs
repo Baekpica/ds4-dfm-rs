@@ -1,4 +1,5 @@
-//! GGUF dimensions (input width first) of the MQ-Q5-SSD-ENGRAM-FP8 recipe.
+//! GGUF dimensions (input width first) of the MQ-Q5-SSD-ENGRAM-FP8 recipe
+//! and its MQ-Q5-Q8 derivation.
 use crate::{LayoutSpec, TypeClass};
 
 const F32: u32 = 0;
@@ -24,6 +25,34 @@ fn tensor(name: String, ty: u32, dims: &[u64]) -> LayoutSpec {
         ndim: dims.len() as u32,
         dim,
     }
+}
+
+/// MQ-Q5-Q8-SSD-ENGRAM-FP8 stores these BF16 projections as Q8_0 and the
+/// F32 router (widened BF16 values) as BF16.
+fn derived(name: &str) -> Option<u32> {
+    const Q8_ROLES: [&str; 10] = [
+        "attn_q_a.weight",
+        "attn_kv_a_mqa.weight",
+        "attn_k_b.weight",
+        "attn_v_b.weight",
+        "ffn_gate_shexp.weight",
+        "ffn_up_shexp.weight",
+        "ffn_down_shexp.weight",
+        "ffn_routed_down.weight",
+        "ffn_routed_up.weight",
+        "engram_kv.weight",
+    ];
+    const Q8_NAMES: [&str; 4] = [
+        "output.weight",
+        "blk.0.ffn_gate.weight",
+        "blk.0.ffn_up.weight",
+        "blk.0.ffn_down.weight",
+    ];
+    let role = name.splitn(3, '.').nth(2).unwrap_or(name);
+    if Q8_NAMES.contains(&name) || (name.starts_with("blk.") && Q8_ROLES.contains(&role)) {
+        return Some(Q8_0);
+    }
+    name.ends_with(".ffn_gate_inp.weight").then_some(BF16)
 }
 
 pub(crate) fn layouts() -> Vec<LayoutSpec> {
@@ -104,6 +133,11 @@ pub(crate) fn layouts() -> Vec<LayoutSpec> {
             add("ffn_gate_exps.weight", gate, &[1536, 1536, 512]);
             add("ffn_up_exps.weight", gate, &[1536, 1536, 512]);
             add("ffn_down_exps.weight", Q5_K, &[1536, 1536, 512]);
+        }
+    }
+    for spec in &mut out {
+        if let (TypeClass::Exact(source), Some(q8)) = (spec.class, derived(&spec.name)) {
+            spec.class = TypeClass::Hy4Native(source, q8);
         }
     }
     out

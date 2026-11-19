@@ -511,6 +511,10 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   217-235 GB/s; a warp per output row loading each weight once for all
   rows, in the one-row order, ran 233-258 and made verify rows equal
   decode rows.
+- **A speedup no kernel explains is a bug until the gate says otherwise.**
+  A widened-weight path made Hy4's 32K append 19% faster while its GEMMs
+  were ~6% of the chunk; NLL read 9.98 against 2.98. `cuda_tmp_alloc`
+  hands every caller the same scratch, and a second call aliased the first.
 - **Count CUDA graph executions as busy.** nsys' default graph trace puts
   a graph launch in `CUPTI_ACTIVITY_KIND_GRAPH_TRACE`, not the kernel
   table: a Hy4 verify step looked 29% idle from kernels, 11% with graphs,
