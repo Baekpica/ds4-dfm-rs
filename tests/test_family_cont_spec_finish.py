@@ -13,7 +13,8 @@ repo = Path(__file__).resolve().parents[1]
 s = (repo / 'ds4.c').read_text()
 fn = s.index('static int family_cont_spec(')
 a = s.index('    int emitted = 1;', fn)
-b = s.index('    if (gr) {\n        gr->graph[bank] = s.glm53_graph;', a)
+last = '    if (rows < emitted) { ds4_metric_add(&ds4_metrics_get()->spec_hits, 1u); }'
+b = s.index(last, a) + len(last)
 f = s.index('static bool cont_spec_forced(')
 forced = s[f:s.index('\n}\n', f) + 3]
 code = r'''
@@ -40,6 +41,7 @@ static int land(ds4_session *s, int keep, char *err, size_t errlen) {
     return 0;
 }
 #define ds4_session_glm53_commit land
+#define ds4_session_hy4_commit land
 #define ds4_session_iquest_commit land
 #define ds4_session_ling31_commit land
 #define ds4_session_naive_commit land
@@ -77,7 +79,7 @@ static int step(int keep, uint32_t max_new, int eos, int abort_token, float temp
     bank_t *cb = &bank;
     const int tokens[4] = {10, 11, 12, 13};
     int graph = 0;
-    void *gr = NULL, *ir = NULL, *lr = &graph, *nr = NULL, *ud = NULL;
+    void *hr = &graph, *gr = NULL, *ir = NULL, *lr = NULL, *nr = NULL, *ud = NULL;
     int (*on_token)(void *, void *, int) = streaming ? deliver : NULL;
     const void *ctx = NULL;
     const int first_override = DS4_SAMPLE_OVERRIDE_NONE;
