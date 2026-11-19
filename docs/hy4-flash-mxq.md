@@ -30,6 +30,12 @@ DFly2 shares the target embedding, output head and the caches of target layers 2
 
 The shipped Jinja template controls thinking and grouped tool calls. The server frames tool calls for the client. Image and MP4 video inputs use base64 payloads, the release's 16-pixel patches, 2×2 spatial merge, learned row terminator and interleaved temporal, height and width rotary axes. With the shipped video configuration every decoded frame is used. Linux video input requires FFmpeg and FFprobe with the `fd` input protocol.
 
+## DGX Spark serving checks
+
+At 8,192 context with two text banks, a client received English and Korean answers, distinguished red and blue stills and identified a red two-frame MP4. A streamed weather tool call contained the function name and Seoul argument. The client returned a tool result and received an answer using its temperature value. An identical 1,414-token request reused 1,413 tokens. Its continuation reused 1,415.
+
+At 4,096 context, the 718-token checklist exercised common-prefix rewind, re-rendered continuation, session and bank disk restores, snapshots, a fork and two simultaneous banks. The Q8_0 DFly2 accepted three-token blocks at draft depth two. Replaying the same verified target rows reproduced 16 greedy draws and eight seeded draws with their RNG handoff. The one-row greedy stream matched. The one-row seeded stream diverged on the sixth token in the original fixture. At that frontier both RNG states agreed and the logits differed by up to 0.9204. Use the [quality report](hy4-optimization-2026-11-19.md) for comparisons across arithmetic paths.
+
 ## Reproducing the checks
 
 `make gate-hy4` runs the CUDA attention and rotary arithmetic check, processor tests and output-protocol fixtures. Set `HY4_MODEL_PATH` to the release directory for `cargo test -p ds4-core --test hy4 -- --ignored` and `cargo test -p ds4-core --lib hy4 -- --ignored`. These tests read the released template, tokenizer, weight metadata and selected Engram records.

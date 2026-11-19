@@ -737,20 +737,20 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::hy4::CONTEXT),
-            qualified_ctx: None,
-            qualified_banks: None,
-            qualified_prompt: None,
+            qualified_ctx: Some(8192),
+            qualified_banks: Some(2),
+            qualified_prompt: Some(1439),
             media_serial: true,
         },
         // Short two-bank HTTP gates qualify partial reuse and disk restore
@@ -2830,6 +2830,9 @@ fn measured_limits(
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
+        Variant::Hy4FlashMxq => {
+            "8K with two text banks and Q8_0 DFly2 at depth 2 passed HTTP reuse, serial image/video and tool turns. The 4K checklist covers snapshot, disk and fork. The source context is 1M"
+        }
         Variant::DeepSeek41Flash => {
             "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are qualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
         }

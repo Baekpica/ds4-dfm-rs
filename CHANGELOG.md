@@ -8,6 +8,11 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Added Tencent Hy4-flash MXQ to the Rust hosts on CUDA. The release keeps
+  its 98.91 GiB trunk resident, gathers Engram and embedding rows from SSD,
+  and supports image/video input, grouped tool calls and DFly2. Baekpica
+  published the mixed-quant artifact. [Family and serving checks](docs/hy4-flash-mxq.md) · [PR #158](https://github.com/Baekpica/ds4-dfm-rs/pull/158).
+
 ## v0.1.6 — 2026-11-18
 
 [Release ledger, benchmarks and upgrade notes](docs/releases/v0.1.6.md).
