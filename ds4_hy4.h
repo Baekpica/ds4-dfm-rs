@@ -14,7 +14,16 @@ typedef struct {
     int fp8;
 } ds4_hy4_cache;
 
+/* Routed gate, up and down expert tensors: [512][1536][1536] Q4_K or Q5_K. */
+typedef struct {
+    uint64_t offset[3], bytes[3];
+    uint32_t type[3];
+} ds4_hy4_experts;
+
 const float *ds4_gpu_hy4_weight(const void *map, uint64_t size, uint64_t offset, uint64_t bytes);
+int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *mid, const ds4_gpu_tensor *x,
+                        const ds4_gpu_tensor *ids, const void *map, uint64_t size, const ds4_hy4_experts *w,
+                        uint32_t tokens);
 int ds4_gpu_hy4_add(ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
                     const float *gate, uint32_t n);
 int ds4_gpu_hy4_vision_pos(ds4_gpu_tensor *x, const ds4_gpu_tensor *table, uint32_t gh, uint32_t gw);

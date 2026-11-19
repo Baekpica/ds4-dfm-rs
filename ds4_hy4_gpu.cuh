@@ -1,6 +1,7 @@
 /* HYV4FlashHyperConnection, Engram and attention, Transformers c2ec8505.
  * All leaf launches run on the calling graph's stream. */
 #include "ds4_hy4.h"
+#include "cuda/hy4_moe.cuh"
 #include <cub/block/block_radix_sort.cuh>
 
 namespace hy4 {
@@ -243,6 +244,108 @@ extern "C" int ds4_gpu_hy4_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
     hy4::swiglu<<<(n + 255) / 256, 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)gate->ptr, (const float *)up->ptr, n, limit);
     return cuda_ok(cudaGetLastError(), "Hy4 SwiGLU");
+}
+/* Prefill experts on FP16 tensor cores (cuda/hy4_moe.cuh): gate and up over
+ * the token rows into `gate`/`up`, the clamped SwiGLU as FP16 into `mid`, the
+ * down into `gate`. A tensor whose scales leave the folded FP16 range keeps
+ * MMQ. -1 refuses before any GPU work (decode widths, DS4_HY4_FP16_MOE=0). */
+extern "C" int ds4_gpu_hy4_experts(ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *mid,
+                                   const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids, const void *map,
+                                   uint64_t size, const ds4_hy4_experts *w, uint32_t tokens) {
+    enum { DIM = 1536, EXPERTS = 512, USED = 16, MIN_TOKENS = 64, Q4_K = 12, Q5_K = 13 };
+    const char *env = getenv("DS4_HY4_FP16_MOE");
+    if (tokens < MIN_TOKENS || (env && strcmp(env, "0") == 0) || w->type[0] != w->type[1]) {
+        return -1;
+    }
+    const uint8_t *weight[3];
+    static std::unordered_map<uint64_t, bool> fits;
+    for (uint32_t i = 0; i < 3; i++) {
+        const uint32_t bpb = w->type[i] == Q5_K ? HY4M_Q5 : w->type[i] == Q4_K ? HY4M_Q4 : 0;
+        const uint64_t blocks = (uint64_t)EXPERTS * DIM * (DIM / 256);
+        if (!bpb || w->bytes[i] < blocks * bpb) {
+            return -1;
+        }
+        weight[i] = (const uint8_t *)cuda_model_range_ptr(map, w->offset[i], w->bytes[i], "Hy4 FP16 experts");
+        if (!weight[i]) {
+            return -1;
+        }
+        // One scale-range scan per tensor and process.
+        const uint64_t key = (uint64_t)(uintptr_t)weight[i];
+        auto known = fits.find(key);
+        if (known == fits.end()) {
+            uint32_t *bad = (uint32_t *)cuda_tmp_alloc(sizeof(uint32_t), "Hy4 expert scale check");
+            uint32_t found = 1;
+            if (!bad || cudaMemsetAsync(bad, 0, sizeof(uint32_t), ds4_current_stream()) != cudaSuccess) {
+                return 0;
+            }
+            if (bpb == HY4M_Q5) {
+                hy4m_check<HY4M_Q5><<<(blocks + 255) / 256, 256, 0, ds4_current_stream()>>>(weight[i], blocks, bad);
+            } else {
+                hy4m_check<HY4M_Q4><<<(blocks + 255) / 256, 256, 0, ds4_current_stream()>>>(weight[i], blocks, bad);
+            }
+            if (cudaMemcpyAsync(&found, bad, sizeof(found), cudaMemcpyDeviceToHost, ds4_current_stream()) != cudaSuccess ||
+                cudaStreamSynchronize(ds4_current_stream()) != cudaSuccess) {
+                return 0;
+            }
+            known = fits.emplace(key, found == 0).first;
+        }
+        if (!known->second) {
+            return -1;
+        }
+    }
+    static const bool ready = cudaFuncSetAttribute(hy4m_gemm<HY4M_Q5>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                   HY4M_SMEM) == cudaSuccess &&
+                              cudaFuncSetAttribute(hy4m_gemm<HY4M_Q4>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                                   HY4M_SMEM) == cudaSuccess;
+    int sms = 0;
+    if (!ready || cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess) {
+        return 0;
+    }
+    const uint32_t rows = tokens * USED, cap = DIM / HY4M_BM * (rows / HY4M_BN + EXPERTS);
+    const uint64_t xh_bytes = ((uint64_t)tokens * DIM * sizeof(__half) + 255) / 256 * 256;
+    const uint64_t words = (uint64_t)tokens + 3u * EXPERTS + 2 + 6u * rows;
+    uint8_t *base = (uint8_t *)cuda_tmp_alloc(xh_bytes + words * 4 + (uint64_t)cap * sizeof(uint4), "Hy4 FP16 experts");
+    if (!base || mid->bytes < (uint64_t)rows * DIM * sizeof(__half) || gate->bytes < (uint64_t)rows * DIM * 4 ||
+        up->bytes < (uint64_t)rows * DIM * 4) {
+        return 0;
+    }
+    __half *xh = (__half *)base;
+    uint4 *items = (uint4 *)(base + xh_bytes);
+    uint32_t *wp = (uint32_t *)(items + cap);
+    float *xscale = (float *)wp;
+    uint32_t *count = wp + tokens, *bounds = count + EXPERTS, *cursor = bounds + EXPERTS + 1;
+    uint32_t *n_items = cursor + EXPERTS, *sorted = n_items + 1, *src = sorted + rows;
+    float *scale = (float *)(src + rows), *mid_scale = scale + rows;
+    uint32_t *mid_src = (uint32_t *)(mid_scale + rows);
+    float *mid_row_scale = (float *)(mid_src + rows);
+    const cudaStream_t st = ds4_current_stream();
+    const int32_t *route = (const int32_t *)ids->ptr;
+    float *g = (float *)gate->ptr, *u = (float *)up->ptr;
+    __half *mh = (__half *)mid->ptr;
+    if (cudaMemsetAsync(count, 0, EXPERTS * 4, st) != cudaSuccess || cudaMemsetAsync(n_items, 0, 4, st) != cudaSuccess) {
+        return 0;
+    }
+    hy4m_count<<<(rows + 255) / 256, 256, 0, st>>>(count, route, rows);
+    hy4m_scan<<<1, EXPERTS, 0, st>>>(bounds, cursor, count, EXPERTS);
+    hy4m_scatter<<<(rows + 255) / 256, 256, 0, st>>>(sorted, cursor, route, rows);
+    hy4m_items<<<EXPERTS, 128, 0, st>>>(items, n_items, bounds, DIM / HY4M_BM);
+    glmvq_q4p_prep<float><<<tokens, GLMVQ_Q4P_PREP, 0, st>>>((const float *)x->ptr, xh, xscale, DIM);
+    hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(src, scale, sorted, xscale, rows, USED);
+    auto gemm = [&](uint32_t i, const __half *in, const uint32_t *in_src, const float *in_scale, float *out) {
+        if (w->type[i] == Q5_K) {
+            hy4m_gemm<HY4M_Q5><<<sms, HY4M_THREADS, HY4M_SMEM, st>>>(weight[i], in, in_src, in_scale, out, sorted,
+                                                                   items, n_items, DIM, DIM);
+        } else {
+            hy4m_gemm<HY4M_Q4><<<sms, HY4M_THREADS, HY4M_SMEM, st>>>(weight[i], in, in_src, in_scale, out, sorted,
+                                                                   items, n_items, DIM, DIM);
+        }
+    };
+    gemm(0, xh, src, scale, g);
+    gemm(1, xh, src, scale, u);
+    hy4m_swiglu_prep<<<rows, GLMVQ_Q4P_PREP, 0, st>>>(g, u, mh, mid_scale, DIM);
+    hy4m_rows<<<(rows + 255) / 256, 256, 0, st>>>(mid_src, mid_row_scale, sorted, mid_scale, rows, 1);
+    gemm(2, mh, mid_src, mid_row_scale, g);
+    return cuda_ok(cudaGetLastError(), "Hy4 FP16 experts");
 }
 extern "C" int ds4_gpu_hy4_moe_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
                                    const ds4_gpu_tensor *weights, uint32_t n) {
