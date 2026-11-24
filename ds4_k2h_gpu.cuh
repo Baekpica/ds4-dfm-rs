@@ -846,12 +846,20 @@ extern "C" int ds4_gpu_k2h_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, 
             (const float *)partials->ptr, splits);
         return cuda_ok(cudaGetLastError(), "K2-Horizon decode attention");
     }
-    static const cudaError_t ready = cudaFuncSetAttribute(k2a_prefill, cudaFuncAttributeMaxDynamicSharedMemorySize,
-        INK2A_SMEM_FP4);
+    // Ping-pong tiles (DS4_K2H_ATTN_PP=0: k2a_prefill's warps in step).
+    static const bool pp = !k2h_env_off("DS4_K2H_ATTN_PP");
+    static const cudaError_t ready = pp
+        ? cudaFuncSetAttribute(k2a_prefill_pp, cudaFuncAttributeMaxDynamicSharedMemorySize, K2A_PP_SMEM)
+        : cudaFuncSetAttribute(k2a_prefill, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
     if (!cuda_ok(ready, "K2-Horizon prefill attention attributes")) { return 0; }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, DS4_K2H_HEADS / INK2A_CTA_HEADS);
-    k2a_prefill<<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)heads->ptr, (const float *)q->ptr,
-        (const uint8_t *)pages->ptr, rows, pos);
+    if (pp) {
+        k2a_prefill_pp<<<grid, INK2A_THREADS, K2A_PP_SMEM, stream>>>((float *)heads->ptr, (const float *)q->ptr,
+            (const uint8_t *)pages->ptr, rows, pos);
+    } else {
+        k2a_prefill<<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)heads->ptr, (const float *)q->ptr,
+            (const uint8_t *)pages->ptr, rows, pos);
+    }
     return cuda_ok(cudaGetLastError(), "K2-Horizon prefill attention");
 }
 

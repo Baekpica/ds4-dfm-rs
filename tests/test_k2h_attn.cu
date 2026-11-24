@@ -2,7 +2,9 @@
 // reference over random NVFP4 pages: the prefill tile kernel at a chunk
 // offset that starts and ends inside blocks, and both decode split kernels.
 // Tolerance: the kernels round probabilities to BF16 before P.V.
-// `test_k2h_attn KEYS` also times the decode kernels on one row at KEYS.
+// `test_k2h_attn KEYS` also times the decode kernels on one row at KEYS;
+// `test_k2h_attn KEYS prefill` the prefill kernel on a 2,048-row chunk
+// ending at KEYS.
 #include "cuda/k2h_attn.cuh"
 
 #include <cmath>
@@ -97,6 +99,20 @@ static std::vector<uint8_t> random_pages(uint32_t keys) {
 }
 
 enum decode_kernel { DECODE_WALK, DECODE_MMA };
+enum prefill_kernel { PREFILL_STEP, PREFILL_PP };
+
+// One prefill launch: k2a_prefill's eight warps in step, or the ping-pong form.
+static void prefill(prefill_kernel kind, float *out, const float *q, const uint8_t *pages, uint32_t rows,
+        uint32_t base) {
+    const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, K2A_HEADS / INK2A_CTA_HEADS);
+    if (kind == PREFILL_STEP) {
+        cudaFuncSetAttribute(k2a_prefill, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
+        k2a_prefill<<<grid, INK2A_THREADS, INK2A_SMEM_FP4>>>(out, q, pages, rows, base);
+        return;
+    }
+    cudaFuncSetAttribute(k2a_prefill_pp, cudaFuncAttributeMaxDynamicSharedMemorySize, K2A_PP_SMEM);
+    k2a_prefill_pp<<<grid, INK2A_THREADS, K2A_PP_SMEM>>>(out, q, pages, rows, base);
+}
 
 // One decode launch pair: the k2a_decode walk or the k2a_split MMA, then the merge.
 static void decode(decode_kernel kind, float *out, float *part, const float *q, const uint8_t *pages, uint32_t rows,
@@ -174,7 +190,52 @@ static int bench(uint32_t keys) {
     return cudaDeviceSynchronize() != cudaSuccess;
 }
 
+// The prefill kernel on `rows` queries ending at `keys`: time per call and
+// causal TFLOPS (Q.K and P.V over the keys each query sees).
+static int bench_prefill(uint32_t keys, uint32_t rows) {
+    const std::vector<uint8_t> pages = random_pages(keys);
+    const uint32_t base = keys - rows;
+    std::vector<float> q((uint64_t)rows * K2A_HEADS * K2A_DIM);
+    for (auto &v : q) { v = bf16(((float)(next() % 2001) - 1000.0f) / 4000.0f); }
+    uint8_t *d_pages;
+    float *d_q, *d_out;
+    cudaMalloc(&d_pages, pages.size());
+    cudaMemcpy(d_pages, pages.data(), pages.size(), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_q, q.size() * 4);
+    cudaMalloc(&d_out, q.size() * 4);
+    cudaMemcpy(d_q, q.data(), q.size() * 4, cudaMemcpyHostToDevice);
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    double pairs = 0.0;
+    for (uint32_t r = 0; r < rows; r++) { pairs += base + r + 1; }
+    const char *names[2] = {"step", "pingpong"};
+    std::vector<float> got[2];
+    for (int kind = 0; kind < 2; kind++) {
+        enum { ITERS = 5 };
+        prefill((prefill_kernel)kind, d_out, d_q, d_pages, rows, base);
+        cudaEventRecord(start);
+        for (int i = 0; i < ITERS; i++) { prefill((prefill_kernel)kind, d_out, d_q, d_pages, rows, base); }
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float ms = 0.0f;
+        cudaEventElapsedTime(&ms, start, stop);
+        const double us = 1000.0 * ms / ITERS, flops = pairs * K2A_HEADS * K2A_DIM * 4.0;
+        printf("%-8s rows=%u keys=%u %.1f us %.1f TFLOPS\n", names[kind], rows, keys, us, flops / us / 1e6);
+        got[kind].resize(q.size());
+        cudaMemcpy(got[kind].data(), d_out, q.size() * 4, cudaMemcpyDeviceToHost);
+    }
+    double diff = 0.0, top = 0.0;
+    for (size_t i = 0; i < q.size(); i++) {
+        diff = std::max(diff, (double)std::fabs(got[0][i] - got[1][i]));
+        top = std::max(top, (double)std::fabs(got[0][i]));
+    }
+    printf("max |step - pingpong| %.3e of max |out| %.3e\n", diff, top);
+    return cudaDeviceSynchronize() != cudaSuccess;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2) { return bench_prefill((uint32_t)strtoul(argv[1], nullptr, 10), 2048); }
     if (argc > 1) { return bench((uint32_t)strtoul(argv[1], nullptr, 10)); }
     const uint32_t keys = 1400;
     const std::vector<uint8_t> pages = random_pages(keys);
@@ -191,17 +252,15 @@ int main(int argc, char **argv) {
         cudaMalloc(&d_out, q.size() * 4);
         cudaMalloc(&d_part, (uint64_t)4 * K2A_HEADS * K2A_SPLITS * K2A_PARTIAL * 4);
         cudaMemcpy(d_q, q.data(), q.size() * 4, cudaMemcpyHostToDevice);
-        const int runs = c.rows <= 4 ? 2 : 1;
+        const int runs = 2;
         for (int run = 0; run < runs; run++) {
             const char *name;
             if (c.rows <= 4) {
                 name = run ? "mma" : "walk";
                 decode(run ? DECODE_MMA : DECODE_WALK, d_out, d_part, d_q, d_pages, c.rows, c.base);
             } else {
-                name = "prefill";
-                cudaFuncSetAttribute(k2a_prefill, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
-                const dim3 grid((c.rows + INK2A_TQ - 1) / INK2A_TQ, K2A_HEADS / INK2A_CTA_HEADS);
-                k2a_prefill<<<grid, INK2A_THREADS, INK2A_SMEM_FP4>>>(d_out, d_q, d_pages, c.rows, c.base);
+                name = run ? "pingpong" : "prefill";
+                prefill(run ? PREFILL_PP : PREFILL_STEP, d_out, d_q, d_pages, c.rows, c.base);
             }
             const cudaError_t err = cudaDeviceSynchronize();
             if (err != cudaSuccess) { printf("%s: %s\n", name, cudaGetErrorString(err)); return 1; }
