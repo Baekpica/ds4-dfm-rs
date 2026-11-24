@@ -1084,6 +1084,13 @@ gate-hy4: tests/test_hy4_cuda
 	cargo test -p ds4-core --lib hy4
 	cargo test -p ds4-server --test hy4_output
 
+# K2-Horizon hVQ: attention kernels against FP64, the warp-specialized
+# experts at K2's shape, and the host's release, layout and quote checks.
+.PHONY: gate-k2h
+gate-k2h: test-k2h-attn test-minimax-mma8w
+	cargo test -p ds4-core --lib k2h
+	cargo test -p ds4-core --test k2h_vq
+
 .PHONY: test-gemma4-memory
 test-gemma4-memory:
 	python3 tests/test_gemma4_memory.py
@@ -2245,7 +2252,7 @@ test-minimax-mma8w: tests/test_minimax_mma8w
 	DS4_MW_H=4096 DS4_MW_F=2048 DS4_MW_E=288 DS4_MW_USED=8 DS4_MW_CLAMP=gate ./tests/test_minimax_mma8w
 	DS4_MW_H=6144 DS4_MW_F=1792 DS4_MW_E=192 DS4_MW_USED=8 DS4_MW_ROWS=2048 DS4_MW_CLAMP=gate ./tests/test_minimax_mma8w
 
-# K2-Horizon hVQ attention (prefill tile and decode split kernels) vs FP64 over NVFP4 pages (no model).
+# K2-Horizon hVQ attention (both prefill tiles and both decode splits) vs FP64 over NVFP4 pages (no model).
 tests/test_k2h_attn: tests/test_k2h_attn.cu cuda/k2h_attn.cuh cuda/inkling2_attn.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
@@ -2821,7 +2828,7 @@ BUILD_PROGRAMS := \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
     tests/gemma4_head_rows tests/gemma4_moe_persist tests/gemma4_mtp_gate tests/gemma4_q4_decode \
-    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/hy4_quality tests/test_hy4_cuda tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/hy4_quality tests/test_hy4_cuda tests/minimax_state tests/minimax_vision tests/axk2_quality tests/k2h_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
