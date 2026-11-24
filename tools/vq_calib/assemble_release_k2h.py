@@ -6,8 +6,8 @@ SHA-256) before it is linked into the release; the native parts are re-hashed ag
 manifest is built from those receipts and its source mapping must account for every tensor of the source
 checkpoint exactly once.
 
-    assemble_release_k2h.py --parts $W/parts --source $SRC --docs $W/release-docs --tools tools/vq_calib \
-        --calib tokens.npz --convert $W/convert --out $W/release
+    assemble_release_k2h.py --parts $W/parts --source $SRC --template chat_template.jinja \
+        --docs $W/release-docs --tools tools/vq_calib --calib tokens.npz --convert $W/convert --out $W/release
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
@@ -27,7 +27,11 @@ TOOLS = ['k2h_ref.py', 'k2h_vq_format.py', 'k2h_eval.py', 'k2h_chat.py', 'run_hv
          'convert_nonexpert_k2h.py', 'assemble_release_k2h.py', 'ds41_hvq.py', 'ds41_hess.py', 'axk2_vq_gpu.py',
          'axk2_weighting.py', 'cuda/ds41_hvq.cu', 'cuda/axk2_vq_convert.cu']
 SOURCE_FILES = ['config.json', 'generation_config.json', 'tokenizer.json', 'tokenizer_config.json',
-                'special_tokens_map.json', 'chat_template.jinja', 'LICENSE']
+                'special_tokens_map.json', 'LICENSE']
+# The template is IFM's later official one (the source revision's plus a typed text-part macro); the
+# ds4-dfm-rs loader accepts only this file (crates/ds4-core/src/k2h_vq/release.rs ASSETS).
+TEMPLATE_REVISION = '7a17b47a74b9371e71ed64b4080192e01caa6174'
+TEMPLATE_SHA256 = '5008a8535f850190e119cbb64dcf74c9483c8b483e8e3558795d71e1c3e31e10'
 DOCS = ['README.md', 'FORMAT.md', 'RECIPE.md', 'SOURCE.md', 'EVALUATION.md']
 LAYERS, KV_HEADS, HEAD_DIM, NATIVE_CTX = 61, 8, 128, 524288
 KV_VALUES = LAYERS * 2 * KV_HEADS * HEAD_DIM                      # K and V values per token
@@ -67,6 +71,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--parts', type=Path, required=True)
     ap.add_argument('--source', type=Path, required=True)
+    ap.add_argument('--template', type=Path, required=True,
+                    help=f'chat_template.jinja of IFM/K2-Horizon-375B-A23B at {TEMPLATE_REVISION}')
     ap.add_argument('--docs', type=Path, required=True)
     ap.add_argument('--tools', type=Path, required=True)
     ap.add_argument('--calib', type=Path, required=True)
@@ -75,6 +81,8 @@ def main():
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--allow-partial', action='store_true', help='tests: only the layers converted so far')
     a = ap.parse_args()
+    if sha_file(a.template) != TEMPLATE_SHA256:
+        raise SystemExit(f'{a.template} is not the chat template of IFM {TEMPLATE_REVISION[:8]}')
     out = a.out
     out.mkdir(parents=True, exist_ok=True)
     layers = [l for l in fmt.MOE_LAYERS if (a.parts / 'receipts' / f'layer-{l:02d}-experts.json').exists()]
@@ -188,6 +196,7 @@ def main():
             shutil.copytree(a.docs / extra_dir, out / extra_dir, dirs_exist_ok=True)
     for s in SOURCE_FILES:
         shutil.copy2(a.source / s, out / s)
+    shutil.copy2(a.template, out / 'chat_template.jinja')
     lines = []
     for p in sorted(x for x in out.rglob('*') if x.is_file() and x.name != 'SHA256SUMS'):
         rel = p.relative_to(out).as_posix()
