@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF_VALUE_UINT32};
 use crate::shape::ModelFamily;
@@ -96,6 +97,8 @@ pub struct Vocab {
     user_defined: HashMap<Vec<u8>, i32>,
     user_defined_max_len: u32,
     user_defined_first: [bool; 256],
+    // Built on the first scan, after every family has added its tokens.
+    user_defined_trie: OnceLock<AddedTrie>,
     motif3_added_first: [bool; 256],
     pub bos_id: i32,
     pub eos_id: i32,
@@ -323,6 +326,7 @@ impl Vocab {
             user_defined,
             user_defined_max_len,
             user_defined_first,
+            user_defined_trie: OnceLock::new(),
             motif3_added_first,
             /* C vocab_load: memset 0, then the same -1 defaults. Solar /
              * EXAONE leave end_of_turn_id at 0; do not "fix" it to -1. */
@@ -1855,20 +1859,66 @@ fn ascii_tolower_cp(cp: u32) -> u32 {
     }
 }
 
+/// User-defined tokens as a byte trie. A scan walks while the text still
+/// matches some token: a hash lookup per candidate length at every position
+/// cost K2-Horizon 26 lookups per byte of a run of `r` (562 of its added
+/// tokens are `reserved_special_token_N`), about 30 s for a 64 MiB request.
+#[derive(Debug, Clone)]
+struct AddedTrie {
+    // Per node: sorted (byte, child) edges and the token ending there (-1 none).
+    edges: Vec<Vec<(u8, u32)>>,
+    id: Vec<i32>,
+}
+
+impl AddedTrie {
+    fn build(tokens: &HashMap<Vec<u8>, i32>) -> Self {
+        let mut t = Self {
+            edges: vec![Vec::new()],
+            id: vec![-1],
+        };
+        for (bytes, &id) in tokens {
+            let mut node = 0usize;
+            for &b in bytes {
+                node = match t.edges[node].binary_search_by_key(&b, |e| e.0) {
+                    Ok(i) => t.edges[node][i].1 as usize,
+                    Err(i) => {
+                        let child = t.id.len();
+                        t.edges.push(Vec::new());
+                        t.id.push(-1);
+                        t.edges[node].insert(i, (b, child as u32));
+                        child
+                    }
+                };
+            }
+            t.id[node] = id;
+        }
+        t
+    }
+
+    // The longest token that starts `text`, as (id, length).
+    fn longest(&self, text: &[u8]) -> Option<(i32, usize)> {
+        let (mut node, mut best) = (0usize, None);
+        for (n, &b) in text.iter().enumerate() {
+            match self.edges[node].binary_search_by_key(&b, |e| e.0) {
+                Ok(i) => node = self.edges[node][i].1 as usize,
+                Err(_) => break,
+            }
+            if self.id[node] >= 0 {
+                best = Some((self.id[node], n + 1));
+            }
+        }
+        best
+    }
+}
+
 fn user_defined_at(vocab: &Vocab, text: &[u8], pos: usize) -> Option<(i32, usize)> {
     if vocab.user_defined_max_len == 0 || !vocab.user_defined_first[text[pos] as usize] {
         return None;
     }
-    let mut want = text.len() - pos;
-    if want > vocab.user_defined_max_len as usize {
-        want = vocab.user_defined_max_len as usize;
-    }
-    for n in (1..=want).rev() {
-        if let Some(&id) = vocab.user_defined.get(&text[pos..pos + n]) {
-            return Some((id, n));
-        }
-    }
-    None
+    vocab
+        .user_defined_trie
+        .get_or_init(|| AddedTrie::build(&vocab.user_defined))
+        .longest(&text[pos..])
 }
 
 fn contraction_len(s: &[u8], pos: usize) -> Option<usize> {
@@ -3207,5 +3257,52 @@ mod anchor_tests {
         assert_eq!(last_triple_start(&[105, 4368], &[105, 4368, 107]), -1);
         assert_eq!(last_triple_start(&[], &[105, 4368, 107]), -1);
         assert_eq!(last_triple_start(&[9, 9, 9], &[105, 4368, 107]), -1);
+    }
+}
+
+#[cfg(test)]
+mod added_trie_tests {
+    use super::AddedTrie;
+    use std::collections::HashMap;
+
+    // The trie returns what a hash lookup per length (longest first) did.
+    #[test]
+    fn trie_finds_the_longest_token_a_length_scan_finds() {
+        let tokens: HashMap<Vec<u8>, i32> = [
+            "reserved_special_token_5",
+            "reserved_special_token_56",
+            "<|a|>",
+            "<|ab|>",
+            "<ifm|think>",
+            "r",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_bytes().to_vec(), i as i32))
+        .collect();
+        let trie = AddedTrie::build(&tokens);
+        let max = tokens.keys().map(Vec::len).max().unwrap();
+        let scan = |text: &[u8]| {
+            (1..=text.len().min(max))
+                .rev()
+                .find_map(|n| tokens.get(&text[..n]).map(|&id| (id, n)))
+        };
+        for text in [
+            "reserved_special_token_567x",
+            "reserved_special_token_5",
+            "reserved_special_tok",
+            "rrrrrrrr",
+            "<|ab|><|a|>",
+            "<|a",
+            "<<<<<<",
+            "<ifm|think>yes",
+            "",
+        ] {
+            assert_eq!(
+                trie.longest(text.as_bytes()),
+                scan(text.as_bytes()),
+                "{text:?}"
+            );
+        }
     }
 }
