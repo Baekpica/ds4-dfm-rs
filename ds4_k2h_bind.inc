@@ -32,10 +32,10 @@ static ds4_tensor *k2h_vector(const ds4_model *m, uint32_t il, const char *name,
 enum {
     // max_position_embeddings; NVFP4 K/V is 34.31 GiB there.
     K2H_CONTEXT = 524288,
-    // Every chunk streams each routed expert once: 2,048 rows read half of
-    // 1,024's expert bytes per token. Short of memory, rows halve down to
-    // the minimum before the context does.
-    K2H_PREFILL_DEFAULT = 2048, K2H_PREFILL_MAX = 4096, K2H_PREFILL_MIN = 512,
+    // Every chunk streams each routed expert once: 4,096 rows prefill 4-5%
+    // faster than 2,048 (8K and 32K) for 0.67 GiB more workspace. Short of
+    // memory, rows halve down to the minimum before the context does.
+    K2H_PREFILL_DEFAULT = 4096, K2H_PREFILL_MAX = 4096, K2H_PREFILL_MIN = 512,
 };
 
 static void k2h_bind_experts(ds4_k2h_layer *e, const ds4_model *m, uint32_t il) {

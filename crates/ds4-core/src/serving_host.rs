@@ -168,7 +168,7 @@ const AXK2_SCORE_BUDGET: u64 = 128 * MIB;
 // A.X-K2's floor when the quote does not fit; K/V rows are
 // position-indexed, so the chunk is not part of a snapshot's identity.
 const K2H_PREFILL_CHUNK_ENV: &str = "DS4_K2H_PREFILL_CHUNK";
-const K2H_NATIVE_DEFAULT: u32 = 2048;
+const K2H_NATIVE_DEFAULT: u32 = 4096;
 const K2H_NATIVE_MAX: u32 = 4096;
 const K2H_NATIVE_MIN: u32 = 512;
 // C K2H_ROW_BUFFERS (ds4_k2h_bind.inc) per chunk row: F32 columns (seven
@@ -4505,9 +4505,10 @@ mod tests {
         assert_eq!(facts.per_bank_bytes, Some(k2h_kv_bytes(524_288) + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(k2h_workspace_bytes(2048) + 2048 * K2H_EMBED_ROW_BYTES)
+            Some(k2h_workspace_bytes(4096) + 4096 * K2H_EMBED_ROW_BYTES)
         );
         // The native graph's log line (ds4_k2h_graph.inc) at these chunks.
+        assert_eq!(k2h_workspace_bytes(4096), 1_478_571_520);
         assert_eq!(k2h_workspace_bytes(2048), 760_980_992);
         assert_eq!(k2h_workspace_bytes(1), 43_681_760);
     }
