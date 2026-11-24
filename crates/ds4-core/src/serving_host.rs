@@ -180,8 +180,8 @@ const K2H_EMBED_ROW_BYTES: u64 = 6528;
 // C k2h_decode_plan (ds4_k2h_gpu.cuh): expert decode/verify scratch and the
 // 58 layers' device tables.
 const K2H_DECODE_BYTES: u64 = 1_269_248;
-// C ds4_gpu_k2h_attn_bytes: four split rows x 48 heads x 64 partials of 130.
-const K2H_ATTN_BYTES: u64 = 4 * 48 * 64 * 130 * SIZEOF_F32;
+// C ds4_gpu_k2h_attn_bytes: four split rows x 48 heads x 64 partials of 132.
+const K2H_ATTN_BYTES: u64 = 4 * 48 * 64 * 132 * SIZEOF_F32;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -4508,8 +4508,8 @@ mod tests {
             Some(k2h_workspace_bytes(2048) + 2048 * K2H_EMBED_ROW_BYTES)
         );
         // The native graph's log line (ds4_k2h_graph.inc) at these chunks.
-        assert_eq!(k2h_workspace_bytes(2048), 760_882_688);
-        assert_eq!(k2h_workspace_bytes(1), 43_583_456);
+        assert_eq!(k2h_workspace_bytes(2048), 760_980_992);
+        assert_eq!(k2h_workspace_bytes(1), 43_681_760);
     }
 
     #[test]

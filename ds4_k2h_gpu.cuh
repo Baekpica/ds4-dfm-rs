@@ -677,22 +677,30 @@ __device__ __forceinline__ float k2h_block_sum(float v, float *scratch) {
 }
 
 /* CTA per row: cur = BF16(cur + BF16(branch)) when there is a branch, then
- * norm = BF16((cur * rsqrt(mean cur^2 + 1e-6)) * w), F32 throughout. */
+ * norm = BF16((cur * rsqrt(mean cur^2 + 1e-6)) * w), F32 throughout. Every
+ * load is issued before the first store: interleaved with the cur stores
+ * they ran one round trip each (24 us a decode row, now ~4). */
 __global__ void __launch_bounds__(K2H_THREADS) k2h_norm_kernel(float *norm, float *cur, const float *branch,
         const float *weight) {
     __shared__ float scratch[K2H_THREADS / 32];
     constexpr uint32_t PER = K2H_HIDDEN / K2H_THREADS;
     glmvq_pdl_open();
+    float w[PER];
+    #pragma unroll
+    for (uint32_t i = 0; i < PER; i++) { w[i] = weight[threadIdx.x + i * K2H_THREADS]; }
     glmvq_pdl_wait();
     const uint64_t row = (uint64_t)blockIdx.x * K2H_HIDDEN;
-    float x[PER], sq = 0.0f;
+    float x[PER], b[PER], sq = 0.0f;
     #pragma unroll
     for (uint32_t i = 0; i < PER; i++) {
-        const uint64_t at = row + threadIdx.x + i * K2H_THREADS;
-        x[i] = cur[at];
+        x[i] = cur[row + threadIdx.x + i * K2H_THREADS];
+        b[i] = branch ? branch[row + threadIdx.x + i * K2H_THREADS] : 0.0f;
+    }
+    #pragma unroll
+    for (uint32_t i = 0; i < PER; i++) {
         if (branch) {
-            x[i] = glmvq_round(glmvq_add(x[i], glmvq_round(branch[at])));
-            cur[at] = x[i];
+            x[i] = glmvq_round(glmvq_add(x[i], glmvq_round(b[i])));
+            cur[row + threadIdx.x + i * K2H_THREADS] = x[i];
         }
         sq = fmaf(x[i], x[i], sq);
     }
@@ -700,8 +708,7 @@ __global__ void __launch_bounds__(K2H_THREADS) k2h_norm_kernel(float *norm, floa
     const float inv = rsqrtf(glmvq_add(__fdiv_rn(total, (float)K2H_HIDDEN), 1e-6f));
     #pragma unroll
     for (uint32_t i = 0; i < PER; i++) {
-        const uint32_t c = threadIdx.x + i * K2H_THREADS;
-        norm[row + c] = glmvq_round(glmvq_mul(glmvq_mul(x[i], inv), weight[c]));
+        norm[row + threadIdx.x + i * K2H_THREADS] = glmvq_round(glmvq_mul(glmvq_mul(x[i], inv), w[i]));
     }
 }
 
@@ -810,7 +817,7 @@ extern "C" int ds4_gpu_k2h_qkv(ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const
 enum { K2H_SPLIT_ROWS = K2H_VERIFY_ROWS };
 
 extern "C" uint64_t ds4_gpu_k2h_attn_bytes(void) {
-    return (uint64_t)K2H_SPLIT_ROWS * DS4_K2H_HEADS * INK2A_SPLITS * INK2A_PARTIAL * sizeof(float);
+    return (uint64_t)K2H_SPLIT_ROWS * DS4_K2H_HEADS * INK2A_SPLITS * K2A_PARTIAL * sizeof(float);
 }
 
 extern "C" int ds4_gpu_k2h_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
@@ -822,11 +829,21 @@ extern "C" int ds4_gpu_k2h_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, 
     const cudaStream_t stream = ds4_current_stream();
     if (rows <= K2H_SPLIT_ROWS) {
         if (!partials || partials->bytes < ds4_gpu_k2h_attn_bytes()) { return 0; }
-        const uint32_t splits = ink2a_splits(pos + rows);
-        k2a_decode<<<dim3(splits, DS4_K2H_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
-            (const float *)q->ptr, (const uint8_t *)pages->ptr, pos, splits);
-        k2a_merge<<<rows * DS4_K2H_HEADS, INK2A_DIM, 0, stream>>>((float *)heads->ptr, (const float *)partials->ptr,
-            splits);
+        // Tensor-core split (DS4_K2H_ATTN_MMA=0: the k2a_decode lane-per-key walk).
+        static const bool mma = !k2h_env_off("DS4_K2H_ATTN_MMA");
+        const glmvq_launch mode = gvq_mode(rows);
+        uint32_t splits = ink2a_splits(pos + rows);
+        if (mma) {
+            const uint32_t tiles = (pos + rows - 1) / INK2A_TK + 1, slices = tiles < K2A_DSLICES ? tiles : K2A_DSLICES;
+            splits = slices * K2A_DWARPS;
+            glmvq_launch_kernel(mode, k2a_split, dim3(slices, DS4_K2H_KV_HEADS, rows), K2A_DWARPS * 32, 0, stream,
+                (float *)partials->ptr, (const float *)q->ptr, (const uint8_t *)pages->ptr, pos, slices);
+        } else {
+            k2a_decode<<<dim3(splits, DS4_K2H_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>((float *)partials->ptr,
+                (const float *)q->ptr, (const uint8_t *)pages->ptr, pos, splits);
+        }
+        glmvq_launch_kernel(mode, k2a_merge, rows * DS4_K2H_HEADS, INK2A_DIM, 0, stream, (float *)heads->ptr,
+            (const float *)partials->ptr, splits);
         return cuda_ok(cudaGetLastError(), "K2-Horizon decode attention");
     }
     static const cudaError_t ready = cudaFuncSetAttribute(k2a_prefill, cudaFuncAttributeMaxDynamicSharedMemorySize,

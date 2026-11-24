@@ -20,12 +20,15 @@
  * head, 64-key tiles through a two-stage cp.async ring of raw pages. Key
  * tiles start at multiples of 64 in absolute position and masked keys add
  * exact zeros, so a query's result does not depend on the chunk. Decode
- * rows split their keys over CTAs (split, KV head, row; a warp per query
- * head) and a merge folds the partials. */
+ * rows split their keys over CTAs (k2a_split: the KV head's six query heads
+ * as MMA rows; k2a_decode: a warp per query head) and a merge folds the
+ * partials. */
 
+/* A decode partial: (m, l, two pad floats, acc[128]); the pad keeps acc
+ * 16-byte aligned for vector stores. */
 enum {
     K2A_HEADS = INK2A_HEADS, K2A_GROUP = INK2A_GROUP, K2A_DIM = INK2A_DIM,
-    K2A_SPLITS = INK2A_SPLITS, K2A_PARTIAL = INK2A_PARTIAL, K2A_MIN_SPLIT = INK2A_MIN_SPLIT,
+    K2A_SPLITS = INK2A_SPLITS, K2A_ACC = 4, K2A_PARTIAL = K2A_ACC + INK2A_DIM, K2A_MIN_SPLIT = INK2A_MIN_SPLIT,
 };
 
 // SDPA's scale 128^-1/2, applied to the F32 dot.
@@ -297,27 +300,229 @@ void k2a_decode(float *partials, const float *q, const uint8_t *pages, uint32_t 
             acc[3] = fmaf(pj, __uint_as_float(vv.y & 0xffff0000u), acc[3]);
         }
     }
-    float *dst = partials + (((uint64_t)row * INK2A_HEADS + h) * INK2A_SPLITS + split) * INK2A_PARTIAL;
+    float *dst = partials + (((uint64_t)row * INK2A_HEADS + h) * INK2A_SPLITS + split) * K2A_PARTIAL;
     if (lane == 0) { dst[0] = m; dst[1] = l; }
     #pragma unroll
-    for (int d = 0; d < 4; d++) { dst[2 + 4 * lane + d] = acc[d]; }
+    for (int d = 0; d < 4; d++) { dst[K2A_ACC + 4 * lane + d] = acc[d]; }
 }
 
-// out = BF16(sum of the partials' acc over the sum of their l).
-__global__ void k2a_merge(float *out, const float *partials, uint32_t splits) {
-    const uint32_t rh = blockIdx.x, d = threadIdx.x;
-    const float *src = partials + (uint64_t)rh * INK2A_SPLITS * INK2A_PARTIAL;
-    float top = -INFINITY;
-    for (uint32_t s = 0; s < splits; s++) { top = fmaxf(top, src[s * INK2A_PARTIAL]); }
-    float total = 0.0f, value = 0.0f;
-    for (uint32_t s = 0; s < splits; s++) {
-        const float ms = src[s * INK2A_PARTIAL];
-        if (ms == -INFINITY) { continue; }
-        const float e = __expf(ms - top);
-        total = fmaf(src[s * INK2A_PARTIAL + 1], e, total);
-        value = fmaf(src[s * INK2A_PARTIAL + 2 + d], e, value);
+/* Programmatic dependent launch (cuda/glm_vq.cuh's contract): open first,
+ * wait before reading a predecessor's output. No-ops for plain launches. */
+__device__ __forceinline__ void k2a_pdl_open() {
+#if __CUDA_ARCH__ >= 900
+    asm volatile("griddepcontrol.launch_dependents;");
+#endif
+}
+
+__device__ __forceinline__ void k2a_pdl_wait() {
+#if __CUDA_ARCH__ >= 900
+    asm volatile("griddepcontrol.wait;" ::: "memory");
+#endif
+}
+
+/* Decode attention on tensor cores (MiMo's GQA form): the six query heads
+ * of a KV head are the m16 rows of a BF16 MMA (rows 6-15 zero), so one
+ * decoded K fragment scores all six. CTA (slice, KV head, row): the slice's
+ * 64-key tiles (9 KB raw: K data, K scales, V data, V scales) stream through
+ * a three-stage cp.async ring; warp w takes keys 16w..16w+15 of each tile
+ * with its own online softmax and writes partial 4 * slice + w. The k2a_decode
+ * walk (a lane per key, Q from shared memory) ran at 107 GB/s.
+ *
+ * Fragment order: lane t of a score MMA holds dims 32t..32t+31 over the
+ * eight k steps (step c: dims 32t + 4c..+3), so it reads 16 contiguous code
+ * bytes of its key and Q follows the same order; for P.V lane g holds output
+ * dims 16g..16g+15 (n block j: dim 16g + j) of its four keys. E2M1 x E4M3
+ * is a BF16, so the decoded operands are exact. */
+enum { K2A_DWARPS = 4, K2A_DSTAGES = 3, K2A_DSUB = INK2A_TK / K2A_DWARPS,
+       K2A_DSLICES = INK2A_SPLITS / K2A_DWARPS };
+
+__device__ __forceinline__ float k2a_e4m3(uint32_t byte) {
+    __nv_fp8_e4m3 s;
+    s.__x = (__nv_fp8_storage_t)byte;
+    return (float)s;
+}
+
+// The two E2M1 codes of `byte` (low nibble first) times `scale`, as BF16.
+__device__ __forceinline__ uint32_t k2a_pair(uint32_t byte, float scale) {
+    const float2 v = ink2a_e2m1x2(byte);
+    return ink2a_pack(v.x * scale, v.y * scale);
+}
+
+__global__ __launch_bounds__(K2A_DWARPS * 32)
+void k2a_split(float *partials, const float *q, const uint8_t *pages, uint32_t base, uint32_t slices) {
+    __shared__ __align__(16) uint8_t ring[K2A_DSTAGES][INK2A_RAW];
+    k2a_pdl_open();
+    const uint32_t slice = blockIdx.x, kv = blockIdx.y, row = blockIdx.z;
+    const uint32_t warp = threadIdx.x / 32, lane = threadIdx.x % 32, g = lane / 4, t = lane % 4;
+    const uint32_t last = base + row, tiles = last / INK2A_TK + 1, per = (tiles + slices - 1) / slices;
+    const uint32_t first = min(slice * per, tiles), n = min(first + per, tiles) - first;
+    k2a_pdl_wait();
+
+    // Q fragments of k step c: dims 32t + 4c..+3 of head 6 kv + g (zero past the group).
+    uint32_t qa[INK2A_DIM / 16][2];
+    const float4 *qrow = reinterpret_cast<const float4 *>(q +
+        ((uint64_t)row * INK2A_HEADS + kv * INK2A_GROUP + min(g, (uint32_t)INK2A_GROUP - 1)) * INK2A_DIM + 32 * t);
+    #pragma unroll
+    for (int c = 0; c < INK2A_DIM / 16; c++) {
+        const float4 x = g < INK2A_GROUP ? qrow[c] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        qa[c][0] = ink2a_pack(x.x, x.y);
+        qa[c][1] = ink2a_pack(x.z, x.w);
     }
-    out[(uint64_t)rh * INK2A_DIM + d] = ink2a_bf16(__fdiv_rn(value, total));
+
+    // Tile `tile` (64 keys from position 64 tile) into a ring stage.
+    auto issue = [&](uint32_t stage, uint32_t tile) {
+        const uint32_t kt0 = tile * INK2A_TK, slot = kt0 % INK2A_KB, data = INK2A_TK * INK2A_FP4;
+        const uint8_t *page = ink2a_page(pages, kt0, kv);
+        for (uint32_t c = threadIdx.x; c < INK2A_RAW / 16; c += K2A_DWARPS * 32) {
+            const uint32_t at = c * 16, half = at / INK2A_RAW_HALF, in = at % INK2A_RAW_HALF;
+            const uint8_t *src = page + half * INK2A_KB * INK2A_FP4_ROW +
+                (in < data ? slot * INK2A_FP4 + in : INK2A_KB * INK2A_FP4 + slot * 8 + (in - data));
+            __pipeline_memcpy_async(ring[stage] + at, src, 16);
+        }
+    };
+
+    float o[INK2A_DIM / 8][4], m = -INFINITY, l = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < INK2A_DIM / 8; j++) { o[j][0] = o[j][1] = o[j][2] = o[j][3] = 0.0f; }
+    #pragma unroll
+    for (uint32_t s = 0; s + 1 < K2A_DSTAGES; s++) {
+        if (s < n) { issue(s, first + s); }
+        __pipeline_commit();
+    }
+    #pragma unroll 1
+    for (uint32_t i = 0; i < n; i++) {
+        // Tile i has landed; every warp is done with the stage refilled here.
+        __pipeline_wait_prior(K2A_DSTAGES - 2);
+        __syncthreads();
+        if (i + K2A_DSTAGES - 1 < n) { issue((i + K2A_DSTAGES - 1) % K2A_DSTAGES, first + i + K2A_DSTAGES - 1); }
+        __pipeline_commit();
+        const uint8_t *st = ring[i % K2A_DSTAGES];
+        const uint32_t tile0 = (first + i) * INK2A_TK, sub = K2A_DSUB * warp;
+
+        // Scores of keys sub + 8 jj + g (B column g of n block jj).
+        float s[2][4];
+        #pragma unroll
+        for (int jj = 0; jj < 2; jj++) {
+            const uint32_t key = sub + 8 * jj + g;
+            const uint4 d = *reinterpret_cast<const uint4 *>(st + key * INK2A_FP4 + 16 * t);
+            const uint32_t sc = *reinterpret_cast<const uint16_t *>(st + INK2A_TK * INK2A_FP4 + key * 8 + 2 * t);
+            const float lo = k2a_e4m3(sc & 0xffu), hi = k2a_e4m3(sc >> 8);
+            const uint32_t w[4] = {d.x, d.y, d.z, d.w};
+            s[jj][0] = s[jj][1] = s[jj][2] = s[jj][3] = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < INK2A_DIM / 16; c++) {
+                const uint32_t bytes = w[c / 2] >> (16 * (c % 2));
+                const float scale = c < 4 ? lo : hi;
+                const uint32_t a[4] = {qa[c][0], 0u, qa[c][1], 0u};
+                ink2a_mma(s[jj], a, k2a_pair(bytes & 0xffu, scale), k2a_pair((bytes >> 8) & 0xffu, scale));
+            }
+        }
+
+        // Online softmax of row g over this lane's keys sub + 8 jj + 2t + e.
+        float top = -INFINITY;
+        #pragma unroll
+        for (int jj = 0; jj < 2; jj++) {
+            #pragma unroll
+            for (int e = 0; e < 2; e++) {
+                const bool in = tile0 + sub + 8 * jj + 2 * t + e <= last;
+                s[jj][e] = in ? s[jj][e] * K2A_SCALE : -INFINITY;
+                top = fmaxf(top, s[jj][e]);
+            }
+        }
+        top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, 1));
+        top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, 2));
+        const float next = fmaxf(m, top), rescale = m == -INFINITY ? 0.0f : __expf(m - next);
+        m = next;
+        float sum = 0.0f;
+        #pragma unroll
+        for (int jj = 0; jj < 2; jj++) {
+            #pragma unroll
+            for (int e = 0; e < 2; e++) {
+                s[jj][e] = s[jj][e] == -INFINITY ? 0.0f : __expf(s[jj][e] - m);
+                sum += s[jj][e];
+            }
+        }
+        sum += __shfl_xor_sync(0xffffffffu, sum, 1);
+        sum += __shfl_xor_sync(0xffffffffu, sum, 2);
+        l = l * rescale + sum;
+        #pragma unroll
+        for (int j = 0; j < INK2A_DIM / 8; j++) {
+            o[j][0] *= rescale;
+            o[j][1] *= rescale;
+        }
+
+        // P.V: k rows 2t, 2t + 1, 2t + 8, 2t + 9 are keys sub + 2t + {0, 1, 8, 9};
+        // masked keys take a zero scale so stale bytes cannot reach the sum.
+        const uint32_t pa[4] = {ink2a_pack(s[0][0], s[0][1]), 0u, ink2a_pack(s[1][0], s[1][1]), 0u};
+        const uint8_t *vd = st + INK2A_RAW_HALF, *vsc = vd + INK2A_TK * INK2A_FP4;
+        uint2 vw[4];
+        float vs[4];
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            const uint32_t key = sub + 2 * t + k % 2 + 8 * (k / 2);
+            vw[k] = *reinterpret_cast<const uint2 *>(vd + key * INK2A_FP4 + 8 * g);
+            vs[k] = tile0 + key <= last ? k2a_e4m3(vsc[key * 8 + g]) : 0.0f;
+        }
+        #pragma unroll
+        for (int b = 0; b < 8; b++) {
+            // Byte b: output dims 16g + 2b and 16g + 2b + 1 (n blocks 2b, 2b + 1).
+            float2 f[4];
+            #pragma unroll
+            for (int k = 0; k < 4; k++) { f[k] = ink2a_e2m1x2(((b < 4 ? vw[k].x : vw[k].y) >> (8 * (b % 4))) & 0xffu); }
+            ink2a_mma(o[2 * b], pa, ink2a_pack(f[0].x * vs[0], f[1].x * vs[1]),
+                ink2a_pack(f[2].x * vs[2], f[3].x * vs[3]));
+            ink2a_mma(o[2 * b + 1], pa, ink2a_pack(f[0].y * vs[0], f[1].y * vs[1]),
+                ink2a_pack(f[2].y * vs[2], f[3].y * vs[3]));
+        }
+    }
+
+    // C column n of n block j is dim 16n + j: this lane holds dims 32t..32t+31,
+    // stored as eight 16-byte pieces (scalar stores cost ~30 us a call).
+    if (g >= INK2A_GROUP) { return; }
+    float *dst = partials + (((uint64_t)row * INK2A_HEADS + kv * INK2A_GROUP + g) * INK2A_SPLITS +
+        slice * K2A_DWARPS + warp) * K2A_PARTIAL;
+    if (t == 0) {
+        dst[0] = m;
+        dst[1] = l;
+    }
+    float4 *acc = reinterpret_cast<float4 *>(dst + K2A_ACC + 32 * t);
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        acc[i] = make_float4(o[4 * i][0], o[4 * i + 1][0], o[4 * i + 2][0], o[4 * i + 3][0]);
+        acc[4 + i] = make_float4(o[4 * i][1], o[4 * i + 1][1], o[4 * i + 2][1], o[4 * i + 3][1]);
+    }
+}
+
+/* out = BF16(sum of the partials' acc over the sum of their l). Thread s
+ * loads split s's (m, l) so the 64 splits' maxima arrive together (a serial
+ * walk cost ~0.5 us per split), then each thread sums its dim over the
+ * splits with independent loads. */
+__global__ void __launch_bounds__(INK2A_DIM) k2a_merge(float *out, const float *partials, uint32_t splits) {
+    static_assert(INK2A_SPLITS <= INK2A_DIM, "a thread per split");
+    __shared__ float weight[INK2A_SPLITS], red[INK2A_DIM / 32];
+    k2a_pdl_open();
+    k2a_pdl_wait();
+    const uint32_t rh = blockIdx.x, d = threadIdx.x, lane = d % 32, warp = d / 32;
+    const float *src = partials + (uint64_t)rh * INK2A_SPLITS * K2A_PARTIAL;
+    const float ms = d < splits ? src[d * K2A_PARTIAL] : -INFINITY;
+    const float ls = d < splits ? src[d * K2A_PARTIAL + 1] : 0.0f;
+    float top = ms;
+    for (uint32_t o = 16; o; o >>= 1) { top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, o)); }
+    if (!lane) { red[warp] = top; }
+    __syncthreads();
+    top = fmaxf(fmaxf(red[0], red[1]), fmaxf(red[2], red[3]));
+    const float e = ms == -INFINITY ? 0.0f : __expf(ms - top);
+    if (d < INK2A_SPLITS) { weight[d] = e; }
+    float den = ls * e;
+    for (uint32_t o = 16; o; o >>= 1) { den += __shfl_xor_sync(0xffffffffu, den, o); }
+    __syncthreads();
+    if (!lane) { red[warp] = den; }
+    __syncthreads();
+    den = (red[0] + red[1]) + (red[2] + red[3]);
+    float value = 0.0f;
+    #pragma unroll 16
+    for (uint32_t s = 0; s < splits; s++) { value = fmaf(src[s * K2A_PARTIAL + K2A_ACC + d], weight[s], value); }
+    out[(uint64_t)rh * INK2A_DIM + d] = ink2a_bf16(__fdiv_rn(value, den));
 }
 
 #endif
