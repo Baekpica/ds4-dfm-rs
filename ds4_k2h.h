@@ -77,6 +77,10 @@ int ds4_gpu_k2h_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tenso
 typedef enum { DS4_K2H_Q8_F32, DS4_K2H_Q8_ROUND } ds4_k2h_q8_out;
 int ds4_gpu_k2h_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
     uint32_t rows, ds4_k2h_q8_out mode);
+/* Up to DS4_K2H_Q8_MANY Q8_0 matrices over one input: MMQ quantizes it once. */
+enum { DS4_K2H_Q8_MANY = 4 };
+int ds4_gpu_k2h_q8_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights, uint32_t count,
+    const ds4_gpu_tensor *input, uint32_t rows, ds4_k2h_q8_out mode);
 
 /* With `branch`: cur = BF16(cur + BF16(branch)). Then norm = BF16(cur *
  * rsqrt(mean cur^2 + 1e-6) * w) over 6,144-wide rows (F32 record `weight`). */

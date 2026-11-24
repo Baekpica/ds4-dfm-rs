@@ -375,6 +375,30 @@ int ds4_mmq_q4_K_dense_bf16(
     int           K,
     cudaStream_t  stream);
 
+/* ds4_mmq_q8_0_dense for `count` matrices sharing X: one Q8_1 pass, then
+ * no output scrub (Q8_0 x Q8_1 sums of finite scales and activations are
+ * finite) or, with _bf16_many, every output rounded to BF16 in the same
+ * pass that the scrub took. */
+int ds4_mmq_q8_0_dense_raw_many(
+    const void  * const * W_q8_0,
+    float       * const * out_f32,
+    const int   * M,
+    int           count,
+    const float * X_f32,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
+int ds4_mmq_q8_0_dense_bf16_many(
+    const void  * const * W_q8_0,
+    float       * const * out_f32,
+    const int   * M,
+    int           count,
+    const float * X_f32,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 /* ds4_mmq_q4_K_dense_raw for `count` matrices sharing X: one Q8_1 pass. */
 int ds4_mmq_q4_K_dense_raw_many(
     const void  * const * W_q4_K,

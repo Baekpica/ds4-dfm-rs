@@ -167,6 +167,16 @@ static bool k2h_q8(ds4_k2h_graph *g, const ds4_model *m, ds4_gpu_tensor *out, co
     return ok;
 }
 
+// Q8_0 matrices of one input (prefill quantizes it once).
+static bool k2h_q8_many(ds4_k2h_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
+        const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
+    uint32_t index[DS4_K2H_Q8_MANY];
+    for (uint32_t c = 0; c < count; c++) { index[c] = k2h_index(m, ws[c]); }
+    const bool ok = ds4_gpu_k2h_q8_many(g->gvq, outs, index, count, x, rows, DS4_K2H_Q8_F32) != 0;
+    if (!ok) { fprintf(stderr, "ds4: K2-Horizon Q8_0 group of %u failed (rows=%u)\n", count, rows); }
+    return ok;
+}
+
 // A view of rows [first, first + count) of a buffer `cols` elements wide.
 static ds4_gpu_tensor *k2h_rows(ds4_gpu_tensor *t, uint32_t first, uint32_t count, uint64_t cols, uint64_t size) {
     return ds4_gpu_tensor_view(t, (uint64_t)first * cols * size, (uint64_t)count * cols * size);
@@ -177,9 +187,9 @@ static ds4_gpu_tensor *k2h_rows(ds4_gpu_tensor *t, uint32_t first, uint32_t coun
 static bool k2h_attention(ds4_k2h_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t il, uint32_t rows,
         uint32_t pos) {
     const ds4_layer_weights *l = &w->layer[il];
-    return k2h_q8(g, m, g->q, l->attn_q, g->norm, rows, DS4_K2H_Q8_F32) &&
-        k2h_q8(g, m, g->k, l->attn_k, g->norm, rows, DS4_K2H_Q8_F32) &&
-        k2h_q8(g, m, g->v, l->attn_v, g->norm, rows, DS4_K2H_Q8_F32) &&
+    ds4_gpu_tensor *const outs[] = {g->q, g->k, g->v};
+    const ds4_tensor *const ws[] = {l->attn_q, l->attn_k, l->attn_v};
+    return k2h_q8_many(g, m, outs, ws, 3u, g->norm, rows) &&
         ds4_gpu_k2h_qkv(g->q, g->k, g->v, g->pages[il], g->rope, rows, pos) &&
         k2h_trace(il, pos, "q", g->q, (uint64_t)rows * DS4_K2H_Q * sizeof(float)) &&
         ds4_gpu_k2h_attn(g->heads, g->q, g->pages[il], g->partials, rows, pos) &&
@@ -195,8 +205,9 @@ static bool k2h_mlp_rows(ds4_k2h_graph *g, const ds4_model *m, ds4_gpu_tensor *o
     ds4_gpu_tensor *y = k2h_rows(out, first, rows, DS4_K2H_HIDDEN, sizeof(float));
     ds4_gpu_tensor *a = ds4_gpu_tensor_view(g->ff_gate, 0, (uint64_t)rows * width * sizeof(float));
     ds4_gpu_tensor *b = ds4_gpu_tensor_view(g->ff_up, 0, (uint64_t)rows * width * sizeof(float));
-    const bool ok = x && y && a && b &&
-        k2h_q8(g, m, a, gate, x, rows, DS4_K2H_Q8_F32) && k2h_q8(g, m, b, up, x, rows, DS4_K2H_Q8_F32) &&
+    ds4_gpu_tensor *const outs[] = {a, b};
+    const ds4_tensor *const ws[] = {gate, up};
+    const bool ok = x && y && a && b && k2h_q8_many(g, m, outs, ws, 2u, x, rows) &&
         ds4_gpu_k2h_swiglu(a, a, b, rows, width) &&
         k2h_q8(g, m, y, down, a, rows, DS4_K2H_Q8_ROUND);
     ds4_gpu_tensor_free(b);

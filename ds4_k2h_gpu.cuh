@@ -600,31 +600,66 @@ static bool k2h_q8_launch(const glmvq_source &s, float *out, const float *x, uin
     return cuda_ok(cudaGetLastError(), "K2-Horizon Q8_0 GEMV");
 }
 
-extern "C" int ds4_gpu_k2h_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
-        uint32_t rows, ds4_k2h_q8_out mode) {
-    if (!ctx || weight >= ctx->model->source.size() || ctx->model->records[weight].type != K2H_TYPE_Q8_0) { return 0; }
+// One Q8_0 record over `rows` F32 inputs of its width, or 0.
+static const glmvq_source *k2h_q8_source(ds4_gvq_ctx *ctx, uint32_t weight, const ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (weight >= ctx->model->source.size() || ctx->model->records[weight].type != K2H_TYPE_Q8_0) { return nullptr; }
     const glmvq_source &s = ctx->model->source[weight];
-    if (!rows || s.cols % 256 || !gvq_floats(input, (uint64_t)rows * s.cols) ||
-        !gvq_floats(out, (uint64_t)rows * s.rows) || !gvq_stream(ctx)) { return 0; }
-    float *y = (float *)out->ptr;
-    const float *x = (const float *)input->ptr;
-    if (rows > 1) {
-        // Prefill: MMQ over the Q8_1-quantized input (its rows are F32 per token).
-        if (ds4_mmq_q8_0_dense(s.data, x, y, (int)s.rows, (int)rows, (int)s.cols, ds4_mmq_stream_for_call()) != 0 ||
-            !cuda_ok(cudaGetLastError(), "K2-Horizon Q8_0 MMQ")) { return 0; }
-        return mode == DS4_K2H_Q8_F32 || ds4_gpu_gvq_round(out, (uint64_t)rows * s.rows);
-    }
+    return s.cols % 256 || !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows)
+        ? nullptr : &s;
+}
+
+// One row: the GEMV per matrix.
+static int k2h_q8_row(const glmvq_source &s, float *y, const float *x, ds4_k2h_q8_out mode) {
     const uint32_t row_bytes = s.cols / K2H_Q8_BLOCK * K2H_Q8_BYTES;
     if (row_bytes % 16 || (uintptr_t)s.data % 16) { return 0; }
     const uint32_t warps = k2h_q8_warps(row_bytes);
     const bool round = mode == DS4_K2H_Q8_ROUND;
     if (warps == 8) {
-        return round ? k2h_q8_launch<8, DS4_K2H_Q8_ROUND>(s, y, x, rows) : k2h_q8_launch<8, DS4_K2H_Q8_F32>(s, y, x, rows);
+        return round ? k2h_q8_launch<8, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<8, DS4_K2H_Q8_F32>(s, y, x, 1);
     }
     if (warps == 4) {
-        return round ? k2h_q8_launch<4, DS4_K2H_Q8_ROUND>(s, y, x, rows) : k2h_q8_launch<4, DS4_K2H_Q8_F32>(s, y, x, rows);
+        return round ? k2h_q8_launch<4, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<4, DS4_K2H_Q8_F32>(s, y, x, 1);
     }
-    return round ? k2h_q8_launch<2, DS4_K2H_Q8_ROUND>(s, y, x, rows) : k2h_q8_launch<2, DS4_K2H_Q8_F32>(s, y, x, rows);
+    return round ? k2h_q8_launch<2, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<2, DS4_K2H_Q8_F32>(s, y, x, 1);
+}
+
+/* Prefill quantizes the shared input to Q8_1 once for every matrix (MMQ);
+ * the outputs skip MMQ's non-finite scrub (finite F16 scales, which the host
+ * checked, and finite activations give finite sums) or, rounded, take the
+ * BF16 boundary in that pass's place. */
+extern "C" int ds4_gpu_k2h_q8_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+        uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_k2h_q8_out mode) {
+    if (!ctx || !outs || !weights || !count || count > DS4_K2H_Q8_MANY || !rows || !gvq_stream(ctx)) { return 0; }
+    const void *w[DS4_K2H_Q8_MANY];
+    float *y[DS4_K2H_Q8_MANY];
+    int m[DS4_K2H_Q8_MANY];
+    uint32_t cols = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        const glmvq_source *s = k2h_q8_source(ctx, weights[c], outs[c], input, rows);
+        if (!s || (c && s->cols != cols)) { return 0; }
+        cols = s->cols;
+        w[c] = s->data;
+        y[c] = (float *)outs[c]->ptr;
+        m[c] = (int)s->rows;
+    }
+    const float *x = (const float *)input->ptr;
+    if (rows == 1) {
+        for (uint32_t c = 0; c < count; c++) {
+            if (!k2h_q8_row(ctx->model->source[weights[c]], y[c], x, mode)) { return 0; }
+        }
+        return 1;
+    }
+    const cudaStream_t stream = ds4_mmq_stream_for_call();
+    const int rc = mode == DS4_K2H_Q8_ROUND
+        ? ds4_mmq_q8_0_dense_bf16_many(w, y, m, (int)count, x, (int)rows, (int)cols, stream)
+        : ds4_mmq_q8_0_dense_raw_many(w, y, m, (int)count, x, (int)rows, (int)cols, stream);
+    return rc == 0 && cuda_ok(cudaGetLastError(), "K2-Horizon Q8_0 MMQ");
+}
+
+extern "C" int ds4_gpu_k2h_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
+        uint32_t rows, ds4_k2h_q8_out mode) {
+    return ds4_gpu_k2h_q8_many(ctx, &out, &weight, 1u, input, rows, mode);
 }
 
 /* -------------------------------------------------------------------- norms */
