@@ -2,8 +2,7 @@
 """K2-Horizon-375B-A23B reference forward, layer-streamed from the original BF16 checkpoint.
 
 The arithmetic is the manual forward of the MQ87 release's calibration collector
-(`run_k2_bf16_imatrix.py`, bit-identical to transformers' K2HorizonDecoderLayer on layers 0 and 3:
-`manual-forward-validation-layer{0,3}.json` of the k2-horizon-375b-spark-handoff bucket):
+(`run_k2_bf16_imatrix.py`), bit-identical to transformers' K2HorizonDecoderLayer on layers 0 and 3:
 
     h += o(attn(q, k, v))      q/k/v = proj(rmsnorm(h)); partial NeoX RoPE on the first 64 of 128 head dims
                                (theta 1e7), GQA 48 query / 8 KV heads, causal SDPA in BF16, scale 128^-1/2

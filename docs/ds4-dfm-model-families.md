@@ -68,6 +68,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar |
 | [GLM 5.3 Flash VQ](glm53-vq.md) and its [derivatives](glm53-vq.md#derivatives) (Sage-S2.1-Flash, Swift1.5-GLM-5.3-Flash, Nex-N2.6) | `files.json` directory of GVQ1 parts (`glm5_next`) | 34 KDA and 11 DSA layers, 288 VQ experts top-8 (R13, R13+8 on 19 layers), Q4_K nonexperts, embedded MTP block and vision tower; banks, partial reuse, disk KV, serial images and projected prompt rows |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE |
+| [K2-Horizon 375B A23B hVQ](k2h-vq.md) | `release.json` directory of GVQ1 parts (`k2_horizon_vq`) | the same graph with 192 VQ experts top-8 (13-bit hVQ), a Q8_0 trunk, NVFP4 K/V in all 61 layers, host-read Q8_0 embedding, IFM tools; banks, partial reuse, disk KV, snapshots, no drafter |
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |

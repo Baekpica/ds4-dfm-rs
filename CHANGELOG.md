@@ -8,6 +8,15 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Added K2-Horizon-375B-A23B hVQ to the Rust hosts on CUDA: 13-bit GVQ1
+  experts on GLM VQ's decode and MiniMax's prefill kernels, a Q8_0 trunk
+  and NVFP4 K/V, with partial reuse, disk KV, snapshots and banks.
+  2K–64K: 711.9 prefill / 13.96 decode tok/s, +14.9% / +13.9% over the
+  first serving build; 8K + 64: 1,062.7 / 15.46 against MQ87's
+  644.78 / 13.34. One 128 GB Spark serves 425,984 tokens (a 417,942-token
+  prompt retrieved both planted codes); the native 524,288 do not fit
+  beside the host's memory. Baekpica published the release.
+  [Family guide](docs/k2h-vq.md) · [optimization](docs/k2h-vq-optimization-2026-11-25.md) · PR_LINK.
 - Added Tencent Hy4-flash MXQ to the Rust hosts on CUDA. The release keeps
   its 98.91 GiB trunk resident, gathers Engram and embedding rows from SSD,
   and supports image/video input, grouped tool calls and DFly2. Baekpica

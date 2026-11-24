@@ -96,6 +96,27 @@ prefill/decode. The README retains their ranges rather than selecting the faster
 sample. These are fresh GB10 processes, 8K + 64, context 8,257, no MTP or reuse.
 The report defines the accepted arithmetic differences and clock conditions.
 
+## K2-Horizon hVQ
+
+K2-Horizon-375B-A23B with 13-bit hVQ routed experts on all 58 MoE layers, a
+Q8_0 trunk and NVFP4 K/V
+([model card](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-hVQ-GGUF))
+records **711.9 prefill / 13.96 decode** tok/s over 2K–64K at `c089901f`:
+medians of three fresh run means across 32 frontiers on one DGX Spark /
+GB10. Fresh matched runs of the first serving commit `56c66463` record
+619.4 / 12.26, so the gains are **+14.9% / +13.9%**
+([raw record](../speed-bench/gb10_spark_k2h_hvq_aee84ba4.meta.txt), [report](k2h-vq-optimization-2026-11-25.md)).
+At 8K + 64 (MQ87's protocol, a full prefill in 4,096-row chunks) three
+fresh runs give 1,060.8–1,064.6 / 15.40–15.72 tok/s, against MQ87's
+641.94–644.78 / 13.07–13.34.
+
+Every frontier adds 2,048 prompt tokens over the cached prefix and generates
+128 forced greedy tokens, with all K/V resident and default PDL; busy clocks
+span 2,184–2,190 MHz under the 300–2,200 MHz policy and PSI stayed 0. The
+2K–32K summary is 857.6 / 14.89 tok/s.
+
+![K2-Horizon hVQ prefill and decode on one DGX Spark](../speed-bench/gb10_spark_k2h_hvq_aee84ba4_ts.svg)
+
 ## Inkling
 
 Inkling Small MQ85GB's [September 22 capped-clock result](inkling-optimization-2026-09-22.md)
