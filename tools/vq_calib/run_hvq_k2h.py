@@ -420,12 +420,14 @@ def main():
                 and all((a.out / f'layer-{l:02d}' / 'receipt.json').exists() for l in convert if l <= c):
             start = c + 1
             break
-    held = None
+    held, held_routes = None, {}
     if start:
         d = ck_dir / f'layer-{start - 1:02d}'
         hid = torch.load(d / f'rank-{rank}.pt', map_location='cpu').to(dev)
         if rank == 0 and a.heldout_chunks:
             held = torch.load(d / 'heldout.pt', map_location='cpu').to(dev)
+            # the layers before the checkpoint route only here: teacher.safetensors needs all 58
+            held_routes = torch.load(d / 'heldout-routes.pt', map_location='cpu')
         log({'phase': 'resumed', 'from_layer': start, 'all_ranks': True})
     else:
         glob = R.Globals(src, dev, embed=True)
@@ -434,7 +436,6 @@ def main():
             held = glob.embed[torch.as_tensor(tokens[held_idx].astype(np.int64), device=dev)]
         del glob
     torch.cuda.empty_cache()
-    held_routes = {}
     cos, sin = R.rope_cache(T, dev)
     stacks = R.new_stacks()
     pool = ThreadPoolExecutor(1)
@@ -580,11 +581,12 @@ def main():
             cpu = hid.cpu()
             cpu_held = held.cpu() if held is not None else None
 
-            def write(d=d, cpu=cpu, cpu_held=cpu_held):
+            # the routes as of this layer: later layers add to the dict before the write runs
+            def write(d=d, cpu=cpu, cpu_held=cpu_held, routes=dict(held_routes)):
                 torch.save(cpu, d / f'rank-{rank}.pt')
                 if cpu_held is not None:
                     torch.save(cpu_held, d / 'heldout.pt')
-                    torch.save(held_routes, d / 'heldout-routes.pt')
+                    torch.save(routes, d / 'heldout-routes.pt')
                 (d / f'rank-{rank}.done').write_text(run_id + '\n')
             ck_pool.submit(write)
             del cpu, cpu_held
