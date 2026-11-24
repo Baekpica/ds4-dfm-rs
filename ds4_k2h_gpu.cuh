@@ -550,17 +550,41 @@ extern "C" int ds4_gpu_k2h_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds
 /* Q8_0 decode GEMV (A.X-K2's ax_q8_gemv order): warp o stages output o's
  * row in shared memory by 16-byte copies while the predecessor drains, then
  * lane l takes element l of every 34-byte block (d * q exact in F32)
- * against the F32 input, and a fixed xor tree sums the lanes. */
+ * against the F32 input, and a fixed xor tree sums the lanes. One launch
+ * covers up to DS4_K2H_Q8_MANY matrices of one width over the same input
+ * (q/k/v, shared gate/up): alone, the 1,024- and 1,792-row matrices ran at
+ * 187 and 204 GB/s against 233-269 for the larger ones. `end` holds the
+ * matrices' cumulative rows; unused entries repeat the total. */
+struct k2h_q8_set {
+    const uint8_t *w[DS4_K2H_Q8_MANY];
+    float *y[DS4_K2H_Q8_MANY];
+    uint32_t end[DS4_K2H_Q8_MANY];
+};
+
 template <uint32_t WARPS, ds4_k2h_q8_out MODE>
-__global__ void __launch_bounds__(WARPS * 32) k2h_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t outs, uint32_t cols) {
+__global__ void __launch_bounds__(WARPS * 32) k2h_q8_gemv(k2h_q8_set set, const float *x, uint32_t cols) {
     extern __shared__ __align__(16) uint8_t k2h_q8_rows[];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o = blockIdx.x * WARPS + warp;
     const uint32_t blocks = cols / K2H_Q8_BLOCK, row_bytes = blocks * K2H_Q8_BYTES;
+    const uint32_t outs = set.end[DS4_K2H_Q8_MANY - 1];
+    // Output o's matrix by selects (a runtime index into the parameter
+    // arrays would copy them to the stack).
+    const uint8_t *weight = set.w[0];
+    float *out = set.y[0];
+    uint32_t first = 0;
+    #pragma unroll
+    for (uint32_t i = 1; i < DS4_K2H_Q8_MANY; i++) {
+        if (o >= set.end[i - 1]) {
+            weight = set.w[i];
+            out = set.y[i];
+            first = set.end[i - 1];
+        }
+    }
+    const uint32_t row = o - first;
     uint8_t *w = k2h_q8_rows + warp * row_bytes;
     glmvq_pdl_open();
     if (o < outs) {
-        const uint4 *src = (const uint4 *)(weight + (uint64_t)o * row_bytes);
+        const uint4 *src = (const uint4 *)(weight + (uint64_t)row * row_bytes);
         for (uint32_t i = lane; i < row_bytes / 16; i += 32) {
             asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::
                 "r"((uint32_t)__cvta_generic_to_shared((uint4 *)w + i)), "l"(src + i) : "memory");
@@ -580,7 +604,7 @@ __global__ void __launch_bounds__(WARPS * 32) k2h_q8_gemv(float *out, const uint
         acc = fmaf(value, x[b * K2H_Q8_BLOCK + lane], acc);
     }
     for (uint32_t stride = 16; stride; stride >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, stride); }
-    if (!lane) { out[o] = MODE == DS4_K2H_Q8_ROUND ? glmvq_round(acc) : acc; }
+    if (!lane) { out[row] = MODE == DS4_K2H_Q8_ROUND ? glmvq_round(acc) : acc; }
 }
 
 // Warps per CTA so a CTA's staged rows fit beside a second CTA's: 6,144-wide
@@ -590,13 +614,14 @@ static uint32_t k2h_q8_warps(uint32_t row_bytes) {
 }
 
 template <uint32_t WARPS, ds4_k2h_q8_out MODE>
-static bool k2h_q8_launch(const glmvq_source &s, float *out, const float *x, uint32_t rows) {
+static bool k2h_q8_launch(const k2h_q8_set &set, uint32_t cols, const float *x) {
     const auto kernel = k2h_q8_gemv<WARPS, MODE>;
-    const uint32_t row_bytes = s.cols / K2H_Q8_BLOCK * K2H_Q8_BYTES, smem = WARPS * row_bytes;
+    const uint32_t row_bytes = cols / K2H_Q8_BLOCK * K2H_Q8_BYTES, smem = WARPS * row_bytes;
+    const uint32_t outs = set.end[DS4_K2H_Q8_MANY - 1];
     if (smem > 48u * 1024u && !cuda_ok(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)smem), "K2-Horizon Q8_0 GEMV attributes")) { return false; }
-    glmvq_launch_kernel(gvq_mode(rows), kernel, (s.rows + WARPS - 1) / WARPS, WARPS * 32, smem,
-        ds4_current_stream(), out, (const uint8_t *)s.data, x, s.rows, s.cols);
+    glmvq_launch_kernel(gvq_mode(1), kernel, (outs + WARPS - 1) / WARPS, WARPS * 32, smem, ds4_current_stream(),
+        set, x, cols);
     return cuda_ok(cudaGetLastError(), "K2-Horizon Q8_0 GEMV");
 }
 
@@ -609,19 +634,24 @@ static const glmvq_source *k2h_q8_source(ds4_gvq_ctx *ctx, uint32_t weight, cons
         ? nullptr : &s;
 }
 
-// One row: the GEMV per matrix.
-static int k2h_q8_row(const glmvq_source &s, float *y, const float *x, ds4_k2h_q8_out mode) {
-    const uint32_t row_bytes = s.cols / K2H_Q8_BLOCK * K2H_Q8_BYTES;
-    if (row_bytes % 16 || (uintptr_t)s.data % 16) { return 0; }
+// One row: the GEMV over a set of matrices of width `cols`.
+static int k2h_q8_row(const k2h_q8_set &set, uint32_t cols, const float *x, ds4_k2h_q8_out mode) {
+    const uint32_t row_bytes = cols / K2H_Q8_BLOCK * K2H_Q8_BYTES;
+    if (row_bytes % 16) { return 0; }
+    for (uint32_t i = 0; i < DS4_K2H_Q8_MANY; i++) {
+        if ((uintptr_t)set.w[i] % 16) { return 0; }
+    }
     const uint32_t warps = k2h_q8_warps(row_bytes);
     const bool round = mode == DS4_K2H_Q8_ROUND;
     if (warps == 8) {
-        return round ? k2h_q8_launch<8, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<8, DS4_K2H_Q8_F32>(s, y, x, 1);
+        return round ? k2h_q8_launch<8, DS4_K2H_Q8_ROUND>(set, cols, x)
+                     : k2h_q8_launch<8, DS4_K2H_Q8_F32>(set, cols, x);
     }
     if (warps == 4) {
-        return round ? k2h_q8_launch<4, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<4, DS4_K2H_Q8_F32>(s, y, x, 1);
+        return round ? k2h_q8_launch<4, DS4_K2H_Q8_ROUND>(set, cols, x)
+                     : k2h_q8_launch<4, DS4_K2H_Q8_F32>(set, cols, x);
     }
-    return round ? k2h_q8_launch<2, DS4_K2H_Q8_ROUND>(s, y, x, 1) : k2h_q8_launch<2, DS4_K2H_Q8_F32>(s, y, x, 1);
+    return round ? k2h_q8_launch<2, DS4_K2H_Q8_ROUND>(set, cols, x) : k2h_q8_launch<2, DS4_K2H_Q8_F32>(set, cols, x);
 }
 
 /* Prefill quantizes the shared input to Q8_1 once for every matrix (MMQ);
@@ -645,8 +675,21 @@ extern "C" int ds4_gpu_k2h_q8_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs
     }
     const float *x = (const float *)input->ptr;
     if (rows == 1) {
-        for (uint32_t c = 0; c < count; c++) {
-            if (!k2h_q8_row(ctx->model->source[weights[c]], y[c], x, mode)) { return 0; }
+        // One launch for the set (DS4_K2H_Q8_GROUP=0: one per matrix).
+        static const bool group = !k2h_env_off("DS4_K2H_Q8_GROUP");
+        const uint32_t launches = group ? 1u : count;
+        for (uint32_t l = 0; l < launches; l++) {
+            const uint32_t lo = group ? 0u : l, hi = group ? count : l + 1u;
+            k2h_q8_set set = {};
+            uint32_t total = 0;
+            for (uint32_t i = 0; i < DS4_K2H_Q8_MANY; i++) {
+                const uint32_t c = lo + i < hi ? lo + i : hi - 1u;
+                if (lo + i < hi) { total += (uint32_t)m[c]; }
+                set.w[i] = (const uint8_t *)w[c];
+                set.y[i] = y[c];
+                set.end[i] = total;
+            }
+            if (!k2h_q8_row(set, cols, x, mode)) { return 0; }
         }
         return 1;
     }

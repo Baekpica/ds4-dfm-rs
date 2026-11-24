@@ -239,7 +239,9 @@ void k2a_prefill_pp(float *out, const float *q, const uint8_t *pages, uint32_t r
     extern __shared__ __align__(16) uint16_t k2a_pp_smem[];
     // Two decoded tiles (K rows then V rows), then a two-stage ring of raw tiles.
     uint8_t *raw = (uint8_t *)(k2a_pp_smem + 2 * INK2A_STAGE_ELEMS);
-    auto s_k = [&](uint32_t b) { return reinterpret_cast<uint16_t (*)[INK2A_SROW]>(k2a_pp_smem + b * INK2A_STAGE_ELEMS); };
+    auto s_k = [&](uint32_t b) {
+        return reinterpret_cast<uint16_t (*)[INK2A_SROW]>(k2a_pp_smem + b * INK2A_STAGE_ELEMS);
+    };
     const uint32_t tq0 = blockIdx.x * INK2A_TQ, h0 = blockIdx.y * INK2A_CTA_HEADS, kv_head = h0 / INK2A_GROUP;
     const uint32_t group = threadIdx.x / (INK2A_WARPS * 32), h = h0 + group;
     const uint32_t local = threadIdx.x % (INK2A_WARPS * 32), warp = local / 32, lane = local % 32;
