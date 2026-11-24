@@ -1,17 +1,18 @@
-//! K2-Horizon hVQ teacher-forced decode logits for the handoff's held-out
-//! scorer (tools/vq_calib/k2h_heldout.py score --logits DIR): each sequence
-//! of IDS_JSON (512-token chunks without BOS) prefills its first token, then
-//! decodes the rest one by one; row p of OUT/seq-NNNN.npy ([512, 250624]
-//! float16) holds the logits after tokens 0..p. SEQS limits the sequences
-//! (`0-7`, default all).
+//! K2-Horizon hVQ teacher-forced logits for the conversion's held-out scorer
+//! (tools/vq_calib/k2h_heldout.py score): each sequence of IDS_JSON (512-token
+//! chunks without BOS) prefills its first token, then decodes the rest one by
+//! one; row p of OUT/seq-NNNN.npy ([512, 250624] float16) holds the logits
+//! after tokens 0..p (`score --logits OUT`). SEQS limits the sequences (`0-7`,
+//! default all).
 //!
-//! With DS4_K2H_TRACE=DIR set, each sequence instead prefills all its tokens
-//! in one forward and OUT/final-hidden.safetensors collects the traced final
-//! residual stream (layer 60's `hidden`, BF16 values) of every sequence with
-//! the input ids, for `k2h_heldout.py score --hidden` (prefill arithmetic).
-//! Usage: k2h_quality MODEL IDS_JSON OUT_DIR [SEQS]
-use ds4_core::{Backend, Model, ModelFamily, TokenBuffer};
+//! With `--prefill STEP` each sequence instead grows one session STEP tokens
+//! at a time (the prefill kernels from five rows up), and
+//! OUT/seq-NNNN/frontier_FFFFFF.logits.json holds the logits after each
+//! F = STEP, 2 STEP, ... tokens (`score --frontiers OUT`).
+//! Usage: k2h_quality MODEL IDS_JSON OUT_DIR [SEQS] [--prefill STEP]
+use ds4_core::{Backend, Model, ModelFamily, Session, TokenBuffer};
 use std::io::Write;
+use std::path::Path;
 
 const CONTEXT: i32 = 4096;
 
@@ -48,7 +49,7 @@ fn half(x: f32) -> u16 {
 }
 
 // One .npy file: '<f2' rows x cols, C order.
-fn write_npy(path: &std::path::Path, rows: &[Vec<f32>], cols: usize) -> std::io::Result<()> {
+fn write_npy(path: &Path, rows: &[Vec<f32>], cols: usize) -> std::io::Result<()> {
     let mut header = format!(
         "{{'descr': '<f2', 'fortran_order': False, 'shape': ({}, {}), }}",
         rows.len(),
@@ -68,78 +69,43 @@ fn write_npy(path: &std::path::Path, rows: &[Vec<f32>], cols: usize) -> std::io:
     out.flush()
 }
 
-// safetensors of the final residual streams (BF16) and the input ids (I32).
-fn write_hidden(
-    path: &std::path::Path,
-    hidden: &[u16],
-    ids: &[Vec<i32>],
-    tokens: usize,
-) -> std::io::Result<()> {
-    let (n, h) = (ids.len(), hidden.len() * 2);
-    let mut header = format!(
-        "{{\"final_hidden\":{{\"dtype\":\"BF16\",\"shape\":[{n},{tokens},6144],\"data_offsets\":[0,{h}]}},\
-         \"input_ids\":{{\"dtype\":\"I32\",\"shape\":[{n},{tokens}],\"data_offsets\":[{h},{}]}}}}",
-        h + n * tokens * 4
-    );
-    header.push_str(&" ".repeat((8 - header.len() % 8) % 8));
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    out.write_all(&(header.len() as u64).to_le_bytes())?;
-    out.write_all(header.as_bytes())?;
-    out.write_all(
-        &hidden
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>(),
-    )?;
-    out.write_all(
-        &ids.iter()
-            .flatten()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>(),
-    )?;
-    out.flush()
-}
-
-// Prefill each sequence in one forward; collect layer 60's traced rows.
-fn prefill_hidden(
-    model: &Model,
-    ids: &[Vec<i32>],
-    out: &std::path::Path,
-    trace: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let tokens = ids[0].len();
-    let mut hidden: Vec<u16> = Vec::with_capacity(ids.len() * tokens * 6144);
-    for (i, seq) in ids.iter().enumerate() {
-        let mut session = model.session(CONTEXT)?;
-        let started = std::time::Instant::now();
-        session.sync(&TokenBuffer::from_tokens(seq.clone()))?;
-        let prefill_s = started.elapsed().as_secs_f64();
-        let rows = std::fs::read(std::path::Path::new(trace).join("layer_60_hidden.bin"))?;
-        if rows.len() != tokens * 6144 * 4 {
-            return Err(format!("sequence {i}: traced rows are {} bytes", rows.len()).into());
-        }
-        // Rows hold BF16-rounded F32 values: the high half is the BF16.
-        hidden.extend(
-            rows.as_chunks::<4>()
-                .0
-                .iter()
-                .map(|b| u16::from_le_bytes([b[2], b[3]])),
-        );
-        println!("{{\"sequence\": {i}, \"prefill_s\": {prefill_s:.3}}}");
-        std::io::stdout().flush()?;
+// The logits after each `step`-token prefill chunk of one session, in
+// ds4-bench's frontier JSON.
+fn prefill_frontiers(
+    session: &mut Session<'_>,
+    seq: &[i32],
+    step: usize,
+    vocab: usize,
+    dir: &Path,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    let mut frontiers = 0;
+    for end in (step..=seq.len()).step_by(step) {
+        session.sync(&TokenBuffer::from_tokens(seq[..end].to_vec()))?;
+        let logits = session.copy_logits(vocab)?;
+        let body = serde_json::json!({"vocab": vocab, "frontier_tokens": end, "logits": logits});
+        std::fs::write(
+            dir.join(format!("frontier_{end:06}.logits.json")),
+            serde_json::to_vec(&body)?,
+        )?;
+        frontiers += 1;
     }
-    Ok(write_hidden(
-        &out.join("final-hidden.safetensors"),
-        &hidden,
-        ids,
-        tokens,
-    )?)
+    Ok(frontiers)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let step = match args.iter().position(|a| a == "--prefill") {
+        Some(at) if at + 1 < args.len() => {
+            let step = args.remove(at + 1).parse::<usize>()?;
+            args.remove(at);
+            Some(step.max(1))
+        }
+        Some(_) => return Err("--prefill needs STEP".into()),
+        None => None,
+    };
     if !(3..=4).contains(&args.len()) {
-        return Err("usage: k2h_quality MODEL IDS_JSON OUT_DIR [SEQS]".into());
+        return Err("usage: k2h_quality MODEL IDS_JSON OUT_DIR [SEQS] [--prefill STEP]".into());
     }
     let ids: Vec<Vec<i32>> = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     let out = std::path::PathBuf::from(&args[2]);
@@ -155,13 +121,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if model.family() != ModelFamily::K2hVq {
         return Err("this receipt requires the K2-Horizon hVQ release".into());
     }
-    if let Ok(trace) = std::env::var("DS4_K2H_TRACE") {
-        return prefill_hidden(&model, &ids, &out, &trace);
-    }
     let vocab = model.vocab().n_vocab() as usize;
     for (i, seq) in ids.iter().enumerate().take(hi.min(ids.len())).skip(lo) {
-        let first = 1.min(seq.len());
         let mut session = model.session(CONTEXT)?;
+        if let Some(step) = step {
+            let started = std::time::Instant::now();
+            let dir = out.join(format!("seq-{i:04}"));
+            let frontiers = prefill_frontiers(&mut session, seq, step, vocab, &dir)?;
+            let prefill_s = started.elapsed().as_secs_f64();
+            println!(
+                "{{\"sequence\": {i}, \"frontiers\": {frontiers}, \"prefill_s\": {prefill_s:.3}}}"
+            );
+            std::io::stdout().flush()?;
+            continue;
+        }
+        let first = 1.min(seq.len());
         let started = std::time::Instant::now();
         session.sync(&TokenBuffer::from_tokens(seq[..first].to_vec()))?;
         let prefill_s = started.elapsed().as_secs_f64();

@@ -123,28 +123,6 @@ static bool k2h_graph_alloc(ds4_k2h_graph *g, const ds4_model *m, const ds4_weig
     return true;
 }
 
-/* DS4_K2H_TRACE=DIR: the forward starting at DS4_K2H_TRACE_POS (default 0)
- * writes each traced tensor's rows as stored (F32, ids I32) to
- * DIR/layer_LL_NAME.bin; DS4_K2H_TRACE_ONLY=LL_NAME keeps one of them. */
-static bool k2h_trace(uint32_t il, uint32_t pos, const char *name, const ds4_gpu_tensor *t, uint64_t bytes) {
-    const char *root = getenv("DS4_K2H_TRACE"), *at = getenv("DS4_K2H_TRACE_POS");
-    if (!root || !root[0] || pos != (at ? (uint32_t)strtoul(at, NULL, 10) : 0u)) { return true; }
-    const char *only = getenv("DS4_K2H_TRACE_ONLY");
-    char key[64];
-    snprintf(key, sizeof(key), "%02u_%s", il, name);
-    if (only && only[0] && strcmp(only, key)) { return true; }
-    char path[PATH_MAX];
-    const int n = snprintf(path, sizeof(path), "%s/layer_%02u_%s.bin", root, il, name);
-    if (n < 0 || (size_t)n >= sizeof(path)) { return false; }
-    void *buffer = xmalloc((size_t)bytes);
-    bool ok = ds4_gpu_tensor_read(t, 0, buffer, bytes) != 0;
-    FILE *fp = ok ? fopen(path, "wb") : NULL;
-    ok = fp && fwrite(buffer, 1u, (size_t)bytes, fp) == bytes;
-    if (fp && fclose(fp)) { ok = false; }
-    free(buffer);
-    return ok;
-}
-
 // A bank graph: its own K/V pages, everything else borrowed from graph 0.
 static bool k2h_graph_bank(ds4_k2h_graph *g, const ds4_k2h_graph *owner) {
     *g = *owner;
@@ -191,9 +169,7 @@ static bool k2h_attention(ds4_k2h_graph *g, const ds4_model *m, const ds4_weight
     const ds4_tensor *const ws[] = {l->attn_q, l->attn_k, l->attn_v};
     return k2h_q8_many(g, m, outs, ws, 3u, g->norm, rows) &&
         ds4_gpu_k2h_qkv(g->q, g->k, g->v, g->pages[il], g->rope, rows, pos) &&
-        k2h_trace(il, pos, "q", g->q, (uint64_t)rows * DS4_K2H_Q * sizeof(float)) &&
         ds4_gpu_k2h_attn(g->heads, g->q, g->pages[il], g->partials, rows, pos) &&
-        k2h_trace(il, pos, "heads", g->heads, (uint64_t)rows * DS4_K2H_Q * sizeof(float)) &&
         k2h_q8(g, m, g->attn_out, l->attn_output, g->heads, rows, DS4_K2H_Q8_F32);
 }
 
@@ -230,16 +206,13 @@ static bool k2h_mlp(ds4_k2h_graph *g, const ds4_model *m, ds4_gpu_tensor *out, c
 
 // Router logits and top-8, the shared expert, then the VQ experts with the
 // shared rows in the routed reduce.
-static bool k2h_ffn(ds4_k2h_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t il, uint32_t rows,
-        uint32_t pos) {
+static bool k2h_ffn(ds4_k2h_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t il, uint32_t rows) {
     const ds4_layer_weights *l = &w->layer[il];
     if (il < K2H_DENSE) {
         return k2h_mlp(g, m, g->ffn_out, l->ffn_gate, l->ffn_up, l->ffn_down, rows, DS4_K2H_DENSE_FF);
     }
-    const uint64_t route = (uint64_t)rows * DS4_K2H_USED * 4u;
     return ds4_gpu_k2h_router(g->gvq, g->route_ids, g->route_weights, g->router, g->norm,
             k2h_index(m, l->ffn_gate_inp), k2h_index(m, l->ffn_exp_probs_b), rows) &&
-        k2h_trace(il, pos, "routes", g->route_ids, route) && k2h_trace(il, pos, "weights", g->route_weights, route) &&
         k2h_mlp(g, m, g->shared, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, rows, DS4_K2H_FFN) &&
         ds4_gpu_k2h_moe(g->moe, g->ffn_out, g->norm, g->route_ids, g->route_weights, g->shared, g->matrices[il], rows);
 }
@@ -251,14 +224,10 @@ static bool k2h_layer(ds4_k2h_graph *g, const ds4_model *m, const ds4_weights *w
         uint32_t pos) {
     const ds4_layer_weights *l = &w->layer[il];
     const ds4_tensor *next = il + 1u == K2H_LAYERS ? w->output_norm : w->layer[il + 1u].attn_norm;
-    const uint64_t hidden = (uint64_t)rows * DS4_K2H_HIDDEN * sizeof(float);
     const bool ok = k2h_attention(g, m, w, il, rows, pos) &&
         ds4_gpu_k2h_norm(g->gvq, g->norm, g->cur, g->attn_out, k2h_index(m, l->ffn_norm), rows) &&
-        k2h_trace(il, pos, "attn", g->cur, hidden) &&
-        k2h_ffn(g, m, w, il, rows, pos) &&
-        k2h_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
-        ds4_gpu_k2h_norm(g->gvq, g->norm, g->cur, g->ffn_out, k2h_index(m, next), rows) &&
-        k2h_trace(il, pos, "hidden", g->cur, hidden);
+        k2h_ffn(g, m, w, il, rows) &&
+        ds4_gpu_k2h_norm(g->gvq, g->norm, g->cur, g->ffn_out, k2h_index(m, next), rows);
     if (!ok) { fprintf(stderr, "ds4: K2-Horizon layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
 }
@@ -307,15 +276,11 @@ static bool k2h_forward(ds4_k2h_graph *g, const ds4_model *m, const ds4_weights 
      * reset before another forward. */
     g->failed = true;
     if (!k2h_embed(g, m, w, tokens, rows) || !ds4_gpu_k2h_rope(g->rope, rows, pos) ||
-        !k2h_trace(0u, pos, "embed", g->cur, (uint64_t)rows * DS4_K2H_HIDDEN * sizeof(float)) ||
         !ds4_gpu_k2h_norm(g->gvq, g->norm, g->cur, NULL, k2h_index(m, w->layer[0].attn_norm), rows)) { return false; }
     for (uint32_t il = 0; il < K2H_LAYERS; il++) {
         if (!k2h_layer(g, m, w, il, rows, pos)) { return false; }
     }
-    if (head == K2H_HEAD_LAST && (!k2h_head(g, m, w, rows - 1u) ||
-            !k2h_trace(K2H_LAYERS, pos, "logits", g->logits, (uint64_t)DS4_N_VOCAB * sizeof(float)))) {
-        return false;
-    }
+    if (head == K2H_HEAD_LAST && !k2h_head(g, m, w, rows - 1u)) { return false; }
     g->position = pos + rows;
     g->failed = false;
     return true;

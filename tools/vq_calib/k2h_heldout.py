@@ -212,7 +212,8 @@ def cmd_score(a):
         same = rlp.argmax(-1) == clp.argmax(-1)
         has = pos < T - 1                                   # positions with a true next token in the sequence
         tgt = ids[i].to(dev)[(pos[has] + 1)][:, None]
-        row = {'sequence': i, 'positions': p, 'kl': float(kl.double().mean()), 'same_top1': float(same.float().mean()),
+        row = {'sequence': i, 'positions': p, 'nll_positions': int(has.sum()), 'kl': float(kl.double().mean()),
+               'same_top1': float(same.float().mean()),
                'nll_reference': float(-rlp[has].gather(1, tgt).double().mean()) if bool(has.any()) else None,
                'nll_candidate': float(-clp[has].gather(1, tgt).double().mean()) if bool(has.any()) else None}
         if index:
@@ -220,9 +221,12 @@ def cmd_score(a):
         rows.append(row)
         kls.append(kl.cpu())
     w = np.array([r['positions'] for r in rows], dtype=np.float64)
+    # NLL averages over the positions with a next token (a frontier at T excludes its last row).
+    w_nll = np.array([r['nll_positions'] for r in rows], dtype=np.float64)
     def avg(k, sel=None):
         keep = [j for j, r in enumerate(rows) if (sel is None or sel[j]) and r[k] is not None]
-        return float(np.average([rows[j][k] for j in keep], weights=[w[j] for j in keep])) if keep else None
+        weights = w_nll if k.startswith('nll') else w
+        return float(np.average([rows[j][k] for j in keep], weights=[weights[j] for j in keep])) if keep else None
     summary = {'reference': a.reference, 'candidate': str(a.hidden or a.logits or a.frontiers), 'sequences': len(rows), 'positions': int(w.sum()),
                'kl': avg('kl'), 'kl_median': float(torch.cat(kls).median()), 'same_top1': avg('same_top1'),
                'nll_reference': avg('nll_reference'), 'nll_candidate': avg('nll_candidate')}

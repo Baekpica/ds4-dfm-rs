@@ -202,14 +202,21 @@ The conversion's held-out set is 64 sequences of 512 tokens (32,768
 positions) from its calibration mix, with the reference forward's final
 residual streams (`tools/vq_calib/k2h_heldout.py`: the release bytes through
 `k2h_ref.py`'s arithmetic with NVFP4 K/V) and the original BF16 model's.
-Candidates are scored through the release's norm and Q8_0 head
-(`tests/k2h_quality`, `DS4_K2H_TRACE_ONLY=60_hidden` for prefill rows).
+Candidates are scored through the release's norm and Q8_0 head.
+`tests/k2h_quality` decodes each sequence token by token (`score --logits`),
+or with `--prefill 64` grows one session 64 rows at a time and keeps the
+logits after each chunk (`score --frontiers`, positions 64, 128, ..., 512).
 
 | Engine path, against | Positions | KL, mean (median) | Same top-1 | NLL (reference) |
 |---|---:|---:|---:|---:|
-| Prefill rows, the reference forward | 32,768 | 0.0224 (0.0073) | 94.43% | 1.3898 (1.3890) |
+| 64-row prefill chunks, the reference forward | 512 | 0.0192 (0.0063) | 94.14% | 1.3110 (1.3124) |
 | Decoded token by token, the reference forward | 3,072 | 0.0138 | 94.73% | 1.5507 (1.5469) |
-| Prefill rows, the original BF16 model | 32,768 | 0.1337 (0.0416) | 86.71% | 1.3898 (1.3106) |
+| 64-row prefill chunks, the original BF16 model | 512 | 0.1048 (0.0385) | 87.89% | 1.3110 (1.2286) |
+
+At `c089901f` the final hidden rows of every prefilled position (32,768,
+one 512-row forward per sequence) gave KL 0.0224 to the reference forward
+(94.43% same top-1, NLL 1.3898 against 1.3890) and 0.1337 to the original
+(86.71%).
 
 The reference forward itself scores KL 0.1316, same top-1 86.78% and NLL
 1.389 against the original, so the engine serves the conversion's quality.
@@ -229,7 +236,6 @@ is a near tie that flips).
 | `DS4_K2H_Q8_GROUP=0` | one decode GEMV launch per Q8_0 matrix instead of one per shared input (q/k/v, gate/up) |
 | `DS4_K2H_GAIN_DOT=0` | decode experts round gain × codeword to BF16 per weight (the restored weights' arithmetic) instead of one multiply after the dot |
 | `DS4_GLMVQ_PDL=0` | plain launches for decode (kernel attribution) |
-| `DS4_K2H_TRACE=DIR`, `DS4_K2H_TRACE_POS`, `DS4_K2H_TRACE_ONLY=LL_NAME` | per-stage rows of one forward (`DIR/layer_LL_NAME.bin`) |
 
 Set diagnostic switches before starting a fresh process.
 
