@@ -188,6 +188,27 @@ fn piece_len(text: &str) -> usize {
     end.max(text.chars().next().map_or(0, char::len_utf8))
 }
 
+/// The longest run of a split piece BPE merges at once. A request can hold
+/// one piece of megabytes (a run of `!`), and the merge allocates per byte
+/// before any context check; no word or whitespace run comes near this.
+const PIECE_CAP: usize = 16 * 1024;
+
+/// `piece` in runs of at most PIECE_CAP bytes, cut on character boundaries.
+fn capped(mut piece: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        if piece.is_empty() {
+            return None;
+        }
+        let mut cut = piece.len().min(PIECE_CAP);
+        while !piece.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let (head, tail) = piece.split_at(cut);
+        piece = tail;
+        Some(head)
+    })
+}
+
 /// NFC on ordinary spans (added tokens were split out of the raw text), then
 /// the source split. Invalid UTF-8, which the source never sees, takes the
 /// GGUF path's split.
@@ -200,14 +221,31 @@ pub(super) fn encode(v: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     let mut rest = normalized.as_str();
     while !rest.is_empty() {
         let n = piece_len(rest);
-        bpe_emit_piece(v, &rest.as_bytes()[..n], out);
+        for part in capped(&rest[..n]) {
+            bpe_emit_piece(v, part.as_bytes(), out);
+        }
         rest = &rest[n..];
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::piece_len;
+    use super::{capped, piece_len, PIECE_CAP};
+
+    // Long pieces go to BPE in bounded runs, never inside a character.
+    #[test]
+    fn long_pieces_cap_on_character_boundaries() {
+        let bangs = "!".repeat(2 * PIECE_CAP + 7);
+        let runs: Vec<usize> = capped(&bangs).map(str::len).collect();
+        assert_eq!(runs, [PIECE_CAP, PIECE_CAP, 7]);
+        let hangul = "\u{ac00}".repeat(PIECE_CAP / 3 + 5);
+        let parts: Vec<&str> = capped(&hangul).collect();
+        assert!(parts
+            .iter()
+            .all(|p| p.len() <= PIECE_CAP && p.len() % 3 == 0));
+        assert_eq!(parts.concat(), hangul);
+        assert_eq!(capped("word").collect::<Vec<_>>(), ["word"]);
+    }
 
     // tokenizers 0.22.2's Split pieces for the release's regex: whitespace
     // tails, digit triples, marks and ZWJ inside punctuation runs, \p{No}.
