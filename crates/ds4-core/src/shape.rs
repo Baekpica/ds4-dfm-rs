@@ -40,6 +40,7 @@ pub enum ModelFamily {
     Gemma4Vq = 19,
     Inkling2Vq = 20,
     Hy4 = 21,
+    K2hVq = 22,
 }
 
 impl ModelFamily {
@@ -67,6 +68,7 @@ impl ModelFamily {
             "gemma4_vq" => Some(Self::Gemma4Vq),
             "hy_v4_flash" => Some(Self::Hy4),
             "inkling2_vq" => Some(Self::Inkling2Vq),
+            "k2_horizon_vq" => Some(Self::K2hVq),
             _ => None,
         }
     }
@@ -95,6 +97,7 @@ impl ModelFamily {
             Self::Gemma4Vq => "gemma4_vq",
             Self::Hy4 => "hy_v4_flash",
             Self::Inkling2Vq => "inkling2_vq",
+            Self::K2hVq => "k2_horizon_vq",
         }
     }
 }
@@ -128,6 +131,7 @@ pub enum Variant {
     Gemma4A4bVq = 23,
     Inkling2SmallVq = 24,
     Hy4FlashMxq = 25,
+    K2HorizonVq = 26,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -392,6 +396,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"gemma4_vq") => ArchRoute::Fixed(Variant::Gemma4A4bVq),
         Some(b"hy_v4_flash") => ArchRoute::Fixed(Variant::Hy4FlashMxq),
         Some(b"inkling2_vq") => ArchRoute::Fixed(Variant::Inkling2SmallVq),
+        Some(b"k2_horizon_vq") => ArchRoute::Fixed(Variant::K2HorizonVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -424,6 +429,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Gemma4A4bVq => SHAPE_GEMMA4_A4B_VQ,
         Variant::Hy4FlashMxq => SHAPE_HY4,
         Variant::Inkling2SmallVq => SHAPE_INKLING2_VQ,
+        Variant::K2HorizonVq => SHAPE_K2H_VQ,
     }
 }
 
@@ -1542,6 +1548,15 @@ pub(crate) const SHAPE_AXK2_VQ: Shape = Shape {
     rope_freq_base: 1_000_000.0,
     rope_scale_factor: 2.0,
     rope_orig_ctx: 131_072,
+    ..SHAPE_K2_HORIZON_375B
+};
+
+// K2-Horizon's VQ release (k2h_vq/layout.rs): the same graph as the GGUF
+// variant; only the artifact contract and stored types differ.
+pub(crate) const SHAPE_K2H_VQ: Shape = Shape {
+    name: "K2-Horizon-375B-A23B-hVQ",
+    family: ModelFamily::K2hVq,
+    variant: Variant::K2HorizonVq,
     ..SHAPE_K2_HORIZON_375B
 };
 

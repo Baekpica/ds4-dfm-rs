@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF_VALUE_UINT32};
 use crate::shape::ModelFamily;
@@ -18,6 +19,7 @@ mod gemma4;
 mod glm_vq;
 mod hy4;
 mod inkling;
+mod k2h;
 mod ling31;
 mod ling3vl;
 mod mimo2;
@@ -95,6 +97,8 @@ pub struct Vocab {
     user_defined: HashMap<Vec<u8>, i32>,
     user_defined_max_len: u32,
     user_defined_first: [bool; 256],
+    // Built on the first scan, after every family has added its tokens.
+    user_defined_trie: OnceLock<AddedTrie>,
     motif3_added_first: [bool; 256],
     pub bos_id: i32,
     pub eos_id: i32,
@@ -322,6 +326,7 @@ impl Vocab {
             user_defined,
             user_defined_max_len,
             user_defined_first,
+            user_defined_trie: OnceLock::new(),
             motif3_added_first,
             /* C vocab_load: memset 0, then the same -1 defaults. Solar /
              * EXAONE leave end_of_turn_id at 0; do not "fix" it to -1. */
@@ -377,6 +382,7 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
+            ModelFamily::K2hVq => k2h::specials(self)?,
             ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
@@ -699,6 +705,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Inkling-2 release metadata"))?;
             return Self::load_tables(&g, family, Some(inkling::tables2(path)?));
         }
+        if family == ModelFamily::K2hVq {
+            let g = crate::k2h_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("K2-Horizon release metadata"))?;
+            return Self::load_tables(&g, family, Some(k2h::tables(path)?));
+        }
         if family == ModelFamily::MinimaxVq {
             let g = crate::minimax_vq::metadata(path)
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
@@ -737,6 +748,7 @@ impl Vocab {
                 | ModelFamily::Gemma4Vq
                 | ModelFamily::Hy4
                 | ModelFamily::Inkling2Vq
+                | ModelFamily::K2hVq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -798,6 +810,9 @@ impl Vocab {
             )),
             ModelFamily::Gemma4Vq => Some(TokError::InvalidTokenizer(
                 "Gemma-4 VQ chat requires official Jinja",
+            )),
+            ModelFamily::K2hVq => Some(TokError::InvalidTokenizer(
+                "K2-Horizon VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -925,7 +940,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1129,7 +1145,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1354,6 +1371,8 @@ impl Vocab {
                 (self.eot_id >= 0 && token == self.eot_id)
                     || (self.im_start_id >= 0 && token == self.im_start_id)
             }
+            // generation_config.json eos_token_id is [1, 250019].
+            ModelFamily::K2hVq => self.eot_id >= 0 && token == self.eot_id,
             ModelFamily::Motif3 => {
                 (self.user_id >= 0 && token == self.user_id)
                     || (self.end_of_turn_id >= 0 && token == self.end_of_turn_id)
@@ -1575,7 +1594,7 @@ fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
         off += n;
     }
 
-    if vocab.family == ModelFamily::Hy4 {
+    if matches!(vocab.family, ModelFamily::Hy4 | ModelFamily::K2hVq) {
         merge_by(&mut sym, |a, b| bpe_rank(vocab, a, b));
     } else {
         merge_in_rounds(vocab, &mut sym);
@@ -1840,20 +1859,66 @@ fn ascii_tolower_cp(cp: u32) -> u32 {
     }
 }
 
+/// User-defined tokens as a byte trie. A scan walks while the text still
+/// matches some token: a hash lookup per candidate length at every position
+/// cost K2-Horizon 26 lookups per byte of a run of `r` (562 of its added
+/// tokens are `reserved_special_token_N`), about 30 s for a 64 MiB request.
+#[derive(Debug, Clone)]
+struct AddedTrie {
+    // Per node: sorted (byte, child) edges and the token ending there (-1 none).
+    edges: Vec<Vec<(u8, u32)>>,
+    id: Vec<i32>,
+}
+
+impl AddedTrie {
+    fn build(tokens: &HashMap<Vec<u8>, i32>) -> Self {
+        let mut t = Self {
+            edges: vec![Vec::new()],
+            id: vec![-1],
+        };
+        for (bytes, &id) in tokens {
+            let mut node = 0usize;
+            for &b in bytes {
+                node = match t.edges[node].binary_search_by_key(&b, |e| e.0) {
+                    Ok(i) => t.edges[node][i].1 as usize,
+                    Err(i) => {
+                        let child = t.id.len();
+                        t.edges.push(Vec::new());
+                        t.id.push(-1);
+                        t.edges[node].insert(i, (b, child as u32));
+                        child
+                    }
+                };
+            }
+            t.id[node] = id;
+        }
+        t
+    }
+
+    // The longest token that starts `text`, as (id, length).
+    fn longest(&self, text: &[u8]) -> Option<(i32, usize)> {
+        let (mut node, mut best) = (0usize, None);
+        for (n, &b) in text.iter().enumerate() {
+            match self.edges[node].binary_search_by_key(&b, |e| e.0) {
+                Ok(i) => node = self.edges[node][i].1 as usize,
+                Err(_) => break,
+            }
+            if self.id[node] >= 0 {
+                best = Some((self.id[node], n + 1));
+            }
+        }
+        best
+    }
+}
+
 fn user_defined_at(vocab: &Vocab, text: &[u8], pos: usize) -> Option<(i32, usize)> {
     if vocab.user_defined_max_len == 0 || !vocab.user_defined_first[text[pos] as usize] {
         return None;
     }
-    let mut want = text.len() - pos;
-    if want > vocab.user_defined_max_len as usize {
-        want = vocab.user_defined_max_len as usize;
-    }
-    for n in (1..=want).rev() {
-        if let Some(&id) = vocab.user_defined.get(&text[pos..pos + n]) {
-            return Some((id, n));
-        }
-    }
-    None
+    vocab
+        .user_defined_trie
+        .get_or_init(|| AddedTrie::build(&vocab.user_defined))
+        .longest(&text[pos..])
 }
 
 fn contraction_len(s: &[u8], pos: usize) -> Option<usize> {
@@ -2573,6 +2638,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         }
         ModelFamily::MinimaxVq => minimax::encode(vocab, text, out),
         ModelFamily::Axk2Vq => axk2::encode(vocab, text, out),
+        ModelFamily::K2hVq => k2h::encode(vocab, text, out),
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2604,6 +2670,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
             | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq
     ) {
         return user_defined_at(vocab, p, 0);
     }
@@ -3190,5 +3257,52 @@ mod anchor_tests {
         assert_eq!(last_triple_start(&[105, 4368], &[105, 4368, 107]), -1);
         assert_eq!(last_triple_start(&[], &[105, 4368, 107]), -1);
         assert_eq!(last_triple_start(&[9, 9, 9], &[105, 4368, 107]), -1);
+    }
+}
+
+#[cfg(test)]
+mod added_trie_tests {
+    use super::AddedTrie;
+    use std::collections::HashMap;
+
+    // The trie returns what a hash lookup per length (longest first) did.
+    #[test]
+    fn trie_finds_the_longest_token_a_length_scan_finds() {
+        let tokens: HashMap<Vec<u8>, i32> = [
+            "reserved_special_token_5",
+            "reserved_special_token_56",
+            "<|a|>",
+            "<|ab|>",
+            "<ifm|think>",
+            "r",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_bytes().to_vec(), i as i32))
+        .collect();
+        let trie = AddedTrie::build(&tokens);
+        let max = tokens.keys().map(Vec::len).max().unwrap();
+        let scan = |text: &[u8]| {
+            (1..=text.len().min(max))
+                .rev()
+                .find_map(|n| tokens.get(&text[..n]).map(|&id| (id, n)))
+        };
+        for text in [
+            "reserved_special_token_567x",
+            "reserved_special_token_5",
+            "reserved_special_tok",
+            "rrrrrrrr",
+            "<|ab|><|a|>",
+            "<|a",
+            "<<<<<<",
+            "<ifm|think>yes",
+            "",
+        ] {
+            assert_eq!(
+                trie.longest(text.as_bytes()),
+                scan(text.as_bytes()),
+                "{text:?}"
+            );
+        }
     }
 }

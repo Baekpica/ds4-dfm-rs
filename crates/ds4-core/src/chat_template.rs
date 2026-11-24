@@ -40,6 +40,10 @@ fn minimax_model(id: i32) -> bool {
     id == crate::Variant::MinimaxVq as i32
 }
 
+fn k2_model(id: i32) -> bool {
+    id == crate::Variant::K2Horizon375B as i32 || id == crate::Variant::K2HorizonVq as i32
+}
+
 impl ChatOptions {
     pub fn new(model_id: i32, mode: ChatThinkMode) -> Self {
         use ChatThinkMode::{High, Low, Max, None};
@@ -49,7 +53,7 @@ impl ChatOptions {
             (2, Max) => "xhigh",
             (id, None | Max) if glm_model(id) => "max",
             // The existing K2 output parser handles its default think channel.
-            (8, _) => "high",
+            (id, _) if k2_model(id) => "high",
             // Beam always writes analysis: off is its smallest trained budget.
             (19, None) => "minimal",
             // MiniMax has no "none" effort; off closes the think span instead.
@@ -63,7 +67,7 @@ impl ChatOptions {
         };
         let prefill = match (model_id, mode) {
             (id, None) if glm_model(id) => "</think>",
-            (8, None) => "</ifm|think>\n",
+            (id, None) if k2_model(id) => "</ifm|think>\n",
             (id, None) if id == crate::Variant::Step37Flash as i32 => "</think>\n",
             // "When thinking is disabled, begin your response directly after
             // the </mm:think> prefix" (chat_template.jinja).
@@ -117,6 +121,10 @@ impl Template {
             let gguf = crate::axk2_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
         }
+        if path.is_dir() && crate::k2h_vq::is_release(path) {
+            let gguf = crate::k2h_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() && crate::mimo2_vq::is_release(path) {
             let gguf = crate::mimo2_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -155,9 +163,12 @@ impl Template {
             let ling = crate::ling31_vq::is_release(path);
             let mimo = crate::mimo2_vq::is_release(path);
             let inkling2 = crate::inkling2_vq::is_release(path);
+            let k2h = crate::k2h_vq::is_release(path);
             for name in ["tokenizer_config.json", "chat_template.jinja"] {
                 if inkling2 {
                     crate::inkling2_vq::asset(path, name).map_err(asset_error)?;
+                } else if k2h {
+                    crate::k2h_vq::asset(path, name).map_err(asset_error)?;
                 } else if mimo {
                     crate::mimo2_vq::asset(path, name).map_err(asset_error)?;
                 } else if beam {

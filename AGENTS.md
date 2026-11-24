@@ -528,6 +528,19 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   prompts showed no change (32.09 vs 31.94, se 0.24). Compare decode
   after a prefill change over many prompts, and read rounds, accepted
   drafts and round time, not tok/s alone.
+- **Ping-pong two head groups over a decoded tile pair.** K2-Horizon's NVFP4
+  prefill tile (eight warps, two heads) decoded, scored and summed in step,
+  idling the tensor pipe through each decode and softmax: 62 TFLOPS. Two
+  decoded buffers, one head's warps decoding the next keys before consuming
+  and the other's decoding the values after, overlapped them: 82 TFLOPS,
+  tensor pipe 77.5% busy.
+- **Store MMA partials as vectors.** A C-fragment lane's scalar stores touch
+  a sector per row (24 per warp store): K2's decode split lost ~30 µs a
+  call to them until the partial was padded to 16 bytes and stored as
+  float4.
+- **Flush the L2 with reads.** A 64 MiB memset between timed calls left
+  dirty lines whose write-back halved the next kernel's bandwidth; a read
+  kernel leaves the L2 as a decode step's weight stream does.
 
 # Agent Notes
 

@@ -529,6 +529,18 @@ fn ling31_uses_bailing_syntax() {
 }
 
 #[test]
+fn k2h_vq_uses_k2_syntax() {
+    // K2-Horizon VQ keeps K2's IFM think span, XML tool calls and stops.
+    let id = ds4_core::Variant::K2HorizonVq as i32;
+    assert_eq!(ds4_server::syntax_for_model_id(id), ModelSyntax::K2Horizon);
+    let raw = b"plan</ifm|think><ifm|tool_calls>\n<ifm|tool_call>lookup\n<ifm|arg_key>city</ifm|arg_key>\n<ifm|arg_value>Seoul</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>";
+    let parsed = ds4_server::parse_generated_for_model_id(id, raw, true, &[]);
+    assert_eq!(parsed.reasoning, b"plan");
+    assert_eq!(parsed.calls.len(), 1);
+    assert_eq!(parsed.calls[0].name, "lookup");
+}
+
+#[test]
 fn k2_horizon_chat_uses_ifm_not_exaone() {
     let prompt = render_chat(
         ModelSyntax::K2Horizon,

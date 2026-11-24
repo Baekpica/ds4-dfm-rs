@@ -110,6 +110,10 @@ name = "axk2_quality"
 required-features = ["native"]
 
 [[example]]
+name = "k2h_quality"
+required-features = ["native"]
+
+[[example]]
 name = "mimo2_vq_quality"
 required-features = ["native"]
 

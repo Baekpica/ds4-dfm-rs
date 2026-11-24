@@ -46,6 +46,7 @@ documented whole-model results are omitted.
 | Motif-3 MQ87-88 | 627.19 | 15.06 | [8K + 64, historical C](docs/performance.md#motif) |
 | dots3-note MQ87 | 604.3 | 16.78 | [8K + 64, plain](docs/performance.md#dots3) |
 | K2-Horizon MQ87 | 641.94–644.78 | 13.07–13.34 | [8K + 64, two samples](docs/performance.md#k2) |
+| K2-Horizon hVQ (13-bit GVQ1 + Q8_0) | 711.9 | 13.96 | [2K–64K sweep, plain; 8K + 64: 1,060.8–1,064.6 / 15.40–15.72](docs/performance.md#k2-horizon-hvq) |
 | Inkling Small MQ85GB | 452.58 | 13.07 | [8K + 64, plain](docs/performance.md#inkling) |
 | Step 3.7 Flash MQ83 | 1,194.64 | 22.77 | [2K + 64, MTP 3](docs/performance.md#step) |
 | Ling-3.0-flash-VL MQ-Q5 | 1,889 | 24.65 | [8K + 64, plain](docs/performance.md#ling) |
@@ -192,6 +193,7 @@ and the [mixed-quant collection](https://huggingface.co/collections/Baekpica/ds4
 | Swift1.5-GLM-5.3-Flash hVQ | `glm5-next` (GVQ1 parts) | [Baekpica Swift1.5 hVQ](https://huggingface.co/Baekpica/Swift1.5-GLM-5.3-Flash-VQ-GGUF) | [Native 1M serving with MTP 2, images, OCR, projected video and tool follow-up](docs/glm53-vq-optimization-2026-11-18.md#serving-and-memory) |
 | Nex-N2.6 hVQ | `glm5-next` (GVQ1 parts) | [Baekpica Nex hVQ](https://huggingface.co/Baekpica/Nex-N2.6-VQ-GGUF) | [GLM VQ family layout and template](docs/glm53-vq.md#derivatives). Spark execution on this release is unverified. |
 | K2-Horizon 375B A23B | `k2-horizon` | [Baekpica MQ87](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [32K one bank, IFM tools, no MTP](docs/ds4-dfm-model-families.md#k2-horizon-375b-release-scope) |
+| K2-Horizon 375B A23B hVQ | `k2_horizon_vq` (GVQ1 release directory) | [Baekpica 13-bit hVQ experts + Q8_0 nonexperts](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-hVQ-GGUF) | [NVFP4 K/V; 425,984 tokens in one bank on a 128 GB Spark (the native 524,288 do not fit), IFM tools, partial reuse, disk KV, snapshots and banks, no drafter; 2K–64K measured](docs/k2h-vq.md) |
 | Inkling Small | `inkling` | [Baekpica MQ85GB](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + [MTP-BF16](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [Serial text/image/audio input](docs/inkling-small.md) |
 | Step 3.7 Flash | `step35` | [Baekpica MQ83 + MTP + vision](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [Opt-in text banks/MTP, disk KV; images serial](docs/step37-serving-2026-09-13.md) |
 | Ling-3.0-flash-VL | `bailingmoe3` | [Baekpica MQ-Q5 + BF16 mmproj](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [Images, persistent banks, disk KV and YaRN](docs/ling3-flash-vl.md) |

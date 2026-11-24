@@ -1,0 +1,59 @@
+K2-Horizon-375B-A23B hVQ matched speed sweep, 2026-11-25
+Source: original 56c66463 (the first serving commit); final c089901f.
+Original binary SHA256 b7249d6fdb3d6bb1c3bd603e612dc8227c3576408b4ccd353390f5c9c0bfc7a4.
+Final binary SHA256 aee84ba45d105f4b9270f99d6742ddd053cd746fbf3fc902c33859dea859fbd7.
+Build: make ds4 ds4-bench ds4-server CUDA_ARCH=sm_121; CUDA 13.5.37, sm_121a.
+Artifact: Baekpica/K2-Horizon-375B-A23B-hVQ-GGUF at 8839e113cb77df191a1ceb5af16ecb4a50703217, 60 parts.
+release.json SHA256 7d3e2ab42ed0fd144af8430069c07e31e05ce5b4b7f36f52b51087869a1d31e4; the loader checks every part's SHA-256.
+Corpus: speed-bench/promessi_sposi.txt SHA256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f.
+Host: one GB10 / DGX Spark, 48 SMs, 121.6 GiB unified, driver 620.70.06.
+Boot: fc1f4107-bee6-4ba2-9ba5-13810bca6451; nvidia-clocks.service ran at boot (300-2200 MHz set, result success), no profiler overrides.
+Protocol: 2048..65536 step 2048, 2048 NEW prompt tokens (one 2,048-row chunk) per frontier, 128 forced greedy tokens, default PDL, no drafter, all K/V resident.
+Order: base1; a final run of eb17d032 stopped at load when c089901f's grouped GEMVs were adopted (discarded); final1, base2, final2, base3, final3. Fresh processes, one GPU job at a time.
+Original CSVs: gb10_spark_k2h_hvq_b7249d6f_{1,2,3}.csv; final CSVs: gb10_spark_k2h_hvq_aee84ba4_{1,2,3}.csv.
+Guard command (same both arms, after clear_cache):
+python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 --reserve-gib 2 --trip-gib 2 --psi-full-limit 40 --timeout 1800 --log <run>/memory.jsonl -- <binary> --cuda -m <release-dir> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir <run>/proof --csv <run>/bench.csv
+Runtime controls: none (no DS4 overrides). All six exits 0.
+sweep-base-1: prefill 619.37219, decode 12.33719; MemAvailable min 26.71456 GiB, PSI 0.0; busy clocks {'2184 MHz': 720, '2190 MHz': 176}; temperature [35, 74] C
+sweep-base-2: prefill 618.91625, decode 12.25969; MemAvailable min 26.78680 GiB, PSI 0.0; busy clocks {'2184 MHz': 749, '2190 MHz': 147}; temperature [48, 75] C
+sweep-base-3: prefill 619.92344, decode 12.25781; MemAvailable min 26.79501 GiB, PSI 0.0; busy clocks {'2184 MHz': 758, '2190 MHz': 132}; temperature [48, 75] C
+sweep-final-1: prefill 711.69687, decode 14.09031; MemAvailable min 26.11367 GiB, PSI 0.0; busy clocks {'2184 MHz': 754, '2190 MHz': 16}; temperature [45, 75] C
+sweep-final-2: prefill 711.87594, decode 13.96031; MemAvailable min 26.10955 GiB, PSI 0.0; busy clocks {'2184 MHz': 753, '2190 MHz': 16}; temperature [48, 76] C
+sweep-final-3: prefill 712.13469, decode 13.94406; MemAvailable min 26.10084 GiB, PSI 0.0; busy clocks {'2184 MHz': 761, '2190 MHz': 17}; temperature [49, 77] C
+Summary: median of three arithmetic run means over 32 frontier rates (not pooled token/wall throughput).
+Original 2K-64K: 619.37219 prefill, 12.25969 decode; final 711.87594, 13.96031 tok/s.
+Gain vs fresh matched original: 14.93508% prefill, 13.87168% decode.
+Final 2K-32K: 857.60500 / 14.88937 tok/s.
+Per-frontier medians of three, prefill/decode:
+2048: base 920.95/15.14, final 994.17/15.82
+4096: base 981.74/14.84, final 1072.00/15.74
+6144: base 933.74/14.66, final 1029.40/15.62
+8192: base 896.52/14.39, final 987.95/15.47
+10240: base 861.18/14.19, final 956.97/15.33
+12288: base 825.38/14.00, final 919.98/15.25
+14336: base 786.48/13.78, final 888.65/15.04
+16384: base 764.66/13.61, final 855.84/14.95
+18432: base 733.96/13.47, final 832.68/14.84
+20480: base 704.28/13.25, final 801.70/14.70
+22528: base 682.75/13.11, final 781.76/14.54
+24576: base 656.98/12.91, final 759.68/14.45
+26624: base 635.24/12.78, final 737.27/14.30
+28672: base 618.99/12.59, final 720.03/14.19
+30720: base 599.41/12.39, final 699.29/14.07
+32768: base 582.20/12.13, final 681.19/13.94
+34816: base 567.07/12.03, final 664.90/13.84
+36864: base 551.38/11.85, final 648.55/13.75
+38912: base 538.44/11.70, final 633.98/13.62
+40960: base 524.76/11.53, final 619.88/13.51
+43008: base 509.64/11.37, final 603.83/13.43
+45056: base 498.97/11.24, final 592.14/13.28
+47104: base 486.70/11.11, final 578.86/13.19
+49152: base 477.16/10.99, final 565.24/13.07
+51200: base 466.54/10.85, final 555.96/12.96
+53248: base 455.57/10.74, final 543.64/12.88
+55296: base 447.73/10.61, final 533.35/12.76
+57344: base 437.11/10.51, final 522.64/12.67
+59392: base 429.79/10.38, final 513.49/12.57
+61440: base 420.30/10.27, final 502.85/12.46
+63488: base 413.47/10.15, final 494.23/12.37
+65536: base 404.61/10.02, final 485.45/12.29

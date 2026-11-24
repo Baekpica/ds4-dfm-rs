@@ -43,6 +43,7 @@ const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
 const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
 const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
 const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
+const LAYOUT_K2H: u32 = u32::from_le_bytes(*b"K2H1");
 const LAYOUT_HY4: u32 = u32::from_le_bytes(*b"HYF1");
 // Inkling-2: IK22 carries the drafter's context rows (words 8 and 9 count
 // them per local and for the global draft layer); IK21 none.
@@ -77,6 +78,7 @@ pub enum PayloadLayout {
     Gemma4Vq,
     Inkling2Vq,
     Hy4,
+    K2hVq,
 }
 
 impl PayloadLayout {
@@ -102,6 +104,7 @@ impl PayloadLayout {
             LAYOUT_BEAM => Self::BeamVq,
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             LAYOUT_AXK2 => Self::Axk2Vq,
+            LAYOUT_K2H => Self::K2hVq,
             LAYOUT_HY4 => Self::Hy4,
             LAYOUT_GEMMA4 => Self::Gemma4Vq,
             LAYOUT_INKLING2 | LAYOUT_INKLING2_DRAFT => Self::Inkling2Vq,
@@ -132,6 +135,7 @@ impl PayloadLayout {
             Self::Hy4 => ModelFamily::Hy4,
             Self::Gemma4Vq => ModelFamily::Gemma4Vq,
             Self::Inkling2Vq => ModelFamily::Inkling2Vq,
+            Self::K2hVq => ModelFamily::K2hVq,
         }
     }
 
@@ -154,6 +158,7 @@ impl PayloadLayout {
                         | Self::Hy4
                         | Self::Gemma4Vq
                         | Self::Inkling2Vq
+                        | Self::K2hVq
                 ))
     }
 
@@ -356,7 +361,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::IQuestQ1
         | PayloadLayout::Ling31Vq
         | PayloadLayout::BeamVq
-        | PayloadLayout::Axk2Vq => {
+        | PayloadLayout::Axk2Vq
+        | PayloadLayout::K2hVq => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -1053,6 +1059,44 @@ mod tests {
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::Axk2Vq, 262144).is_err());
+    }
+
+    #[test]
+    fn k2h_prefix_identity() {
+        // Native K2H1 header: ctx, row cap, layers, tag, 0, n, 0, K/V block
+        // bytes, layers, vocab, live rows.
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                524_288,
+                2048,
+                61,
+                u32::from_le_bytes(*b"K2H1"),
+                0,
+                3,
+                0,
+                147_456,
+                61,
+                250_624,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        assert_eq!(prefix.layout().family(), ModelFamily::K2hVq);
+        let read = |p: &HostPrefix, family, ctx| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, ctx)
+        };
+        assert_eq!(
+            read(&prefix, ModelFamily::K2hVq, 3).unwrap().tokens,
+            [7, 8, 9]
+        );
+        assert!(read(&prefix, ModelFamily::K2hVq, 2).is_err());
+        assert!(read(&prefix, ModelFamily::Axk2Vq, 524_288).is_err());
+        let mut bad = prefix.clone();
+        bad.fields[12] = 2;
+        assert!(read(&bad, ModelFamily::K2hVq, 524_288).is_err());
     }
 
     #[test]

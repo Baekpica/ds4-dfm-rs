@@ -1024,6 +1024,20 @@ extern "C" int ds4_mmq_q4_K_dense_bf16(
         DS4_MMQ_BF16);
 }
 
+extern "C" int ds4_mmq_q8_0_dense_raw_many(
+        const void * const * W, float * const * out, const int * M, int count,
+        const float * X, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_many<GGML_TYPE_Q8_0>("ds4_mmq_q8_0_dense_raw_many", W, out, M, count, X, N, K, stream,
+        DS4_MMQ_RAW);
+}
+
+extern "C" int ds4_mmq_q8_0_dense_bf16_many(
+        const void * const * W, float * const * out, const int * M, int count,
+        const float * X, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_many<GGML_TYPE_Q8_0>("ds4_mmq_q8_0_dense_bf16_many", W, out, M, count, X, N, K, stream,
+        DS4_MMQ_BF16);
+}
+
 extern "C" int ds4_mmq_q4_K_dense_raw_many(
         const void * const * W, float * const * out, const int * M, int count,
         const float * X, int N, int K, cudaStream_t stream) {

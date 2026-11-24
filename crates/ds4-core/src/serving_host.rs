@@ -164,6 +164,24 @@ const AXK2_DECODE_BYTES: u64 = 448_256;
 const AXK2_FLASH_BYTES: u64 = 48 * 64 * 514 * SIZEOF_F32;
 // C AXK2_SCORE_BUDGET: indexer scores of one row slice.
 const AXK2_SCORE_BUDGET: u64 = 128 * MIB;
+// K2-Horizon's chunk (K2H_PREFILL_DEFAULT, ds4_k2h_bind.inc) halves down to
+// A.X-K2's floor when the quote does not fit; K/V rows are
+// position-indexed, so the chunk is not part of a snapshot's identity.
+const K2H_PREFILL_CHUNK_ENV: &str = "DS4_K2H_PREFILL_CHUNK";
+const K2H_NATIVE_DEFAULT: u32 = 4096;
+const K2H_NATIVE_MAX: u32 = 4096;
+const K2H_NATIVE_MIN: u32 = 512;
+// C K2H_ROW_BUFFERS (ds4_k2h_bind.inc) per chunk row: F32 columns (seven
+// 6,144 wide, k and v, the router, eight routes and weights, 64 RoPE
+// values) and the row's Q8_0 embedding.
+const K2H_ROW_BYTES: u64 =
+    SIZEOF_F32 * (7 * 6144 + 2 * 1024 + 192 + 2 * 8 + 64) + K2H_EMBED_ROW_BYTES;
+const K2H_EMBED_ROW_BYTES: u64 = 6528;
+// C k2h_decode_plan (ds4_k2h_gpu.cuh): expert decode/verify scratch and the
+// 58 layers' device tables.
+const K2H_DECODE_BYTES: u64 = 1_269_248;
+// C ds4_gpu_k2h_attn_bytes: four split rows x 48 heads x 64 partials of 132.
+const K2H_ATTN_BYTES: u64 = 4 * 48 * 64 * 132 * SIZEOF_F32;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -599,6 +617,14 @@ fn quote_native_rows(
             0,
             0,
         ),
+        // Each bank owns its NVFP4 K/V pages, host logits and history; graph
+        // 0 owns the row workspace and the host embedding rows.
+        (ModelFamily::K2hVq, Some(s)) => (
+            k2h_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
+            k2h_workspace_bytes(u64::from(native)) + u64::from(native) * K2H_EMBED_ROW_BYTES,
+            0,
+            0,
+        ),
         (ModelFamily::Inkling, Some(s)) => {
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
@@ -969,6 +995,7 @@ fn quote_native_rows(
         ModelFamily::Glm53Vq => native > GLMVQ_NATIVE_MIN,
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
         ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
+        ModelFamily::K2hVq => native > K2H_NATIVE_MIN,
         ModelFamily::Hy4 => native > crate::hy4::PREFILL_MIN,
         _ => false,
     };
@@ -990,6 +1017,7 @@ fn quote_native_rows(
                     | ModelFamily::BeamVq
                     | ModelFamily::MinimaxVq
                     | ModelFamily::Axk2Vq
+                    | ModelFamily::K2hVq
             ) =>
         {
             MaxSeqs::Fixed(1)
@@ -1385,6 +1413,10 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         if crate::axk2_vq::is_release(path) {
             return crate::axk2_vq::trunk_bytes(path).unwrap_or(0);
         }
+        // K2-Horizon's embedding part is read in host rows by default.
+        if crate::k2h_vq::is_release(path) {
+            return crate::k2h_vq::trunk_bytes(path).unwrap_or(0);
+        }
         return crate::glm_vq::part_bytes(path).unwrap_or(0);
     }
     let count = split_count.max(1);
@@ -1568,6 +1600,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::Inkling2Vq => INKLING2_NATIVE_MAX,
         ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
+        ModelFamily::K2hVq => K2H_NATIVE_MAX,
         ModelFamily::Gemma4Vq => GEMMA4_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
@@ -1670,6 +1703,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             AXK2_NATIVE_MAX,
         ),
+        ModelFamily::K2hVq => env_u32(K2H_PREFILL_CHUNK_ENV, K2H_NATIVE_DEFAULT, 1, K2H_NATIVE_MAX),
         // Same env as ds4_gemma4_bind.inc's gemma4_prefill_cap, which defaults
         // to min(ctx, 512). The graph groups the Q4 projections and the expert
         // routes over the chunk; DS4_GEMMA4_EXACT_PREFILL=1 restores the
@@ -3387,6 +3421,41 @@ fn axk2_workspace_bytes(ctx: u64, rows: u64) -> u64 {
         + mma
 }
 
+// C k2h_kv_bytes: every layer keeps NVFP4 K and V pages of 128 positions,
+// 8 KV heads x 18,432 bytes per page (70,272 bytes per token over 61 layers).
+fn k2h_kv_bytes(ctx: u64) -> u64 {
+    const LAYERS: u64 = 61;
+    const PAGE: u64 = 147_456;
+    LAYERS * ctx.div_ceil(128) * PAGE
+}
+
+// C k2h_workspace_bytes: logits, the two FFN buffers (the shared expert's
+// rows, at least one 16,384-wide dense row), the K2H_ROW_BUFFERS rows, the
+// decode attention partials, 1 MiB of GVQ scratch, cuBLAS and the routes,
+// then the expert decode tables and, above verify widths, the FP8 MMA planes
+// (k2h_mma_plan, 256-byte aligned pieces).
+fn k2h_workspace_bytes(rows: u64) -> u64 {
+    const VOCAB: u64 = 250_624;
+    let ff = 2 * (rows * 1792).max(16_384) * SIZEOF_F32;
+    let gvq = MIB + GLMVQ_CUBLAS_WORKSPACE + rows * 8 * SIZEOF_U32;
+    let mut experts = K2H_DECODE_BYTES;
+    if rows > 4 {
+        let pairs = rows * 8;
+        let a = |bytes: u64| bytes.div_ceil(256) * 256;
+        // x8, xs, gate, mid8, ms, down, order, 64-pair items (48 B), tokens.
+        experts += a(rows * 6144)
+            + a(rows * 48 * SIZEOF_F32)
+            + a(pairs * 1792 * 2)
+            + a(pairs * 1792)
+            + a(pairs * 14 * SIZEOF_F32)
+            + a(pairs * 6144 * 2)
+            + a(pairs * SIZEOF_U32)
+            + a(3 * (192 + pairs / 64) * 48)
+            + a(pairs * SIZEOF_U32);
+    }
+    VOCAB * SIZEOF_F32 + ff + rows * K2H_ROW_BYTES + K2H_ATTN_BYTES + gvq + experts
+}
+
 // C beam_workspace_bytes on the CUDA kernels: logits, the BEAM_ROW_BUFFERS
 // rows, split-decode partials, the q4p input, cuBLAS and routes, then the
 // routed-expert decode tables and, above verify widths, the FP8 MMA planes.
@@ -3485,6 +3554,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Inkling2Vq
                 | ModelFamily::Axk2Vq
+                | ModelFamily::K2hVq
                 | ModelFamily::Hy4
         )
     {
@@ -4398,6 +4468,49 @@ mod tests {
             facts.scratch_bytes,
             Some(axk2_workspace_bytes(262_144, 2048) + 2048 * 7168 * SIZEOF_U16)
         );
+    }
+
+    #[test]
+    fn k2h_quote_matches_the_kv_contract() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(K2H_PREFILL_CHUNK_ENV);
+        // release.json kv_contract: 70,272 NVFP4 bytes per token over 61
+        // layers, 36,842,766,336 at the native 524,288 positions.
+        assert_eq!(k2h_kv_bytes(524_288), 61 * 4096 * 147_456);
+        assert_eq!(k2h_kv_bytes(524_288), 36_842_766_336);
+        assert_eq!(k2h_kv_bytes(129), 2 * 61 * 147_456);
+
+        let s = crate::shape::SHAPE_K2H_VQ;
+        let req = ServingRequest {
+            ctx: 524_288,
+            max_seqs: MaxSeqs::Fixed(1),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::K2hVq, Variant::K2HorizonVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(K2H_NATIVE_DEFAULT));
+        let host = 250_624 * SIZEOF_F32 + 524_288 * SIZEOF_I32;
+        assert_eq!(facts.per_bank_bytes, Some(k2h_kv_bytes(524_288) + host));
+        assert_eq!(
+            facts.scratch_bytes,
+            Some(k2h_workspace_bytes(4096) + 4096 * K2H_EMBED_ROW_BYTES)
+        );
+        // The native graph's log line (ds4_k2h_graph.inc) at these chunks.
+        assert_eq!(k2h_workspace_bytes(4096), 1_478_571_520);
+        assert_eq!(k2h_workspace_bytes(2048), 760_980_992);
+        assert_eq!(k2h_workspace_bytes(1), 43_681_760);
     }
 
     #[test]

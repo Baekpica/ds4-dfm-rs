@@ -49757,3 +49757,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_axk2_gpu.cuh"
 #include "ds4_inkling2_gpu.cuh"
 #include "ds4_hy4_gpu.cuh"
+#include "ds4_k2h_gpu.cuh"

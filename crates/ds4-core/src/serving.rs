@@ -33,6 +33,8 @@ const MINIMAX_CTX_MAX: u32 = 1_048_576;
 const INKLING2_CTX_MAX: u32 = 1_048_576;
 /// A.X-K2's max_position_embeddings (YaRN x 2 over 131,072).
 const AXK2_CTX_MAX: u32 = 262_144;
+/// K2-Horizon's max_position_embeddings (no RoPE scaling).
+const K2H_CTX_MAX: u32 = 524_288;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -673,7 +675,8 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
         | ModelFamily::Hy4
-        | ModelFamily::Inkling2Vq => caps.ctx_max,
+        | ModelFamily::Inkling2Vq
+        | ModelFamily::K2hVq => caps.ctx_max,
         ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
@@ -993,6 +996,29 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(AXK2_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
+        // Every layer is full GQA attention over NVFP4 K/V pages; rows are
+        // position-indexed, so any prefix of a bank is exact and partial
+        // reuse forks without checkpoint slots. The release ships no drafter.
+        ModelFamily::K2hVq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(K2H_CTX_MAX),
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -1739,6 +1765,7 @@ impl ServingCaps {
             Variant::Axk2Vq => "axk2_vq",
             Variant::Gemma4A4bVq => "gemma4_vq",
             Variant::Inkling2SmallVq => "inkling2_vq",
+            Variant::K2HorizonVq => "k2_horizon_vq",
             Variant::Hy4FlashMxq => "hy_v4_flash",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
@@ -1947,6 +1974,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
             Some(ModelFamily::Gemma4Vq) => Some("DS4_GEMMA4_PREFILL_CHUNK"),
             Some(ModelFamily::Inkling2Vq) => Some("DS4_INKLING2_PREFILL_CHUNK"),
+            Some(ModelFamily::K2hVq) => Some("DS4_K2H_PREFILL_CHUNK"),
             _ => None,
         }
     }

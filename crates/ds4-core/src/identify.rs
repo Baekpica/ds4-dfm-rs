@@ -219,6 +219,9 @@ pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
         if crate::axk2_vq::is_release(path) {
             return crate::axk2_vq::identify(path);
         }
+        if crate::k2h_vq::is_release(path) {
+            return crate::k2h_vq::identify(path);
+        }
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::identify(path);
         }

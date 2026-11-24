@@ -24,7 +24,8 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Qwen35
         | ModelFamily::IQuestQ1
         | ModelFamily::NaiveN05
-        | ModelFamily::Inkling2Vq => u64::from(shape.n_embd),
+        | ModelFamily::Inkling2Vq
+        | ModelFamily::K2hVq => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note

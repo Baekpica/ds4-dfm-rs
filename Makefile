@@ -1084,6 +1084,13 @@ gate-hy4: tests/test_hy4_cuda
 	cargo test -p ds4-core --lib hy4
 	cargo test -p ds4-server --test hy4_output
 
+# K2-Horizon hVQ: attention kernels against FP64, the warp-specialized
+# experts at K2's shape, and the host's release, layout and quote checks.
+.PHONY: gate-k2h
+gate-k2h: test-k2h-attn test-minimax-mma8w
+	cargo test -p ds4-core --lib k2h
+	cargo test -p ds4-core --test k2h_vq
+
 .PHONY: test-gemma4-memory
 test-gemma4-memory:
 	python3 tests/test_gemma4_memory.py
@@ -1971,6 +1978,13 @@ tests/axk2_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/axk2_quality" $@
 
+tests/k2h_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example k2h_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/k2h_quality" $@
+
 tests/minimax_vision: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example minimax_vision --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
@@ -2229,12 +2243,22 @@ test-minimax-artifacts: tests/test_minimax_artifacts
 
 # The second run is DeepSeek V4.1's shape: 18 input stages on down, an odd
 # number of 13th-bit plane words per unit. The third is GLM-5.3's (288
-# experts, top-8) with its gate-clamp SwiGLU.
+# experts, top-8) with its gate-clamp SwiGLU; the fourth K2-Horizon's (192
+# experts, 14 down stages: 4n + 2 again).
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
 	DS4_MW_H=5120 DS4_MW_F=2304 DS4_MW_E=384 DS4_MW_USED=6 DS4_MW_ROWS=2048 ./tests/test_minimax_mma8w
 	DS4_MW_H=4096 DS4_MW_F=2048 DS4_MW_E=288 DS4_MW_USED=8 DS4_MW_CLAMP=gate ./tests/test_minimax_mma8w
+	DS4_MW_H=6144 DS4_MW_F=1792 DS4_MW_E=192 DS4_MW_USED=8 DS4_MW_ROWS=2048 DS4_MW_CLAMP=gate ./tests/test_minimax_mma8w
+
+# K2-Horizon hVQ attention (both prefill tiles and both decode splits) vs FP64 over NVFP4 pages (no model).
+tests/test_k2h_attn: tests/test_k2h_attn.cu cuda/k2h_attn.cuh cuda/inkling2_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+.PHONY: test-k2h-attn
+test-k2h-attn: tests/test_k2h_attn
+	./tests/test_k2h_attn
 
 # MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
 tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
@@ -2325,6 +2349,12 @@ AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payl
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/axk2_flash.cuh cuda/axk2_q8.cuh cuda/axk2_norm.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
 	cuda/l31_flash.cuh cuda/l31_latent.cuh
+
+K2H_NATIVE_DEPS = ds4_k2h.h ds4_k2h_bind.inc ds4_k2h_graph.inc ds4_k2h_payload.inc ds4_k2h_session.inc \
+	ds4_k2h_batch.inc ds4_k2h_bank_payload.inc
+ds4.o ds4_cpu.o: $(K2H_NATIVE_DEPS)
+ds4_cuda.o ds4_cuda_range_test.o: ds4_k2h.h ds4_k2h_gpu.cuh cuda/k2h_attn.cuh cuda/inkling2_attn.cuh \
+	cuda/minimax_mma8w.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
 
 tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
@@ -2798,7 +2828,7 @@ BUILD_PROGRAMS := \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
     tests/gemma4_head_rows tests/gemma4_moe_persist tests/gemma4_mtp_gate tests/gemma4_q4_decode \
-    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/hy4_quality tests/test_hy4_cuda tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
+    tests/gemma4_ring tests/ling31_quality tests/minimax_quality tests/hy4_quality tests/test_hy4_cuda tests/minimax_state tests/minimax_vision tests/axk2_quality tests/k2h_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
@@ -2841,7 +2871,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_gemma4_primitives tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_glm_vq_index_walk tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_glm_vq_index_walk tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode tests/test_axk2_norm tests/test_k2h_attn \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \
