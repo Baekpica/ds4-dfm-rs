@@ -16,7 +16,7 @@ for exact provenance. Historical entries retain their original scope.
   644.78 / 13.34. One 128 GB Spark serves 425,984 tokens (a 417,942-token
   prompt retrieved both planted codes); the native 524,288 do not fit
   beside the host's memory. Baekpica published the release.
-  [Family guide](docs/k2h-vq.md) · [optimization](docs/k2h-vq-optimization-2026-11-25.md) · PR_LINK.
+  [Family guide](docs/k2h-vq.md) · [optimization](docs/k2h-vq-optimization-2026-11-25.md) · [PR #160](https://github.com/Baekpica/ds4-dfm-rs/pull/160).
 - Added Tencent Hy4-flash MXQ to the Rust hosts on CUDA. The release keeps
   its 98.91 GiB trunk resident, gathers Engram and embedding rows from SSD,
   and supports image/video input, grouped tool calls and DFly2. Baekpica
