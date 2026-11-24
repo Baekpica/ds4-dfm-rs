@@ -412,12 +412,31 @@ def main():
     src = R.Source(a.source)
     last = max(convert) if a.stop_after < 0 else a.stop_after
     ck_dir = a.out / 'ckpt'
+
+    def converted(l):
+        """Whether layer l has a receipt of this calibration and these settings; another one stops the run, so a
+        reused --out never mixes conversions."""
+        path = a.out / f'layer-{l:02d}' / 'receipt.json'
+        if not path.exists():
+            return False
+        r = json.loads(path.read_text())
+        want = {'calibration_run_id': run_id, 'k': a.k, 't': a.t, 'damping': a.damp, 'source_revision': R.SOURCE_REV,
+                'hess_shrink': a.hess_shrink, 'col_power': a.col_power, 'shrink_tokens': a.shrink_tokens,
+                'col_floor': a.col_floor}
+        got = {**{k: r.get(k) for k in ('calibration_run_id', 'k', 't', 'damping', 'source_revision')},
+               'hess_shrink': r.get('hessian', {}).get('shrink_tokens'),
+               **{k: r.get('weighting', {}).get(k) for k in ('col_power', 'shrink_tokens', 'col_floor')}}
+        diff = {k: (got[k], want[k]) for k in want if got[k] != want[k]}
+        if diff:
+            raise SystemExit(f'{path} is another conversion (receipt, this run): {diff}; use a fresh --out')
+        return True
+
     # resume point: the latest checkpoint every rank has, with every MoE layer up to it converted
     start = 0
     for c in sorted(CKPT_LAYERS, reverse=True):
         d = ck_dir / f'layer-{c:02d}'
         if all((d / f'rank-{r}.done').exists() and (d / f'rank-{r}.done').read_text().strip() == run_id for r in range(world)) \
-                and all((a.out / f'layer-{l:02d}' / 'receipt.json').exists() for l in convert if l <= c):
+                and all(converted(l) for l in convert if l <= c):
             start = c + 1
             break
     held, held_routes = None, {}
@@ -455,7 +474,7 @@ def main():
         if l + 1 <= last:
             nxt_weights = pool.submit(src.read_layer, l + 1, stacks)
         layer_dir = a.out / f'layer-{l:02d}'
-        done = (layer_dir / 'receipt.json').exists()
+        done = converted(l)
         do = l in convert and not done
         col = Collector(dev) if do else None
         torch.cuda.reset_peak_memory_stats()
