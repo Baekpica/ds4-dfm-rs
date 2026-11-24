@@ -386,6 +386,7 @@ fn write_family(family: ModelFamily) -> PathBuf {
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
         | ModelFamily::Inkling2Vq
+        | ModelFamily::K2hVq
         | ModelFamily::Hy4 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
@@ -638,6 +639,7 @@ fn family_cases(family: ModelFamily) {
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
         | ModelFamily::Inkling2Vq
+        | ModelFamily::K2hVq
         | ModelFamily::Hy4 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
@@ -763,6 +765,7 @@ fn family_cases(family: ModelFamily) {
         | ModelFamily::Axk2Vq
         | ModelFamily::Gemma4Vq
         | ModelFamily::Inkling2Vq
+        | ModelFamily::K2hVq
         | ModelFamily::Hy4 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }

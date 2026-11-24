@@ -78,3 +78,4 @@ model_case!(k2, "k2");
 model_case!(inkling, "inkling");
 model_case!(inkling2, "inkling2");
 model_case!(sage, "sage");
+model_case!(k2h, "k2h");

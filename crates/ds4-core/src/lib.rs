@@ -32,6 +32,7 @@ mod inkling_media;
 mod inkling_mtp;
 mod instance_lock;
 mod iquest;
+mod k2h_vq;
 mod layout;
 mod ling31_mtp;
 mod ling31_vq;
@@ -1463,6 +1464,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::K2hVq {
+        let g = k2h_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else if shape.family == ModelFamily::Gemma4Vq {
         let g = gemma4_vq::metadata(path).map_err(|e| Error {
             code: 1,
@@ -1789,6 +1796,20 @@ impl Model {
             return Err(Error {
                 code: 1,
                 message: "A.X-K2 VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
+            });
+        }
+        // Nor does K2-Horizon's.
+        if identified.shape.family == ModelFamily::K2hVq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "K2-Horizon VQ requires one CUDA release directory without sidecar paths"
                     .into(),
             });
         }
@@ -2801,6 +2822,7 @@ impl Session<'_> {
                 | ModelFamily::MinimaxVq
                 | ModelFamily::Axk2Vq
                 | ModelFamily::Inkling2Vq
+                | ModelFamily::K2hVq
         ) {
             return;
         }
@@ -5618,6 +5640,7 @@ mod tests {
             ModelFamily::BeamVq,
             ModelFamily::MinimaxVq,
             ModelFamily::Axk2Vq,
+            ModelFamily::K2hVq,
         ] {
             let mut session = audit_session(family);
             session.host.replace_checkpoint(&[1, 2]);

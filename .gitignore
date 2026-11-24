@@ -251,9 +251,11 @@ tests/naive_banks
 /tests/inkling2_quality
 /tests/test_minimax_decode
 /tests/test_minimax_mma8w
+/tests/test_k2h_attn
 /tests/test_minimax_rows
 /tests/test_minimax_reduce
 /tests/axk2_quality
+/tests/k2h_quality
 /tests/mimo2_vq_quality
 /tests/mimo2_ga8
 /tests/test_axk2_topk

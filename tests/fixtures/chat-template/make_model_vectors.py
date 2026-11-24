@@ -16,7 +16,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 ROOT = Path(__file__).parent
-FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling", "inkling2", "sage")
+FAMILIES = ("solar", "exaone", "motif", "dots", "qwen", "qwen-uncensored", "glm", "k2", "inkling", "inkling2", "sage", "k2h")
 CLOCK = datetime.fromtimestamp(0, timezone.utc)
 TOOL = {
     "type": "function",
@@ -127,9 +127,9 @@ def model_cases(family):
         }
         return {"name": name, "context": context, "reject": reject}
 
-    off_name = "user_none_effort" if family in ("glm", "k2", "sage") else "user_thinking_off"
+    off_name = "user_none_effort" if family in ("glm", "k2", "sage", "k2h") else "user_thinking_off"
     # K2 rejects none; GLM and Sage map it to Max and still open a thinking block.
-    off_reject = "Unsupported reasoning_effort" if family == "k2" else None
+    off_reject = "Unsupported reasoning_effort" if family in ("k2", "k2h") else None
     cases = [
         case(off_name, [USER], render_options(family, Thinking.OFF), reject=off_reject),
         case("user_thinking_on", [USER]),
@@ -197,7 +197,7 @@ def model_cases(family):
         cases.append(case("media_placeholders", media))
         cases.append(case("user_low_effort", [USER], {"reasoning_effort": "low"}))
 
-    if family == "k2":
+    if family in ("k2", "k2h"):
         cases.extend([
             case("user_low_effort", [USER], {"reasoning_effort": "low"}),
             case("missing_thinking_field", [USER, {"role": "assistant", "content": "Reply."}], reject="missing a thinking field"),

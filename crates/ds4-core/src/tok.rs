@@ -18,6 +18,7 @@ mod gemma4;
 mod glm_vq;
 mod hy4;
 mod inkling;
+mod k2h;
 mod ling31;
 mod ling3vl;
 mod mimo2;
@@ -377,6 +378,7 @@ impl Vocab {
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Axk2Vq => axk2::specials(self)?,
+            ModelFamily::K2hVq => k2h::specials(self)?,
             ModelFamily::Gemma4Vq => gemma4::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
@@ -699,6 +701,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Inkling-2 release metadata"))?;
             return Self::load_tables(&g, family, Some(inkling::tables2(path)?));
         }
+        if family == ModelFamily::K2hVq {
+            let g = crate::k2h_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("K2-Horizon release metadata"))?;
+            return Self::load_tables(&g, family, Some(k2h::tables(path)?));
+        }
         if family == ModelFamily::MinimaxVq {
             let g = crate::minimax_vq::metadata(path)
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
@@ -737,6 +744,7 @@ impl Vocab {
                 | ModelFamily::Gemma4Vq
                 | ModelFamily::Hy4
                 | ModelFamily::Inkling2Vq
+                | ModelFamily::K2hVq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -798,6 +806,9 @@ impl Vocab {
             )),
             ModelFamily::Gemma4Vq => Some(TokError::InvalidTokenizer(
                 "Gemma-4 VQ chat requires official Jinja",
+            )),
+            ModelFamily::K2hVq => Some(TokError::InvalidTokenizer(
+                "K2-Horizon VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -925,7 +936,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1129,7 +1141,8 @@ impl Vocab {
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
-            | ModelFamily::Gemma4Vq => {
+            | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
@@ -1354,6 +1367,8 @@ impl Vocab {
                 (self.eot_id >= 0 && token == self.eot_id)
                     || (self.im_start_id >= 0 && token == self.im_start_id)
             }
+            // generation_config.json eos_token_id is [1, 250019].
+            ModelFamily::K2hVq => self.eot_id >= 0 && token == self.eot_id,
             ModelFamily::Motif3 => {
                 (self.user_id >= 0 && token == self.user_id)
                     || (self.end_of_turn_id >= 0 && token == self.end_of_turn_id)
@@ -1575,7 +1590,7 @@ fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
         off += n;
     }
 
-    if vocab.family == ModelFamily::Hy4 {
+    if matches!(vocab.family, ModelFamily::Hy4 | ModelFamily::K2hVq) {
         merge_by(&mut sym, |a, b| bpe_rank(vocab, a, b));
     } else {
         merge_in_rounds(vocab, &mut sym);
@@ -2573,6 +2588,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         }
         ModelFamily::MinimaxVq => minimax::encode(vocab, text, out),
         ModelFamily::Axk2Vq => axk2::encode(vocab, text, out),
+        ModelFamily::K2hVq => k2h::encode(vocab, text, out),
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2604,6 +2620,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1
             | ModelFamily::Gemma4Vq
+            | ModelFamily::K2hVq
     ) {
         return user_defined_at(vocab, p, 0);
     }

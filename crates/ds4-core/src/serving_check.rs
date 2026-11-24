@@ -1190,6 +1190,7 @@ mod tests {
             Variant::Mimo26FlashVq,
             Variant::Inkling2SmallVq,
             Variant::Hy4FlashMxq,
+            Variant::K2HorizonVq,
         ];
         // Gemma-4 VQ has no forward in this tree yet and declares no serving
         // lane; it joins this sweep when the engine lands.
@@ -1220,7 +1221,8 @@ mod tests {
                 | Variant::Mimo26FlashVq
                 | Variant::Gemma4A4bVq
                 | Variant::Inkling2SmallVq
-                | Variant::Hy4FlashMxq => {}
+                | Variant::Hy4FlashMxq
+                | Variant::K2HorizonVq => {}
             }
         }
         all

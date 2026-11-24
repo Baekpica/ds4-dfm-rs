@@ -3814,6 +3814,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::MinimaxVq => crate::minimax_vq::layouts(),
         ModelFamily::Inkling2Vq => crate::inkling2_vq::layouts(),
         ModelFamily::Axk2Vq => crate::axk2_vq::layouts(),
+        ModelFamily::K2hVq => crate::k2h_vq::layouts(),
         ModelFamily::Gemma4Vq => crate::gemma4_vq::layouts(),
         ModelFamily::Qwen35 => expected_qwen35(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),

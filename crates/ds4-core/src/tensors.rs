@@ -29,6 +29,7 @@ pub enum TensorError {
     Mimo2Vq(&'static str),
     Gemma4Vq(&'static str),
     Inkling2Vq(&'static str),
+    K2hVq(&'static str),
     Hy4(String),
 }
 
@@ -53,6 +54,7 @@ impl TensorError {
             TensorError::Gemma4Vq(reason) => format!("gemma4-vq {reason}"),
             TensorError::Hy4(reason) => format!("hy4 {reason}"),
             TensorError::Inkling2Vq(reason) => format!("inkling2-vq {reason}"),
+            TensorError::K2hVq(reason) => format!("k2h-vq {reason}"),
         }
     }
 }
@@ -322,9 +324,11 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
-    // Inkling-2, MiMo, A.X-K2, MiniMax and Beam parts carry GVQ1 tensors GLM's
-    // validator would claim.
-    if crate::inkling2_vq::requested(g) {
+    // K2-Horizon, Inkling-2, MiMo, A.X-K2, MiniMax and Beam parts carry GVQ1
+    // tensors GLM's validator would claim.
+    if crate::k2h_vq::requested(g) {
+        crate::k2h_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::inkling2_vq::requested(g) {
         crate::inkling2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::gemma4_vq::requested(g) {
         crate::gemma4_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -400,6 +404,9 @@ impl TensorInventory {
             }
             if crate::axk2_vq::is_release(path) {
                 return crate::axk2_vq::open_dir(path);
+            }
+            if crate::k2h_vq::is_release(path) {
+                return crate::k2h_vq::open_dir(path);
             }
             // MiMo releases open their trunk; MTP drafting asks for `open_mimo2_vq`.
             if crate::mimo2_vq::is_release(path) {

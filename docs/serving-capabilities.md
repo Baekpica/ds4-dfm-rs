@@ -46,6 +46,7 @@ The request's effective and qualified plan remains authoritative.
 | Gemma-4-26B-A4B-VQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial / unverified |
 | Inkling-2-Small-VQ | opt_in / qualified | partial / qualified | qualified | qualified | Embedded / serial / unverified |
 | Hy4-flash-MXQ | persistent / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / unverified |
+| K2-Horizon-375B-A23B-hVQ | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 
 ## Bounds and allocator controls
 
@@ -80,6 +81,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Gemma-4-26B-A4B-VQ | 262144 | — | — | — | `DS4_GEMMA4_PREFILL_CHUNK` |
 | Inkling-2-Small-VQ | 1048576 | — | — | — | `DS4_INKLING2_PREFILL_CHUNK` |
 | Hy4-flash-MXQ | 1048576 | 8192 | 2 | 1439 | `DS4_HY4_PREFILL_CHUNK` |
+| K2-Horizon-375B-A23B-hVQ | 524288 | — | — | — | `DS4_K2H_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no
