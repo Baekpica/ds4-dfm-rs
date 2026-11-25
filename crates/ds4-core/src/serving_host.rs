@@ -1613,6 +1613,19 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
     }
 }
 
+// C inkling2_prefill_cap: the SSD K/V tier (a context past the resident
+// threshold) keeps the smaller chunk; its memory is the scarce part.
+fn inkling2_native_default(ctx: u32) -> u32 {
+    let resident =
+        env_u32(INKLING2_RESIDENT_CTX_ENV, INKLING2_RESIDENT_CTX, 0, 1 << 20) / 128 * 128;
+    let nvfp4 = std::env::var("DS4_INKLING2_KV_BF16").as_deref() != Ok("1");
+    if nvfp4 && ctx > resident {
+        INKLING2_NATIVE_MIN
+    } else {
+        INKLING2_NATIVE_DEFAULT
+    }
+}
+
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
@@ -1697,7 +1710,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
         ModelFamily::Inkling2Vq => env_u32(
             INKLING2_PREFILL_CHUNK_ENV,
-            INKLING2_NATIVE_DEFAULT,
+            inkling2_native_default(ctx),
             1,
             INKLING2_NATIVE_MAX,
         ),
@@ -4426,6 +4439,21 @@ mod tests {
         assert_eq!(
             inkling2_kv_bytes(1 << 20, 2048),
             below + (8 * 18 + 512) * 147_456 + 2048 * 48 * 130 * 4
+        );
+    }
+
+    #[test]
+    fn inkling2_tier_keeps_the_small_chunk() {
+        let _env = lock_test_env();
+        let _tier = EnvGuard::unset(INKLING2_RESIDENT_CTX_ENV);
+        let _bf16 = EnvGuard::unset("DS4_INKLING2_KV_BF16");
+        assert_eq!(
+            inkling2_native_default(INKLING2_RESIDENT_CTX),
+            INKLING2_NATIVE_DEFAULT
+        );
+        assert_eq!(
+            inkling2_native_default(INKLING2_RESIDENT_CTX + 1),
+            INKLING2_NATIVE_MIN
         );
     }
 

@@ -169,6 +169,9 @@ static void inkling2_bind(ds4_weights *w, const ds4_model *m) {
     tensor_expect_layout(w->token_embd, DS4_TENSOR_BF16, 2, DS4_INK2_HIDDEN, DS4_N_VOCAB, 0);
 }
 
+// Whether a context's full-layer K/V leaves device memory (defined with the tier).
+static bool inkling2_spill(uint32_t ctx);
+
 /* Graph plan: prefill chunk, K/V and row buffers, one allocation schema for
  * the graph and its memory quote (also CPU builds, which refuse the family
  * before allocating). */
@@ -176,7 +179,8 @@ enum {
     INKLING2_CONTEXT = 1048576,
     // Prefill rows per forward; every chunk streams each routed expert once
     // (2.3 GB per layer), so 4,096 rows halve that stream per token. The
-    // chunk halves to INKLING2_PREFILL_MIN when the graph does not fit.
+    // chunk halves to INKLING2_PREFILL_MIN when the graph does not fit, and
+    // starts there past the resident threshold (inkling2_prefill_cap).
     INKLING2_PREFILL_DEFAULT = 4096, INKLING2_PREFILL_MAX = 4096, INKLING2_PREFILL_MIN = 2048,
     // A K/V row: K then V of the 8 KV heads (BF16).
     INKLING2_KV_ROW = 2 * DS4_INK2_KV * 2,
@@ -188,8 +192,12 @@ enum {
 // The template's image placeholder; the host expands one per image token.
 enum { INKLING2_IMAGE_PAD = 200054 };
 
+/* DS4_INKLING2_PREFILL_CHUNK, or 4,096 rows while every K/V block stays
+ * resident. Past that threshold memory is the scarce part (1M at 2,048 rows
+ * dips to 3.7 GiB available; 4,096 rows take 1.5 GiB more): the SSD tier
+ * keeps 2,048 rows. */
 static uint32_t inkling2_prefill_cap(uint32_t ctx) {
-    uint32_t cap = INKLING2_PREFILL_DEFAULT;
+    uint32_t cap = inkling2_spill(ctx) ? INKLING2_PREFILL_MIN : INKLING2_PREFILL_DEFAULT;
     const char *value = getenv("DS4_INKLING2_PREFILL_CHUNK");
     if (value && *value) {
         char *end = NULL;
