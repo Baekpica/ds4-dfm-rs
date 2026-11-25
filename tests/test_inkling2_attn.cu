@@ -1,8 +1,8 @@
 // Attention fast paths versus the original kernels at causal/ring/tile edges.
-// The ping-pong prefill tile, its NVFP4-score form and the tensor-core decode
-// split change rounding (an FMA in the exponent, 4-bit query components,
-// BF16 probabilities), so they compare within a bound; their key segments
-// (the SSD tier's shape) must reproduce one pass.
+// The ping-pong prefill tile, its NVFP4-score form, the rank-16 bias and the
+// tensor-core decode split change rounding (an FMA in the exponent, 4-bit
+// query components, a tensor-core sum, BF16 probabilities), so they compare
+// within a bound; key segments (the SSD tier's shape) must reproduce one pass.
 #include "cuda/inkling2_attn.cuh"
 #include <algorithm>
 #include <cassert>
@@ -82,13 +82,13 @@ static void run(uint32_t rows, uint32_t base, Cache format = Cache::Sliding, Pha
     } else if (fp4) {
         ink2a_prefill<INK2A_FMT_NVFP4><<<grid, INK2A_THREADS, INK2A_SMEM_FP4>>>(ref, q, rel, sink, gate, kv,
             cap, 0, rows, base);
-        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4>>>(
+        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, INK2A_BIAS_LOAD, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4>>>(
             got, q, rel, sink, gate, kv, cap, 0, rows, base);
     } else {
         ink2a_prefill<INK2A_FMT_BF16><<<grid, INK2A_THREADS, INK2A_SMEM>>>(ref, q, rel, sink, gate, kv,
             cap, INK2A_EXTENT, rows, base);
-        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true><<<grid, INK2A_THREADS, INK2A_SMEM>>>(got, q, rel, sink, gate,
-            kv, cap, INK2A_EXTENT, rows, base);
+        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_AHEAD><<<grid, INK2A_THREADS, INK2A_SMEM>>>(got, q, rel,
+            sink, gate, kv, cap, INK2A_EXTENT, rows, base);
     }
     std::vector<float> a(count), b(count);
     check(cudaMemcpy(a.data(), ref, count * 4, cudaMemcpyDeviceToHost));
@@ -99,6 +99,67 @@ static void run(uint32_t rows, uint32_t base, Cache format = Cache::Sliding, Pha
         check(cudaFree(p));
     }
     printf("%s %s attention rows=%u base=%u cap=%u: equal\n", phase == Phase::Decode ? "decode" : "prefill", fp4 ? "full NVFP4" : "sliding", rows, base, cap);
+}
+
+// A bias table from rank-16 factors (the q/r kernel's sum) and the factors
+// in the attention's layout.
+__global__ void rank_inputs(uint16_t *table, uint16_t *factors, size_t heads) {
+    const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    auto r = [](size_t at) { return ink2a_bf16(.5f * sinf(float(at % 211) * .05f)); };
+    auto proj = [](size_t k, size_t d) { return ink2a_bf16(.2f * cosf(float((k * INK2A_EXTENT + d) % 173) * .04f)); };
+    if (i < heads * INK2A_EXTENT) {
+        const size_t rh = i / INK2A_EXTENT, d = i % INK2A_EXTENT;
+        float v = 0.0f;
+        for (uint32_t k = 0; k < INK2A_RANK; k++) { v = fmaf(r(rh * INK2A_RANK + k), proj(k, d), v); }
+        table[i] = __bfloat16_as_ushort(__float2bfloat16_rn(v));
+    }
+    if (i < INK2A_RANK_PROJ) {
+        const size_t d = i / INK2A_RANK, quad = i / 4 % 4, e = i % 4;
+        factors[i] = __bfloat16_as_ushort(__float2bfloat16_rn(proj((e / 2) * 8 + 2 * quad + e % 2, d)));
+    }
+    if (i < heads * INK2A_RANK) { factors[INK2A_RANK_PROJ + i] = __bfloat16_as_ushort(__float2bfloat16_rn(r(i))); }
+}
+
+/* Sliding prefill with the bias from its factors against the table: the
+ * tensor core sums the 16 exact products in its own order, so a bias may
+ * move one BF16 step. */
+static void run_rank(uint32_t rows, uint32_t base) {
+    enum { STEPS = 2, PER_MILLION = 500, FEW = 4 };
+    constexpr float CANCEL = 1e-4f;
+    const uint32_t cap = rows + INK2A_EXTENT + 7;
+    const size_t heads = (size_t)rows * INK2A_HEADS, count = heads * INK2A_DIM;
+    float *q, *gate, *sink, *ref, *got;
+    uint16_t *rel, *factors, *kv;
+    for (float **p : {&q, &gate, &ref, &got}) { check(cudaMalloc(p, count * 4)); }
+    check(cudaMalloc(&sink, heads * 4));
+    check(cudaMalloc(&rel, heads * INK2A_EXTENT * 2));
+    check(cudaMalloc(&factors, heads * INK2A_EXTENT * 2));
+    check(cudaMalloc(&kv, (size_t)cap * INK2A_ROW * 2));
+    const size_t n = std::max(heads * INK2A_EXTENT, (size_t)cap * INK2A_ROW);
+    inputs<<<(n + 255) / 256, 256>>>(q, gate, sink, rel, kv, heads, cap, Cache::Sliding);
+    rank_inputs<<<(heads * INK2A_EXTENT + 255) / 256, 256>>>(rel, factors, heads);
+    const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
+    ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_AHEAD><<<grid, INK2A_THREADS, INK2A_SMEM>>>(ref, q, rel, sink,
+        gate, kv, cap, INK2A_EXTENT, rows, base);
+    ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_RANK><<<grid, INK2A_THREADS, INK2A_SMEM + INK2A_RANK_SMEM>>>(
+        got, q, factors, sink, gate, kv, cap, INK2A_EXTENT, rows, base);
+    std::vector<float> a(count), b(count);
+    check(cudaMemcpy(a.data(), ref, count * 4, cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(b.data(), got, count * 4, cudaMemcpyDeviceToHost));
+    size_t moved = 0;
+    float top = 0.0f;
+    for (float v : a) { top = std::max(top, std::fabs(v)); }
+    for (size_t i = 0; i < count; i++) {
+        assert(std::isfinite(a[i]) && std::isfinite(b[i]));
+        if (a[i] == b[i]) { continue; }
+        moved++;
+        const float mag = std::max(std::fabs(a[i]), std::fabs(b[i]));
+        assert(std::fabs(a[i] - b[i]) <= std::max(STEPS * std::ldexp(1.0f, std::ilogb(mag) - 7), CANCEL * top));
+    }
+    assert(moved * 1000000 <= (size_t)PER_MILLION * count + (size_t)FEW * 1000000);
+    for (void *p : {(void *)q, (void *)gate, (void *)sink, (void *)ref, (void *)got, (void *)rel, (void *)factors,
+            (void *)kv}) { check(cudaFree(p)); }
+    printf("prefill rank bias rows=%u base=%u: %zu of %zu moved\n", rows, base, moved, count);
 }
 
 // NVFP4 rows and their inputs on the device.
@@ -284,11 +345,13 @@ static void run_split(uint32_t rows, uint32_t base) {
 int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);   // a failed assertion keeps the lines before it
     check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16>, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM));
-    check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true>,
+    check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_AHEAD>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM));
+    check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_RANK>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM + INK2A_RANK_SMEM));
     check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4));
-    check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true>,
+    check(cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, INK2A_BIAS_LOAD, true>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4));
     for (uint32_t base : {0u, 7u, 30u, 31u, 32u, 62u, 63u, 64u, 126u, 127u, 128u,
             1022u, 1023u, 1024u, 3070u, 3071u, 9217u, 32768u}) {
@@ -304,6 +367,9 @@ int main() {
         run(rows, 0);
         run(rows, 3 * (rows + INK2A_EXTENT + 7) + 31);
         for (uint32_t base : {0u, 1023u, 1087u, 1088u, 6144u, 32768u}) { run(rows, base, Cache::Nvfp4); }
+    }
+    for (uint32_t rows : {9u, 63u, 64u, 65u, 129u, 2048u}) {
+        for (uint32_t base : {0u, 1u, 62u, 63u, 64u, 959u, 1023u, 1024u, 1087u, 6144u, 32769u}) { run_rank(rows, base); }
     }
     for (auto kernel : {ink2a_prefill_pp<INK2A_ONE>, ink2a_prefill_pp<INK2A_FIRST>, ink2a_prefill_pp<INK2A_NEXT>,
             ink2a_prefill_pp<INK2A_LAST>}) {

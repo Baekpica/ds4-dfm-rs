@@ -57,8 +57,25 @@ enum {
      * (m, l, acc[128] per row and head, the sink as m = sink, l = 1); NEXT
      * continues it; LAST continues it and writes the output. */
     INK2A_ONE = 0, INK2A_FIRST = 1, INK2A_NEXT = 2, INK2A_LAST = 3, INK2A_STATE = INK2A_DIM + 2,
+    /* Where a prefill tile's relative bias comes from: the table
+     * rel[row][head][distance] loaded per score (LOAD) or ahead of Q.K
+     * (AHEAD), or its rank-16 factors (RANK). The table is 2 KB per row and
+     * head, read once: its DRAM traffic and load latency were over half of a
+     * sliding layer's attention. RANK's `rel` holds the projection by
+     * distance in B-fragment order ([1024][lane % 4][k 2q, 2q + 1, 8 + 2q,
+     * 9 + 2q]), then every (row, head)'s 16 r values; a warp computes its 16
+     * queries' biases over a 64-key tile's 79 distances with ten BF16 MMAs
+     * and keeps them in shared memory. Rows of 87 entries start odd rows on
+     * an odd entry, so each (key + 1, key) pair is an aligned 32-bit load,
+     * and put a warp's 32 lanes on 32 banks in every store and load. */
+    INK2A_BIAS_LOAD = 0, INK2A_BIAS_AHEAD = 1, INK2A_BIAS_RANK = 2,
+    INK2A_RANK = 16, INK2A_RANK_PROJ = INK2A_EXTENT * INK2A_RANK,
+    INK2A_RANK_BLOCKS = (INK2A_TK + INK2A_WQ + 7) / 8, INK2A_RANK_ROW = 87,
+    INK2A_RANK_SMEM = INK2A_CTA_HEADS * INK2A_WARPS * INK2A_WQ * INK2A_RANK_ROW * (int)sizeof(uint16_t),
 };
 static_assert(INK2A_CPT * INK2A_THREADS == INK2A_TILE_CHUNKS, "tile copy splits evenly over the block");
+static_assert(INK2A_RANK_ROW >= INK2A_RANK_BLOCKS * 8 && INK2A_RANK_ROW % 2 == 1 && INK2A_WQ % 2 == 0,
+    "a warp's bias rows hold a tile's distances and pair up on 32-bit words");
 static_assert(INK2A_GROUP % INK2A_CTA_HEADS == 0, "a CTA's heads share a KV head");
 
 // The source's scaling: 128^-1/2 as a Python float, applied in F32.
@@ -145,7 +162,7 @@ __device__ __forceinline__ float ink2a_score(float dot, float bias) {
     return ink2a_bf16(ink2a_bf16(ink2a_bf16(dot) * INK2A_SCALE) + bias);
 }
 
-template <int FMT, int MODE = INK2A_ONE, bool PREFETCH_BIAS = false, bool FAR_TILES = false>
+template <int FMT, int MODE = INK2A_ONE, int BIAS = INK2A_BIAS_LOAD, bool FAR_TILES = false>
 __global__ __launch_bounds__(INK2A_THREADS, 1)
 void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float *sinks, const float *gate,
         const void *cache_raw, uint32_t cap, uint32_t window, uint32_t rows, uint32_t base,
@@ -192,6 +209,21 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
             const float2 xy = *reinterpret_cast<const float2 *>(
                 q + ((uint64_t)t * INK2A_HEADS + h) * INK2A_DIM + kc * 16 + 2 * j);
             qa[kc][l] = ink2a_pack(xy.x, xy.y);
+        }
+    }
+
+    // Rank bias: this warp's r rows as an A fragment, its tile biases after
+    // the K/V stages.
+    uint32_t ra[4] = {0, 0, 0, 0};
+    uint16_t *srank = ink2a_smem + 2 * INK2A_STAGE_ELEMS +
+        (threadIdx.x / 32) * INK2A_WQ * INK2A_RANK_ROW;
+    if constexpr (BIAS == INK2A_BIAS_RANK) {
+        #pragma unroll
+        for (int l = 0; l < 4; l++) {
+            const int r = l % 2, j = (l / 2) * 4 + (int)(lane % 4);
+            const uint32_t t = alive[r] ? tq0 + qrow[r] : 0;
+            ra[l] = *reinterpret_cast<const uint32_t *>(
+                rel + INK2A_RANK_PROJ + ((uint64_t)t * INK2A_HEADS + h) * INK2A_RANK + 2 * j);
         }
     }
 
@@ -277,7 +309,39 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
         // Keep raw bias loads ahead of QK; immediate scalar use serialized
         // L1TEX waits. Volatile loads prevent the compiler from sinking them.
         uint32_t biases[INK2A_NB][4];
-        if constexpr (PREFETCH_BIAS) {
+        if constexpr (BIAS == INK2A_BIAS_RANK) {
+            // S[row][j] = r_row . proj[:, dlo + j]; the tile's key c of the
+            // warp's query `row` is at distance dlo + row - c + 63.
+            const int dlo = (int)(base + tq0 + warp * INK2A_WQ) - (int)kt0 - (INK2A_TK - 1);
+            #pragma unroll
+            for (int b = 0; b < INK2A_RANK_BLOCKS; b++) {
+                const int d = min(max(dlo + 8 * b + (int)(lane / 4), 0), INK2A_EXTENT - 1);
+                const uint2 w = *reinterpret_cast<const uint2 *>(rel + ((uint64_t)d * 4 + lane % 4) * 4);
+                float c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                ink2a_mma(c, ra, w.x, w.y);
+                #pragma unroll
+                for (int r = 0; r < 2; r++) {
+                    const uint32_t row = lane / 4 + r * 8;
+                    uint16_t *dst = srank + row * INK2A_RANK_ROW + 8 * b + 2 * (lane % 4);
+                    const uint32_t pair = ink2a_pack(c[2 * r], c[2 * r + 1]);
+                    dst[0] = (uint16_t)pair;
+                    dst[1] = (uint16_t)(pair >> 16);
+                }
+            }
+            __syncwarp();
+            #pragma unroll
+            for (int nb = 0; nb < INK2A_NB; nb++) {
+                #pragma unroll
+                for (int r = 0; r < 2; r++) {
+                    const uint32_t row = lane / 4 + r * 8, c0 = nb * 8 + (lane % 4) * 2;
+                    const uint32_t pair = *reinterpret_cast<const uint32_t *>(
+                        srank + row * INK2A_RANK_ROW + row + (INK2A_TK - 2) - c0);
+                    biases[nb][2 * r] = pair >> 16;
+                    biases[nb][2 * r + 1] = pair & 0xffffu;
+                }
+            }
+        }
+        if constexpr (BIAS == INK2A_BIAS_AHEAD) {
             #pragma unroll
             for (int nb = 0; nb < INK2A_NB; nb++) {
                 #pragma unroll
@@ -333,9 +397,9 @@ void ink2a_prefill(float *out, const float *q, const uint16_t *rel, const float 
                     if (alive[r] && p <= qpos[r] && p >= qfirst[r] && p < seg_hi) {
                         const uint32_t d = qpos[r] - p;
                         const uint32_t t = tq0 + qrow[r];
-                        const float bias = PREFETCH_BIAS ? __uint_as_float(biases[nb][l] << 16) : d < INK2A_EXTENT
-                            ? __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16)
-                            : 0.0f;
+                        const float bias = d >= INK2A_EXTENT ? 0.0f
+                            : BIAS != INK2A_BIAS_LOAD ? __uint_as_float(biases[nb][l] << 16)
+                            : __uint_as_float((uint32_t)rel[((uint64_t)t * INK2A_HEADS + h) * INK2A_EXTENT + d] << 16);
                         x = ink2a_score(s[nb][l], bias);
                     }
                     s[nb][l] = x;

@@ -681,9 +681,26 @@ extern "C" int ds4_gpu_ink2_kv(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache, uint32_t
     return cuda_ok(cudaGetLastError(), "Inkling-2 K/V");
 }
 
-/* q and r tails, then the relative profiles: CTA (row, head), 128 threads. */
+static_assert((int)INK2A_RANK == (int)DS4_INK2_REL, "the attention kernel's rank is the relative projection's");
+
+// DS4_INKLING2_BIAS_RANK=0: sliding prefill rows read the bias table.
+static bool ink2_bias_rank(bool sliding, uint32_t rows) {
+    static const bool on = !ink2_env_off("DS4_INKLING2_BIAS_RANK");
+    return on && sliding && rows > INK2A_SPLIT_ROWS;
+}
+
+// The relative projection by distance in B-fragment order (INK2A_BIAS_RANK).
+__global__ void ink2_rank_proj_kernel(uint16_t *rel, const uint16_t *proj) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x, d = i / INK2A_RANK, quad = i / 4 % 4, e = i % 4;
+    rel[i] = proj[((e / 2) * 8 + 2 * quad + e % 2) * INK2A_EXTENT + d];
+}
+
+/* q and r tails, then the relative profiles: CTA (row, head), 128 threads.
+ * `rank` leaves the profiles to the attention: rel takes r itself after the
+ * reordered projection. */
 __global__ void __launch_bounds__(INK2A_DIM) ink2_qr_kernel(float *q, float *r, uint16_t *rel,
-        const uint16_t *q_scale, const uint16_t *r_scale, const uint16_t *proj, uint32_t pos, int global) {
+        const uint16_t *q_scale, const uint16_t *r_scale, const uint16_t *proj, uint32_t pos, int global,
+        int rank) {
     __shared__ float scratch[INK2A_DIM / 32];
     __shared__ float rr[DS4_INK2_REL];
     const uint32_t row = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
@@ -713,8 +730,13 @@ __global__ void __launch_bounds__(INK2A_DIM) ink2_qr_kernel(float *q, float *r, 
         if (t < DS4_INK2_REL) {
             rv[t] = outr;
             rr[t] = outr;
+            if (rank) {
+                rel[INK2A_RANK_PROJ + ((uint64_t)row * INK2A_HEADS + h) * DS4_INK2_REL + t] =
+                    __bfloat16_as_ushort(__float2bfloat16_rn(outr));
+            }
         }
     }
+    if (rank) { return; }
     __syncthreads();
     // rel[d] = BF16(r . proj[:, d]) (a BF16 matmul with F32 accumulation).
     uint16_t *dst = rel + ((uint64_t)row * INK2A_HEADS + h) * INK2A_EXTENT;
@@ -736,8 +758,14 @@ extern "C" int ds4_gpu_ink2_qr(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tens
     if (!qs || !rs || !pj || !rows || !gvq_floats(q, (uint64_t)rows * INK2A_HEADS * INK2A_DIM) ||
         !gvq_floats(r, (uint64_t)rows * INK2A_HEADS * DS4_INK2_REL) ||
         rel->bytes < (uint64_t)rows * INK2A_HEADS * INK2A_EXTENT * sizeof(uint16_t)) { return 0; }
-    ink2_qr_kernel<<<dim3(rows, INK2A_HEADS), INK2A_DIM, 0, ds4_current_stream()>>>((float *)q->ptr,
-        (float *)r->ptr, (uint16_t *)rel->ptr, qs, rs, pj, pos, global);
+    const bool rank = ink2_bias_rank(!global, rows);
+    const cudaStream_t stream = ds4_current_stream();
+    if (rank) {
+        enum { THREADS = 256 };
+        ink2_rank_proj_kernel<<<INK2A_RANK_PROJ / THREADS, THREADS, 0, stream>>>((uint16_t *)rel->ptr, pj);
+    }
+    ink2_qr_kernel<<<dim3(rows, INK2A_HEADS), INK2A_DIM, 0, stream>>>((float *)q->ptr,
+        (float *)r->ptr, (uint16_t *)rel->ptr, qs, rs, pj, pos, global, rank);
     return cuda_ok(cudaGetLastError(), "Inkling-2 q/r tails");
 }
 
@@ -892,14 +920,19 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
     static cudaError_t ready4 = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
-    static cudaError_t ready_far = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true>,
+    static cudaError_t ready_far = cudaFuncSetAttribute(
+        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, INK2A_BIAS_LOAD, true>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
-    static cudaError_t ready_bias = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true>,
+    static cudaError_t ready_bias = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_AHEAD>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM);
+    static cudaError_t ready_rank = cudaFuncSetAttribute(ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_RANK>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM + INK2A_RANK_SMEM);
     static const bool prefetch_bias = !ink2_env_off("DS4_INKLING2_BIAS_PREFETCH");
     static const bool far_tiles = !ink2_env_off("DS4_INKLING2_FAR_TILES");
+    const bool rank = !fp4 && ink2_bias_rank(window != 0, rows);
     const bool bias = !fp4 && window && prefetch_bias;
     if (!cuda_ok(fp4 ? ready4 : ready, "Inkling-2 attention shared memory")) { return 0; }
+    if (rank && !cuda_ok(ready_rank, "Inkling-2 rank bias shared memory")) { return 0; }
     if (bias && !cuda_ok(ready_bias, "Inkling-2 bias prefetch shared memory")) { return 0; }
     if (fp4 && far_tiles && !cuda_ok(ready_far, "Inkling-2 far tiles shared memory")) { return 0; }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
@@ -908,15 +941,20 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
             (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,
             (const uint8_t *)cache->ptr, rows, pos, nullptr, 0u, UINT32_MAX, 0u});
     } else if (fp4 && far_tiles) {
-        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>(
-            (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
-            (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
+        ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, INK2A_BIAS_LOAD, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4,
+            stream>>>((float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr,
+            (const float *)sinks->ptr, (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
     } else if (fp4) {
         ink2a_prefill<INK2A_FMT_NVFP4><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>((float *)out->ptr,
             (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,
             cache->ptr, cap, window, rows, pos);
+    } else if (rank) {
+        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_RANK><<<grid, INK2A_THREADS,
+            INK2A_SMEM + INK2A_RANK_SMEM, stream>>>((float *)out->ptr, (const float *)q->ptr,
+            (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr, cache->ptr, cap, window,
+            rows, pos);
     } else if (bias) {
-        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, true><<<grid, INK2A_THREADS, INK2A_SMEM, stream>>>(
+        ink2a_prefill<INK2A_FMT_BF16, INK2A_ONE, INK2A_BIAS_AHEAD><<<grid, INK2A_THREADS, INK2A_SMEM, stream>>>(
             (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
             (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
     } else {
