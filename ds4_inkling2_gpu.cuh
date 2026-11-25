@@ -469,7 +469,7 @@ extern "C" int ds4_gpu_ink2_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds
 
 extern "C" int ds4_gpu_ink2_attn_res(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *out, const ds4_gpu_tensor *blocks,
         uint32_t nblocks, uint32_t cap, const ds4_gpu_tensor *partial, uint32_t query, uint32_t nq,
-        const uint32_t *norms, uint32_t rows) {
+        const uint32_t *norms, uint32_t rows, ds4_gpu_tensor *scratch) {
     const uint64_t count = (uint64_t)rows * INK2_HIDDEN;
     const bool attend = query != DS4_GVQ_NO_LINK;
     const uint32_t outputs = attend ? nq : 1u;
@@ -487,7 +487,14 @@ extern "C" int ds4_gpu_ink2_attn_res(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *ou
     }
     if (attend && !q) { return 0; }
     static const bool specialize = !ink2_env_off("DS4_INKLING2_ATTN_RES_SPEC");
+    // DS4_INKLING2_ATTN_RES_SPLIT=0: decode and verify rows keep one CTA per row.
+    static const bool split = specialize && !ink2_env_off("DS4_INKLING2_ATTN_RES_SPLIT");
     const auto *states = nblocks ? (const uint16_t *)blocks->ptr : nullptr;
+    if (split && scratch && scratch->bytes >= INK2_RES_SCRATCH * sizeof(float) &&
+        ink2_res_split((float *)scratch->ptr, o[0], o[1], o[2], states, nblocks, cap, (const float *)partial->ptr, q,
+            outputs, w[0], w[1], w[2], rows, ds4_current_stream())) {
+        return cuda_ok(cudaGetLastError(), "Inkling-2 attention residual");
+    }
     if (specialize && (outputs == 1 || outputs == 3)) {
         ink2_res_launch(o[0], o[1], o[2], states, nblocks, cap, (const float *)partial->ptr, q,
             outputs, w[0], w[1], w[2], rows, ds4_current_stream());

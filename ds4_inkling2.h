@@ -77,10 +77,12 @@ int ds4_gpu_ink2_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tenso
  * unweighted RMS; query j of the F32 record `query` ([nq][4608]) attends
  * over them with scale 4608^-1/2 (F32 softmax); out[j] = rms(attention_j)
  * with BF16 weight norms[j], rounded to BF16. `query` DS4_GVQ_NO_LINK skips
- * the attention: out[0] = rms(partial) with norms[0]. */
+ * the attention: out[0] = rms(partial) with norms[0]. Up to eight attending
+ * rows spread each row over several CTAs through `scratch`
+ * (ds4_gpu_ink2_attn_bytes(); written and read within the call). */
 int ds4_gpu_ink2_attn_res(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *out, const ds4_gpu_tensor *blocks,
     uint32_t nblocks, uint32_t cap, const ds4_gpu_tensor *partial, uint32_t query, uint32_t nq,
-    const uint32_t *norms, uint32_t rows);
+    const uint32_t *norms, uint32_t rows, ds4_gpu_tensor *scratch);
 
 /* out = rms(embedding rows, embed_norm) rounded to BF16 (BF16 input rows). */
 int ds4_gpu_ink2_embed(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *rows_bf16, uint32_t norm,

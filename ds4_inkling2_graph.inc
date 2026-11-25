@@ -290,7 +290,7 @@ static bool inkling2_attention(ds4_inkling2_graph *g, const ds4_model *m, const 
     const uint32_t norms[] = {inkling2_index(m, l->norm[0]), inkling2_index(m, l->norm[1]),
         inkling2_index(m, l->norm[2])};
     if (!ds4_gpu_ink2_attn_res(g->gvq, in3, g->blocks, nblocks, g->row_cap, g->x, inkling2_index(m, l->attn_query),
-            full ? 3u : 1u, norms, rows)) {
+            full ? 3u : 1u, norms, rows, g->partials)) {
         fprintf(stderr, "ds4: Inkling-2 layer %u attention input failed\n", il);
         return false;
     }
@@ -361,7 +361,7 @@ static bool inkling2_mlp(ds4_inkling2_graph *g, const ds4_model *m, const ds4_in
     ds4_gpu_tensor *hm = inkling2_hist(g, il, 3);
     const bool ok = hm &&
         ds4_gpu_ink2_attn_res(g->gvq, in1, g->blocks, nblocks, g->row_cap, g->resid, inkling2_index(m, l->mlp_query),
-            1u, &norm, rows) &&
+            1u, &norm, rows, g->partials) &&
         inkling2_mm1(g, m, g->router, l->router, g->xq, rows, inkling2_router_math()) &&
         ds4_gpu_ink2_route(g->gvq, g->selected, g->route_w, g->router, inkling2_index(m, l->router_bias), rows) &&
         ds4_gpu_ink2_moe(g->moe, g->moe_out, g->xq, g->selected, g->route_w, g->matrices[il], rows) &&
@@ -428,7 +428,7 @@ static bool inkling2_head(ds4_inkling2_graph *g, const ds4_model *m, const ds4_w
     // contiguous, so the final residual runs over every row up to the last
     // and the head reads the rows it needs.
     bool ok = ds4_gpu_ink2_attn_res(g->gvq, out, g->blocks, DS4_INK2_BLOCKS, g->row_cap, g->x,
-        inkling2_index(m, w->inkling2->out_query), 1u, &norm, row + count);
+        inkling2_index(m, w->inkling2->out_query), 1u, &norm, row + count, g->partials);
     ds4_gpu_tensor *final = ok ? ds4_gpu_tensor_view(g->xq, (uint64_t)row * hidden, (uint64_t)count * hidden) : NULL;
     ok = ok && final && inkling2_mm1(g, m, logits, w->output, final, count, DS4_GVQ_BF16) &&
         ds4_gpu_ink2_logits(logits, count);
@@ -471,7 +471,7 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
         ds4_gpu_tensor *const out[] = {g->xq};
         const uint32_t norm = inkling2_index(m, w->output_norm);
         if ((head == INKLING2_HEAD_NONE && !ds4_gpu_ink2_attn_res(g->gvq, out, g->blocks, DS4_INK2_BLOCKS, g->row_cap,
-                g->x, inkling2_index(m, w->inkling2->out_query), 1u, &norm, rows)) ||
+                g->x, inkling2_index(m, w->inkling2->out_query), 1u, &norm, rows, g->partials)) ||
             !inkling2_draft_context(g, m, rows, pos) ||
             (!g->draft->capture && !inkling2_draft_anchor(g->draft, rows - 1u))) { return false; }
     }
