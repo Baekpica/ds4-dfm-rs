@@ -338,6 +338,19 @@ static bool inkling2_attention(ds4_inkling2_graph *g, const ds4_model *m, const 
     return ok;
 }
 
+/* The router's rows are BF16 values, so their F32 products are exact on
+ * TF32 tensor cores (prefill: cuBLAS' SIMT sgemm took 0.64 ms per 2,048
+ * rows); decode rows take the F32 dot either way.
+ * DS4_INKLING2_ROUTER_TF32=0 keeps the SIMT GEMM. */
+static ds4_gvq_math inkling2_router_math(void) {
+    static int tf32 = -1;
+    if (tf32 < 0) {
+        const char *v = getenv("DS4_INKLING2_ROUTER_TF32");
+        tf32 = !v || strcmp(v, "0");
+    }
+    return tf32 ? DS4_GVQ_TF32 : DS4_GVQ_F32;
+}
+
 /* MLP half: attention-residual input with mlp_norm, the F32 router, the
  * routed experts, the MLP output convolution and the BF16 residual. */
 static bool inkling2_mlp(ds4_inkling2_graph *g, const ds4_model *m, const ds4_inkling2_weights *w, uint32_t il,
@@ -349,7 +362,7 @@ static bool inkling2_mlp(ds4_inkling2_graph *g, const ds4_model *m, const ds4_in
     const bool ok = hm &&
         ds4_gpu_ink2_attn_res(g->gvq, in1, g->blocks, nblocks, g->row_cap, g->resid, inkling2_index(m, l->mlp_query),
             1u, &norm, rows) &&
-        inkling2_mm1(g, m, g->router, l->router, g->xq, rows, DS4_GVQ_F32) &&
+        inkling2_mm1(g, m, g->router, l->router, g->xq, rows, inkling2_router_math()) &&
         ds4_gpu_ink2_route(g->gvq, g->selected, g->route_w, g->router, inkling2_index(m, l->router_bias), rows) &&
         ds4_gpu_ink2_moe(g->moe, g->moe_out, g->xq, g->selected, g->route_w, g->matrices[il], rows) &&
         ds4_gpu_ink2_conv(g->gvq, g->x, g->moe_out, hm, inkling2_index(m, l->mlp_conv), g->resid, rows, 1);
