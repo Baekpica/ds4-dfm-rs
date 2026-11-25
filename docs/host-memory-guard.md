@@ -55,6 +55,25 @@ it scans `cgroup.procs` and signals pidfds after verifying scope membership.
 Exit 75 means the job was refused or interrupted by
 the guard; do not use its partial benchmark outputs.
 
+## Fragmented free memory
+
+The driver backs device memory with 2 MiB pages. After days of uptime free
+memory splinters: with every cache dropped, 119.2 GiB were free and 110.0
+GiB of them in blocks of 2 MiB or more, and four loads of a ~108 GiB model
+ended at PSI full 40% (exit 75) while `MemAvailable` still read gigabytes.
+Before a load that nearly fills the host, sum `/proc/buddyinfo` from order
+9 up:
+
+```sh
+awk '/Normal/ {b = 0; for (o = 9; o <= 13; o++) b += $(5 + o) * 4096 * 2 ^ o;
+     printf "%.1f GiB in 2 MiB blocks\n", b / 2 ^ 30}' /proc/buddyinfo
+```
+
+A short process that pins device memory (`cuMemCreate`) up to the stall
+point and frees it makes the kernel compact; three passes with
+`clear_cache` between them raised the total to 115.5 GiB with user rights
+alone. A reboot does the same.
+
 Timestamped JSONL samples and stop events are synced to disk. Stop the
 campaign on any guard failure, inspect the log and remaining PIDs, then
 reclaim page cache only after the affected processes have exited. A

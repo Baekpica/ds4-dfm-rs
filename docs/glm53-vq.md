@@ -279,6 +279,8 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
   with A = m adds the min term. Stages of 16 rows × 16 blocks are whole
   lines and long DRAM runs. A forward's Q4_K at three tokens: 26.3 → 21.6 ms,
   about the one-token cost. `DS4_GLMVQ_Q4_MMA=0` restores the SIMT stream.
+  Rows of 17 or 18 blocks (Inkling-2's 4,608 columns) take one stage of the
+  whole row and a warp per block; `DS4_GLMVQ_Q4M_ROW=0` keeps 16-block stages.
 - **Rollback.** KDA writes its state after each row into a journal slot;
   index tails are replayed from stashed rows; latent, pool and draft-layer
   rows past the frontier are rewritten before any read.

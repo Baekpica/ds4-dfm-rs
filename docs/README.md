@@ -69,6 +69,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [K2-Horizon hVQ](k2h-vq.md) | GVQ1 release directory (13-bit hVQ), Q8_0 trunk, NVFP4 K/V for the native 512K, partial reuse, disk KV and snapshots, banks, 2K–64K sweep |
 | [K2-Horizon hVQ optimization](k2h-vq-optimization-2026-11-25.md) | Shared Q8_1 quantization, ping-pong NVFP4 prefill attention, 4,096-row chunks and tensor-core decode attention, with paired evidence and fallbacks |
 | [Inkling-2-Small VQ](inkling2-vq.md) | GVQ1 release directory (12-bit hVQ), NVFP4 full-layer K/V, the SSD K/V tier for native 1M, DSpark drafter, images, opt-in banks, disk KV and snapshots, 2K–64K sweep |
+| Inkling-2-Small VQ optimization | [November 14–15](inkling2-optimization-2026-11-14.md): residual topology, far tiles, grouped projections. [November 25](inkling2-optimization-2026-11-25.md): NVFP4-score prefill tiles, rank-16 bias, 4,096-row chunks, tensor-core decode split, DSpark and SSD-tier analysis |
 | [MiMo MOPD](ds4-dfm-model-families.md#mimo-mopd) | Separate artifact, text performance and DFlash boundaries |
 | [Naive](naive-n05-flash.md) | MQ87, banks, disk KV, long-context gates and drafter limits |
 | [IQuest-Q1](iquest-q1.md) | Canonical mixed weights, hybrid Q8 KV, embedded MTP and pending Spark gates |
