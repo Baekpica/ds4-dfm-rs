@@ -130,8 +130,11 @@ const MINIMAX_PREFILL_CHUNK_ENV: &str = "DS4_MINIMAX_PREFILL_CHUNK";
 const MINIMAX_NATIVE_DEFAULT: u32 = 4096;
 const MINIMAX_NATIVE_MAX: u32 = 4096;
 const INKLING2_PREFILL_CHUNK_ENV: &str = "DS4_INKLING2_PREFILL_CHUNK";
-const INKLING2_NATIVE_DEFAULT: u32 = 2048;
+// C INKLING2_PREFILL_DEFAULT (ds4_inkling2_bind.inc): every chunk streams
+// each routed expert once, so rows halve only to INKLING2_NATIVE_MIN.
+const INKLING2_NATIVE_DEFAULT: u32 = 4096;
 const INKLING2_NATIVE_MAX: u32 = 4096;
+const INKLING2_NATIVE_MIN: u32 = 2048;
 // C inkling2_resident_ctx: the largest context whose full-layer K/V stays
 // resident.
 const INKLING2_RESIDENT_CTX_ENV: &str = "DS4_INKLING2_KV_RESIDENT_CTX";
@@ -996,6 +999,7 @@ fn quote_native_rows(
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
         ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
         ModelFamily::K2hVq => native > K2H_NATIVE_MIN,
+        ModelFamily::Inkling2Vq => native > INKLING2_NATIVE_MIN,
         ModelFamily::Hy4 => native > crate::hy4::PREFILL_MIN,
         _ => false,
     };

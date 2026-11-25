@@ -76248,6 +76248,17 @@ static uint32_t k2h_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap)
     return k2h_fit_cap(ctx, cap, ds4_session_graph_headroom_bytes(), available);
 }
 
+// The serial graph's chunk, halved until it fits beside the session headroom.
+static uint32_t inkling2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
+    uint64_t available = 0, total = 0;
+    if (e->backend != DS4_BACKEND_CUDA || ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
+        return cap;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    return inkling2_fit_cap(ctx, cap, inkling2_drafting(e), ds4_session_graph_headroom_bytes(), available);
+}
+
 static bool inkling2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                  ds4_session_graph_fit_quote *q) {
     const uint64_t need = inkling2_memory(ctx, cap).total_bytes + (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, cap) : 0u);
@@ -76530,6 +76541,7 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     }
     if (ds4_session_is_inkling2(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
+        s->prefill_cap = inkling2_session_cap(e, ctx, s->prefill_cap);
         const uint64_t estimate = inkling2_memory(ctx, s->prefill_cap).total_bytes +
             (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, s->prefill_cap) : 0u);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
@@ -77062,7 +77074,8 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         return minimax_session_fit(e, (uint32_t)ctx_size, minimax_prefill_cap((uint32_t)ctx_size), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
-        return inkling2_session_fit(e, (uint32_t)ctx_size, inkling2_prefill_cap((uint32_t)ctx_size), q);
+        return inkling2_session_fit(e, (uint32_t)ctx_size,
+            inkling2_session_cap(e, (uint32_t)ctx_size, inkling2_prefill_cap((uint32_t)ctx_size)), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
         const uint32_t ctx = (uint32_t)ctx_size;
