@@ -575,6 +575,12 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   paged K/V block per token (7.17 GB at 1M: 0.86 tok/s), while a session's
   coldest 6.9 GB of experts took 0.01–0.15% of its routes. Replay a
   session's routes through an LRU before choosing what leaves the device.
+- **A larger chunk is a memory change in every lane.** Inkling-2's 4,096-row
+  default took 1.06 GiB of workspace and 0.31 GiB of each bank's rings from
+  what funds the bank lane's checkpoint slots: `banks/partial` passed or
+  failed on 0.3 GiB of free memory, and the two-bank server plan was refused
+  after the open. Rerun `ds4 --serving-check` at the final head and start
+  each documented plan; an earlier build's pass does not carry over.
 
 # Agent Notes
 
