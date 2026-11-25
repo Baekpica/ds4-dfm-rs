@@ -46,7 +46,9 @@ typedef struct {
     INKLING2_ROW_BUFFERS(INKLING2_FIELD)
 #undef INKLING2_FIELD
     ds4_gpu_tensor *logits, *partials;
-    ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS];
+    // hist[il] are views of hist_all, so a trial saves and rolls back every
+    // layer's histories in one launch.
+    ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS], *hist_all;
     // SSD tier of the full layers past the resident context, and the
     // attention state its key segments carry (NULL without a tier).
     inkling2_kv tier;
@@ -76,6 +78,7 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
         ds4_gpu_tensor_free(g->kv[il]);
         ds4_gpu_tensor_free(g->hist[il]);
     }
+    ds4_gpu_tensor_free(g->hist_all);
     inkling2_kv_close(&g->tier);
 #ifndef __APPLE__
     inkling2_draft_free(g->draft);
@@ -131,10 +134,12 @@ static ds4_gpu_tensor *inkling2_hist(ds4_inkling2_graph *g, uint32_t il, uint32_
 // What a bank owns: every layer's K/V (the SSD tier past the resident
 // context) and convolution histories.
 static bool inkling2_graph_state(ds4_inkling2_graph *g) {
-    bool ok = true;
+    const uint64_t hist = (uint64_t)INKLING2_HIST * sizeof(float);
+    g->hist_all = ds4_gpu_tensor_alloc(INKLING2_LAYERS * hist);
+    bool ok = g->hist_all != NULL;
     for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
         g->kv[il] = ds4_gpu_tensor_alloc(inkling2_layer_kv_bytes(il, g->ctx_cap, g->row_cap));
-        g->hist[il] = ds4_gpu_tensor_alloc((uint64_t)INKLING2_HIST * sizeof(float));
+        g->hist[il] = ds4_gpu_tensor_view(g->hist_all, il * hist, hist);
         ok = g->kv[il] && g->hist[il];
     }
     return ok && inkling2_kv_open(&g->tier, g->ctx_cap, g->row_cap);
@@ -203,6 +208,7 @@ static bool inkling2_graph_bank(ds4_inkling2_graph *g, const ds4_inkling2_graph 
     g->live_n = g->live_cap = 0;
     memset(&g->tier, 0, sizeof(g->tier));
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { g->kv[il] = g->hist[il] = NULL; }
+    g->hist_all = NULL;
     if (!inkling2_graph_state(g)) {
         fprintf(stderr, "ds4: Inkling-2 bank allocation failed\n");
         inkling2_graph_free(g);

@@ -202,8 +202,16 @@ int ds4_gpu_ink2_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, ds4_gpu_
 int ds4_gpu_ink2_draft_fold_x(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t bias);
 int ds4_gpu_ink2_draft_fold_pack(ds4_gpu_tensor *fold_w, ds4_gpu_tensor *fold_b, const ds4_gpu_tensor *head_rows);
 int ds4_gpu_ink2_draft_copy(ds4_gpu_tensor *dst, uint64_t dst_off, const ds4_gpu_tensor *src, uint64_t count);
-/* hist = the last three rows of [hist; x[0..rows)] (`width`-wide F32 rows). */
-int ds4_gpu_ink2_history(ds4_gpu_tensor *hist, const ds4_gpu_tensor *x, uint32_t width, uint32_t rows);
+/* A trial keeps layer `layer`'s convolution inputs of its verify rows: K and
+ * V inputs ([rows][1024]), attention and MLP outputs ([rows][4608]), in
+ * `trial` ([48 layers][8 rows of each stream]). */
+int ds4_gpu_ink2_draft_keep(ds4_gpu_tensor *trial, uint32_t layer, const ds4_gpu_tensor *kin,
+    const ds4_gpu_tensor *vin, const ds4_gpu_tensor *attn, const ds4_gpu_tensor *moe, uint32_t rows);
+/* A rejected tail: every layer's histories (`hist`, [48][3 rows of each
+ * stream]) become the last three rows of [saved; the trial's first `keep`
+ * rows]. */
+int ds4_gpu_ink2_draft_rollback(ds4_gpu_tensor *hist, const ds4_gpu_tensor *saved, const ds4_gpu_tensor *trial,
+    uint32_t keep);
 
 /* Vision tower (ds4_inkling2_vision.inc): an image of rows x cols language
  * tokens (40 x 40 pixels each) is 2 rows x 2 cols ViT patches of 20 x 20;
