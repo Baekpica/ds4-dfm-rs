@@ -531,6 +531,8 @@ int main(int argc, char **argv) {
     for (uint32_t tokens : {2u, 3u, 8u}) {
         failures += q4m_case(1024, 4096, tokens);   // KDA q/k/v rows
         failures += q4m_case(1000, 1536, tokens);   // q_b: partial last stage and row tile
+        failures += q4m_case(1024, 4608, tokens);   // Inkling 2: 18-block rows, one stage
+        failures += q4m_case(1000, 4352, tokens);   // 17 blocks: an idle warp and a row tail
     }
     for (uint32_t tokens : {1u, 3u, 8u}) {
         failures += q4m_swiglu_case(2048, 4096, tokens);   // shared expert

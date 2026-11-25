@@ -62964,13 +62964,14 @@ static int beam_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
 }
 
 /* Banks after graph 0 add only their K/V (and SSD tier) and histories; the
- * fit drops banks until they and the serving headroom fit free memory, and
- * what remains funds the checkpoint slots. */
+ * fit halves the chunk, then drops banks, until they and the serving headroom
+ * fit free memory, and what remains funds the checkpoint slots. */
 static int inkling2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
         inkling2_fit_mode mode, ds4_batch_ctx **out, char *err, size_t errlen) {
 #define IBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
-    const uint32_t ctx = (uint32_t)ctx_size, cap = ctx_size > 0 ? inkling2_prefill_cap(ctx) : 0u;
-    const uint64_t base = ctx_size > 0 ? inkling2_memory(ctx, cap).total_bytes : 0u;
+    const uint32_t ctx = (uint32_t)ctx_size;
+    uint32_t cap = ctx_size > 0 ? inkling2_prefill_cap(ctx) : 0u;
+    uint64_t base = ctx_size > 0 ? inkling2_memory(ctx, cap).total_bytes : 0u;
     if (ctx_size <= 0 || ctx > INKLING2_CONTEXT || !base) {
         IBC_ERR("batch_ctx_create: Inkling-2 needs a valid context");
         return 1;
@@ -62986,7 +62987,19 @@ static int inkling2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_s
     if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
         const uint64_t outstanding = ds4_gpu_substrate_outstanding();
         free_b = free_b > outstanding ? free_b - outstanding : 0;
-        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size), bank = inkling2_bank_bytes(ctx, cap);
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+
+        // Fewer rows before fewer checkpoints or banks: partial reuse forks
+        // from the slots, and 4,096 rows take 1.06 GiB of workspace and 0.31
+        // GiB of every bank's rings (two banks kept 1 to 3 of 8 slots).
+        const uint64_t checkpoints = (uint64_t)INKLING2_BANK_CHECKPOINTS * inkling2_ckpt_bytes();
+        while (chosen && cap / 2u >= INKLING2_PREFILL_MIN &&
+               base + (uint64_t)(chosen - 1u) * inkling2_bank_bytes(ctx, cap) + checkpoints + headroom > free_b) {
+            cap /= 2u;
+            base = inkling2_memory(ctx, cap).total_bytes;
+        }
+
+        const uint64_t bank = inkling2_bank_bytes(ctx, cap);
         while (chosen && base + (uint64_t)(chosen - 1u) * bank + headroom > free_b) { chosen--; }
         if (!chosen || (mode == INKLING2_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
             IBC_ERR("batch_ctx_create: Inkling-2 banks and headroom exceed free memory"
@@ -62996,8 +63009,8 @@ static int inkling2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_s
         const uint64_t spare = free_b - (base + (uint64_t)(chosen - 1u) * bank + headroom);
         const uint64_t fit = spare / inkling2_ckpt_bytes();
         slots = fit < INKLING2_BANK_CHECKPOINTS ? (uint32_t)fit : INKLING2_BANK_CHECKPOINTS;
-        fprintf(stderr, "ds4: Inkling-2 banks=%u checkpoint slots=%u (%.2f GiB spare)\n",
-                chosen, slots, (double)spare / 1073741824.0);
+        fprintf(stderr, "ds4: Inkling-2 banks=%u chunk=%u checkpoint slots=%u (%.2f GiB spare)\n",
+                chosen, cap, slots, (double)spare / 1073741824.0);
     }
     ds4_batch_ctx *bc = xcalloc(1, sizeof(*bc));
     bc->e = e;
@@ -76248,6 +76261,17 @@ static uint32_t k2h_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap)
     return k2h_fit_cap(ctx, cap, ds4_session_graph_headroom_bytes(), available);
 }
 
+// The serial graph's chunk, halved until it fits beside the session headroom.
+static uint32_t inkling2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
+    uint64_t available = 0, total = 0;
+    if (e->backend != DS4_BACKEND_CUDA || ds4_session_graph_fit_off() || ds4_gpu_mem_info(&available, &total) != 0) {
+        return cap;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    return inkling2_fit_cap(ctx, cap, inkling2_drafting(e), ds4_session_graph_headroom_bytes(), available);
+}
+
 static bool inkling2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                  ds4_session_graph_fit_quote *q) {
     const uint64_t need = inkling2_memory(ctx, cap).total_bytes + (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, cap) : 0u);
@@ -76530,6 +76554,7 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     }
     if (ds4_session_is_inkling2(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
+        s->prefill_cap = inkling2_session_cap(e, ctx, s->prefill_cap);
         const uint64_t estimate = inkling2_memory(ctx, s->prefill_cap).total_bytes +
             (inkling2_drafting(e) ? inkling2_draft_bytes(ctx, s->prefill_cap) : 0u);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
@@ -77062,7 +77087,8 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         return minimax_session_fit(e, (uint32_t)ctx_size, minimax_prefill_cap((uint32_t)ctx_size), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING2_VQ) {
-        return inkling2_session_fit(e, (uint32_t)ctx_size, inkling2_prefill_cap((uint32_t)ctx_size), q);
+        return inkling2_session_fit(e, (uint32_t)ctx_size,
+            inkling2_session_cap(e, (uint32_t)ctx_size, inkling2_prefill_cap((uint32_t)ctx_size)), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_HY4) {
         const uint32_t ctx = (uint32_t)ctx_size;

@@ -130,8 +130,11 @@ const MINIMAX_PREFILL_CHUNK_ENV: &str = "DS4_MINIMAX_PREFILL_CHUNK";
 const MINIMAX_NATIVE_DEFAULT: u32 = 4096;
 const MINIMAX_NATIVE_MAX: u32 = 4096;
 const INKLING2_PREFILL_CHUNK_ENV: &str = "DS4_INKLING2_PREFILL_CHUNK";
-const INKLING2_NATIVE_DEFAULT: u32 = 2048;
+// C INKLING2_PREFILL_DEFAULT (ds4_inkling2_bind.inc): every chunk streams
+// each routed expert once, so rows halve only to INKLING2_NATIVE_MIN.
+const INKLING2_NATIVE_DEFAULT: u32 = 4096;
 const INKLING2_NATIVE_MAX: u32 = 4096;
+const INKLING2_NATIVE_MIN: u32 = 2048;
 // C inkling2_resident_ctx: the largest context whose full-layer K/V stays
 // resident.
 const INKLING2_RESIDENT_CTX_ENV: &str = "DS4_INKLING2_KV_RESIDENT_CTX";
@@ -996,6 +999,7 @@ fn quote_native_rows(
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
         ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
         ModelFamily::K2hVq => native > K2H_NATIVE_MIN,
+        ModelFamily::Inkling2Vq => native > INKLING2_NATIVE_MIN,
         ModelFamily::Hy4 => native > crate::hy4::PREFILL_MIN,
         _ => false,
     };
@@ -1609,6 +1613,19 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
     }
 }
 
+// C inkling2_prefill_cap: the SSD K/V tier (a context past the resident
+// threshold) keeps the smaller chunk; its memory is the scarce part.
+fn inkling2_native_default(ctx: u32) -> u32 {
+    let resident =
+        env_u32(INKLING2_RESIDENT_CTX_ENV, INKLING2_RESIDENT_CTX, 0, 1 << 20) / 128 * 128;
+    let nvfp4 = std::env::var("DS4_INKLING2_KV_BF16").as_deref() != Ok("1");
+    if nvfp4 && ctx > resident {
+        INKLING2_NATIVE_MIN
+    } else {
+        INKLING2_NATIVE_DEFAULT
+    }
+}
+
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
@@ -1693,7 +1710,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
         ModelFamily::Inkling2Vq => env_u32(
             INKLING2_PREFILL_CHUNK_ENV,
-            INKLING2_NATIVE_DEFAULT,
+            inkling2_native_default(ctx),
             1,
             INKLING2_NATIVE_MAX,
         ),
@@ -3223,7 +3240,7 @@ fn inkling2_workspace_bytes(rows: u64) -> u64 {
     let row = (5 * HIDDEN + 3 * 6144 + 768 + 48 + 2 * 1024 + 2 * 32 + 2 * HIDDEN + 384 + 2 * USED)
         * SIZEOF_F32
         + (HIDDEN + 48 * 1024 + 8 * HIDDEN) * SIZEOF_U16;
-    let partials = 8 * 48 * 64 * 130 * SIZEOF_F32;
+    let partials = 8 * 48 * 64 * 132 * SIZEOF_F32;
     let q4p = (rows * 6144 * SIZEOF_U16 * 2).max(384 * HIDDEN * SIZEOF_F32);
     let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;
     let pairs = rows * USED;
@@ -4422,6 +4439,21 @@ mod tests {
         assert_eq!(
             inkling2_kv_bytes(1 << 20, 2048),
             below + (8 * 18 + 512) * 147_456 + 2048 * 48 * 130 * 4
+        );
+    }
+
+    #[test]
+    fn inkling2_tier_keeps_the_small_chunk() {
+        let _env = lock_test_env();
+        let _tier = EnvGuard::unset(INKLING2_RESIDENT_CTX_ENV);
+        let _bf16 = EnvGuard::unset("DS4_INKLING2_KV_BF16");
+        assert_eq!(
+            inkling2_native_default(INKLING2_RESIDENT_CTX),
+            INKLING2_NATIVE_DEFAULT
+        );
+        assert_eq!(
+            inkling2_native_default(INKLING2_RESIDENT_CTX + 1),
+            INKLING2_NATIVE_MIN
         );
     }
 

@@ -467,12 +467,71 @@ extern "C" int ds4_gpu_ink2_draft_copy(ds4_gpu_tensor *dst, uint64_t dst_off, co
     return cuda_ok(cudaGetLastError(), "Inkling-2 draft copy");
 }
 
-/* A trial's rollback: the history of `width`-wide rows becomes the last
- * three rows of [hist; x[0..rows)] (the kept rows of a verify forward). */
-extern "C" int ds4_gpu_ink2_history(ds4_gpu_tensor *hist, const ds4_gpu_tensor *x, uint32_t width, uint32_t rows) {
-    if (!rows || !width || !gvq_floats(hist, (uint64_t)DS4_INK2_HISTORY * width) ||
-        !gvq_floats(x, (uint64_t)rows * width)) { return 0; }
-    ink2_history_kernel<<<(width + 127u) / 128u, 128, 0, ds4_current_stream()>>>((float *)hist->ptr,
-        (const float *)x->ptr, width, rows);
+/* A layer's history and a trial's kept inputs share one stream order: K and
+ * V inputs (1,024 wide), then the attention and MLP outputs (4,608 wide).
+ *
+ *   history  [3 rows K][3 rows V][3 rows attention][3 rows MLP]
+ *   trial    [8 rows K][8 rows V][8 rows attention][8 rows MLP]  */
+enum { INK2D_ROW = 2 * INK2A_KV + 2 * INK2_HIDDEN, INK2D_HIST = DS4_INK2_HISTORY * INK2D_ROW,
+       INK2D_TRIAL = DS4_INK2_DRAFT_BLOCK * INK2D_ROW };
+
+__device__ __forceinline__ uint32_t ink2d_width(uint32_t s) { return s < 2 ? INK2A_KV : INK2_HIDDEN; }
+
+// First element of stream s in a layout of `rows` rows per stream.
+__device__ __forceinline__ uint32_t ink2d_start(uint32_t s, uint32_t rows) {
+    return s < 2 ? s * rows * INK2A_KV : rows * (2 * INK2A_KV + (s - 2) * INK2_HIDDEN);
+}
+
+// The stream holding element e of that layout.
+__device__ __forceinline__ uint32_t ink2d_stream(uint32_t e, uint32_t rows) {
+    return e < ink2d_start(1, rows) ? 0u : e < ink2d_start(2, rows) ? 1u : e < ink2d_start(3, rows) ? 2u : 3u;
+}
+
+// The verify rows' convolution inputs of one layer, kept for a rollback.
+__global__ void ink2d_keep_kernel(float *trial, const float *kin, const float *vin, const float *attn,
+        const float *moe, uint32_t rows) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * INK2D_ROW) { return; }
+    const uint32_t s = ink2d_stream(i, rows), at = i - ink2d_start(s, rows);
+    const float *src = s == 0 ? kin : s == 1 ? vin : s == 2 ? attn : moe;
+    trial[ink2d_start(s, DS4_INK2_DRAFT_BLOCK) + at] = src[at];
+}
+
+extern "C" int ds4_gpu_ink2_draft_keep(ds4_gpu_tensor *trial, uint32_t layer, const ds4_gpu_tensor *kin,
+        const ds4_gpu_tensor *vin, const ds4_gpu_tensor *attn, const ds4_gpu_tensor *moe, uint32_t rows) {
+    if (!rows || rows > DS4_INK2_DRAFT_BLOCK || layer >= INK2_LAYERS || !gvq_floats(kin, (uint64_t)rows * INK2A_KV) ||
+        !gvq_floats(vin, (uint64_t)rows * INK2A_KV) || !gvq_floats(attn, (uint64_t)rows * INK2_HIDDEN) ||
+        !gvq_floats(moe, (uint64_t)rows * INK2_HIDDEN) || !gvq_floats(trial, (uint64_t)INK2_LAYERS * INK2D_TRIAL)) {
+        return 0;
+    }
+    ink2d_keep_kernel<<<(rows * INK2D_ROW + 255) / 256, 256, 0, ds4_current_stream()>>>(
+        (float *)trial->ptr + (uint64_t)layer * INK2D_TRIAL, (const float *)kin->ptr, (const float *)vin->ptr,
+        (const float *)attn->ptr, (const float *)moe->ptr, rows);
+    return cuda_ok(cudaGetLastError(), "Inkling-2 trial inputs");
+}
+
+/* A trial's rollback, every layer at once: a history becomes the last three
+ * rows of [saved history; the trial's first `keep` rows]. */
+__global__ void ink2d_rollback_kernel(float *hist, const float *saved, const float *trial, uint32_t keep) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= INK2_LAYERS * INK2D_HIST) { return; }
+    const uint32_t layer = i / INK2D_HIST, e = i % INK2D_HIST;
+    const uint32_t s = ink2d_stream(e, DS4_INK2_HISTORY), width = ink2d_width(s);
+    const uint32_t first = ink2d_start(s, DS4_INK2_HISTORY), h = (e - first) / width, c = (e - first) % width;
+    // Row h of the new history: row keep - 3 + h of the kept rows, or a saved row.
+    const int32_t at = (int32_t)keep - DS4_INK2_HISTORY + (int32_t)h;
+    const float v = at >= 0
+        ? trial[(uint64_t)layer * INK2D_TRIAL + ink2d_start(s, DS4_INK2_DRAFT_BLOCK) + (uint32_t)at * width + c]
+        : saved[(uint64_t)layer * INK2D_HIST + first + (uint32_t)(at + DS4_INK2_HISTORY) * width + c];
+    hist[i] = glmvq_round(v);
+}
+
+extern "C" int ds4_gpu_ink2_draft_rollback(ds4_gpu_tensor *hist, const ds4_gpu_tensor *saved,
+        const ds4_gpu_tensor *trial, uint32_t keep) {
+    const uint32_t count = INK2_LAYERS * INK2D_HIST;
+    if (!keep || keep > DS4_INK2_DRAFT_BLOCK || !gvq_floats(hist, count) || !gvq_floats(saved, count) ||
+        !gvq_floats(trial, (uint64_t)INK2_LAYERS * INK2D_TRIAL)) { return 0; }
+    ink2d_rollback_kernel<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>((float *)hist->ptr,
+        (const float *)saved->ptr, (const float *)trial->ptr, keep);
     return cuda_ok(cudaGetLastError(), "Inkling-2 history rollback");
 }

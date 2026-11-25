@@ -293,10 +293,7 @@ int ds4_session_inkling2_trial(ds4_session *s, int first, int max_tokens, int *t
     }
     const double t1 = now_sec();
     d->draft_ms = (t1 - t0) * 1000.0;
-    bool ok = true;
-    for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
-        ok = ds4_gpu_ink2_draft_copy(d->hist_save, (uint64_t)il * INKLING2_HIST, g->hist[il], INKLING2_HIST);
-    }
+    bool ok = ds4_gpu_ink2_draft_copy(d->hist_save, 0, g->hist_all, (uint64_t)INKLING2_LAYERS * INKLING2_HIST) != 0;
     d->capture = true;
     ok = ok && inkling2_forward(g, m, w, tokens, n, start, INKLING2_HEAD_ALL);
     d->capture = false;

@@ -143,6 +143,12 @@ by MMA latency.
 - **Unified memory is shared with the host.** GPU allocations, the page cache
   of mapped weights and every process draw from the same 121.6 GiB: run
   model loads under the memory guard, one resident model at a time.
+- **Device memory comes in 2 MiB blocks.** A host up two days had 119.2 GiB
+  free and 110.0 GiB of it in blocks of 2 MiB or more (`/proc/buddyinfo`,
+  orders 9 and up): a 108 GiB load stalled in direct compaction near its end
+  (PSI full 40%). Pinning device memory up to the stall point and freeing
+  it, three times, left 115.5 GiB in such blocks
+  ([guard notes](host-memory-guard.md#fragmented-free-memory)).
 - **Clock policy changes the peaks.** Compare variants at the same clock and
   state it.
 - **Random-read rate depends on the span.** The SSD's map cache covers tens

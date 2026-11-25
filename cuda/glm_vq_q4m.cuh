@@ -227,9 +227,23 @@ template <glmvq_q4m_epilogue EPI>
 static constexpr auto glmvq_q4m_kernel =
     glmvq_q4m<GLMVQ_Q4M_TILES, GLMVQ_Q4M_WARPS, GLMVQ_Q4M_CHUNK, GLMVQ_Q4M_STAGES, EPI>;
 
+// Rows of 17 or 18 blocks (Inkling 2's 4,608 columns) leave that shape a
+// second stage of one or two blocks for its 16 warps. One stage of the
+// whole row and a warp per block, three tokens: 6,144 rows 187 -> 237 GB/s,
+// the 200,064-row head 196 -> 265. 24-block rows did not gain (207 -> 201).
+enum { GLMVQ_Q4M_ROW = 18 };
+enum glmvq_q4m_stage { GLMVQ_Q4M_STAGED, GLMVQ_Q4M_WHOLE_ROW };
+using glmvq_q4m_row = glmvq_q4m_shape<GLMVQ_Q4M_TILES, GLMVQ_Q4M_ROW, GLMVQ_Q4M_ROW, GLMVQ_Q4M_STAGES>;
+static constexpr auto glmvq_q4m_row_kernel =
+    glmvq_q4m<GLMVQ_Q4M_TILES, GLMVQ_Q4M_ROW, GLMVQ_Q4M_ROW, GLMVQ_Q4M_STAGES, GLMVQ_Q4M_PLAIN>;
+
 static cudaError_t glmvq_q4m_prepare() {
     cudaError_t err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_PLAIN>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4m_row_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            glmvq_q4m_row::smem);
+    }
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
@@ -247,8 +261,15 @@ static bool glmvq_q4m_fits(const void *weight, const float *input, uint32_t cols
 }
 
 static cudaError_t glmvq_q4m_decode(const void *weight, const float *input, float *out,
-        uint32_t rows, uint32_t cols, uint32_t tokens, cudaStream_t stream, glmvq_launch launch) {
+        uint32_t rows, uint32_t cols, uint32_t tokens, cudaStream_t stream, glmvq_launch launch,
+        glmvq_q4m_stage stage = GLMVQ_Q4M_WHOLE_ROW) {
     if (!out || !rows || !glmvq_q4m_fits(weight, input, cols, tokens)) { return cudaErrorInvalidValue; }
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK;
+    if (stage == GLMVQ_Q4M_WHOLE_ROW && blocks > GLMVQ_Q4M_CHUNK && blocks <= GLMVQ_Q4M_ROW) {
+        return glmvq_launch_kernel(launch, glmvq_q4m_row_kernel, (rows + glmvq_q4m_row::rows - 1) / glmvq_q4m_row::rows,
+            glmvq_q4m_row::threads, glmvq_q4m_row::smem, stream, (const uint8_t *)weight, (const uint8_t *)nullptr,
+            input, out, cols, rows, tokens, 0.0f);
+    }
     return glmvq_launch_kernel(launch, glmvq_q4m_kernel<GLMVQ_Q4M_PLAIN>, (rows + glmvq_q4m_prod::rows - 1) / glmvq_q4m_prod::rows,
         glmvq_q4m_prod::threads, glmvq_q4m_prod::smem, stream, (const uint8_t *)weight, (const uint8_t *)nullptr,
         input, out, cols, rows, tokens, 0.0f);

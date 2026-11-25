@@ -385,25 +385,29 @@ quality.
 Inkling-2-Small with 12-bit hVQ routed experts on all 48 layers, a Q4_K body
 and NVFP4 full-layer K/V
 ([model card](https://huggingface.co/Baekpica/Inkling-2-Small-VQ-GGUF))
-records **1,248.1 prefill / 29.79 decode** tok/s without drafting over
-2K–64K at `457e60f4`: medians of three fresh run means across 32 frontiers
-on one DGX Spark / GB10. Fresh matched runs of the starting `53043039`
-record 979.9 / 23.41, so the gains are **+27.37% / +27.23%**
-([raw record](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt), [six-round report](inkling2-optimization-2026-11-14.md)).
+records **1,428.9 prefill / 31.53 decode** tok/s without drafting over
+2K–64K at `496f315e`: medians of three fresh run means across 32 frontiers
+on one DGX Spark / GB10. Fresh matched runs of the starting `4242cf82`
+record 1,239.9 / 29.72, so the gains are **+15.2% / +6.1%**
+([raw record](../speed-bench/gb10_spark_inkling2_31efb8d0.meta.txt), [report](inkling2-optimization-2026-11-25.md)).
+The [November 15 record](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt)
+at `457e60f4` was 1,248.1 / 29.79 ([six-round report](inkling2-optimization-2026-11-14.md)).
 
 Every frontier adds 2,048 prompt tokens over the cached prefix and generates
 128 forced greedy tokens, with all K/V resident and default PDL. Final run
-means span 1,244.3–1,253.9 prefill and 29.60–30.08 decode; busy clocks span
-2,177–2,190 MHz under the 300–2,200 MHz policy.
-All six valid comparison runs have PSI 0 and at least 7.75 GiB available.
-The 2K–32K summary is 1,333.2 / 30.72 tok/s.
+means span 1,428.6–1,435.7 prefill and 31.30–32.04 decode; busy clocks read
+2,184–2,190 MHz under the 300–2,200 MHz policy. The six runs kept at least
+5.68 GiB available, with PSI 0 once the model was resident. The 2K–32K
+summary is 1,494.0 / 32.17 tok/s. The same steps to 258K gain 24.3% /
+11.4% on average and 37.1% / 19.2% at the 258K frontier; a cold 64K prompt
+runs 1,574.9 / 30.59 against 1,238.4 / 27.77 (4,096-row chunks: contexts of
+at most 262,144 tokens; past that 1,424 tok/s).
 
-The plot shows final run 1, the median prefill run; raw files preserve
-all repeats. These are resident text results. The [family page](inkling2-vq.md#performance)
-keeps earlier 1M/SSD and DSpark evidence separate; those modes and vision
-were not requalified in this campaign.
+The plot shows the median prefill run; raw files preserve all repeats. The
+[family page](inkling2-vq.md#performance) has the long-context, SSD-tier
+and DSpark measurements.
 
-![Inkling-2-Small VQ prefill and decode on one DGX Spark](../speed-bench/gb10_spark_inkling2_671bc661_ts.svg)
+![Inkling-2-Small VQ prefill and decode on one DGX Spark](../speed-bench/gb10_spark_inkling2_31efb8d0_ts.svg)
 
 ## DeepSeek V4.1
 

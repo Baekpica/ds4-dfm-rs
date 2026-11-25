@@ -120,20 +120,29 @@ deviation that changes proposals only.
 MiniMax's rate gate (`DS4_INKLING2_DSPARK_GATE=0` disables it) decodes plainly
 for a cooldown while trials keep tokens slower than plain decodes.
 
-Through the server, 512 tokens per request, decode tok/s (code / explanation /
-Korean / arithmetic / Italian prose continuation; plain on the default
-server, 2 drafts at `-c 131072 --mem-floor-gb 2`):
+Through the server, up to 512 tokens per request, decode tok/s (code /
+explanation / Korean / arithmetic / Italian prose continuation; every server
+at `-c 131072 --mem-floor-gb 2`, November 25):
 
 | Requests | Plain | 2 drafts, gate | 2 drafts, no gate |
 |---|---|---|---|
-| greedy | 24.9 / 24.9 / 24.8 / 25.0 / 24.6 | 29.6 / 25.9 / 25.8 / 34.2 / 22.0 | 30.4 / 27.8 / 27.1 / 33.4 / 18.2 |
-| sampled (T 0.7, top-p 0.95) | 24.8 / 24.7 / 24.8 / 24.9 / 24.4 | 27.8 / 24.8 / 23.7 / 31.9 / 22.9 | 28.7 / 25.0 / 23.9 / 32.5 / 17.6 |
+| greedy | 32.9 / 33.0 / 33.1 / 33.1 / 32.4 | 38.8 / 34.2 / 36.9 / 39.2 / 30.9 | 42.0 / 32.8 / 36.3 / 39.6 / 30.1 |
+| sampled (T 0.7, top-p 0.95) | 32.7 / 32.7 / 32.6 / 32.9 / 32.0 | 37.7 / 31.6 / 31.2 / 39.7 / 29.7 | 39.7 / 30.7 / 27.7 / 37.4 / 23.8 |
 
-With the gate drafting adds 10.7% to the greedy mean and 6.1% to the sampled
-one; the prose continuation loses 11% (6% sampled), 26% (28%) without it.
-Doubling each pause that follows a losing probe (16 to 256 tokens) halved the
-prose loss but lowered the ten requests' mean from 26.86 to 26.46 tok/s:
-rejected.
+With the gate drafting adds 9.5% to the greedy mean and 4.2% to the sampled
+one; the prose continuation loses 4.5% (7.4% sampled), 7.0% (25.6%) without
+it.
+
+A two-draft trial reads 9.9 GB of weights against a plain token's 5.45 GB:
+its three verify rows route to 15.4 distinct experts of 24, and the drafter
+adds 1.75 GB and a second read of the head. No kernel makes it pay below 1.81
+kept tokens; it takes 2.14 plain tokens' time (65.3 against 30.5 ms), and raw
+prose keeps 2.09 ([analysis](inkling2-optimization-2026-11-25.md#is-dsparks-deficit-the-devices)).
+
+The measurements in the rest of this section are the initial release
+build's (plain decoding at ~24 tok/s). Doubling each pause that follows a
+losing probe (16 to 256 tokens) halved the prose loss but lowered the ten
+requests' mean from 26.86 to 26.46 tok/s: rejected.
 
 Greedy drafting against plain decoding, 512 tokens after five prompts (code,
 explanation, Korean travel plan, arithmetic, an Italian prose continuation),
@@ -263,42 +272,65 @@ the release's own references:
 
 ## Performance
 
-The November 15 [2K–64K record](../speed-bench/gb10_spark_inkling2_671bc661.meta.txt) uses three fresh `ds4-bench`
-processes at `457e60f4`, 2,048 new tokens and 128 forced greedy tokens per
+The November 25 [2K–64K record](../speed-bench/gb10_spark_inkling2_31efb8d0.meta.txt) uses three fresh `ds4-bench`
+processes at `496f315e`, 2,048 new tokens and 128 forced greedy tokens per
 frontier, all K/V resident, default PDL and no drafter. Medians of run means:
-**1,248.1 prefill / 29.79 decode** tok/s (2K–32K:
-1,333.2 / 30.72).
-Fresh matched `53043039` runs give 979.9 / 23.41: **+27.37% / +27.23%**.
-Final run means span 1,244.3–1,253.9 / 29.60–30.08; see the
-[three-Prefill/three-Decode report](inkling2-optimization-2026-11-14.md) for numerical gates,
-target attribution and D3's 32K boundary.
+**1,428.9 prefill / 31.53 decode** tok/s (2K–32K: 1,494.0 / 32.17).
+Fresh matched `4242cf82` runs give 1,239.9 / 29.72: **+15.2% / +6.1%**.
+Final run means span 1,428.6–1,435.7 / 31.30–32.04. The
+[November 25 report](inkling2-optimization-2026-11-25.md) has the rounds, numerical gates and
+attribution; the [November 14–15 one](inkling2-optimization-2026-11-14.md) the six rounds before
+(979.9 / 23.41 → 1,248.1 / 29.79).
 
 | Frontier | 2K | 8K | 16K | 32K | 48K | 64K |
 |---|---|---|---|---|---|---|
-| Prefill | 1,303.0 | 1,395.6 | 1,339.7 | 1,245.2 | 1,172.0 | 1,087.8 |
-| Decode | 31.46 | 31.38 | 30.85 | 29.83 | 28.92 | 28.05 |
+| Prefill | 1,342.5 | 1,551.3 | 1,506.7 | 1,437.6 | 1,371.1 | 1,299.0 |
+| Decode | 32.70 | 32.65 | 32.23 | 31.49 | 30.94 | 30.24 |
 
-Per-frontier medians of three. Busy clocks 2,177–2,190 MHz;
-minimum available memory 7.75 GiB and PSI 0 across the six valid runs.
+Per-frontier medians of three. Busy clocks 2,184–2,190 MHz; at least
+5.68 GiB available, PSI 0 once the model was resident.
 
-The following SSD/1M measurements are inherited from the initial release;
-they were not rerun by this resident text campaign.
+The same steps to 258K (32 greedy tokens, two runs) and cold prompts, which
+prefill in 4,096-row chunks (prefill / decode tok/s; `4242cf82` in
+parentheses):
 
-Resident against the SSD tier (same corpus, 2,048-row chunks; prefill over
-the span since the previous frontier, 32 decoded tokens; prefill tok/s /
-decode tok/s):
+| | 64K | 131K | 196K | 258K |
+|---|---|---|---|---|
+| Frontier, 2,048 new tokens | 1,309.8 / 30.21 (1,084.0 / 27.95) | 1,099.8 / 28.05 (863.2 / 25.08) | 954.6 / 26.20 (719.7 / 22.50) | 846.2 / 24.63 (617.3 / 20.66) |
+| Cold prompt | 1,574.9 / 30.59 (1,238.4 / 27.77) | | | 1,190.9 / 23.74 (866.0 / 20.41) |
 
-| Frontier | Resident | All on SSD (resident 0) |
-|---|---|---|
-| 2K-8K | 1,101-1,148 / 24.8-24.9 | |
-| 16K | 1,114 / 24.07 | 1,106 / 24.04 |
-| 32K | 1,023 / 23.33 | 1,015 / 18.91 |
-| 64K | 902 / 22.20 | 894 / 9.63 |
+A cold 8K prompt runs 1,657.1 / 32.76 (1,377.1 / 31.28). A context past the
+resident threshold, the native 1M plan included, keeps 2,048-row chunks: a
+cold 8K / 64K / 258K prompt then prefills at 1,494 / 1,424 / 1,104 tok/s
+(the sweeps' tokens over their time).
 
-At 64K on the SSD every token reads 604 MB (5.8 GB/s). 1,040,000 tokens at the
-default threshold: prefill 268.2 tok/s on average (3,878 s), decode 0.86 tok/s
-(7.17 GB of file blocks per token, ~6.2 GB/s), 1,372.6 GiB read in 252.7 s of
-I/O; MemAvailable stayed near 5.8 GiB.
+The SSD tier with every block in the file (`DS4_INKLING2_KV_RESIDENT_CTX=0`,
+same corpus; prefill over the span since the previous frontier / decode
+tok/s, November 25):
+
+| Frontier | 32K | 64K | 131K | 258K |
+|---|---|---|---|---|
+| `4242cf82`, 2,048-row chunks | 1,267.9 / 18.81 | 1,037.9 / 9.83 | 809.0 / 5.01 | 564.6 / 2.56 |
+| 2,048-row chunks (the tier's default) | 1,473.3 / 19.15 | 1,315.0 / 9.86 | 1,114.9 / 5.00 | 858.3 / 2.58 |
+| `DS4_INKLING2_PREFILL_CHUNK=4096` | 1,613.3 / 19.03 | 1,425.3 / 9.76 | 1,198.2 / 4.99 | 912.8 / 2.58 |
+
+Decode there is the drive's rate: at 64K every token reads 604 MB. A chunk
+reads the file region once, so 4,096-row chunks read a third less (137.5
+against 207.3 GiB over the run) for 1.5 GiB of memory; the tier keeps 2,048
+rows because the native context has no memory to spare ([Memory](#memory)).
+
+One 524,288-token prompt, half of it past the default threshold (2,048-row
+chunks; November 25):
+
+| K/V of the 524,288 positions | Prefill tok/s | Decode tok/s | First token | MemAvailable minimum |
+|---|---|---|---|---|
+| All resident (`DS4_INKLING2_KV_RESIDENT_CTX=524288`) | 839.0 | 19.59 | 0.05 s | 3.88 GiB |
+| Default: 262,144 resident, 262,144 on the SSD | 801.0 | 2.54 | 0.40 s | 5.81 GiB |
+
+1,040,000 tokens at the default threshold (November 25): prefill 518.5
+tok/s on average (2,006 s), decode 0.86 tok/s (7.17 GB of file blocks per
+token, ~6.2 GB/s), 1,372.6 GiB read in 252.0 s of I/O; MemAvailable stayed
+near 6.2 GiB.
 
 Past the threshold decode reads (context - threshold) x 9,216 bytes per token
 at the drive's rate, so the threshold is the remaining lever. Same 1,040,000
@@ -306,8 +338,10 @@ tokens without drafting:
 
 | Resident positions | Prefill tok/s | Decode tok/s | First token | Read | MemAvailable median (min) |
 |---|---|---|---|---|---|
-| 262,144 (default) | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
-| 524,288 | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
+| 262,144 (default) | 518.5 | 0.86 | 1.17 s | 1,372.6 GiB | 6.22 GiB (5.84) |
+| 262,144 at `4242cf82` | 284.7 | 0.86 | 1.17 s | 1,372.6 GiB | 6.19 GiB (5.82) |
+| 262,144, the initial release's engine | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
+| 524,288, the initial release's engine | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
 
 524,288 costs 2.36 GB of device K/V; drafting (1.94 tok/s at 262,144) and
 the image reserve need that memory, so the default stays 262,144.
@@ -317,7 +351,7 @@ the image reserve need that memory, so the default stays 262,144.
 
 `ds4-server --check-config` prices the trunk (113,799,088,128 bytes), the K/V
 of the requested context (resident blocks, the tier's pinned buffers and
-attention state), the row workspace (1.11 GiB at 2,048 rows), the image
+attention state), the row workspace (2.17 GiB at 4,096 rows, 1.11 at 2,048), the image
 reserve (1.39 GB: the tower at 10,609 tokens, one image's pixels and 16,384
 tokens of rows) and,
 with MTP, the drafter part (1.87 GB) and its runtime (0.63 GiB at 1M). A 1M
@@ -326,7 +360,8 @@ available (4 GiB floor included). The server quotes again after the open,
 against the memory the load left: ~9.9 GiB without the drafter, ~8 GiB with
 it. The native context needs 9.29 GiB without drafting and 9.92 GiB with it
 (7.92 GiB at a 2 GiB floor), so DSpark serves up to 131,072 positions with
-`--mem-floor-gb 2` (6.65 GiB). Two banks at 131,072 positions (1.6 GiB each)
+`--mem-floor-gb 2` (6.65 GiB, at 2,048-row chunks: the plan halves the chunk
+when 4,096 rows do not fit; 3.9 GiB stayed available while it served). Two banks at 131,072 positions (1.6 GiB each)
 also take the 2 GiB floor. Measured at 1M with `ds4`: MemAvailable ~5.8 GiB
 without the drafter, 2.7 GiB with it (minimum 2.37).
 
@@ -360,7 +395,9 @@ forwards run bank by bank. Blocks fork straight from the source bank; a fork
 below its frontier restores a checkpoint slot (the histories and every
 ring's 1,023 rows: 174 MB) taken every 4,096-aligned 1/24 of the context, at
 history ends and at request boundaries, in at most eight slots funded from
-what the banks leave.
+what the banks leave. The bank lane halves its chunk to 2,048 rows before
+it gives up a slot or a bank: two banks at 131,072 positions with a 2 GiB
+floor run 2,048-row chunks with all eight slots (2.37 GiB spare).
 
 **Disk KV and snapshots** (`IK21`): tokens, logits, the full layers' blocks
 below n wherever the tier keeps them, every ring's last 1,023 rows in
@@ -376,7 +413,7 @@ the first in the tier's file or window.
 
 `ds4 --serving-check` with the [checklist](benchmarks/serving-checklist-2026-11-02/README.md)'s
 essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
-(2,048-row chunks) and with the SSD tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`,
+(4,096-row chunks; 2,048 in its two banks) and with the SSD tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`,
 512-row chunks): reuse prefix, rewind and continue (top-1 17/17), disk and
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
@@ -388,8 +425,9 @@ its unsupported-format fallback;
 `make test-inkling2-vit-attn` checks the tower's flash attention against an
 F64 softmax on a GPU.
 
-See the [November 14–15 optimization record](inkling2-optimization-2026-11-14.md)
-for measured text prefill/decode changes and their bounds.
+See the [November 14–15](inkling2-optimization-2026-11-14.md) and
+[November 25](inkling2-optimization-2026-11-25.md) optimization records for
+measured prefill/decode changes and their bounds.
 
 `make tests/inkling2_quality CUDA_ARCH=sm_121` builds the Rust arithmetic
 recorder; `tests/inkling2_quality --self-test` checks its NLL math without a
@@ -410,7 +448,7 @@ hashes. It is a numerical regression check, not a general ability benchmark.
 
 | Variable | Effect |
 |---|---|
-| `DS4_INKLING2_PREFILL_CHUNK` | prefill rows per chunk (default 2,048, at most 4,096) |
+| `DS4_INKLING2_PREFILL_CHUNK` | prefill rows per chunk (default 4,096 while every K/V block is resident, halved to 2,048 when the graph, or the banks with their checkpoint slots, do not fit; 2,048 past the resident threshold) |
 | `DS4_INKLING2_KV_RESIDENT_CTX` | largest context whose full-layer K/V stays resident (default 262,144; 0 = SSD tier past the first window) |
 | `DS4_KV_OFFLOAD_DIR` | directory of the SSD tier's unlinked file |
 | `DS4_INKLING2_KV_BF16=1` | full layers keep BF16 K/V rows (the source's own; no SSD tier) |
@@ -418,10 +456,18 @@ hashes. It is a numerical regression check, not a general ability benchmark.
 | `DS4_INKLING2_VERIFY_MMA=0` | verify rows use the one-row SIMT attention |
 | `DS4_INKLING2_GAIN_DOT=0` | decode and verify experts round gain x codeword per weight instead of one multiply after the dot |
 | `DS4_INKLING2_ATTN_RES_SPEC=0` | attention residuals use runtime-indexed arrays instead of fixed block/query widths |
-| `DS4_INKLING2_BIAS_PREFETCH=0` | sliding prefill attention loads each relative bias at score use |
-| `DS4_INKLING2_FAR_TILES=0` | resident NVFP4 prefill attention checks masks and relative biases on every score, including old complete tiles |
+| `DS4_INKLING2_ATTN_FP4=0` | full-layer prefill scores on BF16 tensor cores over decoded keys (the path of builds without NVFP4 tensor cores) instead of the stored NVFP4 keys |
+| `DS4_INKLING2_ATTN_PP=0` | full-layer prefill uses the in-step tile kernel |
+| `DS4_INKLING2_FAR_TILES=0` | with `ATTN_PP=0`: masks and relative biases checked on every score, including old complete tiles |
+| `DS4_INKLING2_BIAS_RANK=0` | sliding prefill attention reads the relative-bias table instead of computing it from its factors |
+| `DS4_INKLING2_BIAS_PREFETCH=0` | with `BIAS_RANK=0`: each table bias loaded at score use |
+| `DS4_INKLING2_ROUTER_TF32=0` | the prefill router GEMM stays on cuBLAS' SIMT F32 path |
+| `DS4_INKLING2_ATTN_SPLIT=0` | a full-layer decode row walks its keys a lane per key instead of the tensor-core split |
+| `DS4_INKLING2_FULL_DECODE=0` | with `ATTN_SPLIT=0`: at 32K or more keys each group read serially instead of batching raw loads |
+| `DS4_INKLING2_ATTN_RES_SPLIT=0` | decode and verify attention residuals run one CTA per row |
+| `DS4_INKLING2_VERIFY_WAVE=0` | verify attention uses up to 64 key splits instead of one wave of six |
+| `DS4_GLMVQ_Q4M_ROW=0` | verify-width Q4_K projections stage 16 blocks of a row at a time instead of the whole 18-block row |
 | `DS4_INKLING2_SWA_DECODE=0` | one-row sliding attention uses synchronous KV copies and 128-key splits instead of staged 64-key splits |
-| `DS4_INKLING2_FULL_DECODE=0` | one-row resident NVFP4 attention at 32K or more keys reads each group serially instead of batching raw loads; shorter contexts retain the original path |
 | `DS4_INKLING2_Q4_GROUP=0` | one-row Q4 projections run separately, with the scalar path for small matrices |
 | `DS4_INKLING2_VIT_FLASH=0` | the vision tower's attention materializes S and P per query tile (V4.1's path) |
 | `DS4_INKLING2_BATCH=1` | native builds banks (the server sets it from `--max-seqs`: 1 from two banks, 0 otherwise, which keeps the serial session) |

@@ -46,7 +46,9 @@ typedef struct {
     INKLING2_ROW_BUFFERS(INKLING2_FIELD)
 #undef INKLING2_FIELD
     ds4_gpu_tensor *logits, *partials;
-    ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS];
+    // hist[il] are views of hist_all, so a trial saves and rolls back every
+    // layer's histories in one launch.
+    ds4_gpu_tensor *kv[INKLING2_LAYERS], *hist[INKLING2_LAYERS], *hist_all;
     // SSD tier of the full layers past the resident context, and the
     // attention state its key segments carry (NULL without a tier).
     inkling2_kv tier;
@@ -76,6 +78,7 @@ static void inkling2_graph_free(ds4_inkling2_graph *g) {
         ds4_gpu_tensor_free(g->kv[il]);
         ds4_gpu_tensor_free(g->hist[il]);
     }
+    ds4_gpu_tensor_free(g->hist_all);
     inkling2_kv_close(&g->tier);
 #ifndef __APPLE__
     inkling2_draft_free(g->draft);
@@ -131,10 +134,12 @@ static ds4_gpu_tensor *inkling2_hist(ds4_inkling2_graph *g, uint32_t il, uint32_
 // What a bank owns: every layer's K/V (the SSD tier past the resident
 // context) and convolution histories.
 static bool inkling2_graph_state(ds4_inkling2_graph *g) {
-    bool ok = true;
+    const uint64_t hist = (uint64_t)INKLING2_HIST * sizeof(float);
+    g->hist_all = ds4_gpu_tensor_alloc(INKLING2_LAYERS * hist);
+    bool ok = g->hist_all != NULL;
     for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
         g->kv[il] = ds4_gpu_tensor_alloc(inkling2_layer_kv_bytes(il, g->ctx_cap, g->row_cap));
-        g->hist[il] = ds4_gpu_tensor_alloc((uint64_t)INKLING2_HIST * sizeof(float));
+        g->hist[il] = ds4_gpu_tensor_view(g->hist_all, il * hist, hist);
         ok = g->kv[il] && g->hist[il];
     }
     return ok && inkling2_kv_open(&g->tier, g->ctx_cap, g->row_cap);
@@ -203,6 +208,7 @@ static bool inkling2_graph_bank(ds4_inkling2_graph *g, const ds4_inkling2_graph 
     g->live_n = g->live_cap = 0;
     memset(&g->tier, 0, sizeof(g->tier));
     for (uint32_t il = 0; il < INKLING2_LAYERS; il++) { g->kv[il] = g->hist[il] = NULL; }
+    g->hist_all = NULL;
     if (!inkling2_graph_state(g)) {
         fprintf(stderr, "ds4: Inkling-2 bank allocation failed\n");
         inkling2_graph_free(g);
@@ -284,7 +290,7 @@ static bool inkling2_attention(ds4_inkling2_graph *g, const ds4_model *m, const 
     const uint32_t norms[] = {inkling2_index(m, l->norm[0]), inkling2_index(m, l->norm[1]),
         inkling2_index(m, l->norm[2])};
     if (!ds4_gpu_ink2_attn_res(g->gvq, in3, g->blocks, nblocks, g->row_cap, g->x, inkling2_index(m, l->attn_query),
-            full ? 3u : 1u, norms, rows)) {
+            full ? 3u : 1u, norms, rows, g->partials)) {
         fprintf(stderr, "ds4: Inkling-2 layer %u attention input failed\n", il);
         return false;
     }
@@ -332,6 +338,19 @@ static bool inkling2_attention(ds4_inkling2_graph *g, const ds4_model *m, const 
     return ok;
 }
 
+/* The router's rows are BF16 values, so their F32 products are exact on
+ * TF32 tensor cores (prefill: cuBLAS' SIMT sgemm took 0.64 ms per 2,048
+ * rows); decode rows take the F32 dot either way.
+ * DS4_INKLING2_ROUTER_TF32=0 keeps the SIMT GEMM. */
+static ds4_gvq_math inkling2_router_math(void) {
+    static int tf32 = -1;
+    if (tf32 < 0) {
+        const char *v = getenv("DS4_INKLING2_ROUTER_TF32");
+        tf32 = !v || strcmp(v, "0");
+    }
+    return tf32 ? DS4_GVQ_TF32 : DS4_GVQ_F32;
+}
+
 /* MLP half: attention-residual input with mlp_norm, the F32 router, the
  * routed experts, the MLP output convolution and the BF16 residual. */
 static bool inkling2_mlp(ds4_inkling2_graph *g, const ds4_model *m, const ds4_inkling2_weights *w, uint32_t il,
@@ -342,8 +361,8 @@ static bool inkling2_mlp(ds4_inkling2_graph *g, const ds4_model *m, const ds4_in
     ds4_gpu_tensor *hm = inkling2_hist(g, il, 3);
     const bool ok = hm &&
         ds4_gpu_ink2_attn_res(g->gvq, in1, g->blocks, nblocks, g->row_cap, g->resid, inkling2_index(m, l->mlp_query),
-            1u, &norm, rows) &&
-        inkling2_mm1(g, m, g->router, l->router, g->xq, rows, DS4_GVQ_F32) &&
+            1u, &norm, rows, g->partials) &&
+        inkling2_mm1(g, m, g->router, l->router, g->xq, rows, inkling2_router_math()) &&
         ds4_gpu_ink2_route(g->gvq, g->selected, g->route_w, g->router, inkling2_index(m, l->router_bias), rows) &&
         ds4_gpu_ink2_moe(g->moe, g->moe_out, g->xq, g->selected, g->route_w, g->matrices[il], rows) &&
         ds4_gpu_ink2_conv(g->gvq, g->x, g->moe_out, hm, inkling2_index(m, l->mlp_conv), g->resid, rows, 1);
@@ -409,7 +428,7 @@ static bool inkling2_head(ds4_inkling2_graph *g, const ds4_model *m, const ds4_w
     // contiguous, so the final residual runs over every row up to the last
     // and the head reads the rows it needs.
     bool ok = ds4_gpu_ink2_attn_res(g->gvq, out, g->blocks, DS4_INK2_BLOCKS, g->row_cap, g->x,
-        inkling2_index(m, w->inkling2->out_query), 1u, &norm, row + count);
+        inkling2_index(m, w->inkling2->out_query), 1u, &norm, row + count, g->partials);
     ds4_gpu_tensor *final = ok ? ds4_gpu_tensor_view(g->xq, (uint64_t)row * hidden, (uint64_t)count * hidden) : NULL;
     ok = ok && final && inkling2_mm1(g, m, logits, w->output, final, count, DS4_GVQ_BF16) &&
         ds4_gpu_ink2_logits(logits, count);
@@ -452,7 +471,7 @@ static bool inkling2_forward(ds4_inkling2_graph *g, const ds4_model *m, const ds
         ds4_gpu_tensor *const out[] = {g->xq};
         const uint32_t norm = inkling2_index(m, w->output_norm);
         if ((head == INKLING2_HEAD_NONE && !ds4_gpu_ink2_attn_res(g->gvq, out, g->blocks, DS4_INK2_BLOCKS, g->row_cap,
-                g->x, inkling2_index(m, w->inkling2->out_query), 1u, &norm, rows)) ||
+                g->x, inkling2_index(m, w->inkling2->out_query), 1u, &norm, rows, g->partials)) ||
             !inkling2_draft_context(g, m, rows, pos) ||
             (!g->draft->capture && !inkling2_draft_anchor(g->draft, rows - 1u))) { return false; }
     }

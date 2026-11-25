@@ -541,6 +541,46 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **Flush the L2 with reads.** A 64 MiB memset between timed calls left
   dirty lines whose write-back halved the next kernel's bandwidth; a read
   kernel leaves the L2 as a decode step's weight stream does.
+- **A low-rank table is a GEMM.** Inkling-2's sliding bias, `r · proj[:, d]`
+  over 16 values, was written as 2 KB per row and head (201 MB per 2,048
+  rows) and read once: 60% of the attention's warp cycles waited on those
+  loads (13 TFLOPS). Ten BF16 MMAs per warp and tile into shared memory:
+  3.75 → 2.15 ms, 8K prefill +10%. Rows of an odd length (87 entries)
+  aligned every pair load and put a warp's lanes on 32 banks.
+- **Stored NVFP4 keys are an MMA operand.** Inkling-2's 4-bit K pages feed
+  `mxf4nvf4` unconverted; the query is three NVFP4 rows, each coding what
+  the rows before miss (two left 4.6e-2 of the output's RMS, three 3.9e-3,
+  beside 1.5e-3 for the BF16 score roundings): a prefill tile 53 → 88
+  TFLOPS at 262K keys, with only the values decoded.
+- **A norm over a split row comes from a Gram matrix.** Spreading a one-row
+  attention residual over 24 CTAs needed the outputs' sum of squares before
+  any output existed: the weights' quadratic form of the states' Gram
+  matrix, reduced with the dots (16–42 → 8–14 µs a call, decode +5%).
+- **Check 2 MiB blocks before a load that fills the host.** After two days
+  up, 110.0 of 119.2 free GiB sat in order-9 blocks or larger and a 108 GiB
+  load stalled in compaction at PSI 40%
+  ([guard notes](docs/host-memory-guard.md#fragmented-free-memory)).
+- **Pick an ncu template instance by launch index.** `-k` matches the
+  kernel's base name: a regex on the mangled instantiation matched nothing;
+  `--launch-skip` selected it.
+- **Time a borrowed kernel at the borrower's shape.** GLM's verify Q4_K
+  MMA stages 16 blocks; Inkling-2's 18-block rows ran a second stage of two
+  blocks for the same 16 warps (187 GB/s). One stage of the whole row and a
+  warp per block: 237, and 24-block rows gained from no shape tried.
+- **Price a draft trial in bytes first.** A two-draft Inkling-2 trial reads
+  1.81 plain tokens' weights (three verify rows route to 1.93 rows' experts;
+  the drafter and a second head read add 2.3 GB): no kernel pays below 1.81
+  kept tokens. It took 2.14 tokens' time; that gap is what kernels can give.
+- **Page out what a token rarely reads.** Dense full layers read every
+  paged K/V block per token (7.17 GB at 1M: 0.86 tok/s), while a session's
+  coldest 6.9 GB of experts took 0.01–0.15% of its routes. Replay a
+  session's routes through an LRU before choosing what leaves the device.
+- **A larger chunk is a memory change in every lane.** Inkling-2's 4,096-row
+  default took 1.06 GiB of workspace and 0.31 GiB of each bank's rings from
+  what funds the bank lane's checkpoint slots: `banks/partial` passed or
+  failed on 0.3 GiB of free memory, and the two-bank server plan was refused
+  after the open. Rerun `ds4 --serving-check` at the final head and start
+  each documented plan; an earlier build's pass does not carry over.
 
 # Agent Notes
 

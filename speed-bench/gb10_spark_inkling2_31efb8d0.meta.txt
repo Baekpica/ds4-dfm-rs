@@ -1,0 +1,63 @@
+Inkling-2-Small VQ matched speed sweep, 2026-11-25
+Source: original 4242cf828c6c9394b8b1088bc749a6016d872fea; final 496f315ea4dcde07056c59f8f2836ac86cb1f96c.
+Original binary SHA256 8c36b1784da6a128e8056588a7e700177f235a0a783d575d4702854163838b8e.
+Final binary SHA256 31efb8d0e5f2b40ad9cb2b44518ca12aac0f378712bfefe9c11eb87379188915.
+Build: make ds4-bench (cuda-spark flags); CUDA 13.5.37, sm_121a.
+Artifact: Baekpica/Inkling-2-Small-VQ-GGUF release a6db8b8b, 52 parts.
+release.json SHA256 ff495b121f21e92870db8909f54880da61e02b56a37a9f9af8e60d17691e13ef; loader checks tensor spans.
+Corpus: speed-bench/promessi_sposi.txt SHA256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f.
+Host: one GB10 / DGX Spark, 48 SMs, driver 620.70.06, kernel 7.0.0-1025-nvidia.
+Boot: fc1f4107-bee6-4ba2-9ba5-13810bca6451; enabled successful nvidia-clocks.service 300-2200 MHz, no profiler overrides.
+Protocol: 2048..65536 step 2048, 2048 NEW prompt tokens (one chunk) per frontier, 128 forced greedy tokens, default PDL, no drafter, all KV resident.
+Order: base1, final1, final2, base2 (excluded), base3, final3, base4; fresh processes, one GPU job at a time.
+Excluded: base2. A model-free memory-quote probe overlapped its load (116 s to resident against ~50 s); its first 16 frontiers ran 3-20% below base1 and base3. base4 replaces it, run after the later measurements.
+Original CSVs: gb10_spark_inkling2_8c36b178_{1,2,3}.csv (base1, base3, base4); final CSVs: gb10_spark_inkling2_31efb8d0_{1,2,3}.csv.
+Before each run: GPU process list empty, clear_cache until KReclaimable < 2 GiB, free memory in blocks of 2 MiB or more checked (>= 114 GiB).
+Guard command (same both arms):
+python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 --reserve-gib 1 --trip-gib 1 --psi-full-limit 40 --timeout 3600 --log <run>/memory.jsonl -- taskset -c 5-9,15-19 <binary> --cuda -m <release-dir> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir <run>/proof --csv <run>/bench.csv
+Runtime controls: none. No DS4 overrides.
+Later commits of the same change (991095d6, f07ffc56, 03be9ed1) touch verify-width Q4_K rows, the SSD tier chunk and the bank lane chunk only; none runs in this sweep.
+All six exits 0; minimum available 5.67797 GiB; PSI full avg10 at most 0.17 once the model was resident (up to 9.7 during loads).
+sweep-base-1: prefill 1238.26969, decode 29.71906; MemAvailable min 7.48168 GiB, PSI 0.0; guard max/high 118.6/117.6 GiB; busy clocks {'2190 MHz': 1, '2184 MHz': 119}; temperature [45, 75] C
+sweep-final-1: prefill 1428.62812, decode 32.03813; MemAvailable min 5.67797 GiB, PSI 0.0; guard max/high 118.2/117.2 GiB; busy clocks {'2184 MHz': 107}; temperature [48, 78] C
+sweep-final-2: prefill 1428.87687, decode 31.53344; MemAvailable min 6.16201 GiB, PSI 0.17; guard max/high 118.4/117.4 GiB; busy clocks {'2184 MHz': 108}; temperature [48, 77] C
+sweep-base-3: prefill 1241.18469, decode 29.65625; MemAvailable min 7.72820 GiB, PSI 0.0; guard max/high 118.3/117.3 GiB; busy clocks {'2184 MHz': 119}; temperature [49, 76] C
+sweep-final-3: prefill 1435.74594, decode 31.29688; MemAvailable min 6.31834 GiB, PSI 0.01; guard max/high 118.5/117.5 GiB; busy clocks {'2184 MHz': 108}; temperature [49, 78] C
+sweep-base-4: prefill 1239.91125, decode 29.98781; MemAvailable min 7.49884 GiB, PSI 0.0; guard max/high 118.5/117.5 GiB; busy clocks {'2184 MHz': 118}; temperature [39, 74] C
+Summary: median of three arithmetic run means over 32 frontier rates (not pooled token/wall throughput).
+Original 2K-64K: 1239.91125 prefill, 29.71906 decode; final 1428.87687, 31.53344 tok/s.
+Gain vs fresh matched original: 15.24025% prefill, 6.10509% decode.
+Final 2K-32K: 1494.04750 / 32.16562 tok/s.
+Per-frontier medians of three, prefill/decode:
+2048: base 1293.13/31.61, final 1342.45/32.70
+4096: base 1408.51/31.48, final 1562.44/32.66
+6144: base 1400.20/31.34, final 1557.09/32.67
+8192: base 1385.63/31.37, final 1551.26/32.65
+10240: base 1390.40/31.10, final 1567.37/32.47
+12288: base 1375.12/31.10, final 1551.54/32.43
+14336: base 1358.06/30.94, final 1525.51/32.26
+16384: base 1334.52/30.89, final 1506.67/32.23
+18432: base 1330.22/30.69, final 1519.18/32.17
+20480: base 1315.92/30.48, final 1502.23/32.08
+22528: base 1294.81/30.49, final 1475.45/31.91
+24576: base 1292.25/30.23, final 1480.44/31.83
+26624: base 1270.55/30.11, final 1455.74/31.81
+28672: base 1254.15/30.00, final 1447.34/31.67
+30720: base 1255.91/29.85, final 1449.88/31.62
+32768: base 1242.43/29.71, final 1437.60/31.49
+34816: base 1225.40/29.60, final 1423.85/31.55
+36864: base 1222.27/29.53, final 1427.67/31.38
+38912: base 1224.09/29.26, final 1419.43/31.25
+40960: base 1200.71/29.27, final 1409.98/31.17
+43008: base 1190.42/29.13, final 1389.15/31.19
+45056: base 1171.85/28.93, final 1376.36/31.04
+47104: base 1165.72/28.91, final 1373.87/31.04
+49152: base 1164.22/28.77, final 1371.09/30.94
+51200: base 1147.03/28.69, final 1357.22/30.93
+53248: base 1143.10/28.65, final 1354.70/30.75
+55296: base 1135.27/28.42, final 1348.41/30.72
+57344: base 1117.65/28.37, final 1330.57/30.66
+59392: base 1108.31/28.27, final 1327.49/30.63
+61440: base 1098.15/28.17, final 1317.80/30.50
+63488: base 1097.85/28.02, final 1317.66/30.43
+65536: base 1083.82/27.90, final 1298.97/30.24

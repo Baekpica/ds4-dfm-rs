@@ -193,12 +193,7 @@ static bool inkling2_draft_tap(ds4_inkling2_graph *g, uint32_t il, uint32_t rows
 static bool inkling2_draft_keep(ds4_inkling2_graph *g, uint32_t il, uint32_t rows) {
     inkling2_draft_rt *d = g->draft;
     if (!d || !d->capture) { return true; }
-    const uint64_t at = (uint64_t)il * DS4_INK2_DRAFT_BLOCK * INKLING2_TRIAL_ROW, b = DS4_INK2_DRAFT_BLOCK;
-    return ds4_gpu_ink2_draft_copy(d->trial_rows, at, g->kin, (uint64_t)rows * DS4_INK2_KV) &&
-        ds4_gpu_ink2_draft_copy(d->trial_rows, at + b * DS4_INK2_KV, g->vin, (uint64_t)rows * DS4_INK2_KV) &&
-        ds4_gpu_ink2_draft_copy(d->trial_rows, at + b * 2u * DS4_INK2_KV, g->attn_out, (uint64_t)rows * DS4_INK2_HIDDEN) &&
-        ds4_gpu_ink2_draft_copy(d->trial_rows, at + b * (2u * DS4_INK2_KV + DS4_INK2_HIDDEN), g->moe_out,
-            (uint64_t)rows * DS4_INK2_HIDDEN);
+    return ds4_gpu_ink2_draft_keep(d->trial_rows, il, g->kin, g->vin, g->attn_out, g->moe_out, rows) != 0;
 }
 
 /* After the target layers (g->xq holds the normalized output of every row):
@@ -299,28 +294,10 @@ static bool inkling2_draft_propose(ds4_inkling2_graph *g, const ds4_model *m, co
     return true;
 }
 
-/* A rejected tail: each layer's histories become the saved ones advanced by
- * the kept rows' inputs. */
+/* A rejected tail: every layer's histories become the saved ones advanced
+ * by the kept rows' inputs, in one launch (240 launches per commit cost
+ * ~3 ms of a 73 ms two-draft trial). */
 static bool inkling2_draft_rollback(ds4_inkling2_graph *g, uint32_t keep) {
     inkling2_draft_rt *d = g->draft;
-    static const uint32_t width[INKLING2_DRAFT_STREAMS] = {DS4_INK2_KV, DS4_INK2_KV, DS4_INK2_HIDDEN, DS4_INK2_HIDDEN};
-    static const uint32_t start[INKLING2_DRAFT_STREAMS] = {0, DS4_INK2_KV, 2u * DS4_INK2_KV,
-        2u * DS4_INK2_KV + DS4_INK2_HIDDEN};
-    const uint64_t b = DS4_INK2_DRAFT_BLOCK;
-    bool ok = true;
-    for (uint32_t il = 0; ok && il < INKLING2_LAYERS; il++) {
-        ds4_gpu_tensor *saved = ds4_gpu_tensor_view(d->hist_save, (uint64_t)il * INKLING2_HIST * sizeof(float),
-            (uint64_t)INKLING2_HIST * sizeof(float));
-        ok = saved && ds4_gpu_ink2_draft_copy(g->hist[il], 0, saved, INKLING2_HIST);
-        ds4_gpu_tensor_free(saved);
-        for (uint32_t s = 0; ok && s < INKLING2_DRAFT_STREAMS; s++) {
-            ds4_gpu_tensor *hist = inkling2_hist(g, il, s);
-            ds4_gpu_tensor *rows = ds4_gpu_tensor_view(d->trial_rows,
-                ((uint64_t)il * b * INKLING2_TRIAL_ROW + b * start[s]) * sizeof(float), (uint64_t)keep * width[s] * sizeof(float));
-            ok = hist && rows && ds4_gpu_ink2_history(hist, rows, width[s], keep);
-            ds4_gpu_tensor_free(hist);
-            ds4_gpu_tensor_free(rows);
-        }
-    }
-    return ok;
+    return ds4_gpu_ink2_draft_rollback(g->hist_all, d->hist_save, d->trial_rows, keep) != 0;
 }
