@@ -299,7 +299,10 @@ parentheses):
 | Frontier, 2,048 new tokens | 1,309.8 / 30.21 (1,084.0 / 27.95) | 1,099.8 / 28.05 (863.2 / 25.08) | 954.6 / 26.20 (719.7 / 22.50) | 846.2 / 24.63 (617.3 / 20.66) |
 | Cold prompt | 1,574.9 / 30.59 (1,238.4 / 27.77) | | | 1,190.9 / 23.74 (866.0 / 20.41) |
 
-A cold 8K prompt runs 1,657.1 / 32.76 (1,377.1 / 31.28).
+A cold 8K prompt runs 1,657.1 / 32.76 (1,377.1 / 31.28). A context past the
+resident threshold, the native 1M plan included, keeps 2,048-row chunks: a
+cold 8K / 64K / 258K prompt then prefills at 1,494 / 1,424 / 1,104 tok/s
+(the sweeps' tokens over their time).
 
 The SSD tier with every block in the file (`DS4_INKLING2_KV_RESIDENT_CTX=0`,
 same corpus; prefill over the span since the previous frontier / decode
@@ -316,12 +319,18 @@ reads the file region once, so 4,096-row chunks read a third less (137.5
 against 207.3 GiB over the run) for 1.5 GiB of memory; the tier keeps 2,048
 rows because the native context has no memory to spare ([Memory](#memory)).
 
-The native context was measured on the initial release's engine (plain
-decoding then ran ~24 tok/s; decode past the threshold is the drive's and
-has not moved). 1,040,000 tokens at the
-default threshold: prefill 268.2 tok/s on average (3,878 s), decode 0.86 tok/s
-(7.17 GB of file blocks per token, ~6.2 GB/s), 1,372.6 GiB read in 252.7 s of
-I/O; MemAvailable stayed near 5.8 GiB.
+One 524,288-token prompt, half of it past the default threshold (2,048-row
+chunks; November 25):
+
+| K/V of the 524,288 positions | Prefill tok/s | Decode tok/s | First token | MemAvailable minimum |
+|---|---|---|---|---|
+| All resident (`DS4_INKLING2_KV_RESIDENT_CTX=524288`) | 839.0 | 19.59 | 0.05 s | 3.88 GiB |
+| Default: 262,144 resident, 262,144 on the SSD | 801.0 | 2.54 | 0.40 s | 5.81 GiB |
+
+1,040,000 tokens at the default threshold (November 25): prefill 518.5
+tok/s on average (2,006 s), decode 0.86 tok/s (7.17 GB of file blocks per
+token, ~6.2 GB/s), 1,372.6 GiB read in 252.0 s of I/O; MemAvailable stayed
+near 6.2 GiB.
 
 Past the threshold decode reads (context - threshold) x 9,216 bytes per token
 at the drive's rate, so the threshold is the remaining lever. Same 1,040,000
@@ -329,8 +338,9 @@ tokens without drafting:
 
 | Resident positions | Prefill tok/s | Decode tok/s | First token | Read | MemAvailable median (min) |
 |---|---|---|---|---|---|
-| 262,144 (default) | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
-| 524,288 | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
+| 262,144 (default) | 518.5 | 0.86 | 1.17 s | 1,372.6 GiB | 6.22 GiB (5.84) |
+| 262,144, the initial release's engine | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
+| 524,288, the initial release's engine | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
 
 524,288 costs 2.36 GB of device K/V; drafting (1.94 tok/s at 262,144) and
 the image reserve need that memory, so the default stays 262,144.
@@ -412,8 +422,9 @@ its unsupported-format fallback;
 `make test-inkling2-vit-attn` checks the tower's flash attention against an
 F64 softmax on a GPU.
 
-See the [November 14–15 optimization record](inkling2-optimization-2026-11-14.md)
-for measured text prefill/decode changes and their bounds.
+See the [November 14–15](inkling2-optimization-2026-11-14.md) and
+[November 25](inkling2-optimization-2026-11-25.md) optimization records for
+measured prefill/decode changes and their bounds.
 
 `make tests/inkling2_quality CUDA_ARCH=sm_121` builds the Rust arithmetic
 recorder; `tests/inkling2_quality --self-test` checks its NLL math without a

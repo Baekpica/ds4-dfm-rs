@@ -16,7 +16,7 @@ for exact provenance. Historical entries retain their original scope.
   bias from its rank-16 factors, and resident prefill runs 4,096-row
   chunks. Two DSpark drafts add 9.5% to the mean of five greedy requests;
   raw prose loses 2–5% against plain decoding.
-  [Report](docs/inkling2-optimization-2026-11-25.md).
+  [Report](docs/inkling2-optimization-2026-11-25.md) · [PR #161](https://github.com/Baekpica/ds4-dfm-rs/pull/161).
 - Added K2-Horizon-375B-A23B hVQ to the Rust hosts on CUDA: 13-bit GVQ1
   experts on GLM VQ's decode and MiniMax's prefill kernels, a Q8_0 trunk
   and NVFP4 K/V, with partial reuse, disk KV, snapshots and banks.

@@ -400,7 +400,8 @@ means span 1,428.6–1,435.7 prefill and 31.30–32.04 decode; busy clocks read
 5.68 GiB available, with PSI 0 once the model was resident. The 2K–32K
 summary is 1,494.0 / 32.17 tok/s. The same steps to 258K gain 24.3% /
 11.4% on average and 37.1% / 19.2% at the 258K frontier; a cold 64K prompt
-runs 1,574.9 / 30.59 against 1,238.4 / 27.77.
+runs 1,574.9 / 30.59 against 1,238.4 / 27.77 (4,096-row chunks: contexts of
+at most 262,144 tokens; past that 1,424 tok/s).
 
 The plot shows the median prefill run; raw files preserve all repeats. The
 [family page](inkling2-vq.md#performance) has the long-context, SSD-tier

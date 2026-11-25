@@ -161,6 +161,12 @@ prompts do (means of two runs at 8K and 64K, one at 258K):
 |---|---|---|---|
 | `4242cf82` | 1,377.1 / 31.28 | 1,238.4 / 27.77 | 866.0 / 20.41 |
 | `496f315e` | 1,657.1 / 32.76 | 1,574.9 / 30.59 | 1,190.9 / 23.74 |
+| `496f315e`, 2,048-row chunks (prefill, from the sweeps) | 1,494.5 | 1,424.0 | 1,103.7 |
+
+The last row is what a context past the resident threshold gets, the
+native 1M plan included: its chunks stay at 2,048 rows, and the sweeps'
+tokens over their time match a cold prompt (`4242cf82`: 1,370.6 / 1,232.4 /
+865.5 against the measured 1,377.1 / 1,238.4 / 866.0).
 
 ### Kernel classes, before and after
 
@@ -290,6 +296,12 @@ third: 6–10% for 1.5 GiB. The tier defaults to 2,048 rows because a 1M
 session at 2,048 rows already dips to 3.7 GiB available; the variable takes
 the rest where memory allows.
 
+**The native context.** 1,040,000 tokens at the default threshold prefill
+at 518.5 tok/s on average (2,006 s; the initial release's engine: 268.2)
+and decode at 0.86: 7.17 GB of file blocks per token. The run read 1,372.6 GiB in 252 s of I/O, an eighth
+of its time: compute bounds that prefill, the full layers' attention over up
+to a million keys first. At least 5.84 GiB stayed available.
+
 **What changes decode is which bytes leave the device.** The K/V is read
 whole by every token; the experts are not. 258K tokens of one session at
 2,048-row chunks, replayed through an LRU over (layer, expert):
@@ -307,9 +319,18 @@ The native context needs 7.25 GB of K/V past the threshold, 6.6% of the
 experts. Paging that many experts out instead and keeping every K/V block
 resident, a decode token would read one 6 MB expert every 6 to 14 tokens
 where it now reads 7.17 GB of K/V, and a prefill chunk 0.03–0.3 GB of
-experts where it now reads the K/V file. Decode would follow the resident
-slope (30.6 ms a token at 8K, 40.6 at 258K): about 72 ms at 1M, 14 tok/s
-against 0.86, by extrapolation.
+experts where it now reads the K/V file.
+
+Resident decode is measured to 524K (one 524,288-token prompt, 2,048-row
+chunks):
+
+| K/V of the 524,288 positions | Prefill tok/s | Decode tok/s | First token | Available memory, minimum |
+|---|---|---|---|---|
+| All resident (`DS4_INKLING2_KV_RESIDENT_CTX=524288`) | 839.0 | 19.59 | 0.05 s | 3.88 GiB |
+| Default: 262,144 resident, 262,144 on the SSD | 801.0 | 2.54 | 0.40 s | 5.81 GiB |
+
+The resident slope (30.6 ms a token at 8K, 40.6 at 258K, 51.0 at 524K)
+extrapolates to about 72 ms at 1M: 14 tok/s against 0.86.
 
 That is a slot pool with one indirection per routed expert, a miss path in
 decode and a new memory plan (`--ssd-streaming` does this for GLM-5.3 and
