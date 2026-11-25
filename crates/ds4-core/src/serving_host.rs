@@ -3227,7 +3227,7 @@ fn inkling2_workspace_bytes(rows: u64) -> u64 {
     let row = (5 * HIDDEN + 3 * 6144 + 768 + 48 + 2 * 1024 + 2 * 32 + 2 * HIDDEN + 384 + 2 * USED)
         * SIZEOF_F32
         + (HIDDEN + 48 * 1024 + 8 * HIDDEN) * SIZEOF_U16;
-    let partials = 8 * 48 * 64 * 130 * SIZEOF_F32;
+    let partials = 8 * 48 * 64 * 132 * SIZEOF_F32;
     let q4p = (rows * 6144 * SIZEOF_U16 * 2).max(384 * HIDDEN * SIZEOF_F32);
     let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;
     let pairs = rows * USED;

@@ -747,6 +747,67 @@ static bool ink2a_verify_on() {
     return on;
 }
 
+// DS4_INKLING2_ATTN_SPLIT=0: a full-layer decode row on the SIMT walk.
+static bool ink2a_split_on() {
+    static const bool on = !ink2_env_off("DS4_INKLING2_ATTN_SPLIT");
+    return on;
+}
+
+// Slices of a decode row's tensor-core split over the keys [lo, end).
+static uint32_t ink2a_slices(uint32_t lo, uint32_t end) {
+    const uint32_t tiles = (end - 1) / INK2A_TK + 1 - lo / INK2A_TK;
+    return tiles < INK2A_SSLICES ? tiles : INK2A_SSLICES;
+}
+
+/* Full-layer prefill tiles over NVFP4 pages: Q.K on NVFP4 tensor cores
+ * where the build has them, the BF16 ping-pong kernel otherwise or with
+ * DS4_INKLING2_ATTN_FP4=0, the in-step kernel with DS4_INKLING2_ATTN_PP=0. */
+enum ink2a_full { INK2A_FULL_STEP, INK2A_FULL_PP, INK2A_FULL_FP4 };
+
+static ink2a_full ink2a_full_path() {
+    static const ink2a_full path = [] {
+        if (ink2_env_off("DS4_INKLING2_ATTN_PP")) { return INK2A_FULL_STEP; }
+#ifdef DS4_CUDA_HAVE_MXF4
+        if (!ink2_env_off("DS4_INKLING2_ATTN_FP4")) { return INK2A_FULL_FP4; }
+#endif
+        return INK2A_FULL_PP;
+    }();
+    return path;
+}
+
+struct ink2a_full_args {
+    float *out;
+    const float *q;
+    const uint16_t *rel;
+    const float *sinks, *gate;
+    const uint8_t *pages;
+    uint32_t rows, pos;
+    float *state;
+    uint32_t seg_lo, seg_hi, block0;
+};
+
+template <typename K>
+static bool ink2a_full_run(K kernel, int smem, const ink2a_full_args &a) {
+    cudaError_t err = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    if (err == cudaSuccess) {
+        const dim3 grid((a.rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
+        kernel<<<grid, INK2A_THREADS, smem, ds4_current_stream()>>>(a.out, a.q, a.rel, a.sinks, a.gate, a.pages,
+            a.rows, a.pos, a.state, a.seg_lo, a.seg_hi, a.block0);
+        err = cudaGetLastError();
+    }
+    return cuda_ok(err, "Inkling-2 full-layer attention");
+}
+
+// Key segment MODE (INK2A_ONE: every key) on the selected tile kernel.
+template <int MODE>
+static bool ink2a_full_tiles(ink2a_full path, const ink2a_full_args &a) {
+#ifdef DS4_CUDA_HAVE_MXF4
+    if (path == INK2A_FULL_FP4) { return ink2a_full_run(ink2a_prefill_q4<MODE>, INK2A_Q4_SMEM, a); }
+#endif
+    (void)path;
+    return ink2a_full_run(ink2a_prefill_pp<MODE>, INK2A_PP_SMEM, a);
+}
+
 /* Verify rows (2..8) on tensor cores over `keys` keys from the first row's
  * bound: splits of whole 64-key tiles writing the decode kernel's partials.
  * Returns the split count, 0 on failure. */
@@ -758,7 +819,11 @@ static uint32_t ink2a_verify_launch(float *partials, const float *q, const uint1
     static const cudaError_t ready = cudaFuncSetAttribute(ink2a_verify<FMT>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
     if (!cuda_ok(ready, "Inkling-2 verify attention shared memory")) { return 0; }
-    const uint32_t splits = ink2a_splits(keys);
+    // A verify CTA takes an SM's shared memory: one wave of (split, KV head)
+    // CTAs on GB10's 48 SMs (64 splits ran eleven).
+    static const uint32_t wave = ink2_env_off("DS4_INKLING2_VERIFY_WAVE") ? (uint32_t)INK2A_SPLITS
+                                                                           : (uint32_t)INK2A_VERIFY_SPLITS;
+    const uint32_t splits = min(ink2a_splits(keys), wave);
     const uint32_t span = ((keys + splits - 1) / splits + INK2A_TK - 1) / INK2A_TK * INK2A_TK;
     ink2a_verify<FMT><<<dim3(splits, INK2A_KV_HEADS), INK2A_VTHREADS, smem, stream>>>(partials, q, rel, cache, cap,
         window, pos, rows, span, seg_lo, seg_hi, block0);
@@ -792,6 +857,11 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
                                (const uint16_t *)rel->ptr, cache->ptr, cap, window, pos, rows, last + 1 - first, 0u,
                                UINT32_MAX, 0u, stream);
             if (!splits) { return 0; }
+        } else if (fp4 && rows == 1u && ink2a_split_on()) {
+            const uint32_t slices = ink2a_slices(0u, last + 1);
+            ink2a_split<<<dim3(slices, INK2A_KV_HEADS, rows), INK2A_SWARPS * 32, 0, stream>>>((float *)partials->ptr,
+                (const float *)q->ptr, (const uint16_t *)rel->ptr, (const uint8_t *)cache->ptr, pos, slices);
+            splits = slices * INK2A_SWARPS;
         } else {
             const uint32_t keys = window && last >= window ? window : last + 1;
             static const bool swa_decode = !ink2_env_off("DS4_INKLING2_SWA_DECODE");
@@ -833,7 +903,11 @@ extern "C" int ds4_gpu_ink2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, c
     if (bias && !cuda_ok(ready_bias, "Inkling-2 bias prefetch shared memory")) { return 0; }
     if (fp4 && far_tiles && !cuda_ok(ready_far, "Inkling-2 far tiles shared memory")) { return 0; }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
-    if (fp4 && far_tiles) {
+    if (fp4 && ink2a_full_path() != INK2A_FULL_STEP) {
+        return ink2a_full_tiles<INK2A_ONE>(ink2a_full_path(), {(float *)out->ptr, (const float *)q->ptr,
+            (const uint16_t *)rel->ptr, (const float *)sinks->ptr, (const float *)gate->ptr,
+            (const uint8_t *)cache->ptr, rows, pos, nullptr, 0u, UINT32_MAX, 0u});
+    } else if (fp4 && far_tiles) {
         ink2a_prefill<INK2A_FMT_NVFP4, INK2A_ONE, false, true><<<grid, INK2A_THREADS, INK2A_SMEM_FP4, stream>>>(
             (float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr, (const float *)sinks->ptr,
             (const float *)gate->ptr, cache->ptr, cap, window, rows, pos);
@@ -878,6 +952,12 @@ extern "C" int ds4_gpu_ink2_attn_seg(ds4_gpu_tensor *out, ds4_gpu_tensor *state,
             splits = ink2a_verify_launch<INK2A_FMT_NVFP4>((float *)partials->ptr, (const float *)q->ptr,
                 (const uint16_t *)rel->ptr, store->ptr, 0u, 0u, pos, rows, keys, seg_lo, seg_hi, block0, stream);
             if (!splits) { return 0; }
+        } else if (rows == 1u && ink2a_split_on()) {
+            const uint32_t slices = ink2a_slices(seg_lo, seg_lo + keys);
+            ink2a_split<<<dim3(slices, INK2A_KV_HEADS, rows), INK2A_SWARPS * 32, 0, stream>>>((float *)partials->ptr,
+                (const float *)q->ptr, (const uint16_t *)rel->ptr, (const uint8_t *)store->ptr, pos, slices, seg_lo,
+                seg_hi, block0);
+            splits = slices * INK2A_SWARPS;
         } else {
             splits = ink2a_splits(keys);
             ink2a_decode<INK2A_FMT_NVFP4><<<dim3(splits, INK2A_KV_HEADS, rows), INK2A_DTHREADS, 0, stream>>>(
@@ -893,6 +973,15 @@ extern "C" int ds4_gpu_ink2_attn_seg(ds4_gpu_tensor *out, ds4_gpu_tensor *state,
         return cuda_ok(cudaGetLastError(), "Inkling-2 segment decode attention");
     }
     const dim3 grid((rows + INK2A_TQ - 1) / INK2A_TQ, INK2A_HEADS / INK2A_CTA_HEADS);
+    const ink2a_full path = ink2a_full_path();
+    if (path != INK2A_FULL_STEP) {
+        const ink2a_full_args a = {(float *)out->ptr, (const float *)q->ptr, (const uint16_t *)rel->ptr,
+            (const float *)sinks->ptr, (const float *)gate->ptr, (const uint8_t *)store->ptr, rows, pos,
+            (float *)state->ptr, seg_lo, seg_hi, block0};
+        return mode == DS4_INK2_SEG_FIRST ? ink2a_full_tiles<INK2A_FIRST>(path, a)
+            : mode == DS4_INK2_SEG_NEXT ? ink2a_full_tiles<INK2A_NEXT>(path, a)
+            : ink2a_full_tiles<INK2A_LAST>(path, a);
+    }
     auto launch = [&](auto kernel) {
         cudaError_t err = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, INK2A_SMEM_FP4);
         if (err == cudaSuccess) {
