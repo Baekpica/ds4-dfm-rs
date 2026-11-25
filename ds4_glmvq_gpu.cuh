@@ -50,6 +50,7 @@ struct ds4_gvq_ctx {
     glmvq_restore_mode restore;
     bool direct_q4;
     bool q4_mma;
+    glmvq_q4m_stage q4m_stage;
     bool gate_up;
     bool split_row;
     bool split_cur;
@@ -600,6 +601,9 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
     }
     ctx->q4_mma = (!q4_mma || strcmp(q4_mma, "0")) &&
         cuda_ok(glmvq_q4m_prepare(), "GLM VQ Q4 MMA shared memory");
+    // DS4_GLMVQ_Q4M_ROW=0: 17- and 18-block rows keep the two-stage shape.
+    const char *q4m_row = getenv("DS4_GLMVQ_Q4M_ROW");
+    ctx->q4m_stage = q4m_row && !strcmp(q4m_row, "0") ? GLMVQ_Q4M_STAGED : GLMVQ_Q4M_WHOLE_ROW;
     const char *gate_up = getenv("DS4_GLMVQ_GATE_UP");
     if (gate_up && strcmp(gate_up, "0") && strcmp(gate_up, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_GATE_UP accepts 0 or 1\n");
@@ -832,7 +836,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         // the SIMT stream. DS4_GLMVQ_Q4_MMA=0 keeps SIMT for every width.
         if (rows > 1 && ctx->q4_mma && glmvq_q4m_fits(s.data, (const float *)input->ptr, s.cols, rows)) {
             return cuda_ok(glmvq_q4m_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
-                s.rows, s.cols, rows, ctx->stream, gvq_mode(rows)), "GLM VQ Q4 MMA");
+                s.rows, s.cols, rows, ctx->stream, gvq_mode(rows), ctx->q4m_stage), "GLM VQ Q4 MMA");
         }
         if (rows <= GLMVQ_Q4_WARPS) {
             return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
