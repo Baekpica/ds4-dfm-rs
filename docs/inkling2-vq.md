@@ -339,6 +339,7 @@ tokens without drafting:
 | Resident positions | Prefill tok/s | Decode tok/s | First token | Read | MemAvailable median (min) |
 |---|---|---|---|---|---|
 | 262,144 (default) | 518.5 | 0.86 | 1.17 s | 1,372.6 GiB | 6.22 GiB (5.84) |
+| 262,144 at `4242cf82` | 284.7 | 0.86 | 1.17 s | 1,372.6 GiB | 6.19 GiB (5.82) |
 | 262,144, the initial release's engine | 268.2 | 0.86 | 1.18 s | 1,372.6 GiB | 5.81 GiB (3.73) |
 | 524,288, the initial release's engine | 267.5 | 1.26 | 0.79 s | 626.8 GiB | 4.09 GiB (3.67) |
 
@@ -394,7 +395,9 @@ forwards run bank by bank. Blocks fork straight from the source bank; a fork
 below its frontier restores a checkpoint slot (the histories and every
 ring's 1,023 rows: 174 MB) taken every 4,096-aligned 1/24 of the context, at
 history ends and at request boundaries, in at most eight slots funded from
-what the banks leave.
+what the banks leave. The bank lane halves its chunk to 2,048 rows before
+it gives up a slot or a bank: two banks at 131,072 positions with a 2 GiB
+floor run 2,048-row chunks with all eight slots (2.37 GiB spare).
 
 **Disk KV and snapshots** (`IK21`): tokens, logits, the full layers' blocks
 below n wherever the tier keeps them, every ring's last 1,023 rows in
@@ -410,7 +413,7 @@ the first in the tier's file or window.
 
 `ds4 --serving-check` with the [checklist](benchmarks/serving-checklist-2026-11-02/README.md)'s
 essay prompt (6,148 tokens, ctx 8,192) passes every item with resident K/V
-(4,096-row chunks) and with the SSD tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`,
+(4,096-row chunks; 2,048 in its two banks) and with the SSD tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`,
 512-row chunks): reuse prefix, rewind and continue (top-1 17/17), disk and
 snapshot sessions (exact), banks warm, fork, partial (4,096 kept from a
 checkpoint), disk and width (16/16 tokens). `make gate-inkling2` checks the
@@ -445,7 +448,7 @@ hashes. It is a numerical regression check, not a general ability benchmark.
 
 | Variable | Effect |
 |---|---|
-| `DS4_INKLING2_PREFILL_CHUNK` | prefill rows per chunk (default 4,096 while every K/V block is resident, halved to 2,048 when the graph does not fit; 2,048 past the resident threshold) |
+| `DS4_INKLING2_PREFILL_CHUNK` | prefill rows per chunk (default 4,096 while every K/V block is resident, halved to 2,048 when the graph, or the banks with their checkpoint slots, do not fit; 2,048 past the resident threshold) |
 | `DS4_INKLING2_KV_RESIDENT_CTX` | largest context whose full-layer K/V stays resident (default 262,144; 0 = SSD tier past the first window) |
 | `DS4_KV_OFFLOAD_DIR` | directory of the SSD tier's unlinked file |
 | `DS4_INKLING2_KV_BF16=1` | full layers keep BF16 K/V rows (the source's own; no SSD tier) |

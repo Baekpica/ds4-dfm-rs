@@ -16,13 +16,15 @@ K/V leaves device memory. The [release](https://huggingface.co/Baekpica/Inkling-
 | Cold 64K prompt | 1,238.4 / 27.77 | 1,574.9 / 30.59 | +27.2% / +10.2% |
 | Cold 258K prompt | 866.0 / 20.41 | 1,190.9 / 23.74 | +37.5% / +16.3% |
 | 258K with every K/V block on the SSD, prefill | 564.6 | 858.3 | +52.0% |
+| 1,040,000 tokens, K/V past 262,144 on the SSD | 284.7 / 0.86 | 518.5 / 0.86 | +82.1% / 0 |
 
 ## Protocol
 
 One GB10, 48 SMs, CUDA 13.5.37 (`sm_121a`), driver 620.70.06, kernel
 7.0.0-1025-nvidia, boot `fc1f4107-bee6-4ba2-9ba5-13810bca6451`. The enabled,
 successful `nvidia-clocks.service` keeps 300–2,200 MHz; busy samples read
-2,184 MHz (2,190 in under 2% of them). Floors: 240 GB/s streaming, 107.8
+2,184 MHz in the record sweeps (2,190 in under 2% of them) and 2,177–2,190
+in the hour-long 1M runs. Floors: 240 GB/s streaming, 107.8
 TFLOPS BF16, 215.6 FP8 and 431 NVFP4 at the clock cap
 ([GB10 limits](gb10-hardware.md)).
 
@@ -83,7 +85,7 @@ against `DS4_INKLING2_GAIN_DOT=0` on the 1,280 teacher-forced positions of
 | Round | Target | Change | Result (fresh processes) | Numerics | Switch |
 |---|---|---|---|---|---|
 | P4 | Full-layer prefill tiles: eight warps decoded, scored and summed in step (53 TFLOPS at 262K keys); 17% of a cold 64K prefill, 42% at 258K | Ping-pong tile (`ink2a_prefill_pp`, K2-Horizon's), then Q·K on NVFP4 tensor cores (`ink2a_prefill_q4`): the stored 4-bit keys are the `mxf4nvf4` B operand as they are, a query is three NVFP4 rows, only the values decode. Key segments carry the state for the SSD tier | 2,048 rows over 262K keys: 247.2 → 181.7 (ping-pong) → 149.8 ms, 88 TFLOPS. Span rates at 2,048-row chunks: 64K 1,171.9 → 1,274.1, 131K 970.3 → 1,122.9, 258K 723.6 → 908.2 tok/s | 3.9e-3 of the output's RMS (BF16 score roundings: 1.3e-3 to 1.8e-3). Frontier KL to the in-step kernel inside the chunk switch's (table below) | `DS4_INKLING2_ATTN_FP4=0` (BF16 ping-pong), `DS4_INKLING2_ATTN_PP=0` (in step) |
-| P5 | Each chunk streams every routed expert once (2.3 GB per layer): 43% of a cold 8K prefill | 4,096-row chunks while every K/V block is resident; the session halves to 2,048 when the graph does not fit, and the SSD tier starts there | Cold 64K 1,288.7 → 1,397.6 tok/s for 1.37 GiB (workspace 1.11 → 2.17 GiB, rings and histories 1.04 → 1.35); minimum available memory 7.9 → 6.5 GiB at 64K, 6.0 → 4.4 at 258K | the chunk size is the prefill noise reference | `DS4_INKLING2_PREFILL_CHUNK` |
+| P5 | Each chunk streams every routed expert once (2.3 GB per layer): 43% of a cold 8K prefill | 4,096-row chunks while every K/V block is resident; the session halves to 2,048 when the graph does not fit, the bank lane before it gives up a checkpoint slot or a bank, and the SSD tier starts there | Cold 64K 1,288.7 → 1,397.6 tok/s for 1.37 GiB (workspace 1.11 → 2.17 GiB, rings and histories 1.04 → 1.35); minimum available memory 7.9 → 6.5 GiB at 64K, 6.0 → 4.4 at 258K | the chunk size is the prefill noise reference | `DS4_INKLING2_PREFILL_CHUNK` |
 | P6 | A sliding layer's relative bias, `r · proj[:, d]` over 16 values, was written as a table (201 MB per 2,048 rows) and read once. NCU: 60% of warp cycles waiting on those loads, issue slots 12% busy, 13 TFLOPS | The attention takes the factors: a warp computes its 16 queries' biases over a tile's 79 distances with ten BF16 MMAs into shared memory (rows of 87 entries: aligned pair loads, no bank conflict) | Isolated 2,048 rows 3.75 → 2.15 ms; the q/r kernel writes no table. Same build, cold: 8K 1,514–1,526 → 1,671–1,677 tok/s, 64K 1,447.1 → 1,576.4 | the tensor core's own summation order; the fixture does not move, frontier KL in the chunk switch's band | `DS4_INKLING2_BIAS_RANK=0` |
 | P7 | The router GEMM ran cuBLAS' SIMT sgemm on BF16-rounded rows: 1.22 ms per 4,096 rows and layer | TF32 math: products of BF16 values are exact | 0.48 ms per 4,096 rows | summation order | `DS4_INKLING2_ROUTER_TF32=0` |
 | D4 | A full layer's decode row walked its keys a lane per key: 137 GB/s at 256K | `ink2a_split`: a KV head's six query heads are the m16 rows of a BF16 MMA over 64-key tiles staged by cp.async; parallel merge and fold; vector partial stores | 256K 2,204.6 → 1,310.0 µs per layer (230 GB/s), 64K 565.0 → 342.7; decode at 64K 27.74 → 29.61 tok/s | BF16 probabilities (prefill's and verify's arithmetic): 7e-4 of the output's RMS | `DS4_INKLING2_ATTN_SPLIT=0` |
@@ -129,6 +131,15 @@ The serving checklist (`ds4 --serving-check`, the essay prompt of 6,148
 tokens) passes all ten reuse, disk, snapshot and bank items with resident
 K/V and with the tier forced (`DS4_INKLING2_KV_RESIDENT_CTX=1024`, 512-row
 chunks).
+
+It also found what P5 cost the bank lane. Rerun at the head, its two banks
+kept one checkpoint slot of eight (3 in an earlier run with 0.34 GiB more
+free) and the partial fork prefilled from zero; the documented two-bank
+plan (`--max-seqs 2 -c 131072 --mem-floor-gb 2`) kept 6 slots and the
+server refused it after the open (its fitted quote held one bank). The bank
+lane now halves the chunk first: the check passes with 8 slots (1.98 GiB
+spare) and that plan serves two banks with 8 (2.37 GiB; 2.72 at
+`4242cf82`).
 
 ## Results
 
@@ -297,10 +308,12 @@ session at 2,048 rows already dips to 3.7 GiB available; the variable takes
 the rest where memory allows.
 
 **The native context.** 1,040,000 tokens at the default threshold prefill
-at 518.5 tok/s on average (2,006 s; the initial release's engine: 268.2)
-and decode at 0.86: 7.17 GB of file blocks per token. The run read 1,372.6 GiB in 252 s of I/O, an eighth
-of its time: compute bounds that prefill, the full layers' attention over up
-to a million keys first. At least 5.84 GiB stayed available.
+at 518.5 tok/s on average (2,006 s) against 284.7 at `4242cf82` (3,653 s;
+the initial release's engine: 268.2), and decode at 0.86 on both: 7.17 GB
+of file blocks per token. Each run read 1,372.6 GiB in 250–252 s of I/O, an
+eighth of the new prefill: compute bounds it, and at the tile's 88 TFLOPS
+the full layers' attention over up to a million keys is about 60% of that.
+At least 5.82 GiB stayed available; busy clocks read 2,177–2,190 MHz.
 
 **What changes decode is which bytes leave the device.** The K/V is read
 whole by every token; the experts are not. 258K tokens of one session at
