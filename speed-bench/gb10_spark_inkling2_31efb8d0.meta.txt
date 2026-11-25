@@ -16,7 +16,7 @@ Before each run: GPU process list empty, clear_cache until KReclaimable < 2 GiB,
 Guard command (same both arms):
 python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 --reserve-gib 1 --trip-gib 1 --psi-full-limit 40 --timeout 3600 --log <run>/memory.jsonl -- taskset -c 5-9,15-19 <binary> --cuda -m <release-dir> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --dump-frontier-logits-dir <run>/proof --csv <run>/bench.csv
 Runtime controls: none. No DS4 overrides.
-Later commits of the same change (991095d6, f07ffc56) touch verify-width Q4_K rows and the SSD tier chunk only; neither runs in this sweep.
+Later commits of the same change (991095d6, f07ffc56, 03be9ed1) touch verify-width Q4_K rows, the SSD tier chunk and the bank lane chunk only; none runs in this sweep.
 All six exits 0; minimum available 5.67797 GiB; PSI full avg10 at most 0.17 once the model was resident (up to 9.7 during loads).
 sweep-base-1: prefill 1238.26969, decode 29.71906; MemAvailable min 7.48168 GiB, PSI 0.0; guard max/high 118.6/117.6 GiB; busy clocks {'2190 MHz': 1, '2184 MHz': 119}; temperature [45, 75] C
 sweep-final-1: prefill 1428.62812, decode 32.03813; MemAvailable min 5.67797 GiB, PSI 0.0; guard max/high 118.2/117.2 GiB; busy clocks {'2184 MHz': 107}; temperature [48, 78] C
