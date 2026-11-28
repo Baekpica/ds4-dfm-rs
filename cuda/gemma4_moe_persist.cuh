@@ -56,16 +56,17 @@ enum : uint32_t {
  * (expert << 8) | slot. Each of the first G4_USED threads counts the routes
  * that precede its own, the rank-count v41_vq_order_kernel uses
  * (cuda/ds41_vq_decode.cuh:189-196); ties keep the slot order, which is the
- * grouped list's order for one token. An out-of-range id (the router never
- * emits one) is treated as expert 0 so no table read can leave the layer. */
+ * grouped list's order for one token. Non-active routes handled on the CPU
+ * arrive as (uint32_t)-1 (>= G4_EXPERTS) and sort to the tail as G4_EXPERTS
+ * so the GPU kernels skip them cleanly. */
 __device__ __forceinline__ void g4_moe_order_shared(uint32_t *order, const uint32_t *selected) {
     const uint32_t p = threadIdx.x;
     if (p >= G4_USED) { return; }
-    const uint32_t e = selected[p] < G4_EXPERTS ? selected[p] : 0u;
+    const uint32_t e = selected[p] < G4_EXPERTS ? selected[p] : G4_EXPERTS;
     uint32_t rank = 0;
     #pragma unroll
     for (uint32_t q = 0; q < G4_USED; q++) {
-        const uint32_t eq = selected[q] < G4_EXPERTS ? selected[q] : 0u;
+        const uint32_t eq = selected[q] < G4_EXPERTS ? selected[q] : G4_EXPERTS;
         if (eq < e || (eq == e && q < p)) { rank++; }
     }
     order[rank] = (e << 8) | p;
@@ -165,14 +166,17 @@ __global__ void __launch_bounds__(WARPS * 32, 1) g4_moe_gu_kernel(
     auto *x = (__nv_bfloat16 *)(stage + G4_MOE_BOOK_BYTES + G4_MOE_RES_BYTES);
     auto *order = (uint32_t *)(stage + G4_MOE_BOOK_BYTES + G4_MOE_RES_BYTES +
         G4_EMBED * sizeof(__nv_bfloat16));
-    g4_moe_stage_book((uint4 *)book, (const uint4 *)gate[0].book,
+    g4_moe_order_shared(order, selected);
+    __syncthreads();
+    const uint32_t first_expert = order[0] >> 8;
+    if (first_expert >= G4_EXPERTS) { return; }
+    g4_moe_stage_book((uint4 *)book, (const uint4 *)gate[first_expert].book,
         G4_MOE_BOOK_BYTES / sizeof(uint4));
-    g4_moe_stage_book((uint4 *)res_book, (const uint4 *)gate[0].res_book,
+    g4_moe_stage_book((uint4 *)res_book, (const uint4 *)gate[first_expert].res_book,
         G4_MOE_RES_BYTES / sizeof(uint4));
     for (uint32_t i = threadIdx.x; i < G4_EMBED; i += blockDim.x) {
         x[i] = __float2bfloat16_rn(input[i]);
     }
-    g4_moe_order_shared(order, selected);
     __syncthreads();
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t warp = blockIdx.x * WARPS + threadIdx.x / 32u;
@@ -180,6 +184,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) g4_moe_gu_kernel(
     for (uint32_t task = warp; task < G4_USED * G4_FF; task += gridDim.x * WARPS) {
         const uint32_t e = task / G4_FF, row = task % G4_FF;
         const uint32_t expert = order[e] >> 8;
+        if (expert >= G4_EXPERTS) { break; }
         const glmvq_matrix gm = gate[expert], um = up[expert];
         const uint64_t base = (uint64_t)row * nvec;
         float g = 0.0f, u = 0.0f;
@@ -218,14 +223,23 @@ __global__ void __launch_bounds__(WARPS * 32, 1) g4_moe_down_kernel(
     auto *x = (__nv_bfloat16 *)(stage + G4_MOE_BOOK_BYTES + G4_MOE_RES_BYTES);
     auto *order = (uint32_t *)(stage + G4_MOE_BOOK_BYTES + G4_MOE_RES_BYTES +
         G4_USED * G4_FF * sizeof(__nv_bfloat16));
-    g4_moe_stage_book((uint4 *)book, (const uint4 *)down[0].book,
+    g4_moe_order_shared(order, selected);
+    __syncthreads();
+    const uint32_t first_expert = order[0] >> 8;
+    if (first_expert >= G4_EXPERTS) {
+        for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+             i < G4_EMBED; i += gridDim.x * blockDim.x) {
+            out[i] = 0.0f;
+        }
+        return;
+    }
+    g4_moe_stage_book((uint4 *)book, (const uint4 *)down[first_expert].book,
         G4_MOE_BOOK_BYTES / sizeof(uint4));
-    g4_moe_stage_book((uint4 *)res_book, (const uint4 *)down[0].res_book,
+    g4_moe_stage_book((uint4 *)res_book, (const uint4 *)down[first_expert].res_book,
         G4_MOE_RES_BYTES / sizeof(uint4));
     for (uint32_t i = threadIdx.x; i < G4_USED * G4_FF / 8u; i += blockDim.x) {
         ((uint4 *)x)[i] = ((const uint4 *)mid)[i];
     }
-    g4_moe_order_shared(order, selected);
     __syncthreads();
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t warp = blockIdx.x * WARPS + threadIdx.x / 32u;
@@ -236,7 +250,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) g4_moe_down_kernel(
         #pragma unroll
         for (uint32_t e = 0; e < G4_USED; e++) {
             const uint32_t packed = order[e];
-            const glmvq_matrix dm = down[packed >> 8];
+            const uint32_t expert = packed >> 8;
+            if (expert >= G4_EXPERTS) { break; }
+            const glmvq_matrix dm = down[expert];
             float val = 0.0f;
             for (uint32_t j = lane; j < nvec; j += 32u) {
                 const uint64_t vector = base + j;

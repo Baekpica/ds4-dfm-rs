@@ -181,7 +181,8 @@ static uint32_t gemma4_stream_rows(const int32_t *ids, uint32_t rows,
     for (uint32_t row = 0; row < rows; row++) {
         for (uint32_t i = 0; i < used; i++) {
             const int32_t id = ids[(uint64_t)row * used + i];
-            if (id < 0 || (uint32_t)id >= experts) { return 0u; }
+            if (id < 0) { continue; }
+            if ((uint32_t)id >= experts) { return 0u; }
             if (seen[id]) { continue; }
             seen[id] = 1u;
             if (++unique > capacity) { return row; }
@@ -814,14 +815,18 @@ static bool gemma4_stream_load(ds4_gemma4_stream *s, const ds4_gemma4_layer *l,
     return true;
 }
 
-/* Read the next `rows` routes, stage the largest prefix whose expert union
- * fits the cache, and return that prefix. The caller runs the MoE over the
- * same prefix with the ids left in s->ids. */
-static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
-        const ds4_weights *w, uint32_t il, const ds4_gpu_tensor *selected,
-        uint32_t first, uint32_t rows) {
-    if (!s || !s->plan || !m || !w || !w->gemma4 || il >= G4_LAYERS ||
-        !selected || !rows) { return 0u; }
+static uint32_t gemma4_stream_free_count(const ds4_gemma4_stream *s) {
+    return s ? s->free_slots : 0u;
+}
+
+/* Stage from host route IDs (`host_ids`, `rows * G4_USED`); negative IDs (-1)
+ * denote non-active routes handled on the CPU and are skipped. */
+static uint32_t gemma4_stream_stage_host(ds4_gemma4_stream *s, const ds4_model *m,
+        const ds4_weights *w, uint32_t il, const int32_t *host_ids, uint32_t rows) {
+    (void)m;
+    if (!s || !w || !w->gemma4 || !host_ids || !rows || il >= G4_LAYERS) {
+        return 0u;
+    }
     const uint64_t count = (uint64_t)rows * G4_USED;
     if (count > s->ids_cap) {
         int32_t *ids = realloc(s->ids, (size_t)count * sizeof(*ids));
@@ -829,9 +834,9 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
         s->ids = ids;
         s->ids_cap = (uint32_t)count;
     }
-    if (!ds4_gpu_tensor_read(selected,
-            (uint64_t)first * G4_USED * sizeof(int32_t), s->ids,
-            count * sizeof(int32_t))) { return 0u; }
+    if (host_ids != s->ids) {
+        memcpy(s->ids, host_ids, (size_t)count * sizeof(int32_t));
+    }
     const uint32_t chunk = gemma4_stream_rows(s->ids, rows, G4_USED, G4_EXPERTS, s->count);
     if (!chunk) { return 0u; }
     const ds4_gemma4_layer *l = &w->gemma4[il];
@@ -844,7 +849,8 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
     uint8_t unique[G4_EXPERTS] = {0};
     for (uint64_t i = 0; i < (uint64_t)chunk * G4_USED; i++) {
         const int32_t id = s->ids[i];
-        if (id < 0 || (uint32_t)id >= G4_EXPERTS) { return 0u; }
+        if (id < 0) { continue; }
+        if ((uint32_t)id >= G4_EXPERTS) { return 0u; }
         if (!unique[id]) { s->stats.route_unique++; unique[id] = 1u; }
     }
     /* The two admission walks below resolve each route id through the
@@ -853,7 +859,9 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
     const uint64_t upload_before = s->stats.upload_ns;
     const uint64_t io_before = s->stats.io_ns;
     for (uint64_t i = 0; i < (uint64_t)chunk * G4_USED; i++) {
-        const int slot = gemma4_stream_find(s, il, (uint32_t)s->ids[i]);
+        const int32_t id = s->ids[i];
+        if (id < 0) { continue; }
+        const int slot = gemma4_stream_find(s, il, (uint32_t)id);
         if (slot >= 0) { s->slots[slot].pinned = s->epoch; }
     }
     /* Open the batch's queued window: the upload stream waits for the
@@ -864,7 +872,9 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
                 !ds4_gpu_capture_active();
     s->ordered = false;
     for (uint64_t i = 0; i < (uint64_t)chunk * G4_USED; i++) {
-        const uint32_t expert = (uint32_t)s->ids[i];
+        const int32_t id = s->ids[i];
+        if (id < 0) { continue; }
+        const uint32_t expert = (uint32_t)id;
         int slot = gemma4_stream_find(s, il, expert);
         if (slot >= 0) {
             s->stats.hits++;
@@ -907,6 +917,25 @@ static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
     s->queued = false;
     if (!gemma4_stream_ring_flush(s)) { return 0u; }
     return chunk;
+}
+
+static uint32_t gemma4_stream_stage(ds4_gemma4_stream *s, const ds4_model *m,
+        const ds4_weights *w, uint32_t il, const ds4_gpu_tensor *selected,
+        uint32_t first, uint32_t rows) {
+    if (!s || !s->plan || !m || !w || !w->gemma4 || !selected || !rows || il >= G4_LAYERS) {
+        return 0u;
+    }
+    const uint64_t count = (uint64_t)rows * G4_USED;
+    if (count > s->ids_cap) {
+        int32_t *ids = realloc(s->ids, (size_t)count * sizeof(*ids));
+        if (!ids) { return 0u; }
+        s->ids = ids;
+        s->ids_cap = (uint32_t)count;
+    }
+    if (!ds4_gpu_tensor_read(selected,
+            (uint64_t)first * G4_USED * sizeof(int32_t), s->ids,
+            count * sizeof(int32_t))) { return 0u; }
+    return gemma4_stream_stage_host(s, m, w, il, s->ids, rows);
 }
 
 #endif

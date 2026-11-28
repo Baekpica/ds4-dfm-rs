@@ -316,12 +316,71 @@ static void g4_cpu_gemv_rows(const struct g4_cpu_mat *m, const float *x, float *
     }
 }
 
+/* Multi-token row block: decodes each weight row once into L1 cache and
+ * accumulates across all `ntok` tokens routed to this expert with the exact
+ * same 4-accumulator AVX2 tree as g4_cpu_gemv_rows. */
+static void g4_cpu_gemm_rows(const struct g4_cpu_mat *m, const float *const *xs,
+                             float *const *ys, uint32_t ntok, uint32_t r0, uint32_t r1) {
+    if (ntok == 1u) {
+        g4_cpu_gemv_rows(m, xs[0], ys[0], r0, r1);
+        return;
+    }
+    const uint32_t nvec = m->cols / 8u;
+    alignas(32) float wrow[G4_EMBED];
+    for (uint32_t row = r0; row < r1; row++) {
+        const float gain = _cvtsh_ss(*(const uint16_t *)(m->gain + 2u * row));
+        const __m256 g8 = _mm256_set1_ps(gain);
+        const uint64_t base = (uint64_t)row * nvec;
+        const uint8_t *ix = m->main + (base >> 1) * 3u;
+        const uint8_t *pl = m->plane + (base >> 3);
+        const uint8_t *ri = m->res + base;
+        float *wp = wrow;
+        for (uint32_t k = 0; k < nvec; k += 4u) {
+            uint32_t i0, i1, i2, i3;
+            G4_CPU_INDEX4(ix, pl[k >> 3], k & 7u, i0, i1, i2, i3);
+            _mm256_store_ps(wp, g4_cpu_bf16x8(_mm256_mul_ps(g8, _mm256_add_ps(
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->book + (size_t)i0 * 8))),
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->rbook + (size_t)ri[k] * 8)))))));
+            _mm256_store_ps(wp + 8, g4_cpu_bf16x8(_mm256_mul_ps(g8, _mm256_add_ps(
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->book + (size_t)i1 * 8))),
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->rbook + (size_t)ri[k + 1u] * 8)))))));
+            _mm256_store_ps(wp + 16, g4_cpu_bf16x8(_mm256_mul_ps(g8, _mm256_add_ps(
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->book + (size_t)i2 * 8))),
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->rbook + (size_t)ri[k + 2u] * 8)))))));
+            _mm256_store_ps(wp + 24, g4_cpu_bf16x8(_mm256_mul_ps(g8, _mm256_add_ps(
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->book + (size_t)i3 * 8))),
+                _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->rbook + (size_t)ri[k + 3u] * 8)))))));
+            ix += 6; wp += 32;
+        }
+        for (uint32_t t = 0; t < ntok; t++) {
+            const float *xp = xs[t];
+            __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+            for (uint32_t c = 0; c < m->cols; c += 32u) {
+                a0 = _mm256_fmadd_ps(_mm256_load_ps(wrow + c), _mm256_loadu_ps(xp + c), a0);
+                a1 = _mm256_fmadd_ps(_mm256_load_ps(wrow + c + 8), _mm256_loadu_ps(xp + c + 8), a1);
+                a2 = _mm256_fmadd_ps(_mm256_load_ps(wrow + c + 16), _mm256_loadu_ps(xp + c + 16), a2);
+                a3 = _mm256_fmadd_ps(_mm256_load_ps(wrow + c + 24), _mm256_loadu_ps(xp + c + 24), a3);
+            }
+            const __m256 s = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+            const __m128 lo = _mm256_castps256_ps128(s);
+            const __m128 hi = _mm256_extractf128_ps(s, 1);
+            __m128 v = _mm_add_ps(lo, hi);
+            v = _mm_hadd_ps(v, v);
+            v = _mm_hadd_ps(v, v);
+            ys[t][row] = _mm_cvtss_f32(v);
+        }
+    }
+}
+
 /* --------------------------------------------------------------- the pool */
 
 struct g4_cpu_job {
     const struct g4_cpu_mat *m;
     const float *x;
     float *y;
+    const float *const *xs;
+    float *const *ys;
+    uint32_t ntok;
 };
 
 struct g4_cpu_pool {
@@ -359,7 +418,11 @@ static void g4_cpu_work(struct g4_cpu_pool *p) {
             uint32_t r0 = k * G4_CPU_CHUNK;
             uint32_t r1 = r0 + G4_CPU_CHUNK;
             if (r1 > job->m->rows) { r1 = job->m->rows; }
-            g4_cpu_gemv_rows(job->m, job->x, job->y, r0, r1);
+            if (job->ntok > 1u && job->xs && job->ys) {
+                g4_cpu_gemm_rows(job->m, job->xs, job->ys, job->ntok, r0, r1);
+            } else {
+                g4_cpu_gemv_rows(job->m, job->x, job->y, r0, r1);
+            }
         } else {
             const uint32_t e = j;
             uint32_t i0 = k * G4_CPU_GELU_CHUNK;
@@ -519,6 +582,122 @@ static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
     return 1;
 }
 
+/* Batch of `nroutes` cold (expert, token) pairs for a layer: runs all gate/up
+ * jobs in one pool sweep, all GELU epilogues in one sweep, and all down jobs
+ * in one sweep, writing `nroutes * G4_EMBED` floats to `out`. */
+static int g4_cpu_moe_routes(const void *map, const ds4_gvq_model *model,
+                             const uint32_t *matrices, const uint32_t *experts,
+                             const uint32_t *tokens, uint32_t nroutes,
+                             const float *x, uint32_t rows, float *out) {
+    if (!nroutes) { return 1; }
+    if (!map || !model || !matrices || !experts || !tokens || !x || !out || !rows) { return 0; }
+    if (!g4_cpu_pool_init()) { return 0; }
+
+    struct g4_cpu_mat gate[G4_EXPERTS], up[G4_EXPERTS], down[G4_EXPERTS];
+    uint8_t parsed[G4_EXPERTS] = {0};
+    for (uint32_t r = 0; r < nroutes; r++) {
+        const uint32_t e = experts[r];
+        if (e >= G4_EXPERTS || tokens[r] >= rows) { return 0; }
+        if (!parsed[e]) {
+            if (!g4_cpu_mat_parse(&gate[e], map, model, matrices[e]) ||
+                !g4_cpu_mat_parse(&up[e], map, model, matrices[G4_EXPERTS + e]) ||
+                !g4_cpu_mat_parse(&down[e], map, model, matrices[2u * G4_EXPERTS + e])) {
+                return 0;
+            }
+            if (gate[e].rows != G4_FF || gate[e].cols != G4_EMBED ||
+                up[e].rows != G4_FF || up[e].cols != G4_EMBED ||
+                down[e].rows != G4_EMBED || down[e].cols != G4_FF) {
+                return 0;
+            }
+            parsed[e] = 1;
+        }
+    }
+
+    static float *s_xr, *s_g, *s_u, *s_mid;
+    static const float **s_xs;
+    static float **s_yg, **s_yu, **s_ym, **s_yd;
+    static struct g4_cpu_job *s_jobs;
+    static int32_t *s_tok_slot;
+    static uint32_t s_cap_routes, s_cap_rows;
+    if (nroutes > s_cap_routes) {
+        free(s_g); free(s_u); free(s_mid); free(s_jobs);
+        free(s_xs); free(s_yg); free(s_yu); free(s_ym); free(s_yd);
+        s_g = (float *)malloc((size_t)nroutes * G4_FF * sizeof(float));
+        s_u = (float *)malloc((size_t)nroutes * G4_FF * sizeof(float));
+        s_mid = (float *)malloc((size_t)nroutes * G4_FF * sizeof(float));
+        s_jobs = (struct g4_cpu_job *)malloc((size_t)2u * G4_EXPERTS * sizeof(*s_jobs));
+        s_xs = (const float **)malloc((size_t)nroutes * sizeof(*s_xs));
+        s_yg = (float **)malloc((size_t)nroutes * sizeof(*s_yg));
+        s_yu = (float **)malloc((size_t)nroutes * sizeof(*s_yu));
+        s_ym = (float **)malloc((size_t)nroutes * sizeof(*s_ym));
+        s_yd = (float **)malloc((size_t)nroutes * sizeof(*s_yd));
+        if (!s_g || !s_u || !s_mid || !s_jobs || !s_xs || !s_yg || !s_yu || !s_ym || !s_yd) {
+            s_cap_routes = 0;
+            return 0;
+        }
+        s_cap_routes = nroutes;
+    }
+    if (rows > s_cap_rows) {
+        free(s_xr); free(s_tok_slot);
+        s_xr = (float *)malloc((size_t)rows * G4_EMBED * sizeof(float));
+        s_tok_slot = (int32_t *)malloc((size_t)rows * sizeof(int32_t));
+        if (!s_xr || !s_tok_slot) { s_cap_rows = 0; return 0; }
+        s_cap_rows = rows;
+    }
+    for (uint32_t t = 0; t < rows; t++) { s_tok_slot[t] = -1; }
+    uint32_t ntok = 0;
+    uint32_t counts[G4_EXPERTS] = {0}, offsets[G4_EXPERTS + 1] = {0}, cursor[G4_EXPERTS] = {0};
+    for (uint32_t r = 0; r < nroutes; r++) {
+        const uint32_t t = tokens[r];
+        if (s_tok_slot[t] < 0) {
+            const float *src = x + (size_t)t * G4_EMBED;
+            float *dst = s_xr + (size_t)ntok * G4_EMBED;
+            for (uint32_t i = 0; i < G4_EMBED; i++) { dst[i] = g4_cpu_bf16(src[i]); }
+            s_tok_slot[t] = (int32_t)ntok++;
+        }
+        counts[experts[r]]++;
+    }
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        offsets[e + 1] = offsets[e] + counts[e];
+        cursor[e] = offsets[e];
+    }
+    for (uint32_t r = 0; r < nroutes; r++) {
+        const uint32_t e = experts[r];
+        const uint32_t pos = cursor[e]++;
+        const float *xt = s_xr + (size_t)(uint32_t)s_tok_slot[tokens[r]] * G4_EMBED;
+        s_xs[pos] = xt;
+        s_yg[pos] = s_g + (size_t)r * G4_FF;
+        s_yu[pos] = s_u + (size_t)r * G4_FF;
+        s_ym[pos] = s_mid + (size_t)r * G4_FF;
+        s_yd[pos] = out + (size_t)r * G4_EMBED;
+    }
+    uint32_t nexp = 0;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const uint32_t n = counts[e];
+        if (!n) { continue; }
+        const uint32_t off = offsets[e];
+        s_jobs[2u * nexp] = {&gate[e], s_xs[off], s_yg[off], s_xs + off, s_yg + off, n};
+        s_jobs[2u * nexp + 1u] = {&up[e], s_xs[off], s_yu[off], s_xs + off, s_yu + off, n};
+        nexp++;
+    }
+    g4_cpu_sweep(0, s_jobs, 2u * nexp,
+                 (G4_FF + G4_CPU_CHUNK - 1u) / G4_CPU_CHUNK, NULL, NULL, NULL);
+    g4_cpu_sweep(1, NULL, nroutes,
+                 (G4_FF + G4_CPU_GELU_CHUNK - 1u) / G4_CPU_GELU_CHUNK,
+                 s_g, s_u, s_mid);
+    nexp = 0;
+    for (uint32_t e = 0; e < G4_EXPERTS; e++) {
+        const uint32_t n = counts[e];
+        if (!n) { continue; }
+        const uint32_t off = offsets[e];
+        s_jobs[nexp++] = {&down[e], s_ym[off], s_yd[off],
+                          (const float *const *)(s_ym + off), s_yd + off, n};
+    }
+    g4_cpu_sweep(0, s_jobs, nexp,
+                 (G4_EMBED + G4_CPU_CHUNK - 1u) / G4_CPU_CHUNK, NULL, NULL, NULL);
+    return 1;
+}
+
 /* Decode entry: rows tokens of G4_USED routes each, all through the host.
  * `layer` is only the histogram's index; it never reaches the arithmetic. */
 static int g4_cpu_moe_run_tensors(const void *map, const ds4_gvq_model *model,
@@ -587,6 +766,15 @@ static int g4_cpu_moe_expert(const void *map, const ds4_gvq_model *model,
                              const uint32_t *matrices, uint32_t expert,
                              const float *x, float *out) {
     (void)map; (void)model; (void)matrices; (void)expert; (void)x; (void)out;
+    return g4_cpu_moe_unavailable();
+}
+
+static int g4_cpu_moe_routes(const void *map, const ds4_gvq_model *model,
+                             const uint32_t *matrices, const uint32_t *experts,
+                             const uint32_t *tokens, uint32_t nroutes,
+                             const float *x, uint32_t rows, float *out) {
+    (void)map; (void)model; (void)matrices; (void)experts; (void)tokens;
+    (void)nroutes; (void)x; (void)rows; (void)out;
     return g4_cpu_moe_unavailable();
 }
 
